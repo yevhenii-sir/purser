@@ -58,11 +58,16 @@ The last step checks everything and shows the URLs to paste into Play Console (R
 
 ## 3. Connect the game
 
-**Unity:** add the package to `Packages/manifest.json`, create the config (Tools → Purser → Create Config) and press **Paste config from admin panel**:
+**Unity:** add the package to `Packages/manifest.json` and create the config (Tools → Purser → Create Config):
 
 ```json
 "com.yevhenii.purser": "https://github.com/yevhenii-sir/purser.git?path=/unity/com.yevhenii.purser"
 ```
+
+The config and the admin panel exchange one JSON (server address, the builds by store, the products with their store-specific ids), in either direction:
+
+- **Admin panel first:** copy the *Unity config* from the last step of the setup wizard and paste it into the config inspector.
+- **Game first:** copy the JSON from the config inspector and press **Paste from Unity** on the first step of **Apps → Add an app**: it fills in the builds and the products. Products added in the game later are imported with **Import from Unity** on the app's Products tab, which shows what is new or changed and adds nothing for builds the app does not have yet.
 
 The [Unity package README](../unity/com.yevhenii.purser/README.md) covers the API (`PurchaseAsync`, `IsActive`, `RestoreAsync`) and the DI adapters.
 

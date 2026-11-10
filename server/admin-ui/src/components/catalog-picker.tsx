@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, type ReactNode } from "react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DataTable, Mono, Tone } from "@/components/common"
@@ -10,11 +10,19 @@ export interface PickedProduct {
   kind: Kind
   default_price_micros: number
   currency: string
+  /** Product id per store id where it differs from `product_id` (from a Unity config). */
+  store_ids?: Record<string, string>
 }
 
 /** Store catalog rows to pick from. The kind of one-time products can be changed: Google Play
  * does not tell consumable from non-consumable (the App Store does). */
-export function CatalogPicker({ rows, onChange }: { rows: CatalogRow[]; onChange: (picked: PickedProduct[]) => void }) {
+export function CatalogPicker({ rows, onChange, empty = "The store has no products for this app.", detail }: {
+  rows: CatalogRow[]
+  onChange: (picked: PickedProduct[]) => void
+  empty?: string
+  /** Extra text under the product id. */
+  detail?: (r: CatalogRow) => ReactNode
+}) {
   const [picked, setPicked] = useState<Record<string, boolean>>(() => Object.fromEntries(rows.map((r) => [r.product_id, r.status !== "same"])))
   const [kinds, setKinds] = useState<Record<string, Kind>>(() => Object.fromEntries(rows.map((r) => [r.product_id, r.kind])))
 
@@ -29,14 +37,20 @@ export function CatalogPicker({ rows, onChange }: { rows: CatalogRow[]; onChange
   return (
     <DataTable
       rows={rows}
-      empty="The store has no products for this app."
+      empty={empty}
       columns={[
         {
           title: "",
           className: "w-8",
           cell: (r) => <Checkbox checked={!!picked[r.product_id]} onCheckedChange={(v) => setPicked((p) => ({ ...p, [r.product_id]: v === true }))} />,
         },
-        { title: "Product", cell: (r) => <Mono>{r.product_id}</Mono> },
+        {
+          title: "Product",
+          cell: (r) => {
+            const extra = detail?.(r)
+            return <div className="min-w-0"><Mono>{r.product_id}</Mono>{extra && <div className="truncate font-mono text-xs text-muted-foreground">{extra}</div>}</div>
+          },
+        },
         {
           title: "Type",
           cell: (r) =>

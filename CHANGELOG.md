@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Unity package: the config is keyed by store (`builds`, per-product `storeIds`), so one game can have several web builds (Stripe and Xsolla); **Copy config for admin panel** in the inspector; fixes for purchases without a product id, Amazon receipts the server rejected, web purchases without attribution and paywall, hanging purchases and game handler exceptions. Breaking for the package API: see `unity/com.yevhenii.purser/CHANGELOG.md`.
+- Admin page: the Unity config goes both ways. **Paste from Unity** on the first step of the new app wizard fills in the builds (merged by store and app id) and the products from the JSON the Unity config inspector copies; **Import from Unity** on an app's Products tab compares the pasted products with the app's (new, changed, same), saves them to every build with the store's own product id and keeps existing prices, and lists builds the app does not have instead of creating them. The config is keyed by store (`builds: [{store, appId}]`, `products: [{id, type, storeIds}]`); the wizard's Unity config now lists every build (Steam and web included) and per-store product ids. Configs in the old format (`androidAppId`, ...) are refused with a hint to copy them again from Unity.
 
 ## 0.1.0 - 2026-11-10
 

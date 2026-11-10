@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react"
-import { CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon } from "lucide-react"
+import { ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -11,11 +11,13 @@ import { Textarea } from "@/components/ui/textarea"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
 import { call, proc, sqlWhereIn } from "@/lib/api"
-import { buildLabel, storeOf } from "@/lib/stores"
+import { buildLabel, storeById, storeOf } from "@/lib/stores"
 import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { KINDS, type CatalogRow, type GameApp, type Kind, type Product } from "@/lib/types"
 import type { TabProps } from "@/pages/app"
+import { appRoute } from "@/routes"
+import { parseUnityConfig, productIdIn, type UnityBuild } from "@/lib/unity-config"
 
 interface Row {
   product_id: string
@@ -23,11 +25,11 @@ interface Row {
   by: Record<string, Product | undefined>
 }
 
-export function AppProductsTab({ data }: TabProps) {
+export function AppProductsTab({ data, go }: TabProps) {
   const g = data.group
   const ids = g.apps.map((a) => a.app_id)
   const [editing, setEditing] = useState<Row | "new" | null>(null)
-  /** `import:<app_id>` (store catalog import of that build) or `json`. */
+  /** `import:<app_id>` (store catalog import of that build), `unity` or `json`. */
   const [dialog, setDialog] = useState<string | null>(null)
   const products = useAsync(async () => {
     const all = await sqlWhereIn<Product>("product", "app_id", ids)
@@ -66,6 +68,7 @@ export function AppProductsTab({ data }: TabProps) {
             {g.apps.slice(1).map((to) => (
               <Button key={to.app_id} variant="outline" size="sm" onClick={() => copyToOther(g.apps[0], to)}><CopyIcon /> Copy missing to {buildLabel(to)}</Button>
             ))}
+            <Button variant="outline" size="sm" onClick={() => setDialog("unity")}><ClipboardPasteIcon /> Import from Unity</Button>
             <Button variant="outline" size="sm" onClick={() => setDialog("json")}><FileJsonIcon /> JSON</Button>
             <Button size="sm" onClick={() => setEditing("new")}><PlusIcon /> Add</Button>
           </>
@@ -94,6 +97,8 @@ export function AppProductsTab({ data }: TabProps) {
       {importers.map((a) => (
         <StoreImportDialog key={a.app_id} open={dialog === `import:${a.app_id}`} app={a} others={g.apps.filter((o) => o !== a)} onClose={() => setDialog(null)} onSaved={products.reload} />
       ))}
+      <UnityImportDialog open={dialog === "unity"} apps={g.apps} existing={products.data ? rows : null} onClose={() => setDialog(null)} onSaved={products.reload}
+        onWizard={() => go(appRoute(g.key, "setup"))} />
       <JsonDialog open={dialog === "json"} appId={g.apps[0].app_id} onClose={() => setDialog(null)} onSaved={products.reload} />
     </>
   )
@@ -245,5 +250,120 @@ function JsonDialog({ open, appId, onClose, onSaved }: { open: boolean; appId: s
         <DialogFooter><Button onClick={save}>Import</Button></DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+
+/** Pasted Unity config compared with the app's products: one catalog row per product, saved to every build
+ * (with the build's store-specific product id). Builds the paste names but the app lacks are only listed. */
+function UnityImportDialog({ open, onClose, ...props }: UnityImportProps & { open: boolean }) {
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-3xl">{open && <UnityImport onClose={onClose} {...props} />}</DialogContent>
+    </Dialog>
+  )
+}
+
+interface UnityImportProps {
+  apps: GameApp[]
+  existing: Row[] | null
+  onClose: () => void
+  onSaved: () => void
+  onWizard: () => void
+}
+
+function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImportProps) {
+  const [text, setText] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [parsed, setParsed] = useState<{ rows: CatalogRow[]; storeIds: Record<string, Record<string, string>>; unknown: UnityBuild[] } | null>(null)
+  const [picked, setPicked] = useState<PickedProduct[]>([])
+  const onPick = useCallback((p: PickedProduct[]) => setPicked(p), [])
+  /** The app's product of a build by its store product id. */
+  const find = (app: GameApp, productId: string) => existing?.find((r) => r.product_id === productId)?.by[app.app_id]
+
+  const compare = () => {
+    try {
+      const c = parseUnityConfig(text)
+      if (!c.products.length) throw new Error("The config has no products")
+      const rows: CatalogRow[] = c.products.map((u) => {
+        const have = apps.map((a) => find(a, productIdIn(u, storeOf(a).id)))
+        const some = have.find(Boolean)
+        const status = !some ? "new" : have.every((p) => p && p.kind === u.kind) ? "same" : "changed"
+        return {
+          product_id: u.product_id, kind: u.kind, price_micros: some ? Number(some.default_price_micros) : 0, currency: some?.currency || "",
+          billing_period_days: 0, status, local_kind: some?.kind || "",
+        }
+      })
+      const unknown = c.builds.filter((b) => !apps.some((a) => a.app_id === b.app_id && storeOf(a).id === b.store))
+      setParsed({ rows, storeIds: Object.fromEntries(c.products.map((u) => [u.product_id, u.store_ids])), unknown })
+      setError(null)
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
+  const save = async () => {
+    if (!parsed) return
+    const items = apps.flatMap((a) => picked.map((p) => {
+      const product_id = productIdIn({ product_id: p.product_id, store_ids: parsed.storeIds[p.product_id] }, storeOf(a).id)
+      const had = find(a, product_id)
+      return {
+        app_id: a.app_id, product_id, kind: p.kind,
+        default_price_micros: had ? Number(had.default_price_micros) : p.default_price_micros, currency: had ? had.currency : p.currency,
+      }
+    }))
+    const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Saved ${picked.length} product(s)`)
+    if (ok !== undefined) { onSaved(); onClose() }
+  }
+  const overrides = (r: CatalogRow) => {
+    const ids = parsed?.storeIds[r.product_id] || {}
+    const shown = apps.map((a) => storeOf(a).id).filter((s, i, all) => ids[s] && all.indexOf(s) === i)
+    return shown.length ? shown.map((s) => `${storeById(s)?.name || s}: ${ids[s]}`).join(" · ") : null
+  }
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Import from Unity</DialogTitle>
+        <DialogDescription>
+          Paste the JSON the Purser config inspector copies. Products are saved to every build of the app, with the store's own product id where the
+          config names one. Prices of existing products are kept.
+        </DialogDescription>
+      </DialogHeader>
+      <DialogBody>
+        {!parsed ? (
+          <div className="space-y-3">
+            <Textarea className="min-h-56 font-mono text-xs" value={text} onChange={(e) => { setText(e.target.value); setError(null) }} spellCheck={false}
+              placeholder={'{"serverBaseUrl": "...", "builds": [...], "products": [{"id": "gems_100", "type": "Consumable"}]}'} />
+            {error && <ErrorBox error={error} />}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <CatalogPicker key={text} rows={parsed.rows} onChange={onPick} empty="The config has no products." detail={overrides} />
+            {parsed.unknown.length > 0 && (
+              <div className="rounded-lg border p-3 text-sm">
+                <p>This app has no build for:</p>
+                <ul className="mt-1 list-disc pl-5 font-mono text-xs">
+                  {parsed.unknown.map((b) => <li key={`${b.store}/${b.app_id}`}>{storeById(b.store)?.name || b.store}: {b.app_id}</li>)}
+                </ul>
+                <p className="mt-2 text-muted-foreground">
+                  Nothing is created for them here. Add them with <i>Add a build or run the setup wizard</i> on the{" "}
+                  <Button variant="link" size="sm" className="h-auto p-0" onClick={() => { onClose(); onWizard() }}>Setup tab</Button>,
+                  then import again.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </DialogBody>
+      <DialogFooter className="gap-2">
+        {parsed ? (
+          <>
+            <Button variant="outline" onClick={() => setParsed(null)}>Back</Button>
+            <Button onClick={save} disabled={!picked.length}>Save selected</Button>
+          </>
+        ) : (
+          <Button onClick={compare} disabled={!text.trim() || !existing}>Compare</Button>
+        )}
+      </DialogFooter>
+    </>
   )
 }
