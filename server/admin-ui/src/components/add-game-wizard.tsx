@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState, type ReactNode } from "react"
-import { CheckIcon, DownloadIcon, PlusIcon, Trash2Icon } from "lucide-react"
+import { CheckIcon, ClipboardPasteIcon, DownloadIcon, PlusIcon, Trash2Icon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -11,19 +11,19 @@ import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
 import { AccountSelect, accountsOf } from "@/components/account-select"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
-import { CopyField, DialogBody, Field, Loading, Tone } from "@/components/common"
+import { CopyField, DialogBody, ErrorBox, Field, Loading, Tone } from "@/components/common"
 import { ReportView, reportUrls } from "@/components/report"
 import { call, genSecret, proc, publicRoute, sql, sqlStr } from "@/lib/api"
 import { appsChanged, useApps, type AppGroup } from "@/lib/apps"
 import { checkBuilds } from "@/lib/checks"
 import { buildLabel, platformById, storeById, storeOf, storesFor, usablePlatforms, type StoreInfo } from "@/lib/stores"
 import { errorText } from "@/lib/format"
+import { parseUnityConfig, productIdIn, suggestGameKey, toUnityConfig, type ParsedUnityConfig } from "@/lib/unity-config"
 import type { CatalogRow, Delivery, GameApp, Kind, Platform, Product, Report } from "@/lib/types"
 import { KINDS } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const STEPS = ["App", "Delivery", "Store keys", "Products", "Check"]
-const UNITY_TYPE: Record<Kind, string> = { consumable: "Consumable", non_consumable: "NonConsumable", subscription: "Subscription" }
 
 function reducerSnippet(identity: string) {
   return `// Rust module of the app database: the billing calls these reducers (args_format v1)
@@ -249,7 +249,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         const valid = w.products.filter((p) => p.product_id.trim())
         const items = apps()
           .filter((a) => a.products)
-          .flatMap((a) => valid.map((p) => ({ app_id: a.app_id, product_id: p.product_id.trim(), kind: p.kind, default_price_micros: p.default_price_micros || 0, currency: p.currency || "" })))
+          .flatMap((a) => valid.map((p) => ({ app_id: a.app_id, product_id: productIdIn(p, a.store).trim(), kind: p.kind, default_price_micros: p.default_price_micros || 0, currency: p.currency || "" })))
         if (items.length) {
           onChange()
           await call("admin_upsert_products", JSON.stringify(items))
@@ -304,7 +304,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
       const products = [...s.products]
       for (const p of catalogPick) {
         const i = products.findIndex((x) => x.product_id === p.product_id)
-        if (i >= 0) products[i] = p
+        if (i >= 0) products[i] = { ...products[i], ...p }
         else products.push(p)
       }
       return { ...s, products }
@@ -312,13 +312,30 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
     setCatalog(null)
   }
 
-  const firstOf = (store: string) => apps().find((b) => b.store === store)?.app_id || undefined
-  const unityConfig = reports
-    ? JSON.stringify({
-        serverBaseUrl: reports.base, androidAppId: firstOf("google"), iosAppId: firstOf("apple"), amazonAppId: firstOf("amazon"),
-        products: w.products.filter((p) => p.product_id).map((p) => ({ id: p.product_id, type: UNITY_TYPE[p.kind] })),
-      }, null, 2)
-    : ""
+  const unityConfig = reports ? toUnityConfig(reports.base, apps(), w.products) : ""
+
+  /** A pasted Unity config: builds merged by store and app id, products by id (keeping prices). */
+  const applyUnity = (c: ParsedUnityConfig) => {
+    setW((s) => {
+      let builds = [...s.builds]
+      for (const u of c.builds) {
+        if (builds.some((b) => b.store === u.store && b.app_id === u.app_id)) continue
+        const empty = builds.findIndex((b) => !b.app_id.trim() && b.store === u.store)
+        if (empty >= 0) builds[empty] = { ...builds[empty], app_id: u.app_id }
+        else builds.push({ ...newBuild(u.platform), store: u.store, app_id: u.app_id })
+      }
+      if (c.builds.length) builds = builds.filter((b) => b.app_id.trim())
+      const products = [...s.products]
+      for (const u of c.products) {
+        const i = products.findIndex((p) => p.product_id === u.product_id)
+        if (i >= 0) products[i] = { ...products[i], kind: u.kind, store_ids: u.store_ids }
+        else products.push({ product_id: u.product_id, kind: u.kind, store_ids: u.store_ids, default_price_micros: 0, currency: "" })
+      }
+      const game_key = s.game_key || suggestGameKey(builds.map((b) => b.app_id))
+      return { ...s, builds, products, game_key }
+    })
+    toast.success(`Pasted ${c.builds.length} build(s) and ${c.products.length} product(s)`)
+  }
 
   return (
     <>
@@ -377,9 +394,12 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                   )
                 })}
               </div>
-              <Button variant="outline" size="sm" onClick={() => setW((s) => ({ ...s, builds: [...s.builds, newBuild("android", s.builds[0]?.account)] }))}>
-                <PlusIcon /> Add a build
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={() => setW((s) => ({ ...s, builds: [...s.builds, newBuild("android", s.builds[0]?.account)] }))}>
+                  <PlusIcon /> Add a build
+                </Button>
+                <UnityPaste onApply={applyUnity} />
+              </div>
               <p className="text-sm text-muted-foreground">
                 Empty rows are skipped. Store keys are saved for the developer account, so the next app from the same account reuses them.
                 A game on Google Play and the Amazon Appstore is two builds; give the Amazon build its own app id when the package name is the same.
@@ -469,7 +489,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
               <p className="text-sm text-muted-foreground">Store product ids. Prices are used for revenue when the store does not report one (Google Play, Amazon).</p>
               <div className="space-y-2">
                 {w.products.map((p, i) => (
-                  <div key={i} className="grid grid-cols-[1fr_10rem_6rem_5rem_auto] items-center gap-2">
+                  <div key={i} className="grid grid-cols-[1fr_10rem_6rem_5rem_auto] items-center gap-x-2 gap-y-1">
                     <Input className="font-mono text-xs" placeholder="product_id" value={p.product_id} onChange={(e) => updateProduct(i, { product_id: e.target.value })} />
                     <Select value={p.kind} onValueChange={(v) => updateProduct(i, { kind: v as Kind })}>
                       <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
@@ -481,6 +501,11 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                     <Button variant="ghost" size="icon" aria-label="Remove" onClick={() => setW((s) => ({ ...s, products: s.products.filter((_, j) => j !== i) }))}>
                       <Trash2Icon />
                     </Button>
+                    {Object.keys(p.store_ids || {}).length > 0 && (
+                      <p className="col-span-full truncate px-1 font-mono text-xs text-muted-foreground">
+                        {Object.entries(p.store_ids!).map(([store, id]) => `${storeById(store)?.name || store}: ${id}`).join(" · ")}
+                      </p>
+                    )}
                   </div>
                 ))}
                 {!w.products.length && <p className="py-4 text-center text-sm text-muted-foreground">No products yet.</p>}
@@ -524,7 +549,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                     return u.notify && <CopyField key={r.app_id} label={`${b ? buildLabel(b) : r.app_id}: ${u.notifyLabel}`} value={u.notify} />
                   })}
                   <CopyField label="Webhook HMAC key (shown once)" value={generated.webhook_secret || ""} />
-                  <CopyField label="Unity: Purser config → Paste config from admin panel" value={unityConfig} />
+                  <CopyField label="Unity config: paste it into the Purser config inspector" value={unityConfig} />
                   {Object.keys(generated).some((k) => k !== "webhook_secret") && <p className="text-xs text-muted-foreground">Notification URLs with a new secret are shown only now; the secret is stored on the server.</p>}
                 </div>
               </div>
@@ -550,5 +575,40 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         )}
       </DialogFooter>
     </>
+  )
+}
+
+/** "Paste from Unity": the config the Unity inspector copies (builds and products). */
+function UnityPaste({ onApply }: { onApply: (c: ParsedUnityConfig) => void }) {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const apply = () => {
+    try {
+      onApply(parseUnityConfig(text))
+      setOpen(false)
+      setText("")
+      setError(null)
+    } catch (e) {
+      setError(errorText(e))
+    }
+  }
+  return (
+    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setError(null) }}>
+      <Button variant="outline" size="sm" onClick={() => setOpen(true)}><ClipboardPasteIcon /> Paste from Unity</Button>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Paste from Unity</DialogTitle>
+          <DialogDescription>
+            The JSON the Purser config inspector copies. It fills in the builds (on the default developer account) and the products;
+            prices can be set in the Products step.
+          </DialogDescription>
+        </DialogHeader>
+        <Textarea className="min-h-56 font-mono text-xs" value={text} onChange={(e) => { setText(e.target.value); setError(null) }} spellCheck={false}
+          placeholder={'{"serverBaseUrl": "...", "builds": [{"store": "google", "appId": "com.example.mygame"}], "products": [...]}'} />
+        {error && <ErrorBox error={error} />}
+        <DialogFooter><Button onClick={apply} disabled={!text.trim()}>Fill in</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
