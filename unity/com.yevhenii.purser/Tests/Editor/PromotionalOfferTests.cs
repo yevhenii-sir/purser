@@ -19,9 +19,9 @@ namespace Purser.Tests
         {
             m_Config = BillingConfig.Create("https://billing.example.com/route",
                 new BillingProductConfig("gems_100", BillingProductType.Consumable),
-                new BillingProductConfig("premium", BillingProductType.Subscription, "premium_android", "premium_ios"));
-            m_Config.androidAppId = "com.test.game";
-            m_Config.iosAppId = "com.test.game.ios";
+                new BillingProductConfig("premium", BillingProductType.Subscription)
+                    .WithStoreId(BillingStores.Google, "premium_android").WithStoreId(BillingStores.Apple, "premium_ios"));
+            m_Config.WithBuild(BillingStores.Google, "com.test.game").WithBuild(BillingStores.Apple, "com.test.game.ios");
             m_Config.refreshEntitlementsOnInit = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Store = new FakeStore { Platform = BillingPlatform.Apple };

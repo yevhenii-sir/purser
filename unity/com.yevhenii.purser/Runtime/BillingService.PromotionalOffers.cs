@@ -14,7 +14,7 @@ namespace Purser
             var config = m_Config.FindById(productId) ?? m_Config.FindByStoreId(productId)
                 ?? throw new BillingException($"Unknown product {productId}");
             var user = CurrentUser() ?? throw new BillingException("User id is not set");
-            var (offer, error) = await SignOfferAsync(config.StoreId(Platform), offerId, user, ct);
+            var (offer, error) = await SignOfferAsync(config.StoreId(m_Store.Store), offerId, user, ct);
             return offer ?? throw new BillingException(error);
         }
 
@@ -33,7 +33,7 @@ namespace Purser
             var config = m_Config.FindById(productId) ?? m_Config.FindByStoreId(productId);
             if (config == null)
                 return new PurchaseResult(PurchaseStatus.Failed, productId, message: "unknown product");
-            var storeId = config.StoreId(Platform);
+            var storeId = config.StoreId(m_Store.Store);
             if (config.type != BillingProductType.Subscription)
                 return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId,
                     message: "promotional offers apply to subscriptions only");

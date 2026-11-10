@@ -59,20 +59,12 @@ namespace Purser
     /// (<c>/checkout/xsolla/status</c>) until Xsolla's webhook reached the server and the reward was granted.
     /// Unpaid orders are remembered and checked again at the next launch. Xsolla has no client SDK dependency here.
     /// <code>new BillingDependencies { Store = new XsollaStoreAdapter(config, new XsollaOptions { ReturnUrl = "https://example.com/game" }) }</code>
-    /// The product's store id is the Xsolla item SKU. Subscriptions are not sold through this adapter.
+    /// The app id is the <c>xsolla</c> build of <see cref="BillingConfig.builds"/>; the product's store id is the Xsolla
+    /// item SKU. Subscriptions are not sold through this adapter.
     /// </summary>
-    public sealed class XsollaStoreAdapter : IStoreAdapter, IStoreNameProvider, IWebhookStoreAdapter
+    public sealed class XsollaStoreAdapter : ServerCheckoutStoreAdapter, IWebhookStoreAdapter
     {
-        public const string Store = "xsolla";
         private const string PendingKey = "purser.xsolla.pending";
-
-        private sealed class PendingOrder
-        {
-            [JsonProperty("order_id")] public string OrderId;
-            [JsonProperty("sku")] public string Sku;
-            [JsonProperty("user_id")] public string UserId;
-            [JsonProperty("created_ticks")] public long CreatedTicks;
-        }
 
         private sealed class CheckoutRequest
         {
@@ -83,6 +75,7 @@ namespace Purser
             [JsonProperty("return_url", NullValueHandling = NullValueHandling.Ignore)] public string ReturnUrl;
             [JsonProperty("country", NullValueHandling = NullValueHandling.Ignore)] public string Country;
             [JsonProperty("language", NullValueHandling = NullValueHandling.Ignore)] public string Language;
+            [JsonProperty("attribution", NullValueHandling = NullValueHandling.Ignore)] public IReadOnlyDictionary<string, string> Attribution;
         }
 
         private sealed class StatusRequest
@@ -92,32 +85,18 @@ namespace Purser
             [JsonProperty("order_id")] public string OrderId;
         }
 
-        private readonly string m_BaseUrl;
         private readonly string m_AppId;
-        private readonly int m_TimeoutSeconds;
         private readonly XsollaOptions m_Options;
-        private readonly IHttpTransport m_Transport;
-        private readonly IBillingStorage m_Storage;
-        private readonly BillingLog m_Log;
-        private readonly Func<TimeSpan, CancellationToken, Task> m_Delay;
-        private readonly Func<DateTime> m_UtcNow;
-        private List<PendingOrder> m_Pending;
-        private string m_User;
+        private readonly JsonHttp m_Http;
 
-        public BillingPlatform Platform => BillingPlatform.Web;
-        public string StoreName => Store;
+        public override BillingPlatform Platform => BillingPlatform.Web;
+        public override string Store => BillingStores.Xsolla;
 
-        public event Action<StoreOrder> OrderPending;
-        /// <summary>Not used: an unpaid order is reported by <see cref="CheckOrderAsync"/>.</summary>
-        public event Action<StoreOrder> OrderDeferred { add { } remove { } }
-        public event Action<StorePurchaseFailure> PurchaseFailed;
-        public event Action<StoreOrder, bool, string> OrderConfirmed;
-
-        /// <param name="config">Server URL, request timeout and the web build's app id (<see cref="BillingConfig.webAppId"/>).</param>
+        /// <param name="config">Server URL, request timeout and the app id of its <c>xsolla</c> build.</param>
         /// <param name="storage">Remembers unpaid orders across launches (default: PlayerPrefs).</param>
         public XsollaStoreAdapter(BillingConfig config, XsollaOptions options = null, IHttpTransport transport = null,
             IBillingStorage storage = null, BillingLog log = null)
-            : this(config ? config.serverBaseUrl : null, config ? config.AppIdFor(BillingPlatform.Web) : null,
+            : this(config ? config.serverBaseUrl : null, config ? config.AppIdFor(BillingStores.Xsolla) : null,
                 config ? config.requestTimeoutSeconds : 10, options, transport, storage, log)
         {
         }
@@ -125,199 +104,53 @@ namespace Purser
         /// <param name="serverBaseUrl">Billing server, <c>https://&lt;host&gt;/v1/database/&lt;db&gt;/route</c>.</param>
         /// <param name="appId">App id of the Xsolla build on the server.</param>
         public XsollaStoreAdapter(string serverBaseUrl, string appId, int timeoutSeconds = 10, XsollaOptions options = null,
-            IHttpTransport transport = null, IBillingStorage storage = null, BillingLog log = null,
-            Func<TimeSpan, CancellationToken, Task> delay = null, Func<DateTime> utcNow = null)
+            IHttpTransport transport = null, IBillingStorage storage = null, BillingLog log = null)
+            : base(storage, log, PendingKey, (options ?? new XsollaOptions()).ForgetAfter)
         {
-            if (string.IsNullOrWhiteSpace(serverBaseUrl))
-                throw new ArgumentException("Billing server URL is empty", nameof(serverBaseUrl));
             if (string.IsNullOrWhiteSpace(appId))
-                throw new ArgumentException("The Xsolla build's app id is empty (BillingConfig.webAppId)", nameof(appId));
-            m_BaseUrl = serverBaseUrl.TrimEnd('/');
+                throw new ArgumentException("The Xsolla build's app id is empty (an xsolla build in BillingConfig.builds)", nameof(appId));
+            m_Http = new JsonHttp(serverBaseUrl, timeoutSeconds, transport);
             m_AppId = appId;
-            m_TimeoutSeconds = Math.Max(1, timeoutSeconds);
             m_Options = options ?? new XsollaOptions();
-            m_Transport = transport ?? new UnityWebRequestTransport();
-            m_Storage = storage ?? new PlayerPrefsBillingStorage();
-            m_Log = log ?? new BillingLog(BillingLogLevel.Warning);
-            m_Delay = delay ?? ((d, ct) => Task.Delay(d, ct));
-            m_UtcNow = utcNow ?? (() => DateTime.UtcNow);
         }
 
-        /// <summary>Re-raises orders of earlier sessions that were not confirmed (paid after the app closed, or not yet).</summary>
-        public Task ConnectAsync(CancellationToken ct)
+        protected override bool IsSold(BillingProductConfig product) => product.type != BillingProductType.Subscription;
+
+        protected override async Task StartCheckoutAsync(string sku, string userId)
         {
-            m_Pending = LoadPending();
-            var cutoff = m_UtcNow() - m_Options.ForgetAfter;
-            var expired = m_Pending.RemoveAll(o => new DateTime(o.CreatedTicks, DateTimeKind.Utc) < cutoff);
-            if (expired > 0)
-                SavePending();
-            foreach (var o in m_Pending.ToList())
-                OrderPending?.Invoke(ToOrder(o));
-            return Task.CompletedTask;
-        }
-
-        /// <summary>Checks the remembered unpaid orders again (e.g. when the player returns from Pay Station after
-        /// <see cref="XsollaOptions.PaymentTimeout"/>); their results arrive as purchase events of the billing service.</summary>
-        public void ResumePendingOrders()
-        {
-            foreach (var o in Pending.ToList())
-                OrderPending?.Invoke(ToOrder(o));
-        }
-
-        /// <summary>Products from the config: prices are shown by Pay Station (the catalog lives in Xsolla).</summary>
-        public Task<IReadOnlyList<StoreProduct>> FetchProductsAsync(IReadOnlyList<BillingProductConfig> products, CancellationToken ct)
-        {
-            IReadOnlyList<StoreProduct> list = products
-                .Select(p => new StoreProduct(p.id, p.StoreId(Platform), p.type, "", 0m, null, p.id, "",
-                    p.type != BillingProductType.Subscription))
-                .ToList();
-            return Task.FromResult(list);
-        }
-
-        /// <summary>Xsolla has no account binding field: the server puts the billing user id into the payment token.</summary>
-        public void SetAccountBinding(string googleAccountId, Guid? appleAccountToken) { }
-
-        public void SetBillingUser(string userId) => m_User = userId;
-
-        public void Purchase(string storeProductId) => _ = PurchaseCoreAsync(storeProductId);
-
-        private async Task PurchaseCoreAsync(string sku)
-        {
-            try
+            var request = new CheckoutRequest
             {
-                var user = m_User;
-                if (string.IsNullOrEmpty(user))
-                {
-                    PurchaseFailed?.Invoke(new StorePurchaseFailure(sku, "Xsolla: the billing user id is not set", false));
-                    return;
-                }
-                var request = new CheckoutRequest
-                {
-                    AppId = m_AppId,
-                    ProductId = sku,
-                    UserId = user,
-                    Sandbox = m_Options.Sandbox,
-                    ReturnUrl = NullIfEmpty(m_Options.ReturnUrl),
-                    Country = NullIfEmpty(m_Options.Country),
-                    Language = NullIfEmpty(m_Options.Language),
-                };
-                var res = await PostAsync<XsollaCheckoutResponse>("/checkout/xsolla", request, CancellationToken.None);
-                var checkout = res.Value;
-                if (!res.IsHttpSuccess || string.IsNullOrEmpty(checkout?.Url) || string.IsNullOrEmpty(checkout.OrderId))
-                {
-                    var reason = checkout?.Message ?? res.Error ?? "no answer";
-                    PurchaseFailed?.Invoke(new StorePurchaseFailure(sku, "Xsolla checkout: " + reason, false));
-                    return;
-                }
-                var pending = new PendingOrder { OrderId = checkout.OrderId, Sku = sku, UserId = user, CreatedTicks = m_UtcNow().Ticks };
-                Pending.Add(pending);
-                SavePending();
-                (m_Options.OpenUrl ?? Application.OpenURL)(checkout.Url);
-                OrderPending?.Invoke(ToOrder(pending, checkout));
-            }
-            catch (Exception e)
+                AppId = m_AppId,
+                ProductId = sku,
+                UserId = userId,
+                Sandbox = m_Options.Sandbox,
+                ReturnUrl = NullIfEmpty(m_Options.ReturnUrl),
+                Country = NullIfEmpty(m_Options.Country),
+                Language = NullIfEmpty(m_Options.Language),
+                Attribution = Checkout?.Attribution?.Count > 0 ? Checkout.Attribution : null,
+            };
+            var res = await m_Http.PostAsync<XsollaCheckoutResponse>("/checkout/xsolla", request, CancellationToken.None);
+            var checkout = res.Value;
+            if (!res.IsHttpSuccess || string.IsNullOrEmpty(checkout?.Url) || string.IsNullOrEmpty(checkout.OrderId))
             {
-                m_Log.Error("Xsolla checkout failed: " + e);
-                PurchaseFailed?.Invoke(new StorePurchaseFailure(sku, "Xsolla checkout: " + e.Message, false));
-            }
-        }
-
-        /// <summary>Polls <c>/checkout/xsolla/status</c> until the order is granted, refunded or the payment timeout passes.</summary>
-        public async Task<ApiResult<VerifyResponse>> CheckOrderAsync(StoreOrder order, CancellationToken ct)
-        {
-            var user = string.IsNullOrEmpty(order.StoreUserId) ? m_User : order.StoreUserId;
-            if (!string.IsNullOrEmpty(m_User) && user != m_User)
-                // Paid by another player of this device: granted to that player by the server; not reported here.
-                return Answer(VerifyStatus.PendingOrCanceled, "the order belongs to another user");
-            var request = new StatusRequest { AppId = m_AppId, UserId = user, OrderId = order.TransactionId };
-            var deadline = m_UtcNow() + m_Options.PaymentTimeout;
-            while (true)
-            {
-                var res = await PostAsync<VerifyResponse>("/checkout/xsolla/status", request, ct);
-                var status = res.Value?.Status;
-                var unpaid = status == VerifyStatus.PendingOrCanceled || res.IsTransportError || res.HttpStatus >= 500;
-                if (!unpaid || m_UtcNow() >= deadline)
-                    return res;
-                await m_Delay(m_Options.PollInterval, ct);
-            }
-        }
-
-        /// <summary>The server answered for the order: it is no longer checked at launch.</summary>
-        public void Confirm(StoreOrder order)
-        {
-            if (order?.TransactionId == null)
+                Fail(sku, "checkout: " + (checkout?.Message ?? res.Error ?? "no answer"));
                 return;
-            if (Pending.RemoveAll(o => o.OrderId == order.TransactionId) > 0)
-                SavePending();
-            OrderConfirmed?.Invoke(order, true, null);
+            }
+            var order = Remember(checkout.OrderId, sku, userId);
+            (m_Options.OpenUrl ?? Application.OpenURL)(checkout.Url);
+            RaisePending(ToOrder(order, checkout));
         }
 
-        /// <summary>Owned products come from the server's entitlements: nothing to restore from the store.</summary>
-        public Task<IReadOnlyList<StoreOrder>> FetchPurchasesAsync(CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<StoreOrder>>(new List<StoreOrder>());
-
-        public Task<bool> RestoreTransactionsAsync(CancellationToken ct) => Task.FromResult(true);
-
-        public void Dispose() { }
-
-        // ---- helpers ----
-
-        private List<PendingOrder> Pending => m_Pending ?? (m_Pending = LoadPending());
-
-        private StoreOrder ToOrder(PendingOrder o, object native = null) =>
-            new StoreOrder(Platform, o.Sku, o.OrderId, null, o.OrderId, null, native, o.UserId);
-
-        private static ApiResult<VerifyResponse> Answer(string status, string message) =>
-            new ApiResult<VerifyResponse>(200, new VerifyResponse { Status = status, Message = message }, null);
-
-        private static string NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
-
-        private async Task<ApiResult<T>> PostAsync<T>(string path, object body, CancellationToken ct) where T : class
+        /// <summary>Polls <c>/checkout/xsolla/status</c> until the order is granted, refunded or the payment timeout
+        /// passes. The attribution went with the checkout.</summary>
+        public Task<ApiResult<VerifyResponse>> CheckOrderAsync(StoreOrder order, VerifyRequest request, CancellationToken ct)
         {
-            var res = await m_Transport.SendAsync("POST", m_BaseUrl + path, JsonConvert.SerializeObject(body), m_TimeoutSeconds, ct);
-            if (res.IsTransportError)
-                return new ApiResult<T>(0, null, res.Error);
-            T value = null;
-            string error = null;
-            try
-            {
-                if (!string.IsNullOrEmpty(res.Body))
-                    value = JsonConvert.DeserializeObject<T>(res.Body);
-            }
-            catch (JsonException e)
-            {
-                error = "invalid JSON from server: " + e.Message;
-            }
-            if (error == null && (res.Status < 200 || res.Status >= 300))
-                error = "HTTP " + res.Status;
-            return new ApiResult<T>(res.Status, value, error);
-        }
-
-        private List<PendingOrder> LoadPending()
-        {
-            try
-            {
-                var json = m_Storage.Load(PendingKey);
-                return string.IsNullOrEmpty(json)
-                    ? new List<PendingOrder>()
-                    : JsonConvert.DeserializeObject<List<PendingOrder>>(json) ?? new List<PendingOrder>();
-            }
-            catch (Exception)
-            {
-                return new List<PendingOrder>();
-            }
-        }
-
-        private void SavePending()
-        {
-            try
-            {
-                m_Storage.Save(PendingKey, JsonConvert.SerializeObject(Pending));
-            }
-            catch (Exception e)
-            {
-                m_Log.Warning("Could not remember Xsolla orders: " + e.Message);
-            }
+            var user = BuyerOf(order);
+            if (user == null)
+                return Task.FromResult(Answer(VerifyStatus.PendingOrCanceled, "the order belongs to another user"));
+            var status = new StatusRequest { AppId = m_AppId, UserId = user, OrderId = order.TransactionId };
+            return PollAsync(token => m_Http.PostAsync<VerifyResponse>("/checkout/xsolla/status", status, token),
+                m_Options.PollInterval, m_Options.PaymentTimeout, null, ct);
         }
     }
 }

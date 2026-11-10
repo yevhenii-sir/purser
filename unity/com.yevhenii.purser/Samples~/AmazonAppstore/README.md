@@ -18,4 +18,4 @@ var billing = Billing.Create(config, deps);
 Appstore), or always `AmazonAppstore` for a build made only for Amazon.
 
 On the billing server the Amazon build is its own build of the app (platform `amazon`) with the
-`amazon_shared_secret` key; set `BillingConfig.amazonAppId` to its app id. See docs/store-setup.md.
+`amazon_shared_secret` key; add an `amazon` build with its app id to `BillingConfig.builds`. See docs/store-setup.md.

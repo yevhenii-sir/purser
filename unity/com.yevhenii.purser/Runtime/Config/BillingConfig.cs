@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace Purser
@@ -21,6 +23,26 @@ namespace Purser
         Verbose,
     }
 
+    /// <summary>One build of the app on the billing server: its store and app id there.</summary>
+    [Serializable]
+    public sealed class BillingBuild
+    {
+        [Tooltip("Store id of the billing server: google, apple, amazon, steam, stripe, xsolla (see BillingStores).")]
+        public string store;
+
+        [Tooltip("App id of the build on the server: Android package, iOS bundle id, or any unique id " +
+                 "(e.g. com.example.mygame.web).")]
+        public string appId;
+
+        public BillingBuild() { }
+
+        public BillingBuild(string store, string appId)
+        {
+            this.store = store;
+            this.appId = appId;
+        }
+    }
+
     /// <summary>
     /// Billing configuration asset. Create it with Assets → Create → Purser → Config
     /// (or Tools → Purser → Create Config) and assign it to <see cref="BillingBootstrap"/>
@@ -38,21 +60,9 @@ namespace Purser
         [Tooltip("Base URL of the billing HTTP API: https://<host>/v1/database/<db>/route")]
         public string serverBaseUrl = DefaultServerUrl;
 
-        [Tooltip("Google Play package name registered on the billing server. Empty = Application.identifier.")]
-        public string androidAppId;
-
-        [Tooltip("App Store bundle id registered on the billing server. Empty = Application.identifier.")]
-        public string iosAppId;
-
-        [Tooltip("App id of the Amazon Appstore build on the billing server (e.g. com.example.mygame.amazon " +
-                 "when the Google Play build uses the package name). Empty = Application.identifier.")]
-        public string amazonAppId;
-
-        [Tooltip("App id of the Steam build on the billing server. Empty = Application.identifier.")]
-        public string steamAppId;
-
-        [Tooltip("App id of the web build on the billing server. Empty = Application.identifier.")]
-        public string webAppId;
+        [Tooltip("The app's builds on the billing server: one per store (google, apple, amazon, steam, stripe, xsolla) " +
+                 "with its app id. A store without a row uses Application.identifier.")]
+        public List<BillingBuild> builds = new List<BillingBuild>();
 
         [Tooltip("Store of Android builds. Auto: the Amazon Appstore when it installed the app, otherwise Google Play. " +
                  "Amazon needs an AmazonStoreAdapter in BillingDependencies.Store (Unity IAP 5 has no Amazon store).")]
@@ -94,62 +104,125 @@ namespace Purser
         }
 
         /// <summary>
-        /// Applies the "Unity config" JSON shown by the admin panel's Add game wizard:
-        /// <c>{"serverBaseUrl", "androidAppId", "iosAppId", "amazonAppId", "steamAppId", "webAppId",
-        /// "products": [{"id", "type", "googleId", "appleId", "amazonId"}]}</c>.
-        /// Missing fields keep their value; <c>products</c>, when present, replaces the list.
+        /// Applies the config JSON copied from the admin panel (or from <see cref="ToJson"/>):
+        /// <c>{"serverBaseUrl", "builds": [{"store", "appId"}], "products": [{"id", "type", "storeIds": {"apple": "..."}}]}</c>.
+        /// Missing fields keep their value; <c>builds</c> and <c>products</c>, when present, replace the lists.
         /// <c>type</c> accepts <c>Consumable</c> / <c>NonConsumable</c> / <c>Subscription</c> or the server's
         /// <c>consumable</c> / <c>non_consumable</c> / <c>subscription</c>.
         /// </summary>
+        /// <exception cref="FormatException">The JSON is not a Purser config.</exception>
         public void ApplyJson(string json)
         {
-            var o = Newtonsoft.Json.Linq.JObject.Parse(json);
-            string Str(Newtonsoft.Json.Linq.JToken t, string name) => (string)t[name];
+            JObject o;
+            try
+            {
+                o = JObject.Parse(json ?? "");
+            }
+            catch (Newtonsoft.Json.JsonException e)
+            {
+                throw new FormatException("not JSON: " + e.Message);
+            }
+            foreach (var legacy in new[] { "androidAppId", "iosAppId", "amazonAppId", "steamAppId", "webAppId" })
+                if (o[legacy] != null)
+                    throw new FormatException($"'{legacy}' is from an older Purser: copy the config again from the admin panel");
 
-            serverBaseUrl = Str(o, "serverBaseUrl")?.TrimEnd('/') ?? serverBaseUrl;
-            androidAppId = Str(o, "androidAppId") ?? androidAppId;
-            iosAppId = Str(o, "iosAppId") ?? iosAppId;
-            amazonAppId = Str(o, "amazonAppId") ?? amazonAppId;
-            steamAppId = Str(o, "steamAppId") ?? steamAppId;
-            webAppId = Str(o, "webAppId") ?? webAppId;
-            if (!(o["products"] is Newtonsoft.Json.Linq.JArray items))
-                return;
+            var parsedBuilds = o["builds"] is JArray b ? ParseBuilds(b) : null;
+            var parsedProducts = o["products"] is JArray p ? ParseProducts(p) : null;
+            serverBaseUrl = ((string)o["serverBaseUrl"])?.TrimEnd('/') ?? serverBaseUrl;
+            if (parsedBuilds != null)
+                builds = parsedBuilds;
+            if (parsedProducts != null)
+                products = parsedProducts;
+        }
+
+        private static List<BillingBuild> ParseBuilds(JArray items)
+        {
+            var parsed = new List<BillingBuild>();
+            foreach (var item in items)
+            {
+                var store = (string)item["store"];
+                var appId = (string)item["appId"];
+                if (string.IsNullOrEmpty(store) || string.IsNullOrEmpty(appId))
+                    throw new FormatException("every build needs a store and an appId");
+                parsed.Add(new BillingBuild(store, appId));
+            }
+            return parsed;
+        }
+
+        private static List<BillingProductConfig> ParseProducts(JArray items)
+        {
             var parsed = new List<BillingProductConfig>();
             foreach (var item in items)
             {
-                var id = Str(item, "id");
+                var id = (string)item["id"];
                 if (string.IsNullOrEmpty(id))
                     continue;
-                var type = (Str(item, "type") ?? "").Replace("_", "");
+                var type = ((string)item["type"] ?? "").Replace("_", "");
                 if (!Enum.TryParse(type, true, out BillingProductType parsedType))
-                    throw new FormatException($"Product '{id}': unknown type '{Str(item, "type")}'.");
-                parsed.Add(new BillingProductConfig(id, parsedType, Str(item, "googleId"), Str(item, "appleId"), Str(item, "amazonId")));
+                    throw new FormatException($"product '{id}': unknown type '{(string)item["type"]}'");
+                var product = new BillingProductConfig(id, parsedType);
+                if (item["storeIds"] is JObject storeIds)
+                    foreach (var kv in storeIds)
+                        if (!string.IsNullOrEmpty((string)kv.Value))
+                            product.WithStoreId(kv.Key, (string)kv.Value);
+                parsed.Add(product);
             }
-            products = parsed;
+            return parsed;
         }
 
-        public string AppIdFor(BillingPlatform platform)
+        /// <summary>The config as JSON for the admin panel ("Paste from Unity"); the inverse of <see cref="ApplyJson"/>.</summary>
+        public string ToJson()
         {
-            string overrideId;
-            switch (platform)
+            var o = new JObject
             {
-                case BillingPlatform.Apple: overrideId = iosAppId; break;
-                case BillingPlatform.Amazon: overrideId = amazonAppId; break;
-                case BillingPlatform.Steam: overrideId = steamAppId; break;
-                case BillingPlatform.Web: overrideId = webAppId; break;
-                default: overrideId = androidAppId; break;
-            }
-            return string.IsNullOrEmpty(overrideId) ? Application.identifier : overrideId;
+                ["serverBaseUrl"] = serverBaseUrl,
+                ["builds"] = new JArray((builds ?? new List<BillingBuild>())
+                    .Where(b => b != null && !string.IsNullOrEmpty(b.store))
+                    .Select(b => new JObject { ["store"] = b.store, ["appId"] = b.appId ?? "" })),
+                ["products"] = new JArray((products ?? new List<BillingProductConfig>())
+                    .Where(p => p != null && !string.IsNullOrEmpty(p.id))
+                    .Select(p =>
+                    {
+                        var item = new JObject { ["id"] = p.id, ["type"] = p.type.ToString() };
+                        var overrides = (p.storeIds ?? new List<StoreProductId>())
+                            .Where(s => s != null && !string.IsNullOrEmpty(s.store) && !string.IsNullOrEmpty(s.id) && s.id != p.id)
+                            .GroupBy(s => s.store)
+                            .ToList();
+                        if (overrides.Count > 0)
+                            item["storeIds"] = new JObject(overrides.Select(g => new JProperty(g.Key, g.First().id)));
+                        return item;
+                    })),
+            };
+            return o.ToString(Newtonsoft.Json.Formatting.Indented);
         }
 
+        /// <summary>App id of the build in a store (<see cref="BillingStores"/>); <c>Application.identifier</c> when the
+        /// config has no build for it.</summary>
+        public string AppIdFor(string store)
+        {
+            var build = builds?.FirstOrDefault(b => b != null && b.store == store && !string.IsNullOrEmpty(b.appId));
+            return build?.appId ?? Application.identifier;
+        }
+
+        /// <summary>Adds or replaces the build of a store (fluent, for configs built in code).</summary>
+        public BillingConfig WithBuild(string store, string appId)
+        {
+            builds = builds ?? new List<BillingBuild>();
+            builds.RemoveAll(b => b?.store == store);
+            builds.Add(new BillingBuild(store, appId));
+            return this;
+        }
+
+        /// <summary>The product with this game id, or null.</summary>
         public BillingProductConfig FindById(string id)
         {
             return products.Find(p => p != null && p.id == id);
         }
 
+        /// <summary>The product with this id in any store, or null.</summary>
         public BillingProductConfig FindByStoreId(string storeId)
         {
-            return products.Find(p => p != null && p.Matches(storeId));
+            return string.IsNullOrEmpty(storeId) ? null : products.Find(p => p != null && p.Matches(storeId));
         }
 
         /// <summary>Returns human readable problems; empty when the config is usable.</summary>
@@ -171,6 +244,19 @@ namespace Purser
                 problems.Add("Retry delays are not set.");
             else if (Array.Exists(retryDelaysSeconds, d => d < 0))
                 problems.Add("Retry delays must not be negative.");
+
+            var stores = new HashSet<string>();
+            foreach (var b in builds ?? new List<BillingBuild>())
+            {
+                if (b == null || string.IsNullOrWhiteSpace(b.store))
+                    problems.Add("A build has no store.");
+                else if (!stores.Add(b.store))
+                    problems.Add($"Two builds for the store '{b.store}': keep one.");
+                else if (string.IsNullOrWhiteSpace(b.appId))
+                    problems.Add($"The {b.store} build has no app id.");
+                else if (!BillingStores.All.Contains(b.store))
+                    problems.Add($"Unknown store '{b.store}' (known: {string.Join(", ", BillingStores.All)}).");
+            }
 
             if (products == null || products.Count == 0)
                 problems.Add("No products configured.");

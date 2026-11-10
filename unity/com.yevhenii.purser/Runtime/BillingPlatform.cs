@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace Purser
@@ -7,20 +8,22 @@ namespace Purser
     /// Google Play (<c>android</c>), App Store (<c>ios</c>), Amazon Appstore (<c>amazon</c>), Steam, web.
     /// Unity IAP covers Google and Apple; the others need an <see cref="IStoreAdapter"/> in
     /// <see cref="BillingDependencies.Store"/> (<see cref="AmazonStoreAdapter"/> for Amazon,
-    /// <see cref="SteamStoreAdapter"/> for Steam, <see cref="XsollaStoreAdapter"/> or your own for web).
+    /// <see cref="SteamStoreAdapter"/> for Steam, <see cref="StripeStoreAdapter"/> or <see cref="XsollaStoreAdapter"/> for web).
     /// </summary>
     public enum BillingPlatform
     {
         /// <summary>Platform without a supported store (Editor, Standalone).</summary>
         Unsupported,
+        /// <summary>Google Play (Android, Unity IAP).</summary>
         Google,
+        /// <summary>App Store (iOS, tvOS, macOS, Unity IAP).</summary>
         Apple,
         /// <summary>Amazon Appstore (Fire OS / Android). Use <see cref="AmazonStoreAdapter"/>.</summary>
         Amazon,
         /// <summary>Steam microtransactions. Use <see cref="SteamStoreAdapter"/>.</summary>
         Steam,
-        /// <summary>Browser / web shop. Provide your own <see cref="IStoreAdapter"/> that also implements
-        /// <see cref="IStoreNameProvider"/> (<c>stripe</c> or <c>xsolla</c>).</summary>
+        /// <summary>Browser / web shop: <see cref="StripeStoreAdapter"/>, <see cref="XsollaStoreAdapter"/> or your own
+        /// <see cref="IStoreAdapter"/> (its <see cref="IStoreAdapter.Store"/> names the server's store).</summary>
         Web,
     }
 
@@ -34,13 +37,35 @@ namespace Purser
     }
 
     /// <summary>
-    /// Optional interface of an <see cref="IStoreAdapter"/> whose store is not implied by its platform
-    /// (a web adapter selling through Stripe or Xsolla): the billing server route is <c>/verify/{StoreName}</c>.
+    /// Store ids of the billing server (<c>purser_core::registry</c>): the <c>/verify/{store}</c> route, the
+    /// <see cref="BillingBuild.store"/> of a build and the key of a product's per-store id. Every
+    /// <see cref="IStoreAdapter.Store"/> is one of them.
     /// </summary>
-    public interface IStoreNameProvider
+    public static class BillingStores
     {
-        /// <summary>Store id of the billing server, e.g. <c>stripe</c>.</summary>
-        string StoreName { get; }
+        public const string Google = "google";
+        public const string Apple = "apple";
+        public const string Amazon = "amazon";
+        public const string Steam = "steam";
+        public const string Stripe = "stripe";
+        public const string Xsolla = "xsolla";
+
+        /// <summary>Stores the server knows, in the order the inspector lists them.</summary>
+        public static readonly IReadOnlyList<string> All = new[] { Google, Apple, Amazon, Steam, Stripe, Xsolla };
+
+        /// <summary>The store a platform implies; null for <see cref="BillingPlatform.Web"/> (Stripe or Xsolla:
+        /// the adapter names it) and <see cref="BillingPlatform.Unsupported"/>.</summary>
+        public static string Of(BillingPlatform platform)
+        {
+            switch (platform)
+            {
+                case BillingPlatform.Google: return Google;
+                case BillingPlatform.Apple: return Apple;
+                case BillingPlatform.Amazon: return Amazon;
+                case BillingPlatform.Steam: return Steam;
+                default: return null;
+            }
+        }
     }
 
     public static class BillingPlatforms
@@ -106,28 +131,6 @@ namespace Purser
 #else
             return false;
 #endif
-        }
-
-        /// <summary>Store id of the billing server for a platform (<c>/verify/{store}</c>); null for
-        /// <see cref="BillingPlatform.Web"/> (the adapter names it, see <see cref="IStoreNameProvider"/>)
-        /// and <see cref="BillingPlatform.Unsupported"/>.</summary>
-        public static string StoreName(this BillingPlatform platform)
-        {
-            switch (platform)
-            {
-                case BillingPlatform.Google: return "google";
-                case BillingPlatform.Apple: return "apple";
-                case BillingPlatform.Amazon: return "amazon";
-                case BillingPlatform.Steam: return "steam";
-                default: return null;
-            }
-        }
-
-        /// <summary>Store segment of the server route: <c>/verify/google</c>, <c>/verify/apple</c>, <c>/verify/amazon</c>, ...
-        /// Google for platforms without a store of their own (kept for compatibility).</summary>
-        public static string RouteName(this BillingPlatform platform)
-        {
-            return platform.StoreName() ?? "google";
         }
     }
 }

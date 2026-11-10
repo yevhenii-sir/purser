@@ -10,17 +10,21 @@ namespace Purser.Tests
     internal sealed partial class FakeStore : IStoreAdapter
     {
         public BillingPlatform Platform { get; set; } = BillingPlatform.Google;
+        private string m_Store;
+        /// <summary>The platform's store unless set (web stores).</summary>
+        public string Store { get => m_Store ?? BillingStores.Of(Platform) ?? BillingStores.Google; set => m_Store = value; }
 
         public event Action<StoreOrder> OrderPending;
         public event Action<StoreOrder> OrderDeferred;
         public event Action<StorePurchaseFailure> PurchaseFailed;
-        public event Action<StoreOrder, bool, string> OrderConfirmed;
+        public event Action<StoreOrder, bool, string> OrderFinished;
 
         public readonly List<string> PurchaseCalls = new List<string>();
         public readonly List<StoreOrder> Confirmed = new List<StoreOrder>();
+        /// <summary>The <c>granted</c> flag of every <see cref="Finish"/>, in order.</summary>
+        public readonly List<bool> FinishedGranted = new List<bool>();
         public readonly List<StoreOrder> Owned = new List<StoreOrder>();
-        public string GoogleAccountId;
-        public Guid? AppleAccountToken;
+        public string BoundUserId;
         public bool RestoreCalled;
         public bool Disposed;
 
@@ -32,16 +36,12 @@ namespace Purser.Tests
         public Task<IReadOnlyList<StoreProduct>> FetchProductsAsync(IReadOnlyList<BillingProductConfig> products, CancellationToken ct)
         {
             IReadOnlyList<StoreProduct> list = products
-                .Select(p => new StoreProduct(p.id, p.StoreId(Platform), p.type, "$0.99", 0.99m, "USD", p.id, "", true))
+                .Select(p => new StoreProduct(p.id, p.StoreId(Store), p.type, "$0.99", 0.99m, "USD", p.id, "", true))
                 .ToList();
             return Task.FromResult(list);
         }
 
-        public void SetAccountBinding(string googleAccountId, Guid? appleAccountToken)
-        {
-            GoogleAccountId = googleAccountId;
-            AppleAccountToken = appleAccountToken;
-        }
+        public void SetAccountBinding(string userId) => BoundUserId = userId;
 
         public void Purchase(string storeProductId)
         {
@@ -55,10 +55,11 @@ namespace Purser.Tests
         public void Defer(StoreOrder order) => OrderDeferred?.Invoke(order);
         public void Fail(string storeId, bool cancelled) => PurchaseFailed?.Invoke(new StorePurchaseFailure(storeId, "test failure", cancelled));
 
-        public void Confirm(StoreOrder order)
+        public void Finish(StoreOrder order, bool granted)
         {
             Confirmed.Add(order);
-            OrderConfirmed?.Invoke(order, true, null);
+            FinishedGranted.Add(granted);
+            OrderFinished?.Invoke(order, true, null);
         }
 
         public Task<IReadOnlyList<StoreOrder>> FetchPurchasesAsync(CancellationToken ct) =>
@@ -82,7 +83,7 @@ namespace Purser.Tests
     internal sealed partial class FakeApi : IBillingApi
     {
         public readonly List<VerifyRequest> VerifyRequests = new List<VerifyRequest>();
-        public readonly List<BillingPlatform> VerifyPlatforms = new List<BillingPlatform>();
+        public readonly List<string> VerifyStores = new List<string>();
         public readonly Queue<ApiResult<VerifyResponse>> VerifyResults = new Queue<ApiResult<VerifyResponse>>();
         public ApiResult<VerifyResponse> DefaultVerify = Verify(200, VerifyStatus.Success);
 
@@ -95,10 +96,10 @@ namespace Purser.Tests
         public int EntitlementsCalls;
         public ApiResult<EntitlementsDto> EntitlementsResult = new ApiResult<EntitlementsDto>(500, null, "not configured");
 
-        public Task<ApiResult<VerifyResponse>> VerifyAsync(BillingPlatform platform, VerifyRequest request, CancellationToken ct = default)
+        public Task<ApiResult<VerifyResponse>> VerifyAsync(string store, VerifyRequest request, CancellationToken ct = default)
         {
             VerifyRequests.Add(request);
-            VerifyPlatforms.Add(platform);
+            VerifyStores.Add(store);
             if (Hold != null)
             {
                 var hold = Hold;

@@ -85,7 +85,7 @@ namespace Purser.Tests
             var transport = new FakeTransport { Next = new HttpResponse(200, "{\"status\":\"success\",\"transaction_id\":\"GPA.1\",\"expires_date_ms\":5}") };
             var api = new BillingApiClient("https://billing.example.com/route/", 10, transport);
 
-            var result = Sync.Run(api.VerifyAsync(BillingPlatform.Google, new VerifyRequest
+            var result = Sync.Run(api.VerifyAsync(BillingStores.Google, new VerifyRequest
             {
                 BundleId = "com.test.game",
                 UserId = "u1",
@@ -113,7 +113,7 @@ namespace Purser.Tests
         {
             var transport = new FakeTransport { Next = new HttpResponse(400, "{\"status\":\"invalid\",\"message\":\"Invalid Value\"}") };
             var api = new BillingApiClient("https://b.example.com/route", 10, transport);
-            var result = Sync.Run(api.VerifyAsync(BillingPlatform.Apple, new VerifyRequest()));
+            var result = Sync.Run(api.VerifyAsync(BillingStores.Apple, new VerifyRequest()));
             Assert.AreEqual("https://b.example.com/route/verify/apple", transport.Requests[0].Url);
             Assert.AreEqual(400, result.HttpStatus);
             Assert.AreEqual(VerifyStatus.Invalid, result.Value.Status);
@@ -176,28 +176,73 @@ namespace Purser.Tests
             var config = BillingConfig.Create(BillingConfig.DefaultServerUrl, new BillingProductConfig("old", BillingProductType.Consumable));
             config.requestTimeoutSeconds = 7;
             config.ApplyJson(@"{""serverBaseUrl"": ""https://maincloud.spacetimedb.com/v1/database/my-billing/route/"",
-                ""androidAppId"": ""com.example.mygame"", ""iosAppId"": ""com.example.mygame.ios"",
+                ""builds"": [{""store"": ""google"", ""appId"": ""com.example.mygame""}, {""store"": ""apple"", ""appId"": ""com.example.mygame.ios""},
+                             {""store"": ""stripe"", ""appId"": ""com.example.mygame.web""}],
                 ""products"": [{""id"": ""gems_100"", ""type"": ""Consumable""}, {""id"": ""no_ads"", ""type"": ""non_consumable""},
-                               {""id"": ""vip"", ""type"": ""Subscription"", ""appleId"": ""vip_ios""}]}");
+                               {""id"": ""vip"", ""type"": ""Subscription"", ""storeIds"": {""apple"": ""vip_ios""}}]}");
 
             Assert.AreEqual("https://maincloud.spacetimedb.com/v1/database/my-billing/route", config.serverBaseUrl);
-            Assert.AreEqual("com.example.mygame.ios", config.iosAppId);
+            Assert.AreEqual("com.example.mygame.ios", config.AppIdFor(BillingStores.Apple));
+            Assert.AreEqual("com.example.mygame.web", config.AppIdFor(BillingStores.Stripe));
+            Assert.AreEqual(Application.identifier, config.AppIdFor(BillingStores.Xsolla), "a store without a build");
             Assert.AreEqual(7, config.requestTimeoutSeconds, "fields missing in the JSON are kept");
             Assert.AreEqual(3, config.products.Count);
             Assert.AreEqual(BillingProductType.NonConsumable, config.products[1].type);
-            Assert.AreEqual("vip_ios", config.products[2].StoreId(BillingPlatform.Apple));
+            Assert.AreEqual("vip_ios", config.products[2].StoreId(BillingStores.Apple));
+            Assert.AreEqual("vip", config.products[2].StoreId(BillingStores.Google));
             CollectionAssert.IsEmpty(config.Validate());
             Assert.Throws<FormatException>(() => config.ApplyJson(@"{""products"": [{""id"": ""x"", ""type"": ""gold""}]}"));
+            Assert.Throws<FormatException>(() => config.ApplyJson(@"{""androidAppId"": ""com.example.mygame""}"), "the old format");
+            Assert.Throws<FormatException>(() => config.ApplyJson("not json"));
             UnityEngine.Object.DestroyImmediate(config);
         }
 
         [Test]
-        public void StoreIdsPerPlatform()
+        public void ToJson_RoundTripsThroughApplyJson()
         {
-            var p = new BillingProductConfig("premium", BillingProductType.Subscription, "premium_android", null);
-            Assert.AreEqual("premium_android", p.StoreId(BillingPlatform.Google));
-            Assert.AreEqual("premium", p.StoreId(BillingPlatform.Apple));
+            var config = BillingConfig.Create("https://b.example.com/route",
+                new BillingProductConfig("gems_100", BillingProductType.Consumable),
+                new BillingProductConfig("vip", BillingProductType.Subscription).WithStoreId(BillingStores.Apple, "com.example.vip"));
+            config.WithBuild(BillingStores.Google, "com.example.mygame").WithBuild(BillingStores.Xsolla, "com.example.mygame.web");
+
+            var json = JObject.Parse(config.ToJson());
+            Assert.AreEqual("xsolla", (string)json["builds"][1]["store"]);
+            Assert.IsNull(json["products"][0]["storeIds"], "no overrides, no storeIds");
+            Assert.AreEqual("com.example.vip", (string)json["products"][1]["storeIds"]["apple"]);
+
+            var copy = BillingConfig.Create("https://other.example.com/route");
+            copy.ApplyJson(config.ToJson());
+            Assert.AreEqual(config.serverBaseUrl, copy.serverBaseUrl);
+            Assert.AreEqual("com.example.mygame.web", copy.AppIdFor(BillingStores.Xsolla));
+            Assert.AreEqual("com.example.vip", copy.products[1].StoreId(BillingStores.Apple));
+            Assert.AreEqual(BillingProductType.Subscription, copy.products[1].type);
+            UnityEngine.Object.DestroyImmediate(config);
+            UnityEngine.Object.DestroyImmediate(copy);
+        }
+
+        [Test]
+        public void Validate_ChecksBuilds()
+        {
+            var config = BillingConfig.Create("https://b.example.com/route", new BillingProductConfig("a", BillingProductType.Consumable));
+            config.builds.Add(new BillingBuild("google", "com.example.mygame"));
+            config.builds.Add(new BillingBuild("google", "com.example.other"));
+            config.builds.Add(new BillingBuild("apple", ""));
+            config.builds.Add(new BillingBuild("paddle", "com.example.mygame.web"));
+            var problems = config.Validate();
+            Assert.That(problems, Has.Some.Contains("Two builds for the store 'google'"));
+            Assert.That(problems, Has.Some.Contains("apple build has no app id"));
+            Assert.That(problems, Has.Some.Contains("Unknown store 'paddle'"));
+            UnityEngine.Object.DestroyImmediate(config);
+        }
+
+        [Test]
+        public void StoreIdsPerStore()
+        {
+            var p = new BillingProductConfig("premium", BillingProductType.Subscription).WithStoreId(BillingStores.Google, "premium_android");
+            Assert.AreEqual("premium_android", p.StoreId(BillingStores.Google));
+            Assert.AreEqual("premium", p.StoreId(BillingStores.Apple));
             Assert.IsTrue(p.Matches("premium_android"));
+            CollectionAssert.AreEqual(new[] { "premium", "premium_android" }, p.AllIds());
         }
 
         [Test]

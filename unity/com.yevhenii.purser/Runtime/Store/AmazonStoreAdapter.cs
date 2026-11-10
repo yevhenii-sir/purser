@@ -123,9 +123,13 @@ namespace Purser
         private TaskCompletionSource<List<AmazonReceipt>> m_Updates;
         private readonly List<AmazonReceipt> m_UpdatesBuffer = new List<AmazonReceipt>();
         private bool m_DeliverUpdates;
+        /// <summary>The purchase updates request of <see cref="ConnectAsync"/>; a restore waits for it, because both
+        /// share Amazon's one updates stream.</summary>
+        private TaskCompletionSource<bool> m_StartupUpdates;
         private IReadOnlyList<BillingProductConfig> m_RequestedProducts;
 
         public BillingPlatform Platform => BillingPlatform.Amazon;
+        public string Store => BillingStores.Amazon;
 
         /// <summary>Amazon user id of the signed-in Amazon account (known after <see cref="ConnectAsync"/>).</summary>
         public string UserId { get; private set; }
@@ -137,7 +141,7 @@ namespace Purser
         /// <summary>Amazon has no deferred purchases.</summary>
         public event Action<StoreOrder> OrderDeferred { add { } remove { } }
         public event Action<StorePurchaseFailure> PurchaseFailed;
-        public event Action<StoreOrder, bool, string> OrderConfirmed;
+        public event Action<StoreOrder, bool, string> OrderFinished;
 
         /// <param name="iap">Bridge to the Amazon Appstore SDK.</param>
         /// <param name="storage">Remembers fulfilled receipts across launches (default: PlayerPrefs).</param>
@@ -157,13 +161,14 @@ namespace Purser
         {
             m_User = new TaskCompletionSource<AmazonUserDataResponse>();
             m_Iap.GetUserData();
-            var user = await WithTimeout(m_User.Task, ct, "Amazon user data");
+            var user = await TaskTimeout.With(m_User.Task, OperationTimeout, ct, "Amazon user data");
             if (user.Status != AmazonStatus.Successful || string.IsNullOrEmpty(user.UserId))
                 throw new BillingException($"Amazon Appstore user data: {user.Status}");
             UserId = user.UserId;
             Marketplace = user.Marketplace;
             // Unfinished purchases of earlier sessions: delivered through OrderPending like Unity IAP does.
             m_DeliverUpdates = true;
+            m_StartupUpdates = new TaskCompletionSource<bool>();
             m_UpdatesBuffer.Clear();
             m_Iap.GetPurchaseUpdates(false);
         }
@@ -171,10 +176,10 @@ namespace Purser
         public async Task<IReadOnlyList<StoreProduct>> FetchProductsAsync(IReadOnlyList<BillingProductConfig> products, CancellationToken ct)
         {
             m_RequestedProducts = products;
-            var skus = products.Select(p => p.StoreId(Platform)).Distinct().ToList();
+            var skus = products.Select(p => p.StoreId(Store)).Distinct().ToList();
             m_Products = new TaskCompletionSource<AmazonProductDataResponse>();
             m_Iap.GetProductData(skus);
-            var response = await WithTimeout(m_Products.Task, ct, "Amazon product data");
+            var response = await TaskTimeout.With(m_Products.Task, OperationTimeout, ct, "Amazon product data");
             if (response.Status != AmazonStatus.Successful)
                 throw new BillingException($"Amazon product data: {response.Status}");
             if (response.UnavailableSkus?.Count > 0)
@@ -190,26 +195,41 @@ namespace Purser
         }
 
         /// <summary>Amazon has no account binding field; the ledger keeps consumables with their buyer.</summary>
-        public void SetAccountBinding(string googleAccountId, Guid? appleAccountToken) { }
+        public void SetAccountBinding(string userId) { }
 
         public void Purchase(string storeProductId) => m_Iap.Purchase(storeProductId);
 
-        public void Confirm(StoreOrder order)
+        /// <summary><c>NotifyFulfillment</c>: FULFILLED when the server granted the purchase, UNAVAILABLE when it
+        /// rejected the receipt.</summary>
+        public void Finish(StoreOrder order, bool granted)
         {
             if (string.IsNullOrEmpty(order?.TransactionId))
                 return;
-            m_Iap.NotifyFulfillment(order.TransactionId, true);
+            m_Iap.NotifyFulfillment(order.TransactionId, granted);
             Remember(order.TransactionId);
-            OrderConfirmed?.Invoke(order, true, null);
+            OrderFinished?.Invoke(order, true, null);
         }
 
         public async Task<IReadOnlyList<StoreOrder>> FetchPurchasesAsync(CancellationToken ct)
         {
+            // Amazon has one purchase updates stream: let the startup request finish first.
+            var startup = m_StartupUpdates;
+            if (startup != null && !startup.Task.IsCompleted)
+            {
+                try
+                {
+                    await TaskTimeout.With(startup.Task, OperationTimeout, ct, "Amazon purchase updates at startup");
+                }
+                catch (BillingException e)
+                {
+                    m_Log.Warning(e.Message);
+                }
+            }
             m_Updates = new TaskCompletionSource<List<AmazonReceipt>>();
             m_DeliverUpdates = false;
             m_UpdatesBuffer.Clear();
             m_Iap.GetPurchaseUpdates(true);
-            var receipts = await WithTimeout(m_Updates.Task, ct, "Amazon purchase updates");
+            var receipts = await TaskTimeout.With(m_Updates.Task, OperationTimeout, ct, "Amazon purchase updates");
             return receipts.Where(r => r.CancelDate == 0).Select(Map).Where(o => o != null).ToList();
         }
 
@@ -263,7 +283,16 @@ namespace Purser
             if (response?.Status != AmazonStatus.Successful)
             {
                 m_Log.Warning("Amazon purchase updates: " + (response?.Status ?? "no response"));
-                m_Updates?.TrySetException(new BillingException("Amazon purchase updates: " + response?.Status));
+                m_UpdatesBuffer.Clear();
+                if (m_DeliverUpdates)
+                {
+                    m_DeliverUpdates = false;
+                    m_StartupUpdates?.TrySetResult(false);
+                }
+                else
+                {
+                    m_Updates?.TrySetException(new BillingException("Amazon purchase updates: " + response?.Status));
+                }
                 return;
             }
             m_UpdatesBuffer.AddRange(response.Receipts ?? new List<AmazonReceipt>());
@@ -286,6 +315,7 @@ namespace Purser
                 if (order != null)
                     OrderPending?.Invoke(order);
             }
+            m_StartupUpdates?.TrySetResult(true);
         }
 
         // ---- mapping ----
@@ -294,7 +324,7 @@ namespace Purser
         {
             if (r == null || string.IsNullOrEmpty(r.ReceiptId) || string.IsNullOrEmpty(r.Sku))
                 return null;
-            return new StoreOrder(Platform, r.Sku, r.ReceiptId, null, r.ReceiptId, null, r, UserId);
+            return new StoreOrder(Platform, r.Sku, r.ReceiptId, null, r, UserId);
         }
 
         private BillingProductConfig FindConfig(string sku)
@@ -302,7 +332,7 @@ namespace Purser
             if (m_RequestedProducts == null)
                 return null;
             foreach (var p in m_RequestedProducts)
-                if (p.StoreId(Platform) == sku || p.Matches(sku))
+                if (p.StoreId(Store) == sku || p.Matches(sku))
                     return p;
             return null;
         }
@@ -356,22 +386,6 @@ namespace Purser
             if (m_Fulfilled.Count > MaxRemembered)
                 m_Fulfilled.RemoveRange(0, m_Fulfilled.Count - MaxRemembered);
             m_Storage.Save(FulfilledKey, JsonConvert.SerializeObject(m_Fulfilled));
-        }
-
-        private static async Task<T> WithTimeout<T>(Task<T> task, CancellationToken ct, string what)
-        {
-            using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
-            {
-                var delay = Task.Delay(OperationTimeout, cts.Token);
-                var done = await Task.WhenAny(task, delay);
-                cts.Cancel();
-                if (done != task)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    throw new BillingException($"Timed out waiting for {what}");
-                }
-                return await task;
-            }
         }
     }
 }

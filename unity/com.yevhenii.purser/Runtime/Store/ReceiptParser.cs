@@ -8,7 +8,7 @@ namespace Purser
     /// <c>{"Store":"GooglePlay","TransactionID":"…","Payload":"{\"json\":\"{…purchaseToken…}\",\"signature\":\"…\"}"}</c>
     /// for when the typed order info is not available.
     /// </summary>
-    public static class ReceiptParser
+    internal static class ReceiptParser
     {
         public static bool TryGetGooglePurchaseToken(string unityReceipt, out string purchaseToken)
         {

@@ -49,6 +49,7 @@ namespace Purser.Tests
         private DateTime m_Now;
         private BillingService m_Service;
         private XsollaStoreAdapter m_Adapter;
+        private IAttributionProvider m_Attribution;
 
         [SetUp]
         public void SetUp()
@@ -56,7 +57,7 @@ namespace Purser.Tests
             m_Config = BillingConfig.Create("https://billing.example.com/route",
                 new BillingProductConfig("gems_100", BillingProductType.Consumable),
                 new BillingProductConfig("no_ads", BillingProductType.NonConsumable));
-            m_Config.webAppId = "com.test.game.web";
+            m_Config.WithBuild(BillingStores.Xsolla, "com.test.game.web");
             m_Config.refreshEntitlementsOnInit = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Server = new XsollaServer();
@@ -77,14 +78,18 @@ namespace Purser.Tests
         {
             options = options ?? new XsollaOptions();
             options.OpenUrl = url => m_Opened.Add(url);
-            m_Adapter = new XsollaStoreAdapter(m_Config.serverBaseUrl, m_Config.AppIdFor(BillingPlatform.Web), 10, options,
-                m_Server, m_Storage, delay: (d, ct) =>
+            m_Adapter = new XsollaStoreAdapter(m_Config, options, m_Server, m_Storage)
+            {
+                Delay = (d, ct) =>
                 {
                     m_Now += d;
                     return Task.CompletedTask;
-                }, utcNow: () => m_Now);
+                },
+                UtcNow = () => m_Now,
+            };
             m_Service = new BillingService(m_Config, new BillingDependencies
             {
+                AttributionProvider = m_Attribution,
                 Store = m_Adapter,
                 Api = m_Api,
                 UserIdProvider = new StaticUserIdProvider(User),
@@ -148,6 +153,36 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void Checkout_SendsTheAttribution()
+        {
+            m_Attribution = new FuncAttributionProvider(() => new Dictionary<string, string> { [AttributionKeys.AppsFlyerId] = "af-1" });
+            m_Server.Statuses.Add(XsollaServer.Status("success"));
+            CreateService();
+            Sync.Run(m_Service.PurchaseAsync("gems_100"));
+            Assert.AreEqual("af-1", (string)m_Server.Requests.First().Body["attribution"][AttributionKeys.AppsFlyerId]);
+        }
+
+        [Test]
+        public void TwoWebBuilds_EachAdapterUsesItsOwnAppId()
+        {
+            m_Config.WithBuild(BillingStores.Stripe, "com.test.game.stripe");
+            m_Server.Statuses.Add(XsollaServer.Status("success"));
+            CreateService();
+            Sync.Run(m_Service.PurchaseAsync("gems_100"));
+            Assert.AreEqual("com.test.game.web", (string)m_Server.Requests.First().Body["app_id"]);
+
+            var stripe = new FakeStripeApi();
+            var stripeAdapter = new StripeStoreAdapter(m_Config, new StripeCheckoutOptions
+            {
+                SuccessUrl = "https://game.example/ok", CancelUrl = "https://game.example/back", OpenUrl = _ => { },
+            }, stripe, new MemoryBillingStorage());
+            stripeAdapter.PrepareCheckout(new CheckoutContext { UserId = User });
+            stripeAdapter.Purchase("gems_100");
+            Assert.AreEqual("com.test.game.stripe", stripe.Checkouts.Single().AppId);
+            stripeAdapter.Dispose();
+        }
+
+        [Test]
         public void CheckoutErrors_FailThePurchaseWithoutOpeningPayStation()
         {
             m_Server.Checkout = new HttpResponse(403, "{\"status\":\"forbidden\",\"message\":\"sandbox purchases are disabled for this app\"}");
@@ -180,10 +215,10 @@ namespace Purser.Tests
         }
 
         [Test]
-        public void StoreName_IsXsolla()
+        public void Store_IsXsolla()
         {
             CreateService();
-            Assert.AreEqual("xsolla", ((IStoreNameProvider)m_Adapter).StoreName);
+            Assert.AreEqual("xsolla", m_Service.Store);
             Assert.IsTrue(Sync.Run(m_Service.RestoreAsync()) != null);
             Assert.IsEmpty(m_Api.RestoreRequests, "nothing to restore from Xsolla; entitlements come from the server");
         }

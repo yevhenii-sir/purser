@@ -28,6 +28,10 @@ namespace Purser
         [Tooltip("Optional component implementing IAnalyticsIdProvider (Firebase app_instance_id for GA4).")]
         [SerializeField] private MonoBehaviour analyticsIdProvider;
 
+        [Tooltip("Optional component implementing IStoreAdapterFactory: the store adapter for Amazon, Steam, Stripe or " +
+                 "Xsolla builds. Empty: Unity IAP (Google Play, App Store).")]
+        [SerializeField] private MonoBehaviour storeAdapterFactory;
+
         /// <summary>The first active bootstrap (convenience for projects without DI).</summary>
         public static BillingBootstrap Current { get; private set; }
 
@@ -58,9 +62,12 @@ namespace Purser
             if (dontDestroyOnLoad)
                 DontDestroyOnLoad(gameObject);
 
-            Service = Billing.Create(config,
-                analyticsIdProvider: analyticsIdProvider as IAnalyticsIdProvider,
-                attributionProvider: attributionProvider as IAttributionProvider);
+            Service = Billing.Create(config, new BillingDependencies
+            {
+                AnalyticsIdProvider = analyticsIdProvider as IAnalyticsIdProvider,
+                AttributionProvider = attributionProvider as IAttributionProvider,
+                Store = (storeAdapterFactory as IStoreAdapterFactory)?.CreateStore(config),
+            });
             if (initializeOnAwake)
                 InitializationTask = InitializeAsync();
         }

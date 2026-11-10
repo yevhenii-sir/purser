@@ -85,7 +85,7 @@ The server checks receipts with Amazon's [Receipt Verification Service](https://
 
 ### The build
 
-Add a build with platform **Amazon** (wizard → Add a build). Its app id only has to be unique on the server: RVS receipts carry no package name. When the Google Play build already uses the package name, use e.g. `com.example.mygame.amazon`, and set the same value as `amazonAppId` in the Unity `BillingConfig`. Products use the Amazon SKUs; for subscriptions the term SKU (the one the client buys) or the parent SKU.
+Add a build with platform **Amazon** (wizard → Add a build). Its app id only has to be unique on the server: RVS receipts carry no package name. When the Google Play build already uses the package name, use e.g. `com.example.mygame.amazon`, and use the same value for the `amazon` build in the Unity `BillingConfig`. Products use the Amazon SKUs; for subscriptions the term SKU (the one the client buys) or the parent SKU.
 
 ### Shared key
 
@@ -114,7 +114,7 @@ Unity IAP 5 has no Amazon store: the Unity package uses `AmazonStoreAdapter` ove
 
 ### The build
 
-Add a build with platform **Web** and store **Xsolla**. Its app id only has to be unique on the server, e.g. `com.example.mygame.web`; set the same value as `webAppId` in the Unity `BillingConfig`. Use **one Xsolla project per build**: a project has one webhook URL, and it names the build.
+Add a build with platform **Web** and store **Xsolla**. Its app id only has to be unique on the server, e.g. `com.example.mygame.web`; use the same value for the `xsolla` build in the Unity `BillingConfig`. Use **one Xsolla project per build**: a project has one webhook URL, and it names the build.
 
 Products use the **item SKUs** of the project's catalog (Publisher Account → the project → **Items catalog**, virtual items or currency packages): the SKU is the product id. Kinds: a consumable for currency packages and consumable items, a non-consumable for items bought once. Prices come from Xsolla's webhooks, so no default price is needed.
 
@@ -222,7 +222,7 @@ Web builds can sell through [Stripe Checkout](https://docs.stripe.com/payments/c
 
 ### The build and its products
 
-1. Add a build with platform **Web** and store **Stripe** (wizard → Add a build). Its app id only has to be unique, e.g. `com.example.mygame.web` (the Unity `webAppId`).
+1. Add a build with platform **Web** and store **Stripe** (wizard → Add a build). Its app id only has to be unique, e.g. `com.example.mygame.web` (the `stripe` build in the Unity `BillingConfig`; a game selling through Stripe and Xsolla has a build for each).
 2. Stripe Dashboard → **Product catalog** → a product per item with a **Price**: one-time for consumables and non-consumables, recurring for subscriptions.
 3. Add the products to the build with the **Price id** (`price_…`) as the product id and the matching kind. Test mode and live mode have different Price ids: use a test build (sandbox purchases on) and a live build, or change the ids when going live. Entitlements of a Stripe build name the Price ids; the Unity adapter maps your product ids to them (`StripeCheckoutOptions.PriceIds`).
 

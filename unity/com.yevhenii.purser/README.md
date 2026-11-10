@@ -25,14 +25,21 @@ To pin a specific version, append `#<tag or commit>` to the URL.
 ## Setup
 
 1. **Tools → Purser → Create Config**.
-2. In the billing admin panel finish **Apps → Add an app** and copy the *Unity config* from its last step, then press **Paste config from admin panel** in the config inspector. It fills in the server address, the app ids and the products.
+2. Fill in the config in either direction:
+   - **Unity first** (the game already has its products): fill in the server address
+     `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route`, the builds and the products, press
+     **Copy config for admin panel** and paste it in the admin panel (**Apps → Add an app → Paste from Unity**, or an
+     app's **Products → Import from Unity**). The builds and products are created there.
+   - **Admin panel first**: finish **Apps → Add an app**, copy the *Unity config* from its last step and press
+     **Paste config from admin panel** in the config inspector.
 
-   Or fill them in by hand: the server address `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route` and the products:
-   - `id` — the product id the game code uses to refer to it.
-   - `googleId` / `appleId` / `amazonId` — the store id, if it differs on a given platform.
-   - `type` — Consumable / NonConsumable / Subscription.
-
-   The same apps (`androidAppId` / `iosAppId` / `amazonAppId`, default `Application.identifier`) and the same product store ids must be registered on the server.
+   The fields:
+   - `builds` — one row per store the game sells in: the store (`google`, `apple`, `amazon`, `steam`, `stripe`,
+     `xsolla`) and the build's app id on the server (Android package, iOS bundle id, or any unique id such as
+     `com.example.mygame.web`). A store without a row uses `Application.identifier`. A web game can have both a
+     `stripe` and an `xsolla` build: each adapter sends its own app id.
+   - `products` — `id` (what the game code uses), `type` (Consumable / NonConsumable / Subscription) and
+     `storeIds`: rows for the stores where the product has another id (e.g. a reverse-domain App Store id).
 3. The **Validate** and **Ping server** buttons in the config inspector check the settings and whether the server is reachable.
 
 ## Usage
@@ -108,10 +115,10 @@ The store reports an order: a new purchase, a redelivery after restart, or a res
 
 | Server response | What the package does | `PurchaseStatus` |
 |---|---|---|
-| `success` | `ConfirmPurchase`, `PurchaseSucceeded` event; with `delivery: "client"` — the event first, then `ConfirmPurchase` | `Success` |
-| `pending` (202) | `ConfirmPurchase`, the server will deliver the reward | `PendingDelivery` |
+| `success` | finish in the store, `PurchaseSucceeded` event; with `delivery: "client"` — the event first, then finish | `Success` |
+| `pending` (202) | finish in the store, the server will deliver the reward | `PendingDelivery` |
 | `pending_or_canceled` | doesn't confirm, the store will deliver the order again | `PendingPayment` |
-| `invalid` / `forbidden` / `expired` / `revoked` | `ConfirmPurchase` (so the order doesn't keep coming back forever), `PurchaseFailed` | `Rejected` |
+| `invalid` / `forbidden` / `expired` / `revoked` | finish in the store as not granted (so the order doesn't keep coming back; Amazon: `UNAVAILABLE`), `PurchaseFailed` | `Rejected` |
 | `error`, 5xx, no network | doesn't confirm, retries after `retryDelaysSeconds`, then on the next launch | `PendingVerification` |
 
 Details:
@@ -147,11 +154,12 @@ in `Paywall.MissingProductIds`. Details: [docs/paywalls.md](https://github.com/y
 Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `BillingDependencies.Store`:
 
 - **Amazon Appstore**: `AmazonStoreAdapter` over a bridge to Amazon's Appstore SDK Unity plugin (import the
-  **Amazon Appstore** sample, it has the bridge). Set `amazonAppId` to the app id of the Amazon build on the
-  server and, if the SKUs differ, `amazonId` per product. `androidStore = Auto` treats an install by the
+  **Amazon Appstore** sample, it has the bridge). Add an `amazon` build with the app id of the Amazon build on
+  the server and, if the SKUs differ, `amazon` rows in the products' `storeIds`. `androidStore = Auto` treats an install by the
   Amazon Appstore as an Amazon build. The server verifies the receipt id with the Amazon user id
-  (`/verify/amazon`); the adapter calls `NotifyFulfillment` after the server's answer.
-- **Xsolla** (WebGL, desktop): `XsollaStoreAdapter`. Set `webAppId` to the app id of the Xsolla build; the
+  (`/verify/amazon`); the adapter calls `NotifyFulfillment` after the server's answer (`UNAVAILABLE` when it
+  rejected the receipt).
+- **Xsolla** (WebGL, desktop): `XsollaStoreAdapter`. Add an `xsolla` build with the app id of the Xsolla build; the
   product id is the Xsolla item SKU. A purchase asks the server for a payment token (`/checkout/xsolla`), opens
   Pay Station with `Application.OpenURL` and polls `/checkout/xsolla/status` until Xsolla's webhook reached the
   server; then `PurchaseSucceeded` fires as for any store (with `GrantOnClient` for builds without a backend).
@@ -170,18 +178,18 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
 
   On WebGL a tab opened after an `await` may be blocked as a popup: pass `XsollaOptions.OpenUrl` that opens the
   page from a `.jslib` (same tab, or a window opened in the click handler). Prices are shown by Pay Station
-  (`StoreProduct.LocalizedPrice` is empty), and subscriptions are not sold through the adapter. Adapters of other
-  webhook stores implement `IWebhookStoreAdapter` like it does. Server side and use without Unity:
+  (`StoreProduct.LocalizedPrice` is empty), and subscriptions are not sold through the adapter. The checkout
+  carries the attribution ids (`IAttributionProvider`). Server side and use without Unity:
   [docs/store-setup.md#xsolla](https://github.com/yevhenii-sir/purser/blob/main/docs/store-setup.md#xsolla).
-- **Stripe (web)**: `StripeStoreAdapter` (`StoreName = "stripe"`, an `IWebhookStoreAdapter` like the Xsolla
-  one). Set `webAppId` to the app id of the Stripe build. A purchase asks the server for a Checkout Session
+- **Stripe (web)**: `StripeStoreAdapter`. Add a `stripe` build with the app id of the Stripe build. A purchase asks the server for a Checkout Session
   (`/checkout/stripe`), opens its page (`StripeCheckoutOptions.OpenUrl`, default `Application.OpenURL`) and polls
   `/verify/stripe` with the session id until it is paid and granted; then `PurchaseSucceeded` fires as for any
   store. A payment not finished within `PaymentTimeout` (10 minutes) is reported as `PendingPayment`; the session
   is remembered and checked again at the next launch (or now with `ResumePendingOrders()`), so a same-tab
   redirect to Stripe works on WebGL, where a tab opened after an `await` is often blocked as a popup.
-  Product ids of the Stripe build on the server are Stripe Price ids: map yours with `PriceIds` (entitlements of
-  the Stripe build name the Price ids).
+  The session check carries the attribution ids and the paywall of the purchase (A/B test results).
+  Product ids of the Stripe build on the server are Stripe Price ids: map yours with `PriceIds` or `stripe` rows in
+  the products' `storeIds` (entitlements of the Stripe build name the Price ids).
 
   ```csharp
   // Assets/Plugins/WebGL/StripeRedirect.jslib:
@@ -196,15 +204,15 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
       OpenUrl = StripeRedirect,                    // WebGL: same tab; elsewhere leave the default
   });
   var billing = new BillingService(config, new BillingDependencies { Store = stripe });
-  // A session id from the success URL can also be checked directly: stripe.ResumeSession(id, "gems_100").
+  // A session id from the success URL can also be checked directly: stripe.ResumeSession(id).
   ```
 
   Prices are not loaded from Stripe (`StoreProduct.Price` is 0): show them from your paywall's remote config.
   Server and Stripe Dashboard setup, and use without Unity:
   [docs/store-setup.md#stripe](https://github.com/yevhenii-sir/purser/blob/main/docs/store-setup.md#stripe).
 - **Steam** (Standalone): `SteamStoreAdapter` over `ISteamMicroTxnBridge` (import the **Steam** sample: a bridge
-  for Steamworks.NET behind `PURSER_STEAMWORKS_NET`). Set `steamAppId` to the Steam App ID of the build on the
-  server. A purchase asks the server to start the order (`/checkout/steam`; the server holds the publisher Web API
+  for Steamworks.NET behind `PURSER_STEAMWORKS_NET`). Add a `steam` build with the Steam App ID of the build on
+  the server. A purchase asks the server to start the order (`/checkout/steam`; the server holds the publisher Web API
   key), Steam shows its overlay, and when `MicroTxnAuthorizationResponse_t` says the player authorized it the order
   goes through `/verify/steam` (the server finalizes it) and `PurchaseSucceeded` fires as for any store. Declining is
   `Cancelled`; no answer within `SteamOptions.AuthorizationTimeout` is `Failed`. Authorized orders the server has
@@ -217,9 +225,13 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
   ```
 
   Server side: [docs/store-setup.md#steam](https://github.com/yevhenii-sir/purser/blob/main/docs/store-setup.md#steam).
-- **Other web stores**: implement `IStoreAdapter` with `Platform = BillingPlatform.Web` and `IStoreNameProvider`
-  (`StoreName` = the server's store id) so purchases go to the right route; adapters whose purchase starts on the server
-  implement `IBillingUserStoreAdapter` to learn the billing user id. Set `webAppId`.
+- **Another store**: implement `IStoreAdapter`; its `Store` is the server's store id, which picks the route
+  (`/verify/{store}`), the build in `builds` and the product ids in `storeIds`. A store whose purchase starts on the
+  server derives from `ServerCheckoutStoreAdapter` (pending orders kept across launches, config products, polling);
+  one that learns about payments by webhook also implements `IWebhookStoreAdapter`.
+
+`BillingBootstrap` takes a component implementing `IStoreAdapterFactory` for these adapters; the VContainer and
+Zenject registrations use a bound `IStoreAdapter`.
 
 ## Binding a purchase to the player
 

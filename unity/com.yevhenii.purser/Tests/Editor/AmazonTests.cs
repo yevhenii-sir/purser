@@ -21,7 +21,19 @@ namespace Purser.Tests
         public readonly List<bool> UpdateResets = new List<bool>();
         public readonly List<(string ReceiptId, bool Fulfilled)> Fulfillments = new List<(string, bool)>();
         public Func<string, AmazonPurchaseResponse> OnPurchase;
+        /// <summary>When set, GetPurchaseUpdates calls wait here until <see cref="ReleaseUpdates"/>.</summary>
+        public bool HoldUpdates;
+        private readonly List<bool> m_HeldUpdates = new List<bool>();
         private int m_Page;
+
+        public void ReleaseUpdates()
+        {
+            HoldUpdates = false;
+            var held = m_HeldUpdates.ToList();
+            m_HeldUpdates.Clear();
+            foreach (var reset in held)
+                GetPurchaseUpdates(reset);
+        }
 
         public void GetUserData() =>
             UserDataReceived?.Invoke(new AmazonUserDataResponse { Status = AmazonStatus.Successful, UserId = UserId, Marketplace = "US" });
@@ -38,6 +50,11 @@ namespace Purser.Tests
 
         public void GetPurchaseUpdates(bool reset)
         {
+            if (HoldUpdates)
+            {
+                m_HeldUpdates.Add(reset);
+                return;
+            }
             UpdateResets.Add(reset);
             if (reset)
                 m_Page = 0;
@@ -69,8 +86,10 @@ namespace Purser.Tests
         {
             m_Config = BillingConfig.Create("https://billing.example.com/route",
                 new BillingProductConfig("gems_100", BillingProductType.Consumable),
-                new BillingProductConfig("vip", BillingProductType.Subscription, "vip_android", "vip_ios", "vip_monthly"));
-            m_Config.amazonAppId = "com.test.game.amazon";
+                new BillingProductConfig("vip", BillingProductType.Subscription)
+                    .WithStoreId(BillingStores.Google, "vip_android").WithStoreId(BillingStores.Apple, "vip_ios")
+                    .WithStoreId(BillingStores.Amazon, "vip_monthly"));
+            m_Config.WithBuild(BillingStores.Amazon, "com.test.game.amazon");
             m_Config.refreshEntitlementsOnInit = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Iap = new FakeAmazonIap();
@@ -111,8 +130,7 @@ namespace Purser.Tests
 
             Assert.AreEqual(PurchaseStatus.Success, result.Status);
             var request = m_Api.VerifyRequests.Single();
-            Assert.AreEqual("amazon", request.Store);
-            Assert.AreEqual(BillingPlatform.Amazon, m_Api.VerifyPlatforms.Single());
+            Assert.AreEqual("amazon", m_Api.VerifyStores.Single());
             Assert.AreEqual("com.test.game.amazon", request.BundleId);
             Assert.AreEqual("receipt-gems_100", request.OrderId);
             Assert.AreEqual("amzn1.account.TEST", request.StoreUserId);
@@ -155,6 +173,35 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void RejectedReceipt_IsReportedUnavailable()
+        {
+            m_Api.DefaultVerify = FakeApi.Verify(400, VerifyStatus.Invalid, "receipt not found");
+            CreateService();
+            var result = Sync.Run(m_Service.PurchaseAsync("gems_100"));
+            Assert.AreEqual(PurchaseStatus.Rejected, result.Status);
+            Assert.AreEqual(("receipt-gems_100", false), m_Iap.Fulfillments.Single(), "not FULFILLED: the server rejected it");
+        }
+
+        [Test]
+        public void Restore_WaitsForTheStartupUpdates_SoNoUnfinishedPurchaseIsLost()
+        {
+            m_Iap.HoldUpdates = true;
+            m_Iap.UpdatePages.Add(new List<AmazonReceipt> { FakeAmazonIap.Receipt("gems_100", "r-1") });
+            CreateService();
+            m_Api.RestoreResult = new ApiResult<RestoreResponse>(200, new RestoreResponse { Entitlements = new EntitlementsDto { Subscriptions = new Dictionary<string, long>(), NonConsumables = new List<string>() } }, null);
+
+            var restore = m_Service.RestoreAsync();
+            Assert.IsFalse(restore.IsCompleted);
+            Assert.IsEmpty(m_Iap.UpdateResets, "the restore request waits for the startup one");
+
+            m_Iap.ReleaseUpdates();
+            Sync.Run(restore);
+
+            Assert.AreEqual("r-1", m_Api.VerifyRequests.Single().OrderId, "the unfinished purchase was delivered");
+            CollectionAssert.AreEqual(new[] { false, true }, m_Iap.UpdateResets);
+        }
+
+        [Test]
         public void FailedPurchaseIsReported()
         {
             m_Iap.OnPurchase = sku => new AmazonPurchaseResponse { Status = AmazonStatus.AlreadyPurchased, Sku = sku };
@@ -179,46 +226,40 @@ namespace Purser.Tests
     public sealed class StoreRoutingTests
     {
         [Test]
-        public void ApiClientUsesTheRequestStoreOrThePlatformStore()
+        public void ApiClientPostsToTheStoreRoute()
         {
             var transport = new FakeTransport { Next = new HttpResponse(200, "{\"status\":\"success\"}") };
             var api = new BillingApiClient("https://b.example.com/route", 10, transport);
 
-            Sync.Run(api.VerifyAsync(BillingPlatform.Amazon, new VerifyRequest { OrderId = "r", StoreUserId = "u" }));
+            Sync.Run(api.VerifyAsync(BillingStores.Amazon, new VerifyRequest { OrderId = "r", StoreUserId = "u" }));
             Assert.AreEqual("https://b.example.com/route/verify/amazon", transport.Requests[0].Url);
-            var body = JObject.Parse(transport.Requests[0].Body);
-            Assert.AreEqual("u", (string)body["store_user_id"]);
-            Assert.IsFalse(body.ContainsKey("Store"), "the route is not part of the body");
+            Assert.AreEqual("u", (string)JObject.Parse(transport.Requests[0].Body)["store_user_id"]);
 
-            Sync.Run(api.VerifyAsync(BillingPlatform.Web, new VerifyRequest { Store = "stripe" }));
-            Assert.AreEqual("https://b.example.com/route/verify/stripe", transport.Requests[1].Url);
-
-            var missing = Sync.Run(api.VerifyAsync(BillingPlatform.Web, new VerifyRequest()));
-            Assert.IsTrue(missing.IsTransportError, "a web adapter must name its store");
-            Assert.AreEqual(2, transport.Requests.Count);
+            var missing = Sync.Run(api.VerifyAsync(null, new VerifyRequest()));
+            Assert.IsTrue(missing.IsTransportError, "a store adapter must name its store");
+            Assert.AreEqual(1, transport.Requests.Count);
         }
 
         [Test]
         public void PlatformsMapToServerStores()
         {
-            Assert.AreEqual("google", BillingPlatform.Google.StoreName());
-            Assert.AreEqual("apple", BillingPlatform.Apple.StoreName());
-            Assert.AreEqual("amazon", BillingPlatform.Amazon.StoreName());
-            Assert.AreEqual("steam", BillingPlatform.Steam.StoreName());
-            Assert.IsNull(BillingPlatform.Web.StoreName());
-            Assert.AreEqual("google", BillingPlatform.Unsupported.RouteName(), "compatibility");
+            Assert.AreEqual("google", BillingStores.Of(BillingPlatform.Google));
+            Assert.AreEqual("apple", BillingStores.Of(BillingPlatform.Apple));
+            Assert.AreEqual("amazon", BillingStores.Of(BillingPlatform.Amazon));
+            Assert.AreEqual("steam", BillingStores.Of(BillingPlatform.Steam));
+            Assert.IsNull(BillingStores.Of(BillingPlatform.Web), "Stripe or Xsolla: the adapter names it");
         }
 
         [Test]
         public void ConfigCarriesAmazonIds()
         {
             var config = BillingConfig.Create("https://b.example.com/route");
-            config.ApplyJson(@"{""androidAppId"": ""com.example.mygame"", ""amazonAppId"": ""com.example.mygame.amazon"",
-                ""products"": [{""id"": ""vip"", ""type"": ""subscription"", ""amazonId"": ""vip_monthly""}]}");
-            Assert.AreEqual("com.example.mygame.amazon", config.AppIdFor(BillingPlatform.Amazon));
-            Assert.AreEqual("com.example.mygame", config.AppIdFor(BillingPlatform.Google));
-            Assert.AreEqual("vip_monthly", config.products[0].StoreId(BillingPlatform.Amazon));
-            Assert.AreEqual("vip", config.products[0].StoreId(BillingPlatform.Google));
+            config.ApplyJson(@"{""builds"": [{""store"": ""google"", ""appId"": ""com.example.mygame""}, {""store"": ""amazon"", ""appId"": ""com.example.mygame.amazon""}],
+                ""products"": [{""id"": ""vip"", ""type"": ""subscription"", ""storeIds"": {""amazon"": ""vip_monthly""}}]}");
+            Assert.AreEqual("com.example.mygame.amazon", config.AppIdFor(BillingStores.Amazon));
+            Assert.AreEqual("com.example.mygame", config.AppIdFor(BillingStores.Google));
+            Assert.AreEqual("vip_monthly", config.products[0].StoreId(BillingStores.Amazon));
+            Assert.AreEqual("vip", config.products[0].StoreId(BillingStores.Google));
             Assert.IsTrue(config.products[0].Matches("vip_monthly"));
             UnityEngine.Object.DestroyImmediate(config);
         }
@@ -238,27 +279,27 @@ namespace Purser.Tests
             Sync.Run(service.InitializeAsync());
             store.OnPurchase = id => new StoreOrder(BillingPlatform.Web, id, "cs_test_1", null);
             Sync.Run(service.PurchaseAsync("gems"));
-            Assert.AreEqual("stripe", api.VerifyRequests.Single().Store);
+            Assert.AreEqual("stripe", api.VerifyStores.Single());
             service.Dispose();
             UnityEngine.Object.DestroyImmediate(config);
         }
 
         /// <summary>A game-provided web store adapter.</summary>
-        private sealed class WebStore : IStoreAdapter, IStoreNameProvider
+        private sealed class WebStore : IStoreAdapter
         {
             private readonly FakeStore m_Inner = new FakeStore { Platform = BillingPlatform.Web };
             public Func<string, StoreOrder> OnPurchase { set => m_Inner.OnPurchase = value; }
-            public string StoreName => "stripe";
+            public string Store => "stripe";
             public BillingPlatform Platform => BillingPlatform.Web;
             public event Action<StoreOrder> OrderPending { add => m_Inner.OrderPending += value; remove => m_Inner.OrderPending -= value; }
             public event Action<StoreOrder> OrderDeferred { add => m_Inner.OrderDeferred += value; remove => m_Inner.OrderDeferred -= value; }
             public event Action<StorePurchaseFailure> PurchaseFailed { add => m_Inner.PurchaseFailed += value; remove => m_Inner.PurchaseFailed -= value; }
-            public event Action<StoreOrder, bool, string> OrderConfirmed { add => m_Inner.OrderConfirmed += value; remove => m_Inner.OrderConfirmed -= value; }
+            public event Action<StoreOrder, bool, string> OrderFinished { add => m_Inner.OrderFinished += value; remove => m_Inner.OrderFinished -= value; }
             public Task ConnectAsync(System.Threading.CancellationToken ct) => m_Inner.ConnectAsync(ct);
             public Task<IReadOnlyList<StoreProduct>> FetchProductsAsync(IReadOnlyList<BillingProductConfig> products, System.Threading.CancellationToken ct) => m_Inner.FetchProductsAsync(products, ct);
-            public void SetAccountBinding(string googleAccountId, Guid? appleAccountToken) { }
+            public void SetAccountBinding(string userId) { }
             public void Purchase(string storeProductId) => m_Inner.Purchase(storeProductId);
-            public void Confirm(StoreOrder order) => m_Inner.Confirm(order);
+            public void Finish(StoreOrder order, bool granted) => m_Inner.Finish(order, granted);
             public Task<IReadOnlyList<StoreOrder>> FetchPurchasesAsync(System.Threading.CancellationToken ct) => m_Inner.FetchPurchasesAsync(ct);
             public Task<bool> RestoreTransactionsAsync(System.Threading.CancellationToken ct) => m_Inner.RestoreTransactionsAsync(ct);
             public void Dispose() => m_Inner.Dispose();

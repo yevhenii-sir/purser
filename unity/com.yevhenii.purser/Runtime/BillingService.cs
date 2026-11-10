@@ -13,13 +13,15 @@ namespace Purser
         /// <summary>Default: <see cref="StaticUserIdProvider"/> without a user (call <see cref="IBillingService.SetUserId"/>).</summary>
         public IUserIdProvider UserIdProvider;
 
-        /// <summary>Default: <see cref="UnityIapStoreAdapter"/> (Google Play, App Store). Amazon Appstore:
-        /// <see cref="AmazonStoreAdapter"/>; Steam and web: your own adapter.</summary>
+        /// <summary>Default: <see cref="UnityIapStoreAdapter"/> (Google Play, App Store). Other stores:
+        /// <see cref="AmazonStoreAdapter"/>, <see cref="SteamStoreAdapter"/>, <see cref="StripeStoreAdapter"/>,
+        /// <see cref="XsollaStoreAdapter"/> or your own.</summary>
         public IStoreAdapter Store;
 
         /// <summary>Default: <see cref="BillingApiClient"/> for <see cref="BillingConfig.serverBaseUrl"/>.</summary>
         public IBillingApi Api;
 
+        /// <summary>Firebase <c>app_instance_id</c> for GA4 events of the server.</summary>
         public IAnalyticsIdProvider AnalyticsIdProvider;
 
         /// <summary>Device ids for attribution integrations (AppsFlyer, ...).</summary>
@@ -41,7 +43,7 @@ namespace Purser
     /// Purchase flow: store purchase → server verification (<c>/verify/{store}</c>) → store confirmation.
     /// The server grants the reward to the game and consumes/acknowledges Google purchases itself,
     /// so the client confirms the order (Apple finishTransaction, Amazon notifyFulfillment) only after
-    /// the server accepted or definitively rejected it.
+    /// the server accepted or definitively rejected it (<see cref="IStoreAdapter.Finish"/>).
     /// Must be used from the Unity main thread.
     /// </summary>
     public sealed partial class BillingService : IBillingService
@@ -57,7 +59,6 @@ namespace Purser
 
         private readonly BillingConfig m_Config;
         private readonly IStoreAdapter m_Store;
-        private readonly string m_StoreName;
         private readonly IBillingApi m_Api;
         private readonly IAnalyticsIdProvider m_Analytics;
         private readonly IAttributionProvider m_Attribution;
@@ -84,6 +85,7 @@ namespace Purser
 
         public bool IsInitialized { get; private set; }
         public BillingPlatform Platform { get; }
+        public string Store => m_Store.Store;
         public IReadOnlyList<StoreProduct> Products => m_Products;
         public Entitlements Entitlements => m_Entitlements;
 
@@ -93,7 +95,7 @@ namespace Purser
         public event Action<PurchaseResult> PurchaseFailed;
         public event Action<Entitlements> EntitlementsChanged;
 
-        private string AppId => m_Config.AppIdFor(Platform);
+        private string AppId => m_Config.AppIdFor(m_Store.Store);
 
         private bool SkipServer => m_IsEditor && m_Config.editorMode == EditorVerificationMode.SkipServer;
 
@@ -104,7 +106,8 @@ namespace Purser
             m_Log = new BillingLog(config.logLevel, deps.LogSink);
             m_Store = deps.Store ?? CreateDefaultStore(config, m_Log);
             Platform = m_Store.Platform;
-            m_StoreName = (m_Store as IStoreNameProvider)?.StoreName ?? Platform.StoreName();
+            if (string.IsNullOrEmpty(m_Store.Store))
+                throw new BillingException($"The store adapter {m_Store.GetType().Name} names no store (IStoreAdapter.Store)");
             m_Api = deps.Api ?? new BillingApiClient(config);
             m_Users = deps.UserIdProvider ?? new StaticUserIdProvider();
             m_Analytics = deps.AnalyticsIdProvider;
@@ -119,7 +122,7 @@ namespace Purser
             m_Store.OrderPending += OnOrderPending;
             m_Store.OrderDeferred += OnOrderDeferred;
             m_Store.PurchaseFailed += OnStorePurchaseFailed;
-            m_Store.OrderConfirmed += OnOrderConfirmed;
+            m_Store.OrderFinished += OnOrderFinished;
         }
 
         private static IStoreAdapter CreateDefaultStore(BillingConfig config, BillingLog log)
@@ -157,9 +160,11 @@ namespace Purser
 
             BindAccount();
             await m_Store.ConnectAsync(ct);
+            ThrowIfDisposed();
             var products = m_Config.products.Where(p => p != null && !string.IsNullOrEmpty(p.id)).ToList();
             m_Products = (await m_Store.FetchProductsAsync(products, ct)).ToList();
-            m_Log.Info($"Initialized: {m_Products.Count} products, platform {Platform}");
+            ThrowIfDisposed();
+            m_Log.Info($"Initialized: {m_Products.Count} products, store {m_Store.Store} ({AppId})");
 
             LoadCachedEntitlements(CurrentUser());
             if (m_Attribution is AppleAdsAttributionProvider appleAds)
@@ -213,7 +218,7 @@ namespace Purser
             var user = CurrentUser();
             if (!m_Config.bindPurchasesToUser || user == null || user == m_BoundUser)
                 return;
-            m_Store.SetAccountBinding(AccountIds.GoogleAccountId(user), AccountIds.AppleAccountToken(user));
+            m_Store.SetAccountBinding(user);
             m_BoundUser = user;
         }
 
@@ -238,7 +243,7 @@ namespace Purser
             var config = m_Config.FindById(productId) ?? m_Config.FindByStoreId(productId);
             if (config == null)
                 return new PurchaseResult(PurchaseStatus.Failed, productId, message: "unknown product");
-            var storeId = config.StoreId(Platform);
+            var storeId = config.StoreId(m_Store.Store);
             if (CurrentUser() == null)
                 return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: "user id is not set");
             if (m_Waiters.ContainsKey(storeId))
@@ -251,7 +256,10 @@ namespace Purser
                 m_PaywallContext[storeId] = paywall;
             try
             {
-                (m_Store as IBillingUserStoreAdapter)?.SetBillingUser(CurrentUser());
+                if (m_Store is ICheckoutStoreAdapter checkout)
+                    checkout.PrepareCheckout(new CheckoutContext { UserId = CurrentUser(), Attribution = await AttributionAsync() });
+                if (m_Disposed)
+                    return new PurchaseResult(PurchaseStatus.NotInitialized, config.id, storeId, message: "billing was disposed");
                 m_Store.Purchase(storeId);
             }
             catch (Exception e)
@@ -319,7 +327,7 @@ namespace Purser
                 var user = CurrentUser();
                 if (SkipServer)
                 {
-                    m_Store.Confirm(order);
+                    m_Store.Finish(order, true);
                     if (config != null)
                         SetEntitlements(m_Entitlements.WithLocalGrant(user, order.StoreProductId, config.type, m_UtcNow()));
                     Report(new PurchaseResult(PurchaseStatus.Success, productId, order.StoreProductId,
@@ -328,16 +336,27 @@ namespace Purser
                 }
 
                 var request = await BuildVerifyRequestAsync(order, user);
+                if (m_Disposed)
+                    return;
                 var delays = m_Config.retryDelaysSeconds ?? new int[0];
                 for (var attempt = 0; ; attempt++)
                 {
-                    // Webhook stores (Xsolla) have no receipt: the adapter asks the server about the order.
+                    // Webhook stores (Stripe, Xsolla) have no receipt: the adapter asks the server about the order.
                     var response = m_Store is IWebhookStoreAdapter webhookStore
-                        ? await webhookStore.CheckOrderAsync(order, m_Lifetime.Token)
-                        : await m_Api.VerifyAsync(Platform, request, m_Lifetime.Token);
+                        ? await webhookStore.CheckOrderAsync(order, request, m_Lifetime.Token)
+                        : await m_Api.VerifyAsync(m_Store.Store, request, m_Lifetime.Token);
+                    if (m_Disposed)
+                        return;
                     var outcome = Classify(response);
                     if (outcome != Outcome.Retry)
                     {
+                        if (config == null && !string.IsNullOrEmpty(response.Value?.ProductId))
+                        {
+                            // The store did not name the product (a Steam order authorized before a restart, a resumed
+                            // Stripe session): the server's answer does.
+                            config = m_Config.FindByStoreId(response.Value.ProductId);
+                            productId = config?.id ?? response.Value.ProductId;
+                        }
                         Apply(order, config, productId, response.Value, outcome);
                         return;
                     }
@@ -375,16 +394,14 @@ namespace Purser
         private async Task<VerifyRequest> BuildVerifyRequestAsync(StoreOrder order, string user)
         {
             var product = m_Products.FirstOrDefault(p => p.StoreId == order.StoreProductId);
-            var google = Platform == BillingPlatform.Google;
             // Read before the first await: the purchase that set it may finish meanwhile.
             m_PaywallContext.TryGetValue(order.StoreProductId, out var paywall);
             return new VerifyRequest
             {
-                Store = m_StoreName,
                 BundleId = AppId,
                 UserId = user,
                 ProductId = order.StoreProductId,
-                PurchaseToken = google ? order.PurchaseToken : null,
+                PurchaseToken = NullIfEmpty(order.PurchaseToken),
                 OrderId = string.IsNullOrEmpty(order.TransactionId) ? null : order.TransactionId,
                 StoreUserId = string.IsNullOrEmpty(order.StoreUserId) ? null : order.StoreUserId,
                 AppInstanceId = await AppInstanceIdAsync(),
@@ -478,21 +495,17 @@ namespace Purser
                         // The game grants the reward in PurchaseSucceeded. Finish the purchase (Google
                         // consume / Apple finishTransaction) only after that: if the app dies in between,
                         // the store delivers it again and the server answers success from its ledger.
-                        try
-                        {
-                            Report(result);
-                        }
-                        catch (Exception e)
+                        if (!Report(result))
                         {
                             m_Log.Error($"PurchaseSucceeded handler failed for {order}, not finishing it " +
-                                        $"so the store delivers it again: {e}");
+                                        "so the store delivers it again.");
                             return;
                         }
-                        m_Store.Confirm(order);
+                        m_Store.Finish(order, true);
                     }
                     else
                     {
-                        m_Store.Confirm(order);
+                        m_Store.Finish(order, true);
                         Report(result);
                     }
                     if (config == null || config.type != BillingProductType.Consumable)
@@ -504,7 +517,7 @@ namespace Purser
                     break;
                 case Outcome.Rejected:
                     // Definitive answer: finish the transaction so the store stops re-delivering it.
-                    m_Store.Confirm(order);
+                    m_Store.Finish(order, false);
                     Report(new PurchaseResult(PurchaseStatus.Rejected, productId, order.StoreProductId,
                         transactionId, $"{server?.Status}: {server?.Message}", server));
                     break;
@@ -520,43 +533,63 @@ namespace Purser
 
         private void OnStorePurchaseFailed(StorePurchaseFailure failure)
         {
+            var status = failure.UserCancelled ? PurchaseStatus.Cancelled : PurchaseStatus.Failed;
+            if (string.IsNullOrEmpty(failure.StoreProductId))
+            {
+                // The store did not say which purchase failed: fail every open one rather than leave them waiting.
+                if (m_Waiters.Count == 0)
+                    Report(new PurchaseResult(status, null, null, message: failure.Reason));
+                foreach (var open in m_Waiters.Keys.ToList())
+                    Report(new PurchaseResult(status, m_Config.FindByStoreId(open)?.id ?? open, open, message: failure.Reason));
+                return;
+            }
             var storeId = failure.StoreProductId;
-            if (storeId == null && m_Waiters.Count == 1)
-                storeId = m_Waiters.Keys.First();
-            var config = storeId == null ? null : m_Config.FindByStoreId(storeId);
-            Report(new PurchaseResult(failure.UserCancelled ? PurchaseStatus.Cancelled : PurchaseStatus.Failed,
-                config?.id ?? storeId, storeId, message: failure.Reason));
+            Report(new PurchaseResult(status, m_Config.FindByStoreId(storeId)?.id ?? storeId, storeId, message: failure.Reason));
         }
 
-        private void OnOrderConfirmed(StoreOrder order, bool success, string error)
+        private void OnOrderFinished(StoreOrder order, bool success, string error)
         {
             if (!success)
                 m_Log.Verbose($"Store confirmation of {order} reported: {error} " +
                               "(expected when the server already consumed the purchase).");
         }
 
-        private void Report(PurchaseResult result)
+        /// <summary>Completes the purchase's waiter and raises its event. False when a game handler threw (logged,
+        /// never passed on to the store callbacks).</summary>
+        private bool Report(PurchaseResult result)
         {
-            if (result.StoreProductId != null && m_Waiters.TryGetValue(result.StoreProductId, out var waiter))
+            if (!string.IsNullOrEmpty(result.StoreProductId) && m_Waiters.TryGetValue(result.StoreProductId, out var waiter))
             {
                 m_Waiters.Remove(result.StoreProductId);
                 waiter.TrySetResult(result);
             }
 
             m_Log.Info("Purchase " + result);
+            Action<PurchaseResult> handlers;
+            string name;
             switch (result.Status)
             {
                 case PurchaseStatus.Success:
                 case PurchaseStatus.PendingDelivery:
-                    PurchaseSucceeded?.Invoke(result);
+                    (handlers, name) = (PurchaseSucceeded, nameof(PurchaseSucceeded));
                     break;
                 case PurchaseStatus.PendingPayment:
                 case PurchaseStatus.PendingVerification:
-                    PurchasePending?.Invoke(result);
+                    (handlers, name) = (PurchasePending, nameof(PurchasePending));
                     break;
                 default:
-                    PurchaseFailed?.Invoke(result);
+                    (handlers, name) = (PurchaseFailed, nameof(PurchaseFailed));
                     break;
+            }
+            try
+            {
+                handlers?.Invoke(result);
+                return true;
+            }
+            catch (Exception e)
+            {
+                m_Log.Error($"{name} handler threw for {result}: {e}");
+                return false;
             }
         }
 
@@ -583,7 +616,7 @@ namespace Purser
                 .Select(o => new RestoreItem
                 {
                     ProductId = o.StoreProductId,
-                    PurchaseToken = Platform == BillingPlatform.Google ? o.PurchaseToken : null,
+                    PurchaseToken = NullIfEmpty(o.PurchaseToken),
                     OrderId = string.IsNullOrEmpty(o.TransactionId) ? null : o.TransactionId,
                     StoreUserId = string.IsNullOrEmpty(o.StoreUserId) ? null : o.StoreUserId,
                 })
@@ -692,7 +725,7 @@ namespace Purser
             var config = m_Config.FindById(productId);
             if (config == null)
                 return new[] { productId };
-            return new[] { config.id, config.googleId, config.appleId, config.amazonId }.Where(id => !string.IsNullOrEmpty(id)).Distinct();
+            return config.AllIds();
         }
 
         // ------------------------------------------------------------------
@@ -747,7 +780,7 @@ namespace Purser
                     missing.Add(storeId);
                     continue;
                 }
-                var configStoreId = config.StoreId(Platform);
+                var configStoreId = config.StoreId(m_Store.Store);
                 if (products.Any(x => x.StoreId == configStoreId))
                     continue;
                 products.Add(new PaywallProduct(config, configStoreId, m_Products.FirstOrDefault(sp => sp.StoreId == configStoreId)));
@@ -810,7 +843,7 @@ namespace Purser
             m_Store.OrderPending -= OnOrderPending;
             m_Store.OrderDeferred -= OnOrderDeferred;
             m_Store.PurchaseFailed -= OnStorePurchaseFailed;
-            m_Store.OrderConfirmed -= OnOrderConfirmed;
+            m_Store.OrderFinished -= OnOrderFinished;
             m_Store.Dispose();
             foreach (var waiter in m_Waiters.Values.ToList())
                 waiter.TrySetCanceled();

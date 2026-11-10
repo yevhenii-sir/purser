@@ -26,14 +26,20 @@ namespace Purser
 
         public BillingPlatform Platform { get; }
 
+        /// <summary><c>google</c> or <c>apple</c>.</summary>
+        public string Store { get; }
+
         public event Action<StoreOrder> OrderPending;
         public event Action<StoreOrder> OrderDeferred;
         public event Action<StorePurchaseFailure> PurchaseFailed;
-        public event Action<StoreOrder, bool, string> OrderConfirmed;
+        public event Action<StoreOrder, bool, string> OrderFinished;
 
+        /// <param name="platform"><see cref="BillingPlatform.Google"/> or <see cref="BillingPlatform.Apple"/>; other
+        /// platforms run Unity IAP's fake store (Editor) under the Google store id.</param>
         public UnityIapStoreAdapter(BillingPlatform platform, BillingLog log = null)
         {
             Platform = platform;
+            Store = platform == BillingPlatform.Apple ? BillingStores.Apple : BillingStores.Google;
             m_Log = log ?? new BillingLog(BillingLogLevel.Warning);
             m_Store = UnityIAPServices.StoreController();
 
@@ -60,7 +66,7 @@ namespace Purser
                 throw new BillingException("Store connection failed: " + connect.Exception?.GetBaseException().Message);
             if (m_Store.GetConnectionState() == ConnectionState.Connected)
                 return;
-            await WithTimeout(m_Connect.Task, ct, "store connection");
+            await TaskTimeout.With(m_Connect.Task, OperationTimeout, ct, "store connection");
         }
 
         public async Task<IReadOnlyList<StoreProduct>> FetchProductsAsync(IReadOnlyList<BillingProductConfig> products, CancellationToken ct)
@@ -70,7 +76,7 @@ namespace Purser
             var definitions = new List<ProductDefinition>();
             foreach (var p in products)
             {
-                var storeId = p.StoreId(Platform);
+                var storeId = p.StoreId(Store);
                 if (m_Types.ContainsKey(storeId))
                     continue;
                 m_Types[storeId] = p.type;
@@ -78,15 +84,19 @@ namespace Purser
             }
             m_Products = new TaskCompletionSource<IReadOnlyList<StoreProduct>>();
             m_Store.FetchProducts(definitions);
-            return await WithTimeout(m_Products.Task, ct, "product fetch");
+            return await TaskTimeout.With(m_Products.Task, OperationTimeout, ct, "product fetch");
         }
 
-        public void SetAccountBinding(string googleAccountId, Guid? appleAccountToken)
+        /// <summary>Google <c>obfuscatedAccountId</c> / Apple <c>appAccountToken</c> derived from the user id
+        /// (<see cref="AccountIds"/>, the same as the server).</summary>
+        public void SetAccountBinding(string userId)
         {
-            if (!string.IsNullOrEmpty(googleAccountId))
-                m_Store.GooglePlayStoreExtendedService?.SetObfuscatedAccountId(googleAccountId);
-            if (appleAccountToken.HasValue)
-                m_Store.AppleStoreExtendedService?.SetAppAccountToken(appleAccountToken.Value);
+            if (string.IsNullOrEmpty(userId))
+                return;
+            if (Platform == BillingPlatform.Apple)
+                m_Store.AppleStoreExtendedService?.SetAppAccountToken(AccountIds.AppleAccountToken(userId));
+            else
+                m_Store.GooglePlayStoreExtendedService?.SetObfuscatedAccountId(AccountIds.GoogleAccountId(userId));
         }
 
         public void Purchase(string storeProductId)
@@ -100,7 +110,9 @@ namespace Purser
             m_Store.PurchaseProduct(product);
         }
 
-        public void Confirm(StoreOrder order)
+        /// <summary>Google consume / acknowledge (the server already did it for server deliveries), Apple
+        /// finishTransaction. Unity IAP finishes rejected purchases the same way.</summary>
+        public void Finish(StoreOrder order, bool granted)
         {
             if (order.Native is PendingOrder pending)
                 m_Store.ConfirmPurchase(pending);
@@ -110,7 +122,7 @@ namespace Purser
         {
             m_Purchases = new TaskCompletionSource<IReadOnlyList<StoreOrder>>();
             m_Store.FetchPurchases();
-            return await WithTimeout(m_Purchases.Task, ct, "purchase fetch");
+            return await TaskTimeout.With(m_Purchases.Task, OperationTimeout, ct, "purchase fetch");
         }
 
         public async Task<bool> RestoreTransactionsAsync(CancellationToken ct)
@@ -122,7 +134,7 @@ namespace Purser
                     m_Log.Warning("Restore transactions failed: " + error);
                 tcs.TrySetResult(success);
             });
-            return await WithTimeout(tcs.Task, ct, "restore");
+            return await TaskTimeout.With(tcs.Task, OperationTimeout, ct, "restore");
         }
 
         public void Dispose()
@@ -212,9 +224,9 @@ namespace Purser
         {
             var mapped = Map(order);
             if (order is FailedOrder failed)
-                OrderConfirmed?.Invoke(mapped, false, $"{failed.FailureReason}: {failed.Details}");
+                OrderFinished?.Invoke(mapped, false, $"{failed.FailureReason}: {failed.Details}");
             else
-                OrderConfirmed?.Invoke(mapped, true, null);
+                OrderFinished?.Invoke(mapped, true, null);
         }
 
         private void HandlePurchaseFailed(FailedOrder order)
@@ -261,7 +273,7 @@ namespace Purser
                     ReceiptParser.TryGetGoogleOrderId(info.Receipt, out orderId);
                 return string.IsNullOrEmpty(token)
                     ? null
-                    : new StoreOrder(Platform, storeId, orderId, token, orderId, info.Google?.ObfuscatedAccountId, order);
+                    : new StoreOrder(Platform, storeId, orderId, token, order);
             }
 
             var transactionId = info.TransactionID;
@@ -269,8 +281,7 @@ namespace Purser
                 ReceiptParser.TryGetTransactionId(info.Receipt, out transactionId);
             return string.IsNullOrEmpty(transactionId)
                 ? null
-                : new StoreOrder(Platform, storeId, transactionId, null, info.Apple?.OriginalTransactionID,
-                    info.Apple?.AppAccountToken?.ToString(), order);
+                : new StoreOrder(Platform, storeId, transactionId, null, order);
         }
 
         private static Product ProductOf(Order order) => order?.CartOrdered?.Items()?.FirstOrDefault()?.Product;
@@ -280,7 +291,7 @@ namespace Purser
             if (m_RequestedProducts == null)
                 return null;
             foreach (var p in m_RequestedProducts)
-                if (p.StoreId(Platform) == storeId)
+                if (p.StoreId(Store) == storeId)
                     return p;
             return null;
         }
@@ -302,22 +313,6 @@ namespace Purser
                 case ProductType.NonConsumable: return BillingProductType.NonConsumable;
                 case ProductType.Subscription: return BillingProductType.Subscription;
                 default: return BillingProductType.Consumable;
-            }
-        }
-
-        private static async Task<T> WithTimeout<T>(Task<T> task, CancellationToken ct, string what)
-        {
-            using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
-            {
-                var delay = Task.Delay(OperationTimeout, cts.Token);
-                var done = await Task.WhenAny(task, delay);
-                cts.Cancel();
-                if (done != task)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    throw new BillingException($"Timed out waiting for {what}");
-                }
-                return await task;
             }
         }
     }

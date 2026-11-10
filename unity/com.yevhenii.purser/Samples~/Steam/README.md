@@ -14,7 +14,7 @@ var deps = new BillingDependencies { UserIdProvider = myUserIds, Store = new Ste
 var billing = Billing.Create(config, deps);
 ```
 
-Set `BillingConfig.steamAppId` to the app id of the Steam build on the server (the Steam App ID). A purchase
+Add a `steam` build to `BillingConfig.builds` with the app id of the Steam build on the server (the Steam App ID). A purchase
 opens the Steam overlay; when the player authorizes it, the server finalizes the order and `PurchaseSucceeded`
 fires as for any store. Declining is reported as `Cancelled`.
 

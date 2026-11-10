@@ -50,8 +50,6 @@ namespace Purser
         [JsonProperty("variant_id", NullValueHandling = NullValueHandling.Ignore)] public string VariantId;
         [JsonProperty("test_id", NullValueHandling = NullValueHandling.Ignore)] public string TestId;
         [JsonProperty("paywall_id", NullValueHandling = NullValueHandling.Ignore)] public string PaywallId;
-        /// <summary>Store route (<c>/verify/{Store}</c>) when the platform does not imply it; not sent in the body.</summary>
-        [JsonIgnore] public string Store;
     }
 
     public sealed class VerifyResponse

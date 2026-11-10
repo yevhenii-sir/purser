@@ -27,9 +27,9 @@ namespace Purser.Tests
             m_Config = BillingConfig.Create("https://billing.example.com/route",
                 new BillingProductConfig("gems_100", BillingProductType.Consumable),
                 new BillingProductConfig("vip", BillingProductType.NonConsumable),
-                new BillingProductConfig("premium", BillingProductType.Subscription, "premium_android", "premium_ios"));
-            m_Config.androidAppId = "com.test.game";
-            m_Config.iosAppId = "com.test.game.ios";
+                new BillingProductConfig("premium", BillingProductType.Subscription)
+                    .WithStoreId(BillingStores.Google, "premium_android").WithStoreId(BillingStores.Apple, "premium_ios"));
+            m_Config.WithBuild(BillingStores.Google, "com.test.game").WithBuild(BillingStores.Apple, "com.test.game.ios");
             m_Config.retryDelaysSeconds = new[] { 5, 30 };
             m_Config.refreshEntitlementsOnInit = false;
             m_Config.logLevel = BillingLogLevel.None;
@@ -88,8 +88,7 @@ namespace Purser.Tests
             Assert.IsTrue(m_Service.IsInitialized);
             Assert.AreEqual(3, m_Service.Products.Count);
             Assert.AreEqual("premium_android", m_Service.GetProduct("premium").StoreId);
-            Assert.AreEqual(User, m_Store.GoogleAccountId);
-            Assert.AreEqual(AccountIds.AppleAccountToken(User), m_Store.AppleAccountToken);
+            Assert.AreEqual(User, m_Store.BoundUserId);
         }
 
         [Test]
@@ -105,7 +104,7 @@ namespace Purser.Tests
             Assert.AreEqual(1, m_Succeeded.Count);
 
             var request = m_Api.VerifyRequests.Single();
-            Assert.AreEqual(BillingPlatform.Google, m_Api.VerifyPlatforms.Single());
+            Assert.AreEqual(BillingStores.Google, m_Api.VerifyStores.Single());
             Assert.AreEqual("com.test.game", request.BundleId);
             Assert.AreEqual(User, request.UserId);
             Assert.AreEqual("gems_100", request.ProductId);
@@ -201,7 +200,77 @@ namespace Purser.Tests
             var result = Buy("gems_100", FakeStore.GoogleOrder("gems_100"));
             Assert.AreEqual(PurchaseStatus.Rejected, result.Status);
             Assert.AreEqual(1, m_Store.Confirmed.Count, "rejected orders are finished so the store stops re-delivering them");
+            Assert.IsFalse(m_Store.FinishedGranted.Single(), "finished as not granted (Amazon: UNAVAILABLE)");
             Assert.AreEqual(1, m_Failed.Count);
+        }
+
+        [Test]
+        public void Purchase_Granted_IsFinishedAsGranted()
+        {
+            CreateService();
+            Buy("gems_100", FakeStore.GoogleOrder("gems_100"));
+            Assert.IsTrue(m_Store.FinishedGranted.Single());
+        }
+
+        [Test]
+        public void OrderWithoutProduct_TakesTheProductFromTheServer()
+        {
+            CreateService();
+            m_Api.DefaultVerify = new ApiResult<VerifyResponse>(200, new VerifyResponse
+            {
+                Status = VerifyStatus.Success, TransactionId = "GPA.9", ProductId = "premium_android",
+            }, null);
+
+            m_Store.Deliver(new StoreOrder(BillingPlatform.Google, "", "GPA.9", "tok-9"));
+
+            Assert.AreEqual("premium", m_Succeeded.Single().ProductId, "not the first configured product");
+        }
+
+        [Test]
+        public void EmptyStoreIdsNeverMatch()
+        {
+            // As the inspector saves it: an override row with an empty id.
+            var inspectorMade = new BillingProductConfig { id = "gems_100", type = BillingProductType.Consumable };
+            inspectorMade.storeIds.Add(new StoreProductId(BillingStores.Apple, ""));
+            Assert.IsFalse(inspectorMade.Matches(""));
+            Assert.IsFalse(inspectorMade.Matches(null));
+            Assert.AreEqual("gems_100", inspectorMade.StoreId(BillingStores.Apple));
+            Assert.IsNull(m_Config.FindByStoreId(""));
+        }
+
+        [Test]
+        public void StoreFailureWithoutProduct_FailsEveryOpenPurchase()
+        {
+            CreateService();
+            var gems = m_Service.PurchaseAsync("gems_100");
+            var vip = m_Service.PurchaseAsync("vip");
+            Assert.IsFalse(gems.IsCompleted);
+
+            m_Store.Fail(null, cancelled: false);
+
+            Assert.AreEqual(PurchaseStatus.Failed, Sync.Run(gems).Status);
+            Assert.AreEqual(PurchaseStatus.Failed, Sync.Run(vip).Status);
+        }
+
+        [Test]
+        public void GameHandlerExceptions_DoNotReachTheStoreCallbacks()
+        {
+            CreateService();
+            m_Service.PurchasePending += _ => throw new InvalidOperationException("ui bug");
+            m_Service.PurchaseFailed += _ => throw new InvalidOperationException("ui bug");
+            Assert.DoesNotThrow(() => m_Store.Defer(FakeStore.GoogleOrder("vip")));
+            Assert.DoesNotThrow(() => m_Store.Fail("gems_100", cancelled: false));
+        }
+
+        [Test]
+        public void Purchase_ServerDelivery_HandlerFailure_IsNotReportedAsPendingAfterTheSuccess()
+        {
+            CreateService();
+            m_Service.PurchaseSucceeded += _ => throw new InvalidOperationException("ui bug");
+            var result = Buy("gems_100", FakeStore.GoogleOrder("gems_100"));
+            Assert.AreEqual(PurchaseStatus.Success, result.Status);
+            Assert.AreEqual(1, m_Store.Confirmed.Count);
+            Assert.IsEmpty(m_Pending);
         }
 
         [Test]
@@ -257,7 +326,7 @@ namespace Purser.Tests
 
             m_Service.SetUserId("player-42");
             Assert.AreEqual("player-42", m_Api.VerifyRequests.Single().UserId);
-            Assert.AreEqual("player-42", m_Store.GoogleAccountId);
+            Assert.AreEqual("player-42", m_Store.BoundUserId);
             Assert.AreEqual(1, m_Store.Confirmed.Count);
         }
 
@@ -315,7 +384,7 @@ namespace Purser.Tests
             CreateService();
             Buy("premium", FakeStore.AppleOrder("premium_ios"));
             var request = m_Api.VerifyRequests.Single();
-            Assert.AreEqual(BillingPlatform.Apple, m_Api.VerifyPlatforms.Single());
+            Assert.AreEqual(BillingStores.Apple, m_Api.VerifyStores.Single());
             Assert.AreEqual("com.test.game.ios", request.BundleId);
             Assert.AreEqual("2000000001", request.OrderId);
             Assert.IsNull(request.PurchaseToken);
@@ -432,6 +501,18 @@ namespace Purser.Tests
             var result = Buy("gems_100", FakeStore.GoogleOrder("gems_100"));
             Assert.AreEqual(PurchaseStatus.Success, result.Status);
             Assert.IsNull(m_Api.VerifyRequests.Single().Attribution);
+        }
+
+        [Test]
+        public void Store_NamesTheRouteAndTheBuild()
+        {
+            m_Store.Store = BillingStores.Amazon;
+            m_Config.WithBuild(BillingStores.Amazon, "com.test.game.amazon");
+            CreateService();
+            Assert.AreEqual(BillingStores.Amazon, m_Service.Store);
+            Buy("gems_100", new StoreOrder(BillingPlatform.Amazon, "gems_100", "receipt-1", null));
+            Assert.AreEqual(BillingStores.Amazon, m_Api.VerifyStores.Single());
+            Assert.AreEqual("com.test.game.amazon", m_Api.VerifyRequests.Single().BundleId);
         }
 
         [Test]

@@ -62,21 +62,12 @@ namespace Purser
     /// shows its overlay, and once the player authorized it (<c>MicroTxnAuthorizationResponse_t</c>) the order goes
     /// through <c>/verify/steam</c> like any store purchase (the server calls <c>FinalizeTxn</c>).
     /// <code>new BillingDependencies { Store = new SteamStoreAdapter(config, new SteamworksNetBridge()) }</code>
-    /// Set <see cref="BillingConfig.steamAppId"/> to the Steam App ID of the build on the server. The product's store id
-    /// is the billing product id; prices are set on the server (the overlay shows them).
+    /// The app id is the <c>steam</c> build of <see cref="BillingConfig.builds"/> (the Steam App ID). The product's
+    /// store id is the billing product id; prices are set on the server (the overlay shows them).
     /// </summary>
-    public sealed class SteamStoreAdapter : IStoreAdapter, IBillingUserStoreAdapter
+    public sealed class SteamStoreAdapter : ServerCheckoutStoreAdapter
     {
-        public const string Store = "steam";
         private const string PendingKey = "purser.steam.authorized";
-
-        private sealed class PendingOrder
-        {
-            [JsonProperty("order_id")] public ulong OrderId;
-            [JsonProperty("sku")] public string Sku;
-            [JsonProperty("user_id")] public string UserId;
-            [JsonProperty("created_ticks")] public long CreatedTicks;
-        }
 
         private sealed class CheckoutRequest
         {
@@ -87,38 +78,24 @@ namespace Purser
             [JsonProperty("language", NullValueHandling = NullValueHandling.Ignore)] public string Language;
         }
 
-        private readonly string m_BaseUrl;
         private readonly string m_AppId;
-        private readonly int m_TimeoutSeconds;
         private readonly ISteamMicroTxnBridge m_Bridge;
         private readonly SteamOptions m_Options;
-        private readonly IHttpTransport m_Transport;
-        private readonly IBillingStorage m_Storage;
-        private readonly BillingLog m_Log;
-        private readonly Func<TimeSpan, CancellationToken, Task> m_Delay;
-        private readonly Func<DateTime> m_UtcNow;
+        private readonly JsonHttp m_Http;
         private readonly CancellationTokenSource m_Lifetime = new CancellationTokenSource();
-        /// <summary>Checked out, waiting for the player's answer in the overlay.</summary>
-        private readonly Dictionary<ulong, PendingOrder> m_Awaiting = new Dictionary<ulong, PendingOrder>();
-        /// <summary>Authorized, not yet answered by the server (persisted).</summary>
-        private List<PendingOrder> m_Authorized;
-        private string m_User;
+        /// <summary>Checked out, waiting for the player's answer in the overlay (not persisted).</summary>
+        private readonly Dictionary<string, (string Sku, string User)> m_Awaiting = new Dictionary<string, (string, string)>();
         private bool m_Disposed;
 
-        public BillingPlatform Platform => BillingPlatform.Steam;
+        public override BillingPlatform Platform => BillingPlatform.Steam;
+        public override string Store => BillingStores.Steam;
 
-        public event Action<StoreOrder> OrderPending;
-        /// <summary>Steam has no deferred purchases.</summary>
-        public event Action<StoreOrder> OrderDeferred { add { } remove { } }
-        public event Action<StorePurchaseFailure> PurchaseFailed;
-        public event Action<StoreOrder, bool, string> OrderConfirmed;
-
-        /// <param name="config">Server URL, request timeout and the Steam build's app id (<see cref="BillingConfig.steamAppId"/>).</param>
+        /// <param name="config">Server URL, request timeout and the app id of its <c>steam</c> build.</param>
         /// <param name="bridge">Steamworks glue (see the "Steam" sample).</param>
         /// <param name="storage">Remembers authorized orders across launches (default: PlayerPrefs).</param>
         public SteamStoreAdapter(BillingConfig config, ISteamMicroTxnBridge bridge, SteamOptions options = null,
             IHttpTransport transport = null, IBillingStorage storage = null, BillingLog log = null)
-            : this(config ? config.serverBaseUrl : null, config ? config.AppIdFor(BillingPlatform.Steam) : null, bridge,
+            : this(config ? config.serverBaseUrl : null, config ? config.AppIdFor(BillingStores.Steam) : null, bridge,
                 config ? config.requestTimeoutSeconds : 10, options, transport, storage, log)
         {
         }
@@ -126,170 +103,96 @@ namespace Purser
         /// <param name="serverBaseUrl">Billing server, <c>https://&lt;host&gt;/v1/database/&lt;db&gt;/route</c>.</param>
         /// <param name="appId">App id of the Steam build on the server (the Steam App ID).</param>
         public SteamStoreAdapter(string serverBaseUrl, string appId, ISteamMicroTxnBridge bridge, int timeoutSeconds = 10,
-            SteamOptions options = null, IHttpTransport transport = null, IBillingStorage storage = null, BillingLog log = null,
-            Func<TimeSpan, CancellationToken, Task> delay = null, Func<DateTime> utcNow = null)
+            SteamOptions options = null, IHttpTransport transport = null, IBillingStorage storage = null, BillingLog log = null)
+            : base(storage, log, PendingKey, (options ?? new SteamOptions()).ForgetAfter)
         {
-            if (string.IsNullOrWhiteSpace(serverBaseUrl))
-                throw new ArgumentException("Billing server URL is empty", nameof(serverBaseUrl));
             if (string.IsNullOrWhiteSpace(appId))
-                throw new ArgumentException("The Steam build's app id is empty (BillingConfig.steamAppId)", nameof(appId));
+                throw new ArgumentException("The Steam build's app id is empty (a steam build in BillingConfig.builds)", nameof(appId));
             m_Bridge = bridge ?? throw new ArgumentNullException(nameof(bridge));
-            m_BaseUrl = serverBaseUrl.TrimEnd('/');
+            m_Http = new JsonHttp(serverBaseUrl, timeoutSeconds, transport);
             m_AppId = appId;
-            m_TimeoutSeconds = Math.Max(1, timeoutSeconds);
             m_Options = options ?? new SteamOptions();
-            m_Transport = transport ?? new UnityWebRequestTransport();
-            m_Storage = storage ?? new PlayerPrefsBillingStorage();
-            m_Log = log ?? new BillingLog(BillingLogLevel.Warning);
-            m_Delay = delay ?? ((d, ct) => Task.Delay(d, ct));
-            m_UtcNow = utcNow ?? (() => DateTime.UtcNow);
             m_Bridge.AuthorizationReceived += HandleAuthorization;
         }
 
         /// <summary>Re-raises orders the player authorized in an earlier session that the server has not answered yet.</summary>
-        public Task ConnectAsync(CancellationToken ct)
+        public override Task ConnectAsync(CancellationToken ct)
         {
             if (!m_Bridge.IsReady)
                 throw new BillingException("Steam is not running or the player is not logged on (SteamAPI.Init)");
-            var cutoff = m_UtcNow() - m_Options.ForgetAfter;
-            if (Authorized.RemoveAll(o => new DateTime(o.CreatedTicks, DateTimeKind.Utc) < cutoff) > 0)
-                SaveAuthorized();
-            foreach (var o in Authorized.ToList())
-                OrderPending?.Invoke(ToOrder(o));
-            return Task.CompletedTask;
+            return base.ConnectAsync(ct);
         }
 
-        /// <summary>Products from the config: Steam shows the price in its overlay (set on the server).</summary>
-        public Task<IReadOnlyList<StoreProduct>> FetchProductsAsync(IReadOnlyList<BillingProductConfig> products, CancellationToken ct)
+        protected override async Task StartCheckoutAsync(string sku, string userId)
         {
-            IReadOnlyList<StoreProduct> list = products
-                .Select(p => new StoreProduct(p.id, p.StoreId(Platform), p.type, "", 0m, null, p.id, "", true))
-                .ToList();
-            return Task.FromResult(list);
+            if (!m_Bridge.IsReady || m_Bridge.SteamId == 0)
+            {
+                Fail(sku, "Steam is not running or the player is not logged on");
+                return;
+            }
+            var request = new CheckoutRequest
+            {
+                AppId = m_AppId,
+                ProductId = sku,
+                UserId = userId,
+                SteamId = m_Bridge.SteamId.ToString(CultureInfo.InvariantCulture),
+                Language = NullIfEmpty(m_Bridge.Language),
+            };
+            var res = await m_Http.PostAsync<SteamCheckoutResponse>("/checkout/steam", request, m_Lifetime.Token);
+            var checkout = res.Value;
+            if (!res.IsHttpSuccess || checkout == null ||
+                !ulong.TryParse(checkout.OrderId, NumberStyles.None, CultureInfo.InvariantCulture, out var orderId))
+            {
+                Fail(sku, "checkout: " + (checkout?.Message ?? res.Error ?? "HTTP " + res.HttpStatus));
+                return;
+            }
+            // Steam now shows the overlay; the answer arrives as MicroTxnAuthorizationResponse_t.
+            var id = orderId.ToString(CultureInfo.InvariantCulture);
+            m_Awaiting[id] = (sku, userId);
+            _ = ExpireAsync(id);
         }
 
-        /// <summary>Steam has no account binding field: the server binds the order to the billing user id.</summary>
-        public void SetAccountBinding(string googleAccountId, Guid? appleAccountToken) { }
-
-        public void SetBillingUser(string userId) => m_User = userId;
-
-        public void Purchase(string storeProductId) => _ = PurchaseCoreAsync(storeProductId);
-
-        private async Task PurchaseCoreAsync(string sku)
-        {
-            try
-            {
-                var user = m_User;
-                if (string.IsNullOrEmpty(user))
-                {
-                    PurchaseFailed?.Invoke(new StorePurchaseFailure(sku, "Steam: the billing user id is not set", false));
-                    return;
-                }
-                if (!m_Bridge.IsReady || m_Bridge.SteamId == 0)
-                {
-                    PurchaseFailed?.Invoke(new StorePurchaseFailure(sku, "Steam is not running or the player is not logged on", false));
-                    return;
-                }
-                var request = new CheckoutRequest
-                {
-                    AppId = m_AppId,
-                    ProductId = sku,
-                    UserId = user,
-                    SteamId = m_Bridge.SteamId.ToString(CultureInfo.InvariantCulture),
-                    Language = string.IsNullOrEmpty(m_Bridge.Language) ? null : m_Bridge.Language,
-                };
-                var res = await m_Transport.SendAsync("POST", m_BaseUrl + "/checkout/steam", JsonConvert.SerializeObject(request),
-                    m_TimeoutSeconds, m_Lifetime.Token);
-                SteamCheckoutResponse checkout = null;
-                try
-                {
-                    if (!res.IsTransportError && !string.IsNullOrEmpty(res.Body))
-                        checkout = JsonConvert.DeserializeObject<SteamCheckoutResponse>(res.Body);
-                }
-                catch (JsonException)
-                {
-                    // Reported below.
-                }
-                if (res.Status < 200 || res.Status >= 300 || checkout == null ||
-                    !ulong.TryParse(checkout.OrderId, NumberStyles.None, CultureInfo.InvariantCulture, out var orderId))
-                {
-                    var reason = checkout?.Message ?? res.Error ?? "HTTP " + res.Status;
-                    PurchaseFailed?.Invoke(new StorePurchaseFailure(sku, "Steam checkout: " + reason, false));
-                    return;
-                }
-                // Steam now shows the overlay; the answer arrives as MicroTxnAuthorizationResponse_t.
-                m_Awaiting[orderId] = new PendingOrder { OrderId = orderId, Sku = sku, UserId = user, CreatedTicks = m_UtcNow().Ticks };
-                _ = ExpireAsync(orderId);
-            }
-            catch (OperationCanceledException)
-            {
-                // Disposed.
-            }
-            catch (Exception e)
-            {
-                m_Log.Error("Steam checkout failed: " + e);
-                PurchaseFailed?.Invoke(new StorePurchaseFailure(sku, "Steam checkout: " + e.Message, false));
-            }
-        }
-
-        private async Task ExpireAsync(ulong orderId)
+        private async Task ExpireAsync(string orderId)
         {
             try
             {
-                await m_Delay(m_Options.AuthorizationTimeout, m_Lifetime.Token);
+                await Delay(m_Options.AuthorizationTimeout, m_Lifetime.Token);
             }
             catch (OperationCanceledException)
             {
                 return;
             }
-            if (!m_Awaiting.TryGetValue(orderId, out var order))
+            if (!m_Awaiting.TryGetValue(orderId, out var started))
                 return;
             m_Awaiting.Remove(orderId);
-            PurchaseFailed?.Invoke(new StorePurchaseFailure(order.Sku, "Steam: no answer from the purchase overlay", false));
+            Fail(started.Sku, "no answer from the purchase overlay");
         }
 
-        private void HandleAuthorization(uint appId, ulong orderId, bool authorized)
+        private void HandleAuthorization(uint appId, ulong steamOrderId, bool authorized)
         {
-            m_Awaiting.TryGetValue(orderId, out var order);
+            var orderId = steamOrderId.ToString(CultureInfo.InvariantCulture);
+            var isStarted = m_Awaiting.TryGetValue(orderId, out var started);
             m_Awaiting.Remove(orderId);
             if (!authorized)
             {
-                if (order != null)
-                    PurchaseFailed?.Invoke(new StorePurchaseFailure(order.Sku, "Steam: the player declined the purchase", true));
+                if (isStarted)
+                    Fail(started.Sku, "the player declined the purchase", true);
                 return;
             }
-            if (order == null)
-            {
-                // Started before a restart of the game: the server knows its product.
-                if (Authorized.Any(o => o.OrderId == orderId) || string.IsNullOrEmpty(m_User))
-                    return;
-                order = new PendingOrder { OrderId = orderId, Sku = "", UserId = m_User, CreatedTicks = m_UtcNow().Ticks };
-            }
-            if (Authorized.All(o => o.OrderId != orderId))
-            {
-                Authorized.Add(order);
-                SaveAuthorized();
-            }
-            OrderPending?.Invoke(ToOrder(order));
-        }
-
-        /// <summary>The server answered for the order: it is no longer re-checked at launch.</summary>
-        public void Confirm(StoreOrder order)
-        {
-            if (order?.TransactionId == null)
+            var known = Pending.Any(o => o.OrderId == orderId);
+            if (!isStarted && (known || CurrentUser == null))
                 return;
-            if (Authorized.RemoveAll(o => o.OrderId.ToString(CultureInfo.InvariantCulture) == order.TransactionId) > 0)
-                SaveAuthorized();
-            OrderConfirmed?.Invoke(order, true, null);
+            // Started before a restart of the game: the sku is unknown, the server's answer names the product.
+            var order = isStarted ? Remember(orderId, started.Sku, started.User) : Remember(orderId, "", CurrentUser);
+            RaisePending(ToOrder(order));
         }
 
-        /// <summary>Owned products come from the server's entitlements: Steam has nothing to restore.</summary>
-        public Task<IReadOnlyList<StoreOrder>> FetchPurchasesAsync(CancellationToken ct) =>
-            Task.FromResult<IReadOnlyList<StoreOrder>>(new List<StoreOrder>());
+        /// <summary>Steam orders are looked up by the player's SteamID.</summary>
+        protected override StoreOrder ToOrder(CheckoutOrder o, object native = null) =>
+            new StoreOrder(Platform, o.Sku, o.OrderId, null, native ?? o,
+                m_Bridge.SteamId == 0 ? null : m_Bridge.SteamId.ToString(CultureInfo.InvariantCulture));
 
-        public Task<bool> RestoreTransactionsAsync(CancellationToken ct) => Task.FromResult(true);
-
-        public void Dispose()
+        public override void Dispose()
         {
             if (m_Disposed)
                 return;
@@ -297,44 +200,6 @@ namespace Purser
             m_Bridge.AuthorizationReceived -= HandleAuthorization;
             m_Lifetime.Cancel();
             m_Lifetime.Dispose();
-        }
-
-        // ---- helpers ----
-
-        private List<PendingOrder> Authorized => m_Authorized ?? (m_Authorized = LoadAuthorized());
-
-        private StoreOrder ToOrder(PendingOrder o)
-        {
-            var id = o.OrderId.ToString(CultureInfo.InvariantCulture);
-            return new StoreOrder(Platform, o.Sku, id, null, id, null, o,
-                m_Bridge.SteamId == 0 ? null : m_Bridge.SteamId.ToString(CultureInfo.InvariantCulture));
-        }
-
-        private List<PendingOrder> LoadAuthorized()
-        {
-            try
-            {
-                var json = m_Storage.Load(PendingKey);
-                return string.IsNullOrEmpty(json)
-                    ? new List<PendingOrder>()
-                    : JsonConvert.DeserializeObject<List<PendingOrder>>(json) ?? new List<PendingOrder>();
-            }
-            catch (Exception)
-            {
-                return new List<PendingOrder>();
-            }
-        }
-
-        private void SaveAuthorized()
-        {
-            try
-            {
-                m_Storage.Save(PendingKey, JsonConvert.SerializeObject(Authorized));
-            }
-            catch (Exception e)
-            {
-                m_Log.Warning("Could not remember Steam orders: " + e.Message);
-            }
         }
     }
 }

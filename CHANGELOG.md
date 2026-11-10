@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Unity package: the config is keyed by store (`builds`, per-product `storeIds`), so one game can have several web builds (Stripe and Xsolla); **Copy config for admin panel** in the inspector; fixes for purchases without a product id, Amazon receipts the server rejected, web purchases without attribution and paywall, hanging purchases and game handler exceptions. Breaking for the package API: see `unity/com.yevhenii.purser/CHANGELOG.md`.
+
 ## 0.1.0 - 2026-11-10
 
 First public release.

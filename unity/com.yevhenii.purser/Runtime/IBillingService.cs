@@ -15,6 +15,9 @@ namespace Purser
 
         BillingPlatform Platform { get; }
 
+        /// <summary>Store id of the billing server the purchases go to (<see cref="BillingStores"/>).</summary>
+        string Store { get; }
+
         /// <summary>Products loaded from the store (localized prices).</summary>
         IReadOnlyList<StoreProduct> Products { get; }
 

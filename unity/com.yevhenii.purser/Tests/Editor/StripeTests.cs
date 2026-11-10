@@ -45,6 +45,7 @@ namespace Purser.Tests
         private StripeStoreAdapter m_Adapter;
         private BillingService m_Service;
         private readonly List<PurchaseResult> m_Events = new List<PurchaseResult>();
+        private IAttributionProvider m_Attribution;
 
         [SetUp]
         public void SetUp()
@@ -52,7 +53,7 @@ namespace Purser.Tests
             m_Config = BillingConfig.Create("https://billing.example.com/route",
                 new BillingProductConfig("gems_100", BillingProductType.Consumable),
                 new BillingProductConfig("vip", BillingProductType.Subscription));
-            m_Config.webAppId = "com.test.game.web";
+            m_Config.WithBuild(BillingStores.Stripe, "com.test.game.web");
             m_Config.refreshEntitlementsOnInit = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Stripe = new FakeStripeApi();
@@ -61,6 +62,7 @@ namespace Purser.Tests
             m_Api = new FakeApi();
             m_Now = new DateTime(2026, 11, 10, 12, 0, 0, DateTimeKind.Utc);
             m_Events.Clear();
+            m_Attribution = null;
         }
 
         [TearDown]
@@ -94,6 +96,7 @@ namespace Purser.Tests
             };
             m_Service = new BillingService(m_Config, new BillingDependencies
             {
+                AttributionProvider = m_Attribution,
                 Store = m_Adapter,
                 Api = m_Api,
                 UserIdProvider = new StaticUserIdProvider(User),
@@ -200,6 +203,29 @@ namespace Purser.Tests
             m_Adapter.ResumeSession("cs_test_9", "gems_100", User);
             Assert.AreEqual(("cs_test_9", User), (m_Stripe.SessionChecks.Single().SessionId, m_Stripe.SessionChecks.Single().UserId));
             Assert.AreEqual(PurchaseStatus.Success, m_Events.Single().Status);
+        }
+
+        [Test]
+        public void SessionCheck_CarriesAttributionAndPaywall()
+        {
+            m_Attribution = new FuncAttributionProvider(() => new Dictionary<string, string> { [AttributionKeys.AppsFlyerId] = "af-1" });
+            CreateService();
+            var paywall = new Paywall("store", "pw-1", "Store", "var-b", "test-1", new List<PaywallProduct>(), new List<string>(),
+                "{}", false, m_Now);
+
+            Sync.Run(m_Service.PurchaseAsync("gems_100", paywall));
+
+            var check = m_Stripe.SessionChecks.Single();
+            Assert.AreEqual("af-1", check.Attribution[AttributionKeys.AppsFlyerId]);
+            Assert.AreEqual(("store", "var-b", "test-1", "pw-1"), (check.Placement, check.VariantId, check.TestId, check.PaywallId));
+        }
+
+        [Test]
+        public void ResumedSessionWithoutProduct_IsReportedAsTheServersProduct()
+        {
+            CreateService();
+            m_Adapter.ResumeSession("cs_test_9", null, User);
+            Assert.AreEqual("price_gems", m_Events.Single().ProductId, "not the first configured product");
         }
 
         [Test]

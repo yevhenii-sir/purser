@@ -38,7 +38,7 @@ namespace Purser.Tests
             m_Config = BillingConfig.Create("https://billing.example.com/route",
                 new BillingProductConfig("gems_100", BillingProductType.Consumable),
                 new BillingProductConfig("no_ads", BillingProductType.NonConsumable));
-            m_Config.steamAppId = "480";
+            m_Config.WithBuild(BillingStores.Steam, "480");
             m_Config.refreshEntitlementsOnInit = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Bridge = new FakeSteamBridge();
@@ -65,8 +65,7 @@ namespace Purser.Tests
 
         private BillingService CreateService()
         {
-            m_Adapter = new SteamStoreAdapter(m_Config.serverBaseUrl, m_Config.AppIdFor(BillingPlatform.Steam), m_Bridge, 10, null,
-                m_Server, m_Storage, delay: m_Delay);
+            m_Adapter = new SteamStoreAdapter(m_Config, m_Bridge, null, m_Server, m_Storage) { Delay = m_Delay };
             m_Service = new BillingService(m_Config, new BillingDependencies
             {
                 Store = m_Adapter,
@@ -103,7 +102,7 @@ namespace Purser.Tests
 
             Assert.AreEqual(PurchaseStatus.Success, result.Status, result.ToString());
             var verify = m_Api.VerifyRequests.Single();
-            Assert.AreEqual(BillingPlatform.Steam, m_Api.VerifyPlatforms.Single());
+            Assert.AreEqual(BillingStores.Steam, m_Api.VerifyStores.Single());
             Assert.AreEqual("480", verify.BundleId);
             Assert.AreEqual(Order.ToString(), verify.OrderId);
             Assert.AreEqual("gems_100", verify.ProductId);
@@ -143,7 +142,13 @@ namespace Purser.Tests
         {
             var timeout = new TaskCompletionSource<bool>();
             m_Delay = (d, ct) => timeout.Task;
+            m_Api.DefaultVerify = new ApiResult<VerifyResponse>(200, new VerifyResponse
+            {
+                Status = VerifyStatus.Success, TransactionId = "9001", ProductId = "gems_100", Delivery = VerifyDelivery.Client,
+            }, null);
+            var succeeded = new List<PurchaseResult>();
             CreateService();
+            m_Service.PurchaseSucceeded += succeeded.Add;
             var purchase = m_Service.PurchaseAsync("gems_100");
             Assert.IsFalse(purchase.IsCompleted);
             timeout.SetResult(true);
@@ -152,6 +157,7 @@ namespace Purser.Tests
             m_Bridge.Answer(Order, true);
             Assert.AreEqual(1, m_Api.VerifyRequests.Count);
             Assert.AreEqual("", m_Api.VerifyRequests[0].ProductId, "the server knows the order's product");
+            Assert.AreEqual("gems_100", succeeded.Single().ProductId, "reported as the product the server names, not a guess");
         }
 
         [Test]
@@ -174,6 +180,23 @@ namespace Purser.Tests
             Assert.AreEqual(Order.ToString(), again.OrderId);
             Assert.AreEqual("no_ads", again.ProductId);
             Assert.AreEqual("[]", m_Storage.Load("purser.steam.authorized"));
+        }
+
+        [Test]
+        public void CorruptStoredOrders_AreKept_NotOverwritten()
+        {
+            m_Storage.Save("purser.steam.authorized", "{not json");
+            m_Adapter = new SteamStoreAdapter(m_Config, m_Bridge, null, m_Server, m_Storage, new BillingLog(BillingLogLevel.None));
+            Sync.Run(m_Adapter.ConnectAsync(CancellationToken.None));
+            Assert.AreEqual("{not json", m_Storage.Load("purser.steam.authorized.corrupt"));
+
+            m_Storage.Save("purser.steam.authorized", "[null, {\"order_id\": \"5\", \"sku\": \"gems_100\", \"user_id\": \"u\", \"created_ticks\": " +
+                                                    DateTime.UtcNow.Ticks + "}]");
+            var raised = new List<StoreOrder>();
+            m_Adapter = new SteamStoreAdapter(m_Config, m_Bridge, null, m_Server, m_Storage, new BillingLog(BillingLogLevel.None));
+            m_Adapter.OrderPending += raised.Add;
+            Assert.DoesNotThrow(() => Sync.Run(m_Adapter.ConnectAsync(CancellationToken.None)), "null entries are dropped");
+            Assert.AreEqual("5", raised.Single().TransactionId);
         }
 
         [Test]

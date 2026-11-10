@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
@@ -26,12 +27,19 @@ namespace Purser
         [JsonProperty("url")] public string Url;
     }
 
-    /// <summary>Body of <c>POST /verify/stripe</c>: confirms a Checkout Session after the redirect.</summary>
+    /// <summary>Body of <c>POST /verify/stripe</c>: confirms a Checkout Session after the redirect, with what the
+    /// client knows about the purchase (for GA4, attribution integrations and A/B test results).</summary>
     public sealed class StripeSessionRequest
     {
         [JsonProperty("app_id")] public string AppId;
         [JsonProperty("user_id")] public string UserId;
         [JsonProperty("session_id")] public string SessionId;
+        [JsonProperty("app_instance_id", NullValueHandling = NullValueHandling.Ignore)] public string AppInstanceId;
+        [JsonProperty("attribution", NullValueHandling = NullValueHandling.Ignore)] public Dictionary<string, string> Attribution;
+        [JsonProperty("placement", NullValueHandling = NullValueHandling.Ignore)] public string Placement;
+        [JsonProperty("variant_id", NullValueHandling = NullValueHandling.Ignore)] public string VariantId;
+        [JsonProperty("test_id", NullValueHandling = NullValueHandling.Ignore)] public string TestId;
+        [JsonProperty("paywall_id", NullValueHandling = NullValueHandling.Ignore)] public string PaywallId;
     }
 
     /// <summary>

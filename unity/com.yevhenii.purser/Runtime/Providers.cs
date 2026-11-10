@@ -52,7 +52,7 @@ namespace Purser
     /// </summary>
     public sealed class LocalUserIdProvider : IUserIdProvider
     {
-        public const string DefaultKey = "purser_user_id";
+        public const string DefaultKey = "purser.user_id";
 
         private readonly string m_Key;
         private string m_UserId;

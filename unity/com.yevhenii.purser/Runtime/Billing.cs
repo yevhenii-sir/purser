@@ -1,5 +1,15 @@
 namespace Purser
 {
+    /// <summary>
+    /// Creates the store adapter for <see cref="BillingBootstrap"/> (a component implementing it), e.g. a
+    /// <see cref="SteamStoreAdapter"/> with the game's Steamworks bridge. Return null to use the default
+    /// (<see cref="UnityIapStoreAdapter"/>).
+    /// </summary>
+    public interface IStoreAdapterFactory
+    {
+        IStoreAdapter CreateStore(BillingConfig config);
+    }
+
     /// <summary>Entry point for code-first setup and DI containers.</summary>
     public static class Billing
     {
