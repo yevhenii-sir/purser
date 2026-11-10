@@ -1,0 +1,16 @@
+[
+  {
+    "game_key": "my-game",
+    "paywall_id": "main",
+    "name": "Main paywall",
+    "product_ids": ["vip_month", "vip_year", "remove_ads"],
+    "remote_config": {"title": "Go VIP", "highlight": "vip_year"}
+  },
+  {
+    "game_key": "my-game",
+    "paywall_id": "main_yearly_first",
+    "name": "Main paywall, yearly first",
+    "product_ids": ["vip_year", "vip_month", "remove_ads"],
+    "remote_config": {"title": "Go VIP", "highlight": "vip_year"}
+  }
+]

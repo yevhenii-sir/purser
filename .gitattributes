@@ -1,0 +1,5 @@
+server/spacetimedb/admin/index.html text eol=lf linguist-generated=true
+*.sh text eol=lf
+deploy/docker/Caddyfile text eol=lf
+server/admin-ui/** text=auto eol=lf
+server/admin-ui/demo/snapshot.json linguist-generated=true

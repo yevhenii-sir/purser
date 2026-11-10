@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches package versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(grep -m1 '^version' server/spacetimedb/Cargo.toml | cut -d'"' -f2)
+          upm=$(python3 -c "import json;print(json.load(open('unity/com.yevhenii.purser/package.json'))['version'])")
+          echo "tag=$tag crate=$crate upm=$upm"
+          [ "$tag" = "$crate" ] && [ "$tag" = "$upm" ] || { echo "::error::Tag v$tag does not match Cargo.toml ($crate) / package.json ($upm)"; exit 1; }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - name: Build module
+        working-directory: server
+        run: cargo build -p purser --target wasm32-unknown-unknown --release --locked
+      - name: Package
+        run: |
+          mkdir dist
+          cp server/target/wasm32-unknown-unknown/release/purser.wasm dist/
+          (cd dist && sha256sum purser.wasm > purser.wasm.sha256)
+          (cd server && zip -qr ../dist/seed.example.zip seed.example seed.py stdb.py migrate.py spacetime.example.json)
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes

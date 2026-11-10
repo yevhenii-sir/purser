@@ -1,0 +1,5 @@
+{
+  "server": "maincloud",
+  "module-path": "./spacetimedb",
+  "database": "<your-billing-db>"
+}

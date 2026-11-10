@@ -1,0 +1,38 @@
+[
+  {
+    "app_id": "com.example.mygame",
+    "kind": "ga4",
+    "enabled": true,
+    "settings": {
+      "firebase_app_id": "<1:1234567890:android:abc123>",
+      "send_sandbox": false
+    }
+  },
+  {
+    "app_id": "com.example.mygame",
+    "kind": "appsflyer",
+    "enabled": true,
+    "settings": {
+      "app_id": "com.example.mygame",
+      "send_sandbox": false
+    }
+  },
+  {
+    "app_id": "com.example.mygame.ios",
+    "kind": "appsflyer",
+    "enabled": true,
+    "settings": {
+      "app_id": "<id + App Store numeric id, e.g. id123456789>",
+      "send_sandbox": false
+    }
+  },
+  {
+    "app_id": "com.example.mygame",
+    "kind": "tenjin",
+    "enabled": false,
+    "settings": {
+      "send_sandbox": false,
+      "send_expire": false
+    }
+  }
+]

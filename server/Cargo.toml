@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["core", "spacetimedb"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

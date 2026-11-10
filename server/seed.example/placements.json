@@ -1,0 +1,11 @@
+[
+  {
+    "game_key": "my-game",
+    "placement_id": "main_paywall",
+    "variants": [
+      {"variant_id": "a", "paywall_id": "main", "weight": 50},
+      {"variant_id": "b", "paywall_id": "main_yearly_first", "weight": 50}
+    ],
+    "enabled": true
+  }
+]

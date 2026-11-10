@@ -1,0 +1,343 @@
+{
+  "platforms": [
+    {
+      "default_store": "google",
+      "id": "android",
+      "name": "Android",
+      "os": "android",
+      "stores": [
+        "google"
+      ]
+    },
+    {
+      "default_store": "apple",
+      "id": "ios",
+      "name": "iOS",
+      "os": "ios",
+      "stores": [
+        "apple"
+      ]
+    },
+    {
+      "default_store": "amazon",
+      "id": "amazon",
+      "name": "Amazon",
+      "os": "android",
+      "stores": [
+        "amazon"
+      ]
+    },
+    {
+      "default_store": "steam",
+      "id": "steam",
+      "name": "Steam",
+      "os": null,
+      "stores": [
+        "steam"
+      ]
+    },
+    {
+      "default_store": null,
+      "id": "web",
+      "name": "Web",
+      "os": null,
+      "stores": [
+        "stripe",
+        "xsolla"
+      ]
+    }
+  ],
+  "stores": [
+    {
+      "app_id_is_store_id": true,
+      "app_id_label": "Android package",
+      "app_id_placeholder": "com.example.mygame",
+      "binding": "google_account_id",
+      "docs": "google-play",
+      "finish": "server_consume_acknowledge",
+      "id": "google",
+      "implemented": true,
+      "name": "Google Play",
+      "notifications": true,
+      "notify_label": "Google RTDN push subscription URL",
+      "notify_query": "",
+      "notify_route": "/notify/google",
+      "notify_secret": "google_rtdn_secret",
+      "platforms": [
+        "android"
+      ],
+      "polls_subscriptions": false,
+      "product_import": true,
+      "refunds": "Real-time developer notifications (voided purchases)",
+      "reports_price": false,
+      "secrets": [
+        {
+          "account_wide": true,
+          "file": true,
+          "label": "Google Play service account JSON key",
+          "name": "google_service_account_json",
+          "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Secret in the RTDN push URL (/notify/google?secret=…)",
+          "name": "google_rtdn_secret",
+          "need": "recommended"
+        }
+      ],
+      "verification": "client_receipt",
+      "verify_route": "/verify/google"
+    },
+    {
+      "app_id_is_store_id": true,
+      "app_id_label": "iOS bundle id",
+      "app_id_placeholder": "com.example.mygame",
+      "binding": "apple_account_token",
+      "docs": "app-store",
+      "finish": "client",
+      "id": "apple",
+      "implemented": true,
+      "name": "App Store",
+      "notifications": true,
+      "notify_label": "App Store Server Notifications URL (Production and Sandbox, Version 2)",
+      "notify_query": "",
+      "notify_route": "/notify/apple",
+      "notify_secret": "apple_notification_secret",
+      "platforms": [
+        "ios"
+      ],
+      "polls_subscriptions": false,
+      "product_import": true,
+      "refunds": "App Store Server Notifications V2 (REFUND, REVOKE, EXPIRED)",
+      "reports_price": true,
+      "secrets": [
+        {
+          "account_wide": true,
+          "file": false,
+          "label": "App Store Connect Issuer ID",
+          "name": "apple_issuer_id",
+          "need": "required"
+        },
+        {
+          "account_wide": true,
+          "file": false,
+          "label": "App Store Connect Key ID",
+          "name": "apple_key_id",
+          "need": "required"
+        },
+        {
+          "account_wide": true,
+          "file": true,
+          "label": "Private key .p8 (In-App Purchase key)",
+          "name": "apple_private_key_p8",
+          "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Optional secret in the /notify/apple URL",
+          "name": "apple_notification_secret",
+          "need": "optional"
+        },
+        {
+          "account_wide": true,
+          "file": false,
+          "label": "App Store Connect API Team key ID (catalog import, optional)",
+          "name": "apple_connect_key_id",
+          "need": "optional"
+        },
+        {
+          "account_wide": true,
+          "file": true,
+          "label": "Private key .p8 of the App Store Connect API Team key (catalog import, optional)",
+          "name": "apple_connect_private_key_p8",
+          "need": "optional"
+        }
+      ],
+      "verification": "client_receipt",
+      "verify_route": "/verify/apple"
+    },
+    {
+      "app_id_is_store_id": false,
+      "app_id_label": "App id (package name, or e.g. package.amazon when the Google Play build uses it)",
+      "app_id_placeholder": "com.example.mygame.amazon",
+      "binding": "none",
+      "docs": "amazon-appstore",
+      "finish": "client",
+      "id": "amazon",
+      "implemented": true,
+      "name": "Amazon Appstore",
+      "notifications": true,
+      "notify_label": "Real-Time Notifications endpoint (Developer Console → the app → App Services)",
+      "notify_query": "app={app_id}",
+      "notify_route": "/notify/amazon",
+      "notify_secret": null,
+      "platforms": [
+        "amazon"
+      ],
+      "polls_subscriptions": true,
+      "product_import": false,
+      "refunds": "Real-Time Notifications (*_CANCELLED) and subscription re-checks by the worker",
+      "reports_price": false,
+      "secrets": [
+        {
+          "account_wide": true,
+          "file": false,
+          "label": "Amazon Appstore shared key (Developer Console → Shared Key)",
+          "name": "amazon_shared_secret",
+          "need": "required"
+        }
+      ],
+      "verification": "client_receipt",
+      "verify_route": "/verify/amazon"
+    },
+    {
+      "app_id_is_store_id": true,
+      "app_id_label": "Steam App ID",
+      "app_id_placeholder": "480",
+      "binding": "none",
+      "docs": "steam",
+      "finish": "none",
+      "id": "steam",
+      "implemented": true,
+      "name": "Steam",
+      "notifications": false,
+      "notify_label": "",
+      "notify_query": "",
+      "notify_route": null,
+      "notify_secret": null,
+      "platforms": [
+        "steam"
+      ],
+      "polls_subscriptions": true,
+      "product_import": false,
+      "refunds": "GetReport polling by the worker (Refunded, Chargedback, fraud refunds)",
+      "reports_price": true,
+      "secrets": [
+        {
+          "account_wide": true,
+          "file": false,
+          "label": "Steam publisher Web API key (Steamworks → Users & Permissions → Manage Groups)",
+          "name": "steam_publisher_key",
+          "need": "required"
+        }
+      ],
+      "verification": "client_receipt",
+      "verify_route": "/verify/steam"
+    },
+    {
+      "app_id_is_store_id": false,
+      "app_id_label": "App id (any unique id of the web build)",
+      "app_id_placeholder": "com.example.mygame.web",
+      "binding": "none",
+      "docs": "stripe",
+      "finish": "none",
+      "id": "stripe",
+      "implemented": true,
+      "name": "Stripe",
+      "notifications": true,
+      "notify_label": "Webhook endpoint (Stripe Dashboard → Developers → Webhooks → Add destination)",
+      "notify_query": "app={app_id}",
+      "notify_route": "/notify/stripe",
+      "notify_secret": null,
+      "platforms": [
+        "web"
+      ],
+      "polls_subscriptions": false,
+      "product_import": false,
+      "refunds": "Webhooks (charge.refunded, charge.dispute.created, customer.subscription.deleted)",
+      "reports_price": true,
+      "secrets": [
+        {
+          "account_wide": true,
+          "file": false,
+          "label": "Stripe secret key (sk_live_… / sk_test_…, or a restricted rk_ key)",
+          "name": "stripe_secret_key",
+          "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Webhook signing secret of the endpoint (whsec_…)",
+          "name": "stripe_webhook_secret",
+          "need": "required"
+        }
+      ],
+      "verification": "webhook",
+      "verify_route": null
+    },
+    {
+      "app_id_is_store_id": false,
+      "app_id_label": "App id (any unique id; one Xsolla project per build)",
+      "app_id_placeholder": "com.example.mygame.web",
+      "binding": "none",
+      "docs": "xsolla",
+      "finish": "none",
+      "id": "xsolla",
+      "implemented": true,
+      "name": "Xsolla",
+      "notifications": true,
+      "notify_label": "Webhook URL (Publisher Account → the project → Project settings → Webhooks)",
+      "notify_query": "app={app_id}",
+      "notify_route": "/notify/xsolla",
+      "notify_secret": null,
+      "platforms": [
+        "web"
+      ],
+      "polls_subscriptions": false,
+      "product_import": false,
+      "refunds": "Webhooks (refund, order_canceled; cancel_subscription ends subscriptions)",
+      "reports_price": true,
+      "secrets": [
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Xsolla project ID (Publisher Account → the project; not secret)",
+          "name": "xsolla_project_id",
+          "need": "required"
+        },
+        {
+          "account_wide": true,
+          "file": false,
+          "label": "Xsolla API key (Company settings → API keys, or the project's API keys)",
+          "name": "xsolla_api_key",
+          "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Xsolla project secret key (Project settings → Webhooks → Secret key)",
+          "name": "xsolla_webhook_secret",
+          "need": "required"
+        }
+      ],
+      "verification": "webhook",
+      "verify_route": null
+    },
+    {
+      "app_id_is_store_id": false,
+      "app_id_label": "App id",
+      "app_id_placeholder": "",
+      "binding": "none",
+      "docs": "",
+      "finish": "none",
+      "id": "manual",
+      "implemented": true,
+      "name": "Manual grant",
+      "notifications": false,
+      "notify_label": "",
+      "notify_query": "",
+      "notify_route": null,
+      "notify_secret": null,
+      "platforms": [],
+      "polls_subscriptions": false,
+      "product_import": false,
+      "refunds": "Revoked by an admin",
+      "reports_price": false,
+      "secrets": [],
+      "verification": "manual",
+      "verify_route": null
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "name": "com.yevhenii.purser",
+  "version": "0.1.0",
+  "displayName": "Purser",
+  "description": "Drop-in in-app purchases for Unity, verified by your self-hosted Purser server on SpacetimeDB: Google Play and App Store through Unity IAP 5, Amazon Appstore, Steam, Stripe and Xsolla. Server-side validation, consume/acknowledge, restore, entitlements, paywalls.",
+  "unity": "2022.3",
+  "license": "MIT",
+  "author": {
+    "name": "Yevhenii Sirenko",
+    "url": "https://github.com/yevhenii-sir/purser"
+  },
+  "keywords": ["iap", "billing", "in-app purchase", "spacetimedb", "google play", "app store", "amazon appstore", "steam", "stripe", "xsolla"],
+  "dependencies": {
+    "com.unity.purchasing": "5.4.4",
+    "com.unity.nuget.newtonsoft-json": "3.2.1",
+    "com.unity.modules.unitywebrequest": "1.0.0"
+  },
+  "samples": [
+    {
+      "displayName": "Basic Shop",
+      "description": "Minimal shop: buy, restore and show entitlements (IMGUI, no extra dependencies).",
+      "path": "Samples~/BasicShop"
+    },
+    {
+      "displayName": "Amazon Appstore",
+      "description": "Bridge from AmazonStoreAdapter to Amazon's Appstore SDK Unity plugin (Unity IAP 5 has no Amazon store).",
+      "path": "Samples~/AmazonAppstore"
+    },
+    {
+      "displayName": "Steam",
+      "description": "Bridge from SteamStoreAdapter to Steamworks.NET (MicroTxnAuthorizationResponse_t, SteamID, language).",
+      "path": "Samples~/Steam"
+    }
+  ]
+}

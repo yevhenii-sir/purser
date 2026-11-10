@@ -1,0 +1,22 @@
+# Steam
+
+Steam purchases are microtransactions started by the billing server, which keeps the publisher Web API
+key. `SteamStoreAdapter` talks to the server (`/checkout/steam`, `/verify/steam`) and to Steam through
+`ISteamMicroTxnBridge`; this sample is that bridge for [Steamworks.NET](https://github.com/rlabrecque/Steamworks.NET).
+
+1. Install Steamworks.NET and initialize the Steam API (e.g. its `SteamManager` component).
+2. Add `PURSER_STEAMWORKS_NET` to the Standalone scripting define symbols.
+3. Create the billing service with the adapter on Steam builds:
+
+```csharp
+var bridge = new SteamworksNetBridge(() => SteamManager.Initialized);
+var deps = new BillingDependencies { UserIdProvider = myUserIds, Store = new SteamStoreAdapter(config, bridge) };
+var billing = Billing.Create(config, deps);
+```
+
+Set `BillingConfig.steamAppId` to the app id of the Steam build on the server (the Steam App ID). A purchase
+opens the Steam overlay; when the player authorizes it, the server finalizes the order and `PurchaseSucceeded`
+fires as for any store. Declining is reported as `Cancelled`.
+
+Other wrappers (Facepunch.Steamworks, your own) only need the three values and the
+`MicroTxnAuthorizationResponse_t` callback of `ISteamMicroTxnBridge`. Server setup: docs/store-setup.md#steam.

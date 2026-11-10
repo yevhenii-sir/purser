@@ -1,0 +1,66 @@
+# ---- Rust / SpacetimeDB module ----
+server/target/
+**/target/
+
+# ---- Secrets (uploaded with server/seed.py, never commit) ----
+server/secrets/
+*.p8
+*service-account*.json
+*-credentials.json
+.env
+.env.*
+!.env.example
+
+# ---- Unity (test / sample projects; the UPM package itself has no such folders) ----
+# NOTE: *.meta files are intentionally NOT ignored: UPM packages need them.
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Bb]uild/
+[Bb]uilds/
+MemoryCaptures/
+*.csproj
+*.sln
+*.unityproj
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+*.apk
+*.aab
+crashlytics-build.properties
+
+# ---- IDE / OS ----
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.swp
+.DS_Store
+Thumbs.db
+
+# ---- Python ----
+__pycache__/
+*.pyc
+
+# ---- Local SpacetimeDB target (copy spacetime.example.json) ----
+server/spacetime.json
+
+# ---- Node (server/admin-ui) ----
+node_modules/
+server/admin-ui/dist/
+
+# ---- Docker self-hosting (deploy/docker/publish.sh downloads the module here) ----
+deploy/docker/module/
+
+# ---- Docs site (mkdocs build) ----
+site/
+
+# ---- Agent worktrees ----
+.claude/worktrees/

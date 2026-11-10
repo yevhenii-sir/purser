@@ -1,0 +1,18 @@
+{
+  "channels": [
+    {
+      "kind": "telegram",
+      "enabled": true,
+      "settings": {"chat_id": "<numeric chat id, e.g. -1001234567890, or @channel_name>"},
+      "secret": "<bot token from @BotFather>"
+    }
+  ],
+  "rules": {
+    "delivery_failing": true,
+    "delivery_attempts": 3,
+    "notifications_silent": true,
+    "silent_days": 3,
+    "window_hours": 6,
+    "send_resolved": true
+  }
+}

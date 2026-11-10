@@ -1,0 +1,75 @@
+# Self-hosted SpacetimeDB with the billing module.
+#
+#   cp .env.example .env            # set BILLING_DB (and BILLING_DOMAIN for HTTPS)
+#   docker compose up -d            # SpacetimeDB on 127.0.0.1:3000
+#   ./publish.sh                    # download purser.wasm and publish it
+#   docker compose --profile proxy up -d   # optional: Caddy with automatic HTTPS
+#
+# See README.md in this folder.
+
+name: purser
+
+services:
+  spacetimedb:
+    # Keep the server version in step with the module (SpacetimeDB 2.14.1+, see the release notes).
+    image: clockworklabs/spacetime:${SPACETIMEDB_VERSION:-v2.14.1}
+    # The image's entrypoint is the `spacetime` CLI; `start` runs the standalone server.
+    command: ["start", "--listen-addr", "0.0.0.0:3000"]
+    restart: unless-stopped
+    # Only the host can reach the server directly (admin page, publish, sql, logs).
+    # The internet reaches it through the Caddy service below, which allows only the public paths.
+    ports:
+      - "127.0.0.1:${SPACETIMEDB_PORT:-3000}:3000"
+    volumes:
+      # The image runs as the `spacetime` user. Its home holds the databases
+      # (~/.local/share/spacetime/data) and the server's identity signing keys
+      # (~/.config/spacetime/id_ecdsa*). Losing the keys invalidates every issued token,
+      # including the owner token of the billing database: back up the whole volume.
+      - stdb-server:/home/spacetime
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/v1/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # One-shot SpacetimeDB CLI, used by publish.sh:
+  #   docker compose run --rm cli publish ...
+  #   docker compose run --rm cli login show --token
+  # Its home volume keeps the CLI login, i.e. the token of the database owner.
+  cli:
+    image: clockworklabs/spacetime:${SPACETIMEDB_VERSION:-v2.14.1}
+    profiles: ["tools"]
+    depends_on:
+      spacetimedb:
+        condition: service_healthy
+    volumes:
+      - stdb-cli:/home/spacetime
+      - ./module:/module:ro
+
+  # Optional reverse proxy with automatic HTTPS (Let's Encrypt):
+  #   docker compose --profile proxy up -d
+  # Needs BILLING_DOMAIN in .env, a DNS record pointing at this host and ports 80/443 open.
+  caddy:
+    image: caddy:${CADDY_VERSION:-2.11}
+    profiles: ["proxy"]
+    restart: unless-stopped
+    depends_on:
+      spacetimedb:
+        condition: service_healthy
+    environment:
+      BILLING_DOMAIN: ${BILLING_DOMAIN:-stdb.example.com}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  stdb-server:
+  stdb-cli:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,67 @@
+site_name: Purser
+site_description: Self-hosted in-app purchase billing for games and apps on SpacetimeDB, an open-source alternative to Adapty and RevenueCat.
+repo_url: https://github.com/yevhenii-sir/purser
+repo_name: purser
+edit_uri: edit/main/docs/
+copyright: MIT License
+
+docs_dir: docs
+site_dir: site
+strict: true
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+# Links from docs/ to files elsewhere in the repository (../server/README.md, ...) become GitHub links.
+hooks:
+  - tools/mkdocs_hooks.py
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.details
+
+exclude_docs: |
+  images/README.md
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Store setup: store-setup.md
+  - Game integration: game-integration.md
+  - Revenue analytics: analytics.md
+  - Self-hosting: self-hosting.md
+  - Migrating from Adapty: migrating-from-adapty.md
+  - MCP server: mcp.md
+  - API reference: api.md
+  - Server reference: https://github.com/yevhenii-sir/purser/blob/main/server/README.md
+  - Unity package: https://github.com/yevhenii-sir/purser/blob/main/unity/com.yevhenii.purser/README.md

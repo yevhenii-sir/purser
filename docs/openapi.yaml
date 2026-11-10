@@ -1,0 +1,858 @@
+openapi: 3.1.0
+info:
+  title: Purser HTTP API
+  version: 0.1.0
+  summary: Purchase verification, restore, entitlements and store notifications.
+  description: |
+    The public HTTP API of the billing module (`server/spacetimedb/src/handlers.rs`). It is served
+    by SpacetimeDB as HTTP routes of the billing database:
+
+    `https://<host>/v1/database/<your-billing-db>/route`
+
+    for example `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route` or, self-hosted,
+    `https://stdb.example.com/v1/database/<your-billing-db>/route`.
+
+    - Requests carry no authentication: SpacetimeDB gives HTTP handlers no caller identity. Purchases
+      are trusted only after the module re-queries Google Play / the App Store. Store notification
+      endpoints are protected by a shared secret in the URL.
+    - Request bodies are JSON (the `Content-Type` header is not checked). Unknown fields are ignored.
+    - Every response is JSON with a `status` string; errors also carry a `message`. Some messages start
+      with an error code in brackets, such as `[ERR_CONSUMED_ELSEWHERE]`.
+    - A path or method the module does not route answers `404` with a plain-text body from SpacetimeDB.
+    - The admin page (`GET /admin`, HTML) is served from the same base path and is not part of this API.
+
+    Client rules (when to finish a transaction, consume, retry) are in
+    [docs/game-integration.md](https://github.com/yevhenii-sir/purser/blob/main/docs/game-integration.md).
+  license:
+    name: MIT
+    identifier: MIT
+externalDocs:
+  description: Server reference (server/README.md)
+  url: https://github.com/yevhenii-sir/purser/blob/main/server/README.md
+servers:
+  - url: https://{host}/v1/database/{database}/route
+    description: A billing database on maincloud or on your own SpacetimeDB server.
+    variables:
+      host:
+        default: maincloud.spacetimedb.com
+        description: SpacetimeDB host, e.g. `stdb.example.com` when self-hosted.
+      database:
+        default: your-billing-db
+        description: Name of the billing database.
+tags:
+  - name: Purchases
+    description: Called by the game client (or the game backend) after a purchase and on "Restore purchases".
+  - name: Store notifications
+    description: Called by Google Play (RTDN through Pub/Sub push) and the App Store (Server Notifications V2).
+  - name: Offers and paywalls
+    description: Called by the game client before showing a paywall or buying with an offer.
+  - name: Monitoring
+paths:
+  /healthz:
+    get:
+      tags: [Monitoring]
+      operationId: healthz
+      summary: Health check
+      description: Answers as long as the database and its module are running.
+      responses:
+        "200":
+          description: The module is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version]
+                properties:
+                  status:
+                    type: string
+                    const: healthy
+                  version:
+                    type: string
+                    description: Version of the published module (`purser` crate).
+                    examples: ["0.1.0"]
+
+  /verify/google:
+    post:
+      tags: [Purchases]
+      operationId: verifyGoogle
+      summary: Verify a Google Play purchase
+      description: |
+        Looks the purchase up in the Google Play Developer API, records it in the ledger, delivers the
+        reward (unless the app's delivery is `none`) and consumes / acknowledges it. Repeating the call for
+        the same purchase is safe: the ledger makes it idempotent.
+
+        `purchase_token` is required. For consumables, the purchase's `obfuscatedAccountId` must match
+        `user_id` (see the account binding rule in docs/game-integration.md).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyRequest"
+            example:
+              bundle_id: com.example.mygame
+              user_id: c2005b4c1622269bf51cddf038743f7f
+              product_id: diamonds_150
+              purchase_token: "<Google purchaseToken>"
+              order_id: GPA.1234-5678-9012-34567
+              price_micros: 2990000
+              currency: USD
+              attribution:
+                appsflyer_id: 1700000000000-1234567
+      responses:
+        "200": { $ref: "#/components/responses/VerifyOk" }
+        "202": { $ref: "#/components/responses/VerifyPending" }
+        "400": { $ref: "#/components/responses/VerifyBadRequest" }
+        "403": { $ref: "#/components/responses/VerifyForbidden" }
+        "500": { $ref: "#/components/responses/ServerError" }
+        "502": { $ref: "#/components/responses/StoreUnavailable" }
+
+  /verify/apple:
+    post:
+      tags: [Purchases]
+      operationId: verifyApple
+      summary: Verify an App Store purchase
+      description: |
+        Looks the transaction up in the App Store Server API, records it in the ledger and delivers the
+        reward (unless the app's delivery is `none`). Repeating the call for the same transaction is safe.
+
+        `order_id` (the StoreKit `transactionId`, alias `transaction_id`) is required. For consumables,
+        the transaction's `appAccountToken` must match `user_id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyRequest"
+            example:
+              bundle_id: com.example.mygame
+              user_id: c2005b4c1622269bf51cddf038743f7f
+              product_id: month_sub
+              order_id: "2000000123456789"
+      responses:
+        "200": { $ref: "#/components/responses/VerifyOk" }
+        "202": { $ref: "#/components/responses/VerifyPending" }
+        "400": { $ref: "#/components/responses/VerifyBadRequest" }
+        "403": { $ref: "#/components/responses/VerifyForbidden" }
+        "500": { $ref: "#/components/responses/ServerError" }
+        "502": { $ref: "#/components/responses/StoreUnavailable" }
+
+  /restore:
+    post:
+      tags: [Purchases]
+      operationId: restore
+      summary: Restore purchases
+      description: |
+        Runs the same verification as `/verify/*` for every purchase the store SDK returned on
+        "Restore purchases" (the store is chosen by the app's platform), then returns the entitlements.
+        Non-consumables and subscriptions restored on a new `user_id` move to it (the previous owner gets
+        a `revoke` with `reason = transfer`). The call itself answers `200` even when single purchases fail:
+        check `results[].http_status`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestoreRequest"
+            example:
+              app_id: com.example.mygame
+              user_id: c2005b4c1622269bf51cddf038743f7f
+              purchases:
+                - product_id: no_ads
+                  purchase_token: "<Google purchaseToken>"
+                - product_id: month_sub
+                  purchase_token: "<Google purchaseToken>"
+      responses:
+        "200":
+          description: Every purchase was processed; see the per-purchase results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RestoreResponse"
+        "400":
+          description: |
+            Invalid JSON or missing fields, invalid `user_id`, more than 20 purchases, or an unknown /
+            disabled app (`unknown app <app_id>`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusMessage"
+              example:
+                status: error
+                message: at most 20 purchases per call
+
+  /entitlements:
+    post:
+      tags: [Purchases]
+      operationId: entitlements
+      summary: Active subscriptions and non-consumables of a player
+      description: |
+        Reads the ledger only (no store calls). Covers every app with the same `game_key` as `app_id`,
+        so the Android and iOS builds of a game share entitlements.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntitlementsRequest"
+            example:
+              app_id: com.example.mygame
+              user_id: c2005b4c1622269bf51cddf038743f7f
+      responses:
+        "200":
+          description: The player's entitlements.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlements"
+        "400":
+          description: Invalid JSON or missing fields, invalid `user_id`, or an unknown / disabled app.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusMessage"
+              example:
+                status: error
+                message: unknown app com.example.mygame
+
+  /notify/google:
+    post:
+      tags: [Store notifications]
+      operationId: notifyGoogle
+      summary: Google Play real-time developer notification (Pub/Sub push)
+      description: |
+        Endpoint of the Pub/Sub **push** subscription of the RTDN topic. The notification is used only to
+        find the purchase: the module re-queries Google by `purchaseToken`. Voided purchases (refunds) are
+        applied from the notification itself, which is why the secret is required.
+
+        Non-2xx answers make Pub/Sub retry the delivery. `200` with `status: ignored` is final (unknown
+        package or product, purchase not verified by a client yet, sandbox disabled, ...).
+      parameters:
+        - name: secret
+          in: query
+          required: true
+          description: The app's `google_rtdn_secret` (resolved app → developer account → default).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PubSubPush"
+      responses:
+        "200":
+          description: |
+            Processed (`ok`; a test notification answers `{"status":"ok","message":"test"}`) or
+            deliberately ignored (`ignored`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationResult"
+              examples:
+                test:
+                  value: { status: ok, message: test }
+                ignored:
+                  value: { status: ignored, message: unknown package }
+        "400":
+          description: The body is not a Pub/Sub push with a base64 DeveloperNotification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusMessage"
+              example:
+                status: error
+                message: push body without message.data
+        "401":
+          description: Wrong or unconfigured secret. The setup check reports such notifications.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusMessage"
+              example:
+                status: error
+                message: unauthorized
+        "503":
+          description: Google Play was unavailable or the store keys are misconfigured; Pub/Sub retries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusMessage"
+              example:
+                status: error
+                message: retry later
+
+  /notify/apple:
+    post:
+      tags: [Store notifications]
+      operationId: notifyApple
+      summary: App Store Server Notification V2
+      description: |
+        Production and Sandbox URL of App Store Server Notifications **Version 2**. Only the bundle id and
+        `transactionId` are read from `signedPayload`; the transaction is re-queried from the App Store
+        Server API.
+
+        Non-2xx answers make Apple retry the delivery. `200` with `status: ignored` is final.
+      parameters:
+        - name: secret
+          in: query
+          required: false
+          description: Required only when `apple_notification_secret` is set for the app.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signedPayload]
+              properties:
+                signedPayload:
+                  type: string
+                  description: JWS `responseBodyV2DecodedPayload` signed by Apple.
+      responses:
+        "200":
+          description: |
+            Processed (`ok`; test notifications and notifications without a transaction answer
+            `{"status":"ok","message":"no transaction"}`) or deliberately ignored (`ignored`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationResult"
+        "400":
+          description: No `signedPayload`, or it cannot be decoded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusMessage"
+              example:
+                status: error
+                message: no signedPayload
+        "401":
+          description: Wrong secret.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusMessage"
+              example:
+                status: error
+                message: unauthorized
+        "503":
+          description: The App Store was unavailable or the store keys are misconfigured; Apple retries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusMessage"
+              example:
+                status: error
+                message: retry later
+
+  /offers/apple/sign:
+    post:
+      tags: [Offers and paywalls]
+      operationId: signApplePromotionalOffer
+      summary: Sign an App Store promotional offer for a player
+      description: |
+        Signs a promotional offer of a subscription with the build's In-App Purchase key, bound to the
+        player's `appAccountToken`. Each signature is good for one purchase attempt within 24 hours.
+        See docs/apple-offers.md.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundle_id, product_id, offer_id, user_id]
+              properties:
+                bundle_id: { type: string, examples: [com.example.mygame] }
+                product_id: { type: string, description: Subscription product id }
+                offer_id: { type: string, description: Promotional offer id from App Store Connect }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                transaction_id: { type: string, description: Optional; included in the V2 JWS }
+      responses:
+        "200":
+          description: The signed offer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: success }
+                  bundle_id: { type: string }
+                  product_id: { type: string }
+                  offer_id: { type: string }
+                  key_id: { type: string }
+                  nonce: { type: string, format: uuid }
+                  timestamp: { type: integer, format: int64, description: Milliseconds }
+                  signature: { type: string, description: Base64 DER ECDSA P-256 signature }
+                  app_account_token: { type: string, format: uuid }
+                  signed_offer_jws: { type: [string, "null"], description: Promotional offer V2 compact JWS; null without apple_issuer_id }
+                  expires_at_ms: { type: integer, format: int64 }
+        "400":
+          description: Unknown, disabled or non-iOS build; the product is not a subscription; invalid ids.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusMessage" }
+        "500":
+          description: "`[ERR_OFFER_KEY]`: the In-App Purchase key is not configured."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusMessage" }
+
+  /paywall:
+    post:
+      tags: [Offers and paywalls]
+      operationId: paywall
+      summary: What to show at a placement
+      description: |
+        Products in order and the remote config of the placement's paywall. During an A/B test the player
+        is assigned by a hash of the test id and `user_id` (without `user_id`: the first variant).
+        See docs/paywalls.md.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, placement]
+              properties:
+                app_id: { type: string, description: Package / bundle id of the build. Alias `bundle_id`. }
+                placement: { type: string, description: Alias `placement_id`. }
+                user_id: { $ref: "#/components/schemas/UserId" }
+      responses:
+        "200":
+          description: The paywall for this player.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  placement: { type: string }
+                  paywall_id: { type: string }
+                  paywall_name: { type: string }
+                  variant_id: { type: string }
+                  test_id: { type: string, description: Empty when no test is running }
+                  products:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        store_id: { type: string }
+                        kind: { type: string, enum: [consumable, non_consumable, subscription] }
+                  remote_config: { description: Any JSON set in the admin page }
+                  updated_at_ms: { type: integer, format: int64 }
+        "400":
+          description: Unknown app or invalid input.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusMessage" }
+        "404":
+          description: "`ERR_PLACEMENT_NOT_FOUND` / `ERR_PAYWALL_NOT_FOUND`: no enabled placement."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: not_found }
+                  code: { type: string }
+                  message: { type: string }
+
+  /paywall/event:
+    post:
+      tags: [Offers and paywalls]
+      operationId: paywallEvent
+      summary: Report a paywall view
+      description: Counted per day and variant for A/B test results. Call once per display.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, placement, variant_id, event]
+              properties:
+                app_id: { type: string }
+                placement: { type: string }
+                variant_id: { type: string }
+                test_id: { type: string }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                event: { type: string, const: view }
+      responses:
+        "200":
+          description: Recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+        "400":
+          description: "`ERR_UNKNOWN_VARIANT`, `ERR_UNKNOWN_TEST` or `ERR_BAD_EVENT`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusMessage" }
+
+components:
+  schemas:
+    UserId:
+      type: string
+      description: |
+        The player's id in your game (for SpacetimeDB games, the identity hex). 1 to 128 characters:
+        letters, digits, `-`, `_`, `.`, `:`.
+      minLength: 1
+      maxLength: 128
+      pattern: "^[A-Za-z0-9._:-]{1,128}$"
+
+    Attribution:
+      type: object
+      description: |
+        Device and attribution ids for the integrations (AppsFlyer, Adjust, Tenjin, AppMetrica, Apple Ads,
+        ...). Unknown keys and invalid values are dropped; values are strings (booleans are accepted and
+        turned into "true" / "false") of at most 128 characters: letters, digits, `-`, `_`, `.`, `:`.
+        The server remembers the latest values per player for events without a client (renewals, refunds).
+      properties:
+        appsflyer_id: { type: string }
+        advertising_id: { type: string, description: Android GAID }
+        oaid: { type: string }
+        idfa: { type: string }
+        idfv: { type: string }
+        att: { type: [string, boolean], description: "iOS App Tracking Transparency consent: true / false" }
+        tenjin_id: { type: string, description: Tenjin analytics_installation_id }
+        os_version: { type: string }
+        app_version: { type: string }
+        adjust_id: { type: string, description: Adjust.getAdid() }
+        appmetrica_device_id: { type: string }
+        asa_org_id: { type: string }
+        asa_campaign_id: { type: string }
+        asa_ad_group_id: { type: string }
+        asa_keyword_id: { type: string }
+        asa_ad_id: { type: string }
+        asa_country: { type: string }
+      additionalProperties: true
+
+    VerifyRequest:
+      type: object
+      required: [bundle_id, user_id, product_id]
+      properties:
+        bundle_id:
+          type: string
+          description: Android package or iOS bundle id of the build. Alias `app_id`.
+          examples: [com.example.mygame]
+        app_id:
+          type: string
+          description: Alias of `bundle_id`; send one of them.
+        user_id:
+          $ref: "#/components/schemas/UserId"
+        product_id:
+          type: string
+          description: Store product id, as configured on the server.
+        purchase_token:
+          type: string
+          description: Google `purchaseToken`. Required for `/verify/google`.
+        order_id:
+          type: string
+          description: |
+            Apple `transactionId` (required for `/verify/apple`) or Google `orderId` (optional).
+            Alias `transaction_id`.
+        transaction_id:
+          type: string
+          description: Alias of `order_id`.
+        app_instance_id:
+          type: string
+          description: Firebase `app_instance_id` of the client, for GA4.
+        price_micros:
+          type: integer
+          format: int64
+          description: |
+            Localized price shown to the player, in micros (Google does not report one-time product prices).
+            Used for revenue and integrations.
+        currency:
+          type: string
+          description: ISO 4217 code of `price_micros`.
+          examples: [USD]
+        attribution:
+          $ref: "#/components/schemas/Attribution"
+        store_user_id:
+          type: string
+          description: Amazon Appstore user id (required for `/verify/amazon`, with the receipt id in `order_id`).
+        placement:
+          type: string
+          description: Paywall placement the purchase was made from (A/B test results, see `/paywall`).
+        variant_id: { type: string }
+        test_id: { type: string }
+        paywall_id: { type: string }
+
+    VerifyResult:
+      type: object
+      description: Result of a verification that reached the store.
+      required: [status, message, transaction_id, product_id, is_sub, expires_date_ms, environment, token, delivery]
+      properties:
+        status:
+          type: string
+          description: |
+            - `success`: the reward is granted (or, with `delivery: client`, ready to be granted by the client).
+              Finish the transaction.
+            - `pending`: verified and recorded; the worker delivers the reward shortly. Finish the transaction.
+            - `pending_or_canceled`: the payment has not gone through (or was canceled). Retry later.
+            - `expired` / `revoked`: subscription expired / purchase refunded.
+            - `forbidden`: see the 403 response.
+            - other ledger statuses (`revoke_pending`, `expire_pending`, `rejected`) may appear when the
+              purchase is already being revoked or was rejected.
+          examples: [success, pending, pending_or_canceled, expired, revoked]
+        message:
+          type: string
+        transaction_id:
+          type: string
+          description: Google `orderId` / Apple `transactionId` of the purchase (renewals included).
+        product_id:
+          type: string
+        is_sub:
+          type: boolean
+        expires_date_ms:
+          type: integer
+          format: int64
+          description: Subscription expiration (Unix ms); 0 when the purchase does not expire.
+        environment:
+          type: string
+          enum: [production, sandbox]
+        token:
+          type: string
+          description: Google `purchase_token`, or the Apple `transactionId`.
+        delivery:
+          type: string
+          enum: [server, client]
+          description: |
+            `client` when the app has no game backend (`delivery = none`): the client grants the reward and
+            only then finishes the purchase in the store (Google consume / Apple finishTransaction).
+
+    StatusMessage:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          examples: [error, invalid, forbidden]
+        message:
+          type: string
+
+    NotificationResult:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [ok, ignored]
+        message:
+          type: string
+
+    EntitlementsRequest:
+      type: object
+      required: [app_id, user_id]
+      properties:
+        app_id:
+          type: string
+          description: Any build of the game. Alias `bundle_id`.
+        bundle_id:
+          type: string
+          description: Alias of `app_id`; send one of them.
+        user_id:
+          $ref: "#/components/schemas/UserId"
+
+    Entitlements:
+      type: object
+      required: [user_id, game_key, subscriptions, non_consumables, server_time_ms]
+      properties:
+        user_id:
+          type: string
+        game_key:
+          type: string
+          description: Shared key of the game's builds.
+        subscriptions:
+          type: object
+          description: Active subscriptions, product id → expiration (Unix ms; 0 = no expiration known).
+          additionalProperties:
+            type: integer
+            format: int64
+          examples:
+            - { month_sub: 1793876523123 }
+        non_consumables:
+          type: array
+          description: Owned non-consumable product ids.
+          items:
+            type: string
+          examples:
+            - [no_ads]
+        server_time_ms:
+          type: integer
+          format: int64
+          description: Server time (Unix ms), to compare expirations without trusting the device clock.
+
+    RestoreRequest:
+      type: object
+      required: [app_id, user_id, purchases]
+      properties:
+        app_id:
+          type: string
+          description: The build the purchases come from. Alias `bundle_id`.
+        bundle_id:
+          type: string
+          description: Alias of `app_id`; send one of them.
+        user_id:
+          $ref: "#/components/schemas/UserId"
+        app_instance_id:
+          type: string
+          description: Firebase `app_instance_id`, for GA4.
+        attribution:
+          $ref: "#/components/schemas/Attribution"
+        purchases:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [product_id]
+            properties:
+              product_id:
+                type: string
+              purchase_token:
+                type: string
+                description: Google `purchaseToken` (Android builds).
+              order_id:
+                type: string
+                description: Apple `transactionId` (iOS builds). Alias `transaction_id`.
+              transaction_id:
+                type: string
+                description: Alias of `order_id`.
+
+    RestoreResponse:
+      type: object
+      required: [results, entitlements]
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            required: [product_id, http_status, status, message]
+            properties:
+              product_id:
+                type: string
+              http_status:
+                type: integer
+                description: The HTTP status `/verify/*` would have answered for this purchase.
+              status:
+                type: string
+                description: Same values as `VerifyResult.status` and the error statuses.
+              message:
+                type: string
+        entitlements:
+          $ref: "#/components/schemas/Entitlements"
+
+    PubSubPush:
+      type: object
+      description: Pub/Sub push envelope; `message.data` is the base64 `DeveloperNotification` JSON.
+      required: [message]
+      properties:
+        message:
+          type: object
+          required: [data]
+          properties:
+            data:
+              type: string
+              contentEncoding: base64
+            messageId:
+              type: string
+            publishTime:
+              type: string
+        subscription:
+          type: string
+
+  responses:
+    VerifyOk:
+      description: |
+        The store answered. `status` tells the client what to do: `success`, `pending_or_canceled`,
+        `expired`, `revoked` (or another ledger status, see `VerifyResult.status`).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/VerifyResult"
+          example:
+            status: success
+            message: ""
+            transaction_id: GPA.1234-5678-9012-34567
+            product_id: diamonds_150
+            is_sub: false
+            expires_date_ms: 0
+            environment: production
+            token: "<Google purchaseToken>"
+            delivery: server
+    VerifyPending:
+      description: Verified and recorded; the reward will be delivered by the worker. Finish the transaction.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/VerifyResult"
+          example:
+            status: pending
+            message: purchase verified, reward will be delivered shortly
+            transaction_id: GPA.1234-5678-9012-34567
+            product_id: diamonds_150
+            is_sub: false
+            expires_date_ms: 0
+            environment: production
+            token: "<Google purchaseToken>"
+            delivery: server
+    VerifyBadRequest:
+      description: |
+        - `status: error`: invalid JSON or missing fields, invalid `user_id`, unknown or disabled app, the app
+          is on the other platform, unknown product, missing `purchase_token` (Google) / `order_id` (Apple).
+        - `status: invalid`: the store does not know this purchase, or it belongs to another app or product.
+
+        Finish the transaction for `invalid`; fix the request for `error`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatusMessage"
+          examples:
+            unknownProduct:
+              value: { status: error, message: unknown product diamonds_150 }
+            otherApp:
+              value: { status: invalid, message: transaction belongs to another app }
+    VerifyForbidden:
+      description: |
+        `status: forbidden`. The purchase will not be granted to this player:
+        the consumable is bound to another account (`purchase is bound to another account`) or already
+        belongs to another player; it was consumed outside this server (`[ERR_CONSUMED_ELSEWHERE]`);
+        sandbox purchases are disabled for the app. Finish the transaction.
+
+        When the store lookup succeeded, the body also has the `VerifyResult` fields.
+      content:
+        application/json:
+          schema:
+            anyOf:
+              - $ref: "#/components/schemas/VerifyResult"
+              - $ref: "#/components/schemas/StatusMessage"
+          example:
+            status: forbidden
+            message: sandbox purchases are disabled for this app
+    ServerError:
+      description: |
+        Configuration error (for example, store keys are missing or invalid). The message is generic;
+        details are in the module logs. Do not finish the transaction; retry later.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatusMessage"
+          example:
+            status: error
+            message: store credentials are not configured correctly
+    StoreUnavailable:
+      description: The store API is temporarily unavailable. Do not finish the transaction; retry later.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatusMessage"
+          example:
+            status: error
+            message: store is temporarily unavailable, retry later

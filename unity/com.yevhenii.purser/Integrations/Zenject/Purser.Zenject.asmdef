@@ -1,0 +1,19 @@
+{
+    "name": "Purser.Zenject",
+    "rootNamespace": "Purser.Zenject",
+    "references": [
+        "Purser.Runtime",
+        "Zenject"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "PURSER_ZENJECT"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

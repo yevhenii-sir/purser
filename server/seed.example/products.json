@@ -1,0 +1,58 @@
+[
+  {
+    "app_id": "com.example.mygame",
+    "product_id": "gems_100",
+    "kind": "consumable",
+    "default_price_micros": 990000,
+    "currency": "USD"
+  },
+  {
+    "app_id": "com.example.mygame",
+    "product_id": "remove_ads",
+    "kind": "non_consumable",
+    "default_price_micros": 2990000,
+    "currency": "USD"
+  },
+  {
+    "app_id": "com.example.mygame",
+    "product_id": "vip_month",
+    "kind": "subscription",
+    "default_price_micros": 4990000,
+    "currency": "USD"
+  },
+  {
+    "app_id": "com.example.mygame",
+    "product_id": "vip_year",
+    "kind": "subscription",
+    "default_price_micros": 39990000,
+    "currency": "USD"
+  },
+  {
+    "app_id": "com.example.mygame.ios",
+    "product_id": "gems_100",
+    "kind": "consumable",
+    "default_price_micros": 990000,
+    "currency": "USD"
+  },
+  {
+    "app_id": "com.example.mygame.ios",
+    "product_id": "remove_ads",
+    "kind": "non_consumable",
+    "default_price_micros": 2990000,
+    "currency": "USD"
+  },
+  {
+    "app_id": "com.example.mygame.ios",
+    "product_id": "vip_month",
+    "kind": "subscription",
+    "default_price_micros": 4990000,
+    "currency": "USD"
+  },
+  {
+    "app_id": "com.example.mygame.ios",
+    "product_id": "vip_year",
+    "kind": "subscription",
+    "default_price_micros": 39990000,
+    "currency": "USD"
+  }
+]

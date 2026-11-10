@@ -1,0 +1,25 @@
+# Public HTTPS entry point for the self-hosted SpacetimeDB server.
+# Caddy gets a certificate for BILLING_DOMAIN automatically.
+#
+# Allowlist from docs/self-hosting.md ("Expose only what clients and stores need"):
+#   /v1/database/*/route/*      billing HTTP API (/verify, /restore, /entitlements, /notify/*)
+#   /v1/database/*/call/*       delivery to games on this server, game clients calling reducers
+#   /v1/database/*/subscribe    game clients
+#   /v1/database/*/schema       setup check of games on this server (optional)
+#   /v1/identity*, /v1/ping     clients
+# Everything else (publish, sql, logs, ...) answers 404 and is used through an SSH tunnel.
+#
+# In addition, the admin page (/route/admin) is not served at the public address: open it
+# through the tunnel (http://localhost:3000/v1/database/<db>/route/admin). It holds no secrets
+# and loads no data without /sql, so this is defense in depth only.
+
+{$BILLING_DOMAIN} {
+	@public {
+		path_regexp ^/v1/(database/[^/]+/(route|call|subscribe|schema)(/.*)?|identity.*|ping)$
+		not path_regexp ^/v1/database/[^/]+/route/admin(/.*)?$
+	}
+	handle @public {
+		reverse_proxy spacetimedb:3000
+	}
+	respond 404
+}

@@ -1,0 +1,25 @@
+{
+    "name": "Purser.VContainer",
+    "rootNamespace": "Purser.VContainer",
+    "references": [
+        "Purser.Runtime",
+        "VContainer"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "PURSER_VCONTAINER"
+    ],
+    "versionDefines": [
+        {
+            "name": "jp.hadashikick.vcontainer",
+            "expression": "1.13.0",
+            "define": "PURSER_VCONTAINER"
+        }
+    ],
+    "noEngineReferences": false
+}

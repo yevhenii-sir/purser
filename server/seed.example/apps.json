@@ -1,0 +1,30 @@
+[
+  {
+    "app_id": "com.example.mygame",
+    "platform": "android",
+    "game_key": "my-game",
+    "account": "my-studio",
+    "delivery": "spacetimedb",
+    "spacetime_url": "https://maincloud.spacetimedb.com",
+    "spacetime_db": "my-game-db",
+    "grant_reducer": "billing_grant",
+    "revoke_reducer": "billing_revoke",
+    "args_format": "v1",
+    "allow_sandbox": true,
+    "enabled": true
+  },
+  {
+    "app_id": "com.example.mygame.ios",
+    "platform": "ios",
+    "game_key": "my-game",
+    "account": "my-studio",
+    "delivery": "spacetimedb",
+    "spacetime_url": "https://maincloud.spacetimedb.com",
+    "spacetime_db": "my-game-db",
+    "grant_reducer": "billing_grant",
+    "revoke_reducer": "billing_revoke",
+    "args_format": "v1",
+    "allow_sandbox": true,
+    "enabled": true
+  }
+]

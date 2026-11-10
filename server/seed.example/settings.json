@@ -1,0 +1,5 @@
+{
+  "public_base_url": "<https://<host>/v1/database/<your-billing-db>/route, when the stores reach the database through another address>",
+  "store_commission_percent": "15",
+  "store_commission_by_app": {"com.example.mygame.ios": 30}
+}
