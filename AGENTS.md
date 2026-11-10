@@ -105,6 +105,19 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - Never rename, reorder, retype or remove existing columns or tables: SpacetimeDB cannot migrate
   that in place (it needs a publish with `--delete-data`). Leave a deprecated field and stop using it.
 
+## HTTP API rules (shipped game builds never update)
+
+Every game build in players' hands keeps the SDK it shipped with, so the client HTTP API only grows:
+- New request fields are optional (`#[serde(default)]`); never rename, remove or make a field
+  required, never change what an existing `status` value means, never remove a route. Renamed
+  fields stay as `#[serde(alias)]`. Responses may gain fields (old clients ignore them).
+- A change that cannot be additive gets a new route next to the old one.
+- `server/spacetimedb/sdk-requests/<version>.json` holds the request bodies each released Unity SDK
+  sends; `every_released_sdk_request_is_still_accepted` parses all of them with the current server and
+  `released_sdk_purchase_flows_still_work` replays the purchase flow. Never edit a released file. A
+  release adds the file of its version (the test fails until it exists): copy the previous one and
+  add what the SDK started sending.
+
 ## Commands
 
 ```bash
@@ -258,4 +271,5 @@ Page component in `pages/`, register it in `routes.tsx` (`PAGES` or `APP_TABS`);
 - If anything under `server/admin-ui` changed: `npm run build` and commit `admin/index.html`.
 - New Unity files have `.meta` files; Unity code compiles in your head at least — CI does not run
   Unity tests, so keep changes small and covered by EditMode tests in `Tests/Editor`.
-- Schema changes follow the rules above; docs and changelogs are updated.
+- Schema changes follow the rules above; the client HTTP API only grows (HTTP API rules); docs and
+  changelogs are updated.

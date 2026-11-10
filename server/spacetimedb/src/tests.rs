@@ -4857,3 +4857,88 @@ fn steam_reports_of_builds_without_sales_are_polled_less_often() {
     assert_eq!(next_report_delay(60 * min, 3), 5 * min, "sales: back to every 5 minutes");
     assert_eq!(next_report_delay(60 * min, purser_core::steam::REPORT_MAX_RESULTS), min, "a full page: the next one soon");
 }
+
+// ---------------------------------------------------------------------
+// Released SDKs: the server keeps accepting what every shipped game build sends
+// ---------------------------------------------------------------------
+
+/// Parses a fixture body into the request type of its route.
+fn parse_sdk_request(route: &str, body: &Value) -> Result<(), String> {
+    fn p<T: serde::de::DeserializeOwned>(body: &Value) -> Result<(), String> {
+        serde_json::from_value::<T>(body.clone()).map(|_| ()).map_err(|e| e.to_string())
+    }
+    if let Some(store) = route.strip_prefix("/verify/") {
+        if store == "stripe" {
+            return p::<crate::stripe::VerifyRequest>(body);
+        }
+        let routed = purser_core::registry::store(store).and_then(|s| s.verify_route()).is_some_and(|r| r == route);
+        return if routed { p::<VerifyRequest>(body) } else { Err(format!("{route} is not a route of the server")) };
+    }
+    match route {
+        "/restore" => p::<RestoreRequest>(body),
+        "/entitlements" => p::<EntitlementsRequest>(body),
+        "/paywall" => p::<PaywallRequest>(body),
+        "/paywall/event" => p::<PaywallEventRequest>(body),
+        "/attributes" => p::<AttributesRequest>(body),
+        "/offers/apple/sign" => p::<crate::offers::AppleOfferRequest>(body),
+        "/checkout/steam" => p::<crate::steam::CheckoutRequest>(body),
+        "/checkout/stripe" => p::<crate::stripe::CheckoutRequest>(body),
+        "/checkout/xsolla" => p::<crate::xsolla::CheckoutRequest>(body),
+        "/checkout/xsolla/status" => p::<crate::xsolla::StatusRequest>(body),
+        other => Err(format!("no route {other} (or the contract test does not know it yet)")),
+    }
+}
+
+fn sdk_fixtures() -> Vec<(String, Value)> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk-requests");
+    let mut files: Vec<_> = std::fs::read_dir(&dir).expect("sdk-requests/").map(|e| e.unwrap().path()).collect();
+    files.sort();
+    files
+        .into_iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .map(|p| {
+            let doc: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+            (doc["sdk"].as_str().unwrap().to_string(), doc)
+        })
+        .collect()
+}
+
+#[test]
+fn every_released_sdk_request_is_still_accepted() {
+    let fixtures = sdk_fixtures();
+    let versions: Vec<&str> = fixtures.iter().map(|(v, _)| v.as_str()).collect();
+    assert!(
+        versions.contains(&env!("CARGO_PKG_VERSION")),
+        "add sdk-requests/{}.json with the requests of this release's Unity SDK (see AGENTS.md)",
+        env!("CARGO_PKG_VERSION")
+    );
+    for (version, doc) in &fixtures {
+        for req in doc["requests"].as_array().unwrap() {
+            let route = req["route"].as_str().unwrap();
+            if let Err(e) = parse_sdk_request(route, &req["body"]) {
+                panic!("SDK {version}, {route}: the server no longer accepts this body: {e}");
+            }
+        }
+    }
+}
+
+#[test]
+fn released_sdk_purchase_flows_still_work() {
+    for (version, doc) in sdk_fixtures() {
+        let w = World::new();
+        for req in doc["requests"].as_array().unwrap().iter().filter(|r| r["replay"] == true) {
+            let route = req["route"].as_str().unwrap();
+            let body = req["body"].clone();
+            let o = match route {
+                "/verify/google" => verify(&mut w.ctx(), store::GOOGLE, &serde_json::from_value(body).unwrap()),
+                "/entitlements" => get_entitlements(&mut w.ctx(), &serde_json::from_value(body).unwrap()).unwrap_or_else(|o| o),
+                "/attributes" => set_attributes(&mut w.ctx(), &serde_json::from_value(body).unwrap()).unwrap_or_else(|o| o),
+                other => panic!("no replay for {other}"),
+            };
+            assert_eq!(o.http, 200, "SDK {version}, {route}: {}", o.body);
+            if route == "/verify/google" {
+                assert_eq!(o.body["status"], "success", "SDK {version}: {}", o.body);
+            }
+        }
+    }
+}

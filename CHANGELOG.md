@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Compatibility test: `server/spacetimedb/sdk-requests/` keeps the request bodies every released Unity SDK sends (0.1.0, 0.2.0, 0.3.0); the module tests check the server still accepts all of them and replay the purchase flow, so a change that would break shipped game builds fails CI.
+
 ## 0.3.0 - 2026-11-10
 
 - Player profile in the admin page: per build, when the server first and last heard from the player, the device the client reported (model, OS, app and SDK version, the optional `client` object of `/verify`, `/restore`, `/entitlements`, `/paywall`), the custom attributes the game set (new `POST /attributes`) and the billing country of the newest purchase. New table `player_profile`; `last_seen` is rewritten at most once an hour. The release workflow checks `PurserInfo.Version` too.

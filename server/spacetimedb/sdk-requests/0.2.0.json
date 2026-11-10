@@ -1,0 +1,173 @@
+{
+  "sdk": "0.2.0",
+  "note": "Request bodies the Unity SDK of this version sends. Never edit a released version: the server must keep accepting them.",
+  "requests": [
+    {
+      "route": "/verify/google",
+      "replay": true,
+      "body": {
+        "bundle_id": "com.studio.game",
+        "user_id": "player-1",
+        "product_id": "gems",
+        "purchase_token": "tok-1",
+        "order_id": "GPA.1111-2222-3333-44444",
+        "app_instance_id": "0123456789abcdef0123456789abcdef",
+        "price_micros": 990000,
+        "currency": "USD",
+        "attribution": {
+          "appsflyer_id": "1700000000000-1234567890123456789",
+          "advertising_id": "9c9a82fb-d5de-4cd1-90c3-527441c11828"
+        },
+        "placement": "store",
+        "variant_id": "var-a",
+        "test_id": "test-1",
+        "paywall_id": "pw-1"
+      }
+    },
+    {
+      "route": "/verify/apple",
+      "body": {
+        "bundle_id": "com.studio.game.ios",
+        "user_id": "player-1",
+        "product_id": "gems",
+        "order_id": "2000000123",
+        "price_micros": 0
+      }
+    },
+    {
+      "route": "/verify/amazon",
+      "body": {
+        "bundle_id": "com.studio.game.amazon",
+        "user_id": "player-1",
+        "product_id": "gems",
+        "order_id": "receipt-1",
+        "store_user_id": "amzn1.account.TEST",
+        "price_micros": 0
+      }
+    },
+    {
+      "route": "/verify/steam",
+      "body": {
+        "bundle_id": "480",
+        "user_id": "player-1",
+        "product_id": "",
+        "order_id": "1790000000000000",
+        "store_user_id": "76561197960287930",
+        "price_micros": 0
+      }
+    },
+    {
+      "route": "/restore",
+      "body": {
+        "app_id": "com.studio.game",
+        "user_id": "player-1",
+        "attribution": {
+          "appsflyer_id": "1700000000000-1234567890123456789",
+          "advertising_id": "9c9a82fb-d5de-4cd1-90c3-527441c11828"
+        },
+        "purchases": [
+          {
+            "product_id": "gems",
+            "purchase_token": "tok-1",
+            "order_id": "GPA.1111-2222-3333-44444"
+          }
+        ]
+      }
+    },
+    {
+      "route": "/entitlements",
+      "replay": true,
+      "body": {
+        "app_id": "com.studio.game",
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/paywall",
+      "body": {
+        "app_id": "com.studio.game",
+        "placement": "store",
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/paywall/event",
+      "body": {
+        "app_id": "com.studio.game",
+        "placement": "store",
+        "variant_id": "var-a",
+        "test_id": "test-1",
+        "user_id": "player-1",
+        "event": "view"
+      }
+    },
+    {
+      "route": "/offers/apple/sign",
+      "body": {
+        "bundle_id": "com.studio.game.ios",
+        "product_id": "premium",
+        "offer_id": "winback_50",
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/checkout/steam",
+      "body": {
+        "app_id": "480",
+        "product_id": "gems",
+        "user_id": "player-1",
+        "steam_id": "76561197960287930",
+        "language": "english"
+      }
+    },
+    {
+      "route": "/checkout/stripe",
+      "body": {
+        "app_id": "com.studio.game.web",
+        "product_id": "price_1",
+        "user_id": "player-1",
+        "success_url": "https://game.example/ok?s={CHECKOUT_SESSION_ID}",
+        "cancel_url": "https://game.example/"
+      }
+    },
+    {
+      "route": "/verify/stripe",
+      "body": {
+        "app_id": "com.studio.game.web",
+        "user_id": "player-1",
+        "session_id": "cs_test_1",
+        "app_instance_id": "0123456789abcdef0123456789abcdef",
+        "attribution": {
+          "appsflyer_id": "1700000000000-1234567890123456789",
+          "advertising_id": "9c9a82fb-d5de-4cd1-90c3-527441c11828"
+        },
+        "placement": "store",
+        "variant_id": "var-a",
+        "test_id": "test-1",
+        "paywall_id": "pw-1"
+      }
+    },
+    {
+      "route": "/checkout/xsolla",
+      "body": {
+        "app_id": "com.studio.game.web",
+        "product_id": "gems",
+        "user_id": "player-1",
+        "sandbox": false,
+        "return_url": "https://game.example/",
+        "attribution": {
+          "appsflyer_id": "1700000000000-1234567890123456789",
+          "advertising_id": "9c9a82fb-d5de-4cd1-90c3-527441c11828"
+        }
+      }
+    },
+    {
+      "route": "/checkout/xsolla/status",
+      "body": {
+        "app_id": "com.studio.game.web",
+        "user_id": "player-1",
+        "order_id": "7001"
+      }
+    }
+  ]
+}

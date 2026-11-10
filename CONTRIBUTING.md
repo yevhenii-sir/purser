@@ -56,4 +56,4 @@ Published databases are upgraded in place, so:
 
 ## Releases
 
-Bump the version in `server/core/Cargo.toml`, `server/spacetimedb/Cargo.toml` and `unity/.../package.json` (plus `CHANGELOG.md`), then push a `vX.Y.Z` tag: the release workflow builds `purser.wasm` and attaches it to the GitHub release.
+Bump the version in `server/core/Cargo.toml`, `server/spacetimedb/Cargo.toml`, `unity/.../package.json` and `PurserInfo.Version` (`unity/.../Runtime/Billing.cs`), add `server/spacetimedb/sdk-requests/X.Y.Z.json` with the requests the new Unity SDK sends (copy the previous file; the module tests fail without it), move "Unreleased" in both changelogs, then push a `vX.Y.Z` tag: the release workflow builds `purser.wasm` and attaches it to the GitHub release.
