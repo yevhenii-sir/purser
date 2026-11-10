@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0 - 2026-11-10
+
+First public release.
+
 - Catalog import from the App Store: "Import from App Store" on the Products tab and in the new app wizard lists the app's in-app purchases (with the real consumable / non-consumable kind) and subscriptions (with their period) through the App Store Connect API, next to the existing Google Play import. Needs an App Store Connect API Team key (new optional account secrets `apple_connect_key_id`, `apple_connect_private_key_p8`; the issuer id is shared). An app with several importable builds gets a button for each. Importing a product the store lists without a price keeps its configured price.
 - App Store refund requests: when a player asks Apple for a refund (`CONSUMPTION_REQUEST`), the server answers within the 12 hours Apple gives with whether the purchase was delivered and used, and optionally the outcome it recommends (decline for delivered purchases, a full refund when the delivery failed, prorated for subscriptions). Per build: `game_app.apple_refund_mode` (`off`, `inform`, `prefer`), set on the app's Delivery tab. Only for players who consented in the game (`attribution.refund_data_consent`, `SetRefundDataConsent` in the Unity package). Answers are queued in `apple_consumption_outbox`, retried until the deadline and listed in the purchase history; the setup check shows the mode.
 - Integration health: for every build and integration the module keeps the last sent event, the last failure (retried or dropped, with the error) and the last event skipped because the client did not send the device id the integration needs (`integration_health`). The Integrations tab shows it under each build, and the setup check reports failures and missing device ids instead of only checking the settings.
