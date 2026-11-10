@@ -46,6 +46,8 @@ tags:
     description: Called by Google Play (RTDN through Pub/Sub push) and the App Store (Server Notifications V2).
   - name: Offers and paywalls
     description: Called by the game client before showing a paywall or buying with an offer.
+  - name: Players
+    description: Called by the game client to describe the player on the admin page.
   - name: Monitoring
 paths:
   /healthz:
@@ -420,6 +422,7 @@ paths:
                 app_id: { type: string, description: Package / bundle id of the build. Alias `bundle_id`. }
                 placement: { type: string, description: Alias `placement_id`. }
                 user_id: { $ref: "#/components/schemas/UserId" }
+                client: { $ref: "#/components/schemas/ClientInfo" }
       responses:
         "200":
           description: The paywall for this player.
@@ -495,8 +498,60 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/StatusMessage" }
 
+  /attributes:
+    post:
+      tags: [Players]
+      operationId: attributes
+      summary: Set custom attributes of a player
+      description: |
+        Attributes the game wants to see on the admin page's player profile (email, level, ...). Keys are
+        `a-z`, `0-9` and `_`, up to 40 characters, at most 30 per player and build; values are strings (up to
+        200 characters), numbers or booleans, stored as text; `null` or `""` removes a key. Only send what
+        the player agreed to share.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, user_id, attributes]
+              properties:
+                app_id: { type: string, description: Package / bundle id of the build. Alias `bundle_id`. }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                attributes:
+                  type: object
+                  additionalProperties: { type: [string, number, boolean, "null"] }
+                client: { $ref: "#/components/schemas/ClientInfo" }
+      responses:
+        "200":
+          description: The player's attributes after the update.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+                  attributes: { type: object, additionalProperties: { type: string } }
+        "400":
+          description: Unknown app, invalid user id or attributes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StatusMessage" }
+
 components:
   schemas:
+    ClientInfo:
+      type: object
+      description: |
+        The device a request comes from, shown on the admin page's player profile with when the server first
+        and last heard from the player. Optional in `/verify`, `/restore`, `/entitlements`, `/paywall` and
+        `/attributes`; fields not sent keep the stored value. Each value is at most 100 characters.
+      properties:
+        device: { type: string, description: "Device model, e.g. Xiaomi 23117RA68G" }
+        os: { type: string, description: "Operating system, e.g. Android OS 14 / API-34" }
+        app_version: { type: string }
+        sdk_version: { type: string, description: Version of the client SDK }
+
     UserId:
       type: string
       description: |
@@ -584,6 +639,8 @@ components:
         variant_id: { type: string }
         test_id: { type: string }
         paywall_id: { type: string }
+        client:
+          $ref: "#/components/schemas/ClientInfo"
 
     VerifyResult:
       type: object
@@ -660,6 +717,8 @@ components:
           description: Alias of `app_id`; send one of them.
         user_id:
           $ref: "#/components/schemas/UserId"
+        client:
+          $ref: "#/components/schemas/ClientInfo"
 
     Entitlements:
       type: object
@@ -707,6 +766,8 @@ components:
           description: Firebase `app_instance_id`, for GA4.
         attribution:
           $ref: "#/components/schemas/Attribution"
+        client:
+          $ref: "#/components/schemas/ClientInfo"
         purchases:
           type: array
           maxItems: 20

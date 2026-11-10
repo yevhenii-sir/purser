@@ -41,8 +41,8 @@ struct Fake {
 impl Fake {
     fn respond(&mut self, req: Request) -> Response {
         let mut call = format!("{} {}", req.method(), req.uri());
-        if call.contains("/call/") || call.contains("xsolla.com") || call.contains("api.stripe.com") || call.contains("/consumption/") {
-            // Reducer calls (and Xsolla / Stripe API calls, Apple consumption answers) are recorded with their bodies.
+        if call.contains("/call/") || call.contains("xsolla.com") || call.contains("api.stripe.com") || call.contains("/consumption/") || call.contains("s2s.adjust.com") {
+            // Reducer calls (and Xsolla / Stripe API calls, Apple consumption answers, Adjust events) are recorded with their bodies.
             call = format!("{call} {}", req.into_body().into_string_lossy());
         } else if call.contains("steam-api.com") {
             // Steam calls with the key header and the form body.
@@ -229,7 +229,7 @@ impl World {
     }
 
     fn entitlements(&self, user: &str) -> Value {
-        let r = EntitlementsRequest { app_id: APP.into(), user_id: user.into() };
+        let r = EntitlementsRequest { app_id: APP.into(), user_id: user.into(), client: Default::default() };
         get_entitlements(&mut self.ctx(), &r).unwrap_or_else(|o| o).body
     }
 
@@ -605,6 +605,49 @@ fn admin_reducers_require_an_admin() {
         tx.db.admin().insert(Admin { identity: Identity::ZERO, protected: true });
     });
     assert_eq!(upsert(), Ok(()));
+}
+
+#[test]
+fn player_profile_shows_the_device_attributes_and_when_the_player_was_seen() {
+    let w = World::new();
+    let r: VerifyRequest = serde_json::from_value(json!({
+        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "client": { "device": "Xiaomi 23117RA68G", "os": "Android OS 16 / API-36", "app_version": "1.2.1", "sdk_version": "0.3.0" },
+    }))
+    .unwrap();
+    assert_eq!(verify(&mut w.ctx(), store::GOOGLE, &r).body["status"], "success");
+    let first = w.read(|tx| crate::players::of_user(tx, "player-1"));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["client"]["device"], "Xiaomi 23117RA68G");
+    let seen = first[0]["first_seen_micros"].as_i64().unwrap();
+
+    // Attributes: set, change, remove; invalid keys are refused.
+    let set = |attrs: Value| {
+        let r = AttributesRequest { app_id: APP.into(), user_id: "player-1".into(), attributes: attrs.as_object().unwrap().clone(), client: Default::default() };
+        set_attributes(&mut w.ctx(), &r).unwrap_or_else(|o| o)
+    };
+    assert_eq!(set(json!({ "email": "player@example.com", "level": 7 })).http, 200);
+    let o = set(json!({ "level": 8, "email": null }));
+    assert_eq!(o.body["attributes"], json!({ "level": "8" }));
+    assert_eq!(set(json!({ "bad key": 1 })).http, 400);
+
+    // A frequent /entitlements call does not rewrite the row; an hour later it does, keeping the device.
+    w.advance_clock(60);
+    w.entitlements("player-1");
+    let row = w.read(|tx| crate::players::of_user(tx, "player-1"));
+    assert_eq!(row[0]["last_seen_micros"].as_i64(), Some(seen));
+    w.advance_clock(3600);
+    w.entitlements("player-1");
+    let row = w.read(|tx| crate::players::of_user(tx, "player-1"));
+    assert!(row[0]["last_seen_micros"].as_i64().unwrap() > seen);
+    assert_eq!(row[0]["first_seen_micros"].as_i64(), Some(seen));
+    assert_eq!(row[0]["client"]["app_version"], "1.2.1", "a request without device info keeps it");
+    assert_eq!(row[0]["attributes"], json!({ "level": "8" }));
+
+    w.as_admin(false);
+    let profile: Value = serde_json::from_str(&crate::support::admin_user_profile(&mut w.ctx(), "player-1".into())).unwrap();
+    assert_eq!(profile["players"][0]["client"]["sdk_version"], "0.3.0");
+    assert!(profile["store_country"].is_string());
 }
 
 #[test]
@@ -1054,6 +1097,35 @@ fn integration_settings_are_validated() {
     assert!(upsert(json!({ "app_id": APP, "kind": "mixpanel", "settings": {} })).unwrap_err().contains("unknown"));
     assert_eq!(upsert(json!({ "app_id": APP, "kind": "tenjin", "settings": {} })), Ok(()));
     assert_eq!(upsert(json!({ "app_id": APP, "kind": "ga4", "settings": { "firebase_app_id": "1:1:android:x" } })), Ok(()));
+    assert!(upsert(json!({ "app_id": APP, "kind": "tenjin", "settings": { "revenue": "profit" } })).unwrap_err().contains("gross, proceeds or net"));
+    assert_eq!(upsert(json!({ "app_id": APP, "kind": "tenjin", "settings": { "revenue": "net" } })), Ok(()));
+}
+
+#[test]
+fn integrations_report_the_revenue_mode_they_are_set_to() {
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "adjust", json!({ "app_token": "abc123def456", "event_tokens": { "purchase": "pur111" }, "revenue": "proceeds" }));
+    w.set_secret(secret_name::ADJUST_S2S_TOKEN, "adjust-token");
+    w.write(|tx| {
+        let mut p = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
+        p.default_price_micros = 1_000_000;
+        p.currency = "USD".into();
+        tx.db.product().key().update(p);
+    });
+    let r: VerifyRequest = serde_json::from_value(json!({
+        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "attribution": { "adjust_id": "2e9c3b6f8a1d4e7c9b0a1f2e3d4c5b6a" },
+    }))
+    .unwrap();
+    assert_eq!(verify(&mut w.ctx(), store::GOOGLE, &r).body["status"], "success");
+    let rows = outbox(&w);
+    let queued: Value = serde_json::from_str(&rows[0].event_json).unwrap();
+    assert_eq!(queued["commission_percent"], 15.0, "the default commission, stored with the event");
+    assert_eq!(queued["price_micros"], 1_000_000, "the queue keeps the gross price");
+    crate::integrations::send_integration_event(&mut w.ctx(), rows.into_iter().next().unwrap());
+    let call = w.fake.borrow().calls.iter().find(|c| c.contains("s2s.adjust.com")).cloned().expect("Adjust call");
+    assert!(call.contains("revenue=0.85"), "proceeds after the 15% commission: {call}");
 }
 
 #[test]

@@ -10,6 +10,13 @@ namespace Purser
         IStoreAdapter CreateStore(BillingConfig config);
     }
 
+    /// <summary>The package itself.</summary>
+    public static class PurserInfo
+    {
+        /// <summary>Version of the package (<c>package.json</c>), sent to the server as the SDK version.</summary>
+        public const string Version = "0.2.0";
+    }
+
     /// <summary>Entry point for code-first setup and DI containers.</summary>
     public static class Billing
     {

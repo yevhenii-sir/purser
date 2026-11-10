@@ -232,6 +232,19 @@ See [docs/paywalls.md](../docs/paywalls.md).
 `{"app_id": "...", "placement": "...", "variant_id": "...", "test_id": "...", "event": "view"}` → `200 {"status": "ok"}`.
 A paywall view for A/B test results (counted per day and variant).
 
+### `POST /attributes`
+
+`{"app_id": "...", "user_id": "...", "attributes": {"email": "player@example.com", "level": 7, "old_key": null}}` →
+`200 {"status": "ok", "attributes": {...}}`. Custom attributes of a player for the admin page's player profile: keys
+`a-z0-9_` (up to 40 characters, at most 30 per player and build), values strings / numbers / booleans stored as text,
+`null` or `""` removes a key.
+
+`/verify`, `/restore`, `/entitlements`, `/paywall` and `/attributes` also take an optional
+`client: {device, os, app_version, sdk_version}` (the Unity package sends it). The server keeps, per player and build
+(`player_profile`), the latest device info, the attributes and when it first and last heard from the player
+(`last_seen` is rewritten at most once an hour). The player profile shows them with the billing country of the
+newest purchase.
+
 ### `POST /notify/google?secret=<google_rtdn_secret>`
 
 Play Console → Monetization setup → Real-time developer notifications → Pub/Sub topic. Create a **Push** subscription to this URL. A test notification from the console should return `200 {"status":"ok","message":"test"}`. The module doesn't trust notification contents: it always re-queries Google by `purchaseToken`. The exception is voided purchases, which are protected by the secret.
@@ -300,11 +313,11 @@ Integrations are configured per build on the app's **Integrations** tab in the a
 
 | `kind` | Settings | Secret | The client sends in `attribution` |
 |---|---|---|---|
-| `ga4` (Measurement Protocol) | `firebase_app_id`, `send_sandbox` | `ga4_api_secret` | optionally `app_instance_id` (a field of `/verify`) |
-| `appsflyer` (S2S Events API v3) | `app_id` (package or `id123456789`), `send_sandbox`, `event_names` | `appsflyer_s2s_key` | `appsflyer_id`; recommended `advertising_id` / `idfa`, `idfv`, `att` |
-| `tenjin` (S2S Purchase API) | `send_sandbox`, `send_expire` | `tenjin_sdk_key` | `tenjin_id` (analytics_installation_id), `os_version`; recommended `advertising_id` / `idfa`, `idfv`, `app_version` |
-| `adjust` (S2S events) | `app_token`, `event_tokens` (kind → token), `send_sandbox` | `adjust_s2s_token` | `adjust_id` (Adjust.getAdid) or `advertising_id` / `idfa` / `idfv` |
-| `appmetrica` (Post API) | `application_id`, `use_profile_id`, `send_sandbox` | `appmetrica_post_api_key` | `appmetrica_device_id` (or the profile id = billing `user_id`); recommended `advertising_id` / `idfa`, `idfv`, `os_version`, `app_version` |
+| `ga4` (Measurement Protocol) | `firebase_app_id`, `send_sandbox`, `revenue` | `ga4_api_secret` | optionally `app_instance_id` (a field of `/verify`) |
+| `appsflyer` (S2S Events API v3) | `app_id` (package or `id123456789`), `send_sandbox`, `event_names`, `revenue` | `appsflyer_s2s_key` | `appsflyer_id`; recommended `advertising_id` / `idfa`, `idfv`, `att` |
+| `tenjin` (S2S Purchase API) | `send_sandbox`, `send_expire`, `revenue` | `tenjin_sdk_key` | `tenjin_id` (analytics_installation_id), `os_version`; recommended `advertising_id` / `idfa`, `idfv`, `app_version` |
+| `adjust` (S2S events) | `app_token`, `event_tokens` (kind → token), `send_sandbox`, `revenue` | `adjust_s2s_token` | `adjust_id` (Adjust.getAdid) or `advertising_id` / `idfa` / `idfv` |
+| `appmetrica` (Post API) | `application_id`, `use_profile_id`, `send_sandbox`, `revenue` | `appmetrica_post_api_key` | `appmetrica_device_id` (or the profile id = billing `user_id`); recommended `advertising_id` / `idfa`, `idfv`, `os_version`, `app_version` |
 | `webhook` (signed JSON) | `url` (https), `send_sandbox`, `events` (empty: all) | `integration_webhook_secret` | — |
 | `gcs` (Cloud Storage export) | `bucket`, `folder`, `send_sandbox`, `events` (empty: all) | `gcs_service_account_json` | — |
 
@@ -321,7 +334,15 @@ The client passes device identifiers (`appsflyer_id`, `tenjin_id`, `adjust_id`, 
 - **Cloud Storage**: every event becomes one object `{folder}/dt=YYYY-MM-DD/{time}-{kind}-{transaction}.json` holding one JSON line (the webhook body), uploaded with the service account's OAuth token. Point a BigQuery external table at `gs://bucket/folder/*` (NEWLINE_DELIMITED_JSON, hive partitioning on `dt`) or load the files into any warehouse. The service account needs Storage Object Creator on the bucket.
 - **Apple Ads** has no server API for purchase events. With `collectAppleAdsAttribution` the Unity SDK resolves the install's campaign on the device (AdServices token → Apple's attribution API, once per install) and sends the `asa_*` ids, which reach the webhook and Cloud Storage exports.
 
-Revenue is the store price (Apple, Google subscriptions) or the localized price sent by the client (Google one-time products), i.e. before the store's commission.
+Revenue is the store price (Apple, Google subscriptions) or the localized price sent by the client (Google one-time products), i.e. before the store's commission. What GA4, AppsFlyer, Adjust, Tenjin and AppMetrica report is set per integration with `revenue` in its settings ("How the revenue is sent" in the admin panel):
+
+| `revenue` | Sent amount |
+|---|---|
+| `gross` (default) | the price the player paid |
+| `proceeds` | the price minus the estimated store commission: the app's rate from Revenue → Store fee (`store_commission_percent`, `store_commission_by_app`), lowered to `store_commission_after_year_percent` for subscription periods after the first paid year |
+| `net` | also without the VAT / GST the price includes, estimated from the buyer's billing country with the standard rate (`purser_core::tax`; US and Canadian store prices exclude tax, unknown countries deduct nothing) |
+
+Both are estimates: the stores report neither the fee nor the tax per transaction. The commission rate is fixed when the event is queued (`commission_percent` in the event). The webhook and the Cloud Storage export always carry every amount: `price_micros` (gross), `proceeds_micros`, `net_micros`, with `country` and `commission_percent`.
 
 Test the setup without a purchase (like “Send test event” in Adapty): Integrations → **Send test**, or
 

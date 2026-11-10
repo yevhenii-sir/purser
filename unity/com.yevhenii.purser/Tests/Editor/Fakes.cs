@@ -145,6 +145,15 @@ namespace Purser.Tests
             return Task.FromResult(PaywallEventResult);
         }
 
+        public readonly List<AttributesRequest> AttributeRequests = new List<AttributesRequest>();
+        public ApiResult<AttributesResponse> AttributesResult = new ApiResult<AttributesResponse>(200, new AttributesResponse { Status = "ok" }, null);
+
+        public Task<ApiResult<AttributesResponse>> AttributesAsync(AttributesRequest request, CancellationToken ct = default)
+        {
+            AttributeRequests.Add(request);
+            return Task.FromResult(AttributesResult);
+        }
+
         /// <summary>A `/paywall` answer as the server sends it.</summary>
         public static ApiResult<PaywallResponse> Paywall(string json)
         {

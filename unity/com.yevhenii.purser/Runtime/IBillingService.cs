@@ -51,6 +51,14 @@ namespace Purser
         /// </summary>
         void SetRefundDataConsent(bool consented);
 
+        /// <summary>
+        /// Sets custom attributes of the current player (e.g. <c>email</c>, <c>level</c>), shown on the admin page's player
+        /// profile. Keys are <c>a-z</c>, <c>0-9</c> and <c>_</c> (up to 40 characters, at most 30 per player); values are
+        /// strings, numbers or booleans; <c>null</c> or <c>""</c> removes a key. Only send what the player agreed to share.
+        /// Returns false when the user id is not set or the server refused the update (logged).
+        /// </summary>
+        Task<bool> SetCustomAttributesAsync(IDictionary<string, object> attributes, CancellationToken ct = default);
+
         StoreProduct GetProduct(string productId);
 
         Task<PurchaseResult> PurchaseAsync(string productId, CancellationToken ct = default);

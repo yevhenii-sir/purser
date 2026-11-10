@@ -19,6 +19,8 @@
 //! SpacetimeDB routes have no path parameters: `routes()` registers one route per store of the
 //! registry, and `verify_store` / `notify_store` dispatch on the last path segment.
 
+use crate::players;
+use purser_core::player::ClientInfo;
 use crate::config::{self, secret_name};
 use crate::ctx::Ctx;
 use crate::health;
@@ -150,6 +152,9 @@ struct VerifyRequest {
     test_id: String,
     #[serde(default)]
     paywall_id: String,
+    /// Device the client runs on (shown on the admin page's player profile).
+    #[serde(default)]
+    client: ClientInfo,
 }
 
 impl VerifyRequest {
@@ -200,6 +205,9 @@ fn verify(ctx: &mut impl Ctx, store_name: &str, r: &VerifyRequest) -> Outcome {
         let usable = app.enabled && config::app_store(&app).id == store_name;
         let auth = if usable { Auth::cached(tx, &app, now) } else { Auth::default() };
         let environment = if usable { likely_environment(tx, store_name, &r.order_id) } else { String::new() };
+        if usable {
+            players::touch(tx, &app.app_id, &r.user_id, &r.client);
+        }
         Some((app, product, auth, environment))
     });
     let Some((app, product, mut auth, environment)) = loaded.filter(|(a, ..)| a.enabled) else {
@@ -383,6 +391,8 @@ struct EntitlementsRequest {
     #[serde(alias = "bundle_id")]
     app_id: String,
     user_id: String,
+    #[serde(default)]
+    client: ClientInfo,
 }
 
 /// An enabled build, inside a transaction.
@@ -394,7 +404,12 @@ fn get_entitlements(ctx: &mut impl Ctx, r: &EntitlementsRequest) -> Result<Outco
     if !valid_user_id(&r.user_id) {
         return Err(Outcome::status(400, "error", "invalid user_id"));
     }
-    let body = ctx.tx(|tx| enabled_app(tx, &r.app_id).map(|app| ledger::entitlements(tx, &app, &r.user_id)))?;
+    let body = ctx.tx(|tx| {
+        enabled_app(tx, &r.app_id).map(|app| {
+            players::touch(tx, &app.app_id, &r.user_id, &r.client);
+            ledger::entitlements(tx, &app, &r.user_id)
+        })
+    })?;
     Ok(Outcome::new(200, body))
 }
 
@@ -431,6 +446,8 @@ struct RestoreRequest {
     #[serde(default)]
     attribution: serde_json::Map<String, Value>,
     purchases: Vec<RestoreItem>,
+    #[serde(default)]
+    client: ClientInfo,
 }
 
 /// Verifies every purchase the store SDK reported on "Restore purchases", then returns entitlements.
@@ -445,6 +462,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
     let now = ctx.now_micros();
     let (app, items, mut auth) = ctx.tx(|tx| {
         let app = enabled_app(tx, &r.app_id)?;
+        players::touch(tx, &app.app_id, &r.user_id, &r.client);
         let store_name = config::app_store(&app).id;
         let items: Vec<(Option<Product>, String)> = r
             .purchases
@@ -483,6 +501,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
             variant_id: String::new(),
             test_id: String::new(),
             paywall_id: String::new(),
+            client: ClientInfo::default(),
         };
         let o = verify_with(ctx, &app, product, &mut auth, &environment, &v);
         results.push(json!({
@@ -517,6 +536,8 @@ struct PaywallRequest {
     /// Assigns the player to a running test; without it the default variant is served.
     #[serde(default)]
     user_id: String,
+    #[serde(default)]
+    client: ClientInfo,
 }
 
 fn paywall_error(e: paywalls::ClientError) -> Outcome {
@@ -530,6 +551,7 @@ fn get_paywall(ctx: &mut impl Ctx, r: &PaywallRequest) -> Result<Outcome, Outcom
     }
     ctx.tx(|tx| {
         let app = enabled_app(tx, &r.app_id)?;
+        players::touch(tx, &app.app_id, &r.user_id, &r.client);
         paywalls::serve(tx, &app, &r.placement, &r.user_id).map_err(paywall_error)
     })
     .map(|body| Outcome::new(200, body))
@@ -539,6 +561,42 @@ fn get_paywall(ctx: &mut impl Ctx, r: &PaywallRequest) -> Result<Outcome, Outcom
 fn paywall(ctx: &mut HandlerContext, req: Request) -> Response {
     parse_body::<PaywallRequest>(req)
         .and_then(|r| get_paywall(ctx, &r))
+        .unwrap_or_else(|o| o)
+        .into_response()
+}
+
+// ---------------------------------------------------------------------
+// Player attributes
+// ---------------------------------------------------------------------
+
+/// `/attributes`: custom attributes of a player (email, level, ...), shown on the admin page.
+#[derive(Deserialize)]
+struct AttributesRequest {
+    #[serde(alias = "bundle_id")]
+    app_id: String,
+    user_id: String,
+    /// Key → string / number / boolean; `null` or `""` removes the key.
+    attributes: serde_json::Map<String, Value>,
+    #[serde(default)]
+    client: ClientInfo,
+}
+
+fn set_attributes(ctx: &mut impl Ctx, r: &AttributesRequest) -> Result<Outcome, Outcome> {
+    if !valid_user_id(&r.user_id) {
+        return Err(Outcome::status(400, "error", "invalid user_id"));
+    }
+    ctx.tx(|tx| {
+        let app = enabled_app(tx, &r.app_id)?;
+        players::touch(tx, &app.app_id, &r.user_id, &r.client);
+        players::set_attributes(tx, &app.app_id, &r.user_id, &r.attributes).map_err(|e| Outcome::status(400, "error", e))
+    })
+    .map(|saved| Outcome::new(200, json!({ "status": "ok", "attributes": saved })))
+}
+
+#[handler]
+fn player_attributes(ctx: &mut HandlerContext, req: Request) -> Response {
+    parse_body::<AttributesRequest>(req)
+        .and_then(|r| set_attributes(ctx, &r))
         .unwrap_or_else(|o| o)
         .into_response()
 }
@@ -1030,6 +1088,7 @@ fn routes() -> Router {
         .post("/entitlements", entitlements)
         .post("/paywall", paywall)
         .post("/paywall/event", paywall_event)
+        .post("/attributes", player_attributes)
         .post("/offers/apple/sign", offers_apple_sign)
         .post("/checkout/xsolla", crate::xsolla::checkout_route)
         .post("/checkout/xsolla/status", crate::xsolla::checkout_status_route)

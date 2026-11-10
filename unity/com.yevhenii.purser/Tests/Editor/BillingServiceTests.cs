@@ -543,6 +543,48 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void Requests_CarryTheDevice()
+        {
+            CreateService();
+            Buy("gems_100", FakeStore.GoogleOrder("gems_100"));
+            var client = m_Api.VerifyRequests.Single().Client;
+            Assert.AreEqual((SystemInfo.deviceModel, SystemInfo.operatingSystem), (client.Device, client.Os));
+            Assert.AreEqual((Application.version, PurserInfo.Version), (client.AppVersion, client.SdkVersion));
+        }
+
+        [Test]
+        public void CustomAttributes_AreSentForTheCurrentPlayer()
+        {
+            CreateService();
+            var ok = Sync.Run(m_Service.SetCustomAttributesAsync(new Dictionary<string, object> { ["email"] = "player@example.com", ["level"] = 7, ["old"] = null }));
+            Assert.IsTrue(ok);
+            var request = m_Api.AttributeRequests.Single();
+            Assert.AreEqual(("com.test.game", User), (request.AppId, request.UserId));
+            Assert.AreEqual(7, request.Attributes["level"]);
+            var body = Newtonsoft.Json.Linq.JObject.Parse(Newtonsoft.Json.JsonConvert.SerializeObject(request));
+            Assert.AreEqual(Newtonsoft.Json.Linq.JTokenType.Null, body["attributes"]["old"].Type, "null removes the key on the server");
+
+            m_Api.AttributesResult = new ApiResult<AttributesResponse>(400, new AttributesResponse { Status = "error", Message = "bad key" }, "HTTP 400");
+            Assert.IsFalse(Sync.Run(m_Service.SetCustomAttributesAsync(new Dictionary<string, object> { ["bad key"] = 1 })));
+        }
+
+        [Test]
+        public void CustomAttributes_NeedAUser()
+        {
+            CreateService(user: null);
+            Assert.IsFalse(Sync.Run(m_Service.SetCustomAttributesAsync(new Dictionary<string, object> { ["level"] = 1 })));
+            Assert.IsEmpty(m_Api.AttributeRequests);
+        }
+
+        [Test]
+        public void SdkVersion_MatchesThePackage()
+        {
+            var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(PurserInfo).Assembly);
+            Assert.IsNotNull(info);
+            Assert.AreEqual(info.version, PurserInfo.Version, "bump PurserInfo.Version with package.json");
+        }
+
+        [Test]
         public void Dispose_DisposesStore()
         {
             CreateService();

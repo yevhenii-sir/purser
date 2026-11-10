@@ -242,6 +242,23 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
 `BillingBootstrap` takes a component implementing `IStoreAdapterFactory` for these adapters; the VContainer and
 Zenject registrations use a bound `IStoreAdapter`.
 
+## Player profile
+
+Every request carries the device (`SystemInfo.deviceModel`, `SystemInfo.operatingSystem`), `Application.version` and
+the package version (`PurserInfo.Version`); the admin page's player profile shows them with when the server first
+and last heard from the player and the store country. Custom attributes go there too:
+
+```csharp
+await billing.SetCustomAttributesAsync(new Dictionary<string, object>
+{
+    ["email"] = playerEmail,   // only what the player agreed to share
+    ["level"] = 12,
+    ["old_flag"] = null,       // removes it
+});
+```
+
+Keys are `a-z`, `0-9` and `_` (up to 40 characters, at most 30); values are strings, numbers or booleans.
+
 ## Binding a purchase to the player
 
 With `bindPurchasesToUser = true` the package passes to the store:

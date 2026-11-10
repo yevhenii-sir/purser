@@ -319,6 +319,17 @@ impl Commission {
         self.by_app.get(app_id).copied().unwrap_or(self.percent)
     }
 
+    /// The rate of one payment: the app's, lowered to `after_year_percent` for a subscription period
+    /// paid after the first paid year.
+    pub fn percent_for_period(&self, app_id: &str, after_first_year: bool) -> f64 {
+        let pct = self.percent_for(app_id);
+        if after_first_year {
+            pct.min(self.after_year_percent)
+        } else {
+            pct
+        }
+    }
+
     /// Estimated store fee on `net` (gross − refunds), of which `net_after_year` is from
     /// subscription periods after the first paid year. Refunds return the commission too.
     pub fn fee(&self, app_id: &str, net: i64, net_after_year: i64) -> i64 {

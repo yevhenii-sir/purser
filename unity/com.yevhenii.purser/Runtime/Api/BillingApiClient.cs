@@ -40,6 +40,8 @@ namespace Purser
         Task<ApiResult<PaywallResponse>> PaywallAsync(PaywallRequest request, CancellationToken ct = default);
         /// <summary>Reports a paywall view for A/B test results.</summary>
         Task<ApiResult<StatusResponse>> PaywallEventAsync(PaywallEventRequest request, CancellationToken ct = default);
+        /// <summary>Sets custom attributes of a player (<c>POST /attributes</c>).</summary>
+        Task<ApiResult<AttributesResponse>> AttributesAsync(AttributesRequest request, CancellationToken ct = default);
     }
 
     public sealed partial class BillingApiClient : IBillingApi
@@ -72,6 +74,9 @@ namespace Purser
 
         public Task<ApiResult<StatusResponse>> PaywallEventAsync(PaywallEventRequest request, CancellationToken ct = default) =>
             PostAsync<StatusResponse>("/paywall/event", request, ct);
+
+        public Task<ApiResult<AttributesResponse>> AttributesAsync(AttributesRequest request, CancellationToken ct = default) =>
+            PostAsync<AttributesResponse>("/attributes", request, ct);
 
         public async Task<ApiResult<string>> HealthAsync(CancellationToken ct = default)
         {

@@ -702,6 +702,8 @@ fn probe_ga4(ctx: &mut impl Ctx, app: &GameApp, firebase_app_id: &str, api_secre
         at_ms: now_ms,
         app_instance_id: String::new(),
         attribution: Default::default(),
+        country: String::new(),
+        commission_percent: None,
     };
     match ga4::build(&event, firebase_app_id, api_secret, true) {
         Ok(Built::Send(call)) => {

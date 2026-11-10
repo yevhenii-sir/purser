@@ -294,7 +294,7 @@ fn today(tx: &ReducerContext) -> i32 {
 
 /// Trial / conversion / paid-year facts of a purchase, from the periods of the same subscription
 /// recorded before it (`purser_core::revenue::period_facts`).
-fn period_facts(tx: &ReducerContext, p: &Purchase) -> PeriodFacts {
+pub(crate) fn period_facts(tx: &ReducerContext, p: &Purchase) -> PeriodFacts {
     if p.kind != kind::SUBSCRIPTION || p.original_transaction_id.is_empty() {
         return PeriodFacts { trial: p.trial, ..Default::default() };
     }

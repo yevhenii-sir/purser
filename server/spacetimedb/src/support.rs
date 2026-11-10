@@ -165,8 +165,10 @@ pub fn profile(tx: &TxContext, user_id: &str) -> Value {
         })
         .collect();
 
+    let players = crate::players::of_user(tx, user_id);
     let mut seen: BTreeSet<String> = rows.iter().map(|p| p.app_id.clone()).collect();
     seen.extend(attribution.iter().filter_map(|a| a["app_id"].as_str().map(str::to_string)));
+    seen.extend(players.iter().filter_map(|p| p["app_id"].as_str().map(str::to_string)));
     let known: BTreeMap<&str, &GameApp> = apps.iter().map(|a| (a.app_id.as_str(), a)).collect();
     let builds: Vec<Value> = seen
         .iter()
@@ -209,6 +211,9 @@ pub fn profile(tx: &TxContext, user_id: &str) -> Value {
         "summary": spending,
         "entitlements": entitlements,
         "attribution": attribution,
+        "players": players,
+        // Billing country of the newest purchase that has one.
+        "store_country": rows.iter().find(|p| !p.country.is_empty()).map(|p| p.country.clone()).unwrap_or_default(),
         "purchases": rows.iter().map(|p| purchase_json(tx, p)).collect::<Vec<_>>(),
     })
 }

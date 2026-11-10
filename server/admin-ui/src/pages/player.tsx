@@ -10,7 +10,7 @@ import { RichTable } from "@/components/rich-table"
 import { PurchaseSheet } from "@/components/purchase-sheet"
 import { call, proc } from "@/lib/api"
 import { useAppName, useApps } from "@/lib/apps"
-import { fmtMs, fmtTime, money, usd } from "@/lib/format"
+import { ago, fmtMs, fmtTime, money, usd } from "@/lib/format"
 import { act, tryAct, useAsync } from "@/lib/hooks"
 import type { Purchase } from "@/lib/types"
 import { appRoute, type PageProps } from "@/routes"
@@ -50,7 +50,46 @@ interface Profile {
   }
   entitlements: Entitlements[]
   attribution: { app_id: string; ids: Record<string, string>; updated_at_micros: number }[]
+  /** Per build: when the server heard from the player, the device and the game's custom attributes (missing on older modules). */
+  players?: PlayerRow[]
+  /** Billing country of the newest purchase that has one. */
+  store_country?: string
   purchases: ProfilePurchase[]
+}
+
+interface PlayerRow {
+  app_id: string
+  first_seen_micros: number
+  last_seen_micros: number
+  client: { device: string; os: string; app_version: string; sdk_version: string }
+  attributes: Record<string, string>
+}
+
+/** One build's profile: first / last seen, the device, custom attributes. */
+function PlayerCard({ row, storeCountry }: { row: PlayerRow; storeCountry: string }) {
+  const facts: [string, ReactNode][] = [
+    ["Created", fmtTime(row.first_seen_micros)],
+    ["Last seen", `${fmtTime(row.last_seen_micros)} (${ago(row.last_seen_micros)})`],
+    ["Device", row.client.device],
+    ["OS", row.client.os],
+    ["App version", row.client.app_version],
+    ["SDK version", row.client.sdk_version],
+    ["Store country", storeCountry],
+    ...Object.entries(row.attributes).map(([k, v]) => [k, <IdCell key={k} value={v} max={40} />] as [string, ReactNode]),
+  ]
+  return (
+    <div className="min-w-0 space-y-2 rounded-md border p-3">
+      <div className="truncate text-sm font-medium">{row.app_id}</div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+        {facts.filter(([, v]) => v !== "" && v !== undefined && v !== null).map(([k, v]) => (
+          <div key={k} className="contents">
+            <dt className="text-muted-foreground">{k}</dt>
+            <dd className="min-w-0 break-words">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  )
 }
 
 interface EntitlementRow {
@@ -260,6 +299,18 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
           ))}
         </div>
       )}
+
+      <Section title="Profile" description="Per build: when the server first and last heard from this player, the device the client reported and the custom attributes the game set (SetCustomAttributesAsync).">
+        {data.players?.length ? (
+          <div className="grid gap-4 md:grid-cols-2">
+            {data.players.map((p) => <PlayerCard key={p.app_id} row={p} storeCountry={data.store_country || ""} />)}
+          </div>
+        ) : (
+          <div className="py-4 text-center text-sm text-muted-foreground">
+            The client has not reported this player yet{data.store_country ? ` · store country ${data.store_country}` : ""}.
+          </div>
+        )}
+      </Section>
 
       <Section title="Entitlements" description="Active subscriptions and non-consumables, exactly as /entitlements returns them for each game.">
         <DataTable

@@ -50,6 +50,35 @@ namespace Purser
         [JsonProperty("variant_id", NullValueHandling = NullValueHandling.Ignore)] public string VariantId;
         [JsonProperty("test_id", NullValueHandling = NullValueHandling.Ignore)] public string TestId;
         [JsonProperty("paywall_id", NullValueHandling = NullValueHandling.Ignore)] public string PaywallId;
+        /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
+        [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
+    }
+
+    /// <summary>The device a request comes from: model, OS, app and SDK version.</summary>
+    public sealed class ClientInfoDto
+    {
+        [JsonProperty("device")] public string Device;
+        [JsonProperty("os")] public string Os;
+        [JsonProperty("app_version")] public string AppVersion;
+        [JsonProperty("sdk_version")] public string SdkVersion;
+    }
+
+    /// <summary>Body of <c>POST /attributes</c>: custom attributes of a player; <c>null</c> removes a key.</summary>
+    public sealed class AttributesRequest
+    {
+        [JsonProperty("app_id")] public string AppId;
+        [JsonProperty("user_id")] public string UserId;
+        [JsonProperty("attributes", NullValueHandling = NullValueHandling.Include)] public Dictionary<string, object> Attributes;
+        /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
+        [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
+    }
+
+    /// <summary>Answer of <c>POST /attributes</c>: the player's attributes after the update.</summary>
+    public sealed class AttributesResponse
+    {
+        [JsonProperty("status")] public string Status;
+        [JsonProperty("message")] public string Message;
+        [JsonProperty("attributes")] public Dictionary<string, string> Attributes;
     }
 
     public sealed class VerifyResponse
@@ -83,6 +112,8 @@ namespace Purser
         [JsonProperty("app_instance_id", NullValueHandling = NullValueHandling.Ignore)] public string AppInstanceId;
         [JsonProperty("attribution", NullValueHandling = NullValueHandling.Ignore)] public Dictionary<string, string> Attribution;
         [JsonProperty("purchases")] public List<RestoreItem> Purchases = new List<RestoreItem>();
+        /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
+        [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
     }
 
     public sealed class RestoreItemResult
@@ -104,6 +135,8 @@ namespace Purser
     {
         [JsonProperty("app_id")] public string AppId;
         [JsonProperty("user_id")] public string UserId;
+        /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
+        [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
     }
 
     public sealed class EntitlementsDto
@@ -122,6 +155,8 @@ namespace Purser
         [JsonProperty("placement")] public string Placement;
         /// <summary>Assigns the player to a running A/B test; without it the default variant is served.</summary>
         [JsonProperty("user_id", NullValueHandling = NullValueHandling.Ignore)] public string UserId;
+        /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
+        [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
     }
 
     public sealed class PaywallProductDto

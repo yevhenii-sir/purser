@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Player profile: every request carries the device model, OS, app version and SDK version (`client`; the admin page
+  shows them with first / last seen and the store country). `IBillingService.SetCustomAttributesAsync` sets custom
+  attributes of the player (`POST /attributes`). `IBillingApi` gains `AttributesAsync` (custom implementations must
+  add it); `PurserInfo.Version`.
+
 - **Paste config from admin panel** shows what changes before applying, and merges instead of replacing the lists:
   **Add and update** (default: adds and updates, keeps what only Unity has) or **Match the admin panel** (also removes
   builds, products and store ids the admin panel does not have). Products are matched by id or by any store id.

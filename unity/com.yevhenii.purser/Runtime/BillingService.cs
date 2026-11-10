@@ -68,6 +68,8 @@ namespace Purser
         private readonly Func<TimeSpan, CancellationToken, Task> m_Delay;
         private readonly bool m_IsEditor;
         private readonly CancellationTokenSource m_Lifetime = new CancellationTokenSource();
+        /// <summary>The device, read once on the main thread (Unity APIs).</summary>
+        private readonly ClientInfoDto m_Client;
 
         private readonly Dictionary<string, TaskCompletionSource<PurchaseResult>> m_Waiters =
             new Dictionary<string, TaskCompletionSource<PurchaseResult>>();
@@ -116,6 +118,13 @@ namespace Purser
             m_UtcNow = deps.UtcNow ?? (() => DateTime.UtcNow);
             m_Delay = deps.Delay ?? ((delay, ct) => Task.Delay(delay, ct));
             m_IsEditor = deps.IsEditor ?? Application.isEditor;
+            m_Client = new ClientInfoDto
+            {
+                Device = SystemInfo.deviceModel,
+                Os = SystemInfo.operatingSystem,
+                AppVersion = Application.version,
+                SdkVersion = PurserInfo.Version,
+            };
             if (config.collectAppleAdsAttribution && Platform == BillingPlatform.Apple && !(m_Attribution is AppleAdsAttributionProvider))
                 m_Attribution = new AppleAdsAttributionProvider(m_Attribution, m_Storage);
 
@@ -194,6 +203,24 @@ namespace Purser
         public void SetRefundDataConsent(bool consented)
         {
             m_Storage.Save(RefundConsentKey, consented ? "true" : "false");
+        }
+
+        public async Task<bool> SetCustomAttributesAsync(IDictionary<string, object> attributes, CancellationToken ct = default)
+        {
+            ThrowIfDisposed();
+            var user = CurrentUser();
+            if (user == null || attributes == null || attributes.Count == 0)
+                return false;
+            var response = await m_Api.AttributesAsync(new AttributesRequest
+            {
+                AppId = AppId,
+                UserId = user,
+                Attributes = new Dictionary<string, object>(attributes),
+                Client = m_Client,
+            }, ct);
+            if (!response.IsHttpSuccess)
+                m_Log.Warning($"Attributes not saved: {response.Value?.Message ?? response.ToString()}");
+            return response.IsHttpSuccess;
         }
 
         public void SetUserId(string userId)
@@ -425,6 +452,7 @@ namespace Purser
                 VariantId = NullIfEmpty(paywall?.VariantId),
                 TestId = NullIfEmpty(paywall?.TestId),
                 PaywallId = NullIfEmpty(paywall?.PaywallId),
+                Client = m_Client,
             };
         }
 
@@ -649,6 +677,7 @@ namespace Purser
                     AppInstanceId = appInstanceId,
                     Attribution = attribution,
                     Purchases = items.Skip(i).Take(RestoreRequest.MaxItems).ToList(),
+                    Client = m_Client,
                 };
                 var response = await m_Api.RestoreAsync(request, ct);
                 if (response.IsHttpSuccess && response.Value?.Entitlements != null)
@@ -671,7 +700,7 @@ namespace Purser
             if (SkipServer)
                 return m_Entitlements;
 
-            var response = await m_Api.EntitlementsAsync(new EntitlementsRequest { AppId = AppId, UserId = user }, ct);
+            var response = await m_Api.EntitlementsAsync(new EntitlementsRequest { AppId = AppId, UserId = user, Client = m_Client }, ct);
             if (response.IsHttpSuccess && response.Value != null)
             {
                 SetEntitlements(user, response.Value);
@@ -751,7 +780,7 @@ namespace Purser
             if (string.IsNullOrEmpty(placementId))
                 throw new ArgumentException("Placement id is empty", nameof(placementId));
             var user = CurrentUser();
-            var response = await m_Api.PaywallAsync(new PaywallRequest { AppId = AppId, Placement = placementId, UserId = user }, ct);
+            var response = await m_Api.PaywallAsync(new PaywallRequest { AppId = AppId, Placement = placementId, UserId = user, Client = m_Client }, ct);
             if (response.IsHttpSuccess && response.Value != null)
             {
                 var now = m_UtcNow();

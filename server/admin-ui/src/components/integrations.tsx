@@ -110,6 +110,15 @@ export const KINDS: Record<Kind, KindDef> = {
   },
 }
 export const KIND_LIST = Object.keys(KINDS) as Kind[]
+
+/** What analytics integrations report as revenue (`revenue` in the settings; the server's `revenue_mode`). */
+const REVENUE_MODES = [
+  { value: "gross", label: "Gross revenue", hint: "The price the player paid." },
+  { value: "proceeds", label: "Proceeds after store commission", hint: "The price minus the estimated store commission (Revenue → Store fee: per app, lower after a subscription's first paid year)." },
+  { value: "net", label: "Proceeds after store commission and taxes", hint: "Also without the VAT / GST included in the price, estimated from the buyer's billing country (standard rates; US and Canadian prices exclude tax)." },
+]
+/** Integrations that get every amount in the event instead of one revenue figure. */
+const ALL_AMOUNTS: Kind[] = ["webhook", "gcs"]
 const EVENT_KINDS = ["purchase", "subscription_start", "renewal", "refund", "expire"]
 const AF_EVENTS: [string, string][] = [["purchase", "af_purchase"], ["subscription_start", "af_subscribe"], ["renewal", "subscription_renew"], ["refund", "refund"], ["expire", "(off)"]]
 const ANY = "__all__"
@@ -348,6 +357,20 @@ function IntegrationForm({ kind, row, apps, onClose, onSaved }: {
             </div>}
             <p className="mt-2 text-xs text-muted-foreground">Stored as <code>{def.secret}</code>; it is never shown again.</p>
           </div>
+
+          {ALL_AMOUNTS.includes(kind) ? (
+            <p className="text-xs text-muted-foreground">
+              Every event carries <code>price_micros</code> (gross) and the estimates <code>proceeds_micros</code> (after store commission)
+              and <code>net_micros</code> (after store commission and taxes), with <code>country</code> and <code>commission_percent</code>.
+            </p>
+          ) : (
+            <Field label="How the revenue is sent" hint={REVENUE_MODES.find((m) => m.value === (s.revenue || "gross"))?.hint}>
+              <Select value={s.revenue || "gross"} onValueChange={(v) => set("revenue", v)}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>{REVENUE_MODES.map((m) => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </Field>
+          )}
 
           <div className="rounded-lg bg-muted/50 p-3 text-xs">
             <span className="font-medium">The client sends in <code>attribution</code>: </span>{def.client}

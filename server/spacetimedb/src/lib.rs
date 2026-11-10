@@ -29,6 +29,7 @@ mod ledger;
 mod net;
 mod offers;
 mod paywalls;
+mod players;
 mod poll;
 mod revenue;
 mod settings;
@@ -929,6 +930,8 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
         at_ms: now / 1000,
         app_instance_id: String::new(),
         attribution: sanitize_attribution(&i.attribution),
+        country: String::new(),
+        commission_percent: None,
     };
     let only = if i.kind.is_empty() { None } else { Some(i.kind.as_str()) };
     let queued = integrations::enqueue_event(ctx, &app, &format!("test:{now}"), &event, only);

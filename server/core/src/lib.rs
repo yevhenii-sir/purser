@@ -15,12 +15,14 @@ pub mod jwt;
 pub mod model;
 pub mod offers;
 pub mod paywall;
+pub mod player;
 pub mod registry;
 pub mod revenue;
 pub mod sns;
 pub mod stripe;
 pub mod steam;
 pub mod support;
+pub mod tax;
 pub mod time;
 pub mod xsolla;
 

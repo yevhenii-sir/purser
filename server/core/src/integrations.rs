@@ -136,9 +136,87 @@ pub struct OutEvent {
     pub app_instance_id: String,
     #[serde(default)]
     pub attribution: BTreeMap<String, String>,
+    /// Billing country the store reported (ISO 3166-1 alpha-2); empty if unknown. Used for the tax
+    /// estimate of [`OutEvent::amounts`].
+    #[serde(default)]
+    pub country: String,
+    /// Estimated store commission of this payment in percent: the app's rate, reduced after the first
+    /// paid year of a subscription (`revenue::Commission`). Absent in events queued before it
+    /// existed: the default rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commission_percent: Option<f64>,
+}
+
+/// What an integration reports as revenue (`revenue` in its settings).
+pub mod revenue_mode {
+    /// The price the player paid.
+    pub const GROSS: &str = "gross";
+    /// The price minus the estimated store commission.
+    pub const PROCEEDS: &str = "proceeds";
+    /// The price minus the estimated sales tax and store commission.
+    pub const NET: &str = "net";
+    pub const ALL: [&str; 3] = [GROSS, PROCEEDS, NET];
+
+    /// The `revenue` field of an integration's settings JSON; missing or empty = gross.
+    pub fn of_settings(settings_json: &str) -> Result<&'static str, String> {
+        let v: serde_json::Value = serde_json::from_str(settings_json).map_err(|e| format!("invalid settings: {e}"))?;
+        match v.get("revenue").and_then(|r| r.as_str()).unwrap_or("") {
+            "" | GROSS => Ok(GROSS),
+            PROCEEDS => Ok(PROCEEDS),
+            NET => Ok(NET),
+            other => Err(format!("revenue must be gross, proceeds or net, not '{other}'")),
+        }
+    }
+}
+
+/// The money of one event three ways, in micros of its currency (all ≥ 0; refunds are negated by
+/// the integrations).
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Amounts {
+    pub gross_micros: i64,
+    /// Gross minus the estimated store commission.
+    pub proceeds_micros: i64,
+    /// Gross without the estimated sales tax, minus the store commission on that.
+    pub net_micros: i64,
 }
 
 impl OutEvent {
+    /// Gross, proceeds after the store commission, and proceeds after the commission and taxes.
+    /// Estimates: the commission from the server's settings, the tax from the billing country
+    /// ([`crate::tax`]).
+    pub fn amounts(&self) -> Amounts {
+        let gross = self.price_micros as f64;
+        let keep = 1.0 - self.commission_percent.unwrap_or(crate::revenue::DEFAULT_COMMISSION_PERCENT).clamp(0.0, 100.0) / 100.0;
+        Amounts {
+            gross_micros: self.price_micros,
+            proceeds_micros: (gross * keep).round() as i64,
+            net_micros: (crate::tax::without_tax(gross, &self.country) * keep).round() as i64,
+        }
+    }
+
+    /// The event with `price_micros` replaced by the amount an integration reports in `mode`
+    /// ([`revenue_mode`]).
+    pub fn with_revenue_mode(&self, mode: &str) -> OutEvent {
+        let a = self.amounts();
+        let mut e = self.clone();
+        e.price_micros = match mode {
+            revenue_mode::PROCEEDS => a.proceeds_micros,
+            revenue_mode::NET => a.net_micros,
+            _ => a.gross_micros,
+        };
+        e
+    }
+
+    /// The event as JSON with all three amounts (`gross_micros`, `proceeds_micros`, `net_micros`),
+    /// for the webhook and the Cloud Storage export.
+    fn payload(&self) -> Result<String, String> {
+        let mut v = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        let a = self.amounts();
+        v["gross_micros"] = json!(a.gross_micros);
+        v["proceeds_micros"] = json!(a.proceeds_micros);
+        v["net_micros"] = json!(a.net_micros);
+        Ok(v.to_string())
+    }
     /// Mobile OS of the build (`android` | `ios`); `None` on Steam / web.
     fn os(&self) -> Option<&'static str> {
         crate::registry::os_of(&self.platform)
@@ -596,7 +674,7 @@ pub mod webhook {
     }
 
     /// Body: the event as JSON (`kind`, `app_id`, `product_id`, `price_micros`, `currency`, `user_id`,
-    /// device ids, ...). Headers: `X-Billing-Event: <kind>`, `X-Billing-Signature:
+    /// device ids, `country`, `gross_micros` / `proceeds_micros` / `net_micros`, ...). Headers: `X-Billing-Event: <kind>`, `X-Billing-Signature:
     /// hex(HMAC-SHA256(secret, body))`.
     pub fn build(ev: &OutEvent, settings: &Settings, secret: &str) -> Result<Built, String> {
         if secret.is_empty() {
@@ -608,7 +686,7 @@ pub mod webhook {
         if ev.kind != event_kind::TEST && !settings.events.is_empty() && !settings.events.contains(&ev.kind) {
             return Ok(Built::Skip(format!("webhook does not want '{}'", ev.kind)));
         }
-        let body = serde_json::to_string(ev).map_err(|e| e.to_string())?;
+        let body = ev.payload()?;
         Ok(Built::Send(HttpCall {
             method: "POST",
             url: settings.url.clone(),
@@ -945,7 +1023,7 @@ pub mod gcs {
         if ev.kind != event_kind::TEST && !settings.events.is_empty() && !settings.events.contains(&ev.kind) {
             return Ok(Built::Skip(format!("export does not want '{}'", ev.kind)));
         }
-        let body = serde_json::to_string(ev).map_err(|e| e.to_string())? + "\n";
+        let body = ev.payload()? + "\n";
         Ok(Built::Send(HttpCall {
             method: "POST",
             url: format!(
@@ -984,6 +1062,8 @@ mod tests {
             at_ms: 1_791_198_123_123,
             app_instance_id: String::new(),
             attribution,
+            country: String::new(),
+            commission_percent: None,
         }
     }
 
@@ -1181,6 +1261,44 @@ mod tests {
         assert_eq!(form(&test.body)["event"], "purser_test");
         assert!(tenjin::build(&tenjin_event("purchase", "android"), &s, "").is_err());
         assert_eq!(form_urlencode(&[("a b", "x&y=1/2".into())]), "a+b=x%26y%3D1%2F2");
+    }
+
+    #[test]
+    fn amounts_deduct_commission_and_the_included_tax() {
+        let mut ev = event("purchase", "android");
+        ev.price_micros = 11_900_000;
+        ev.country = "DE".into();
+        ev.commission_percent = Some(30.0);
+        assert_eq!(ev.amounts(), Amounts { gross_micros: 11_900_000, proceeds_micros: 8_330_000, net_micros: 7_000_000 });
+        assert_eq!(ev.with_revenue_mode(revenue_mode::NET).price_micros, 7_000_000);
+        assert_eq!(ev.with_revenue_mode(revenue_mode::PROCEEDS).price_micros, 8_330_000);
+        assert_eq!(ev.with_revenue_mode(revenue_mode::GROSS).price_micros, 11_900_000);
+
+        // US prices exclude sales tax; an event queued before commission_percent existed uses the default.
+        ev.country = "US".into();
+        ev.commission_percent = None;
+        assert_eq!(ev.amounts().net_micros, ev.amounts().proceeds_micros);
+        assert_eq!(ev.amounts().proceeds_micros, 10_115_000);
+    }
+
+    #[test]
+    fn revenue_mode_comes_from_the_settings() {
+        assert_eq!(revenue_mode::of_settings("{}"), Ok(revenue_mode::GROSS));
+        assert_eq!(revenue_mode::of_settings(r#"{"revenue":"net"}"#), Ok(revenue_mode::NET));
+        assert!(revenue_mode::of_settings(r#"{"revenue":"profit"}"#).is_err());
+    }
+
+    #[test]
+    fn webhook_body_carries_every_amount() {
+        let s = webhook::Settings::parse(r#"{"url":"https://hooks.example.com/billing"}"#).unwrap();
+        let mut ev = event("purchase", "android");
+        ev.country = "GB".into();
+        ev.commission_percent = Some(15.0);
+        let body: Value = serde_json::from_str(&send(webhook::build(&ev, &s, "secret").unwrap()).body).unwrap();
+        assert_eq!(body["price_micros"], 4_990_000, "the webhook keeps the gross price");
+        assert_eq!((body["gross_micros"].as_i64(), body["proceeds_micros"].as_i64()), (Some(4_990_000), Some(4_241_500)));
+        assert_eq!(body["net_micros"].as_i64(), Some(3_534_583));
+        assert_eq!((body["country"].as_str(), body["commission_percent"].as_f64()), (Some("GB"), Some(15.0)));
     }
 
     #[test]

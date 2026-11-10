@@ -7,8 +7,8 @@ use crate::config::{self, secret_name};
 use crate::net;
 use crate::{game_app, GameApp, Purchase};
 use purser_core::integrations::{
-    adjust, appmetrica, appsflyer, event_kind, gcs, ga4, integration_kind, is_retryable_status, tenjin, webhook, Built,
-    HttpCall, OutEvent,
+    adjust, appmetrica, appsflyer, event_kind, gcs, ga4, integration_kind, is_retryable_status, revenue_mode, tenjin, webhook,
+    Built, HttpCall, OutEvent,
 };
 use purser_core::retry_delay_secs;
 use spacetimedb::{ProcedureContext, ReducerContext, ScheduleAt, Table, TxContext};
@@ -194,6 +194,10 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         at_ms: tx.timestamp.to_micros_since_unix_epoch() / 1000,
         app_instance_id: p.app_instance_id.clone(),
         attribution: load_attribution(tx, &p.app_id, &p.user_id),
+        country: p.country.clone(),
+        commission_percent: Some(
+            crate::revenue::commission(tx).percent_for_period(&p.app_id, crate::revenue::period_facts(tx, p).after_first_year),
+        ),
     }
 }
 
@@ -210,6 +214,7 @@ fn active_kinds(tx: &ReducerContext, app: &GameApp) -> Vec<String> {
 
 /// Validates the settings of an integration kind (admin input).
 pub fn validate_settings(kind: &str, settings_json: &str) -> Result<(), String> {
+    revenue_mode::of_settings(settings_json)?;
     match kind {
         integration_kind::GA4 => ga4::Settings::parse(settings_json).map(|_| ()),
         integration_kind::APPSFLYER => appsflyer::Settings::parse(settings_json).map(|_| ()),
@@ -272,6 +277,12 @@ fn build_call(tx: &TxContext, row: &IntegrationOutbox, event: &OutEvent, access_
     let integration = tx.db.integration().key().find(&integration_key(&row.app_id, &row.kind));
     let integration = integration.filter(|i| i.enabled).ok_or(format!("{} integration is disabled", row.kind))?;
     let secret = |name: &str| config::require_secret(tx, &app, name).map(|s| s.value);
+    // What the analytics integrations report as revenue; the webhook and the export carry all amounts.
+    let priced = event.with_revenue_mode(revenue_mode::of_settings(&integration.settings_json)?);
+    let event = match row.kind.as_str() {
+        integration_kind::WEBHOOK | integration_kind::GCS => event,
+        _ => &priced,
+    };
     match row.kind.as_str() {
         integration_kind::GA4 => {
             let s = ga4::Settings::parse(&integration.settings_json)?;
