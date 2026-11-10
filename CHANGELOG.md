@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-10
+
 - Player profile in the admin page: per build, when the server first and last heard from the player, the device the client reported (model, OS, app and SDK version, the optional `client` object of `/verify`, `/restore`, `/entitlements`, `/paywall`), the custom attributes the game set (new `POST /attributes`) and the billing country of the newest purchase. New table `player_profile`; `last_seen` is rewritten at most once an hour. The release workflow checks `PurserInfo.Version` too.
 
 - Integrations choose how revenue is sent, like Adapty: **Gross revenue**, **Proceeds after store commission** or **Proceeds after store commission and taxes** (`revenue`: `gross`, `proceeds`, `net` in the settings of GA4, AppsFlyer, Adjust, Tenjin and AppMetrica). The commission comes from the Store fee settings (per app, lowered after a subscription's first paid year) and is fixed when the event is queued; the tax is estimated from the buyer's billing country with the standard VAT / GST rate (`purser_core::tax`). The webhook and the Cloud Storage export carry all three amounts (`price_micros`, `proceeds_micros`, `net_micros`) with `country` and `commission_percent`.

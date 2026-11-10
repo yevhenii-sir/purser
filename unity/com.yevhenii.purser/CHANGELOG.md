@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
 - Player profile: every request carries the device model, OS, app version and SDK version (`client`; the admin page
   shows them with first / last seen and the store country). `IBillingService.SetCustomAttributesAsync` sets custom
   attributes of the player (`POST /attributes`). `IBillingApi` gains `AttributesAsync` (custom implementations must
