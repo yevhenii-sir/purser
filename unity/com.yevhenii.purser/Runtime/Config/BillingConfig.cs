@@ -105,7 +105,8 @@ namespace Purser
 
         /// <summary>
         /// Applies the config JSON copied from the admin panel (or from <see cref="ToJson"/>):
-        /// <c>{"serverBaseUrl", "builds": [{"store", "appId"}], "products": [{"id", "type", "storeIds": {"apple": "..."}}]}</c>.
+        /// <c>{"serverBaseUrl", "builds": [{"store", "appId"}], "products": [{"id", "type", "storeIds": {"apple": "..."},
+        /// "price": 0.99, "currency": "USD"}]}</c> (<c>price</c> / <c>currency</c>: the fallback price).
         /// Missing fields keep their value; <c>builds</c> and <c>products</c>, when present, replace the lists.
         /// <c>type</c> accepts <c>Consumable</c> / <c>NonConsumable</c> / <c>Subscription</c> or the server's
         /// <c>consumable</c> / <c>non_consumable</c> / <c>subscription</c>.
@@ -161,6 +162,13 @@ namespace Purser
                 if (!Enum.TryParse(type, true, out BillingProductType parsedType))
                     throw new FormatException($"product '{id}': unknown type '{(string)item["type"]}'");
                 var product = new BillingProductConfig(id, parsedType);
+                var price = item["price"];
+                if (price != null && price.Type != JTokenType.Null)
+                {
+                    if (price.Type != JTokenType.Float && price.Type != JTokenType.Integer || (double)price < 0)
+                        throw new FormatException($"product '{id}': price must be a number of at least 0");
+                    product.WithFallbackPrice((double)price, ((string)item["currency"])?.Trim().ToUpperInvariant());
+                }
                 if (item["storeIds"] is JObject storeIds)
                     foreach (var kv in storeIds)
                         if (!string.IsNullOrEmpty((string)kv.Value))
@@ -184,6 +192,11 @@ namespace Purser
                     .Select(p =>
                     {
                         var item = new JObject { ["id"] = p.id, ["type"] = p.type.ToString() };
+                        if (p.HasFallbackPrice)
+                        {
+                            item["price"] = Math.Round(p.fallbackPrice, 6);
+                            item["currency"] = p.fallbackCurrency.ToUpperInvariant();
+                        }
                         var overrides = (p.storeIds ?? new List<StoreProductId>())
                             .Where(s => s != null && !string.IsNullOrEmpty(s.store) && !string.IsNullOrEmpty(s.id) && s.id != p.id)
                             .GroupBy(s => s.store)
@@ -270,6 +283,8 @@ namespace Purser
                         problems.Add($"Product #{i} has no id.");
                     else if (!seen.Add(p.id))
                         problems.Add($"Duplicate product id '{p.id}'.");
+                    else if (p.fallbackPrice > 0 && (p.fallbackCurrency ?? "").Trim().Length != 3)
+                        problems.Add($"Product '{p.id}': the fallback price needs a three-letter currency (USD, EUR, ...).");
                 }
             }
             return problems;

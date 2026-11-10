@@ -328,8 +328,10 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
       const products = [...s.products]
       for (const u of c.products) {
         const i = products.findIndex((p) => p.product_id === u.product_id)
-        if (i >= 0) products[i] = { ...products[i], kind: u.kind, store_ids: u.store_ids }
-        else products.push({ product_id: u.product_id, kind: u.kind, store_ids: u.store_ids, default_price_micros: 0, currency: "" })
+        // A price already entered here wins; the Unity fallback price fills the gaps.
+        const priced = (p: PickedProduct) => (p.default_price_micros ? p : { ...p, default_price_micros: u.price_micros, currency: u.currency })
+        if (i >= 0) products[i] = priced({ ...products[i], kind: u.kind, store_ids: u.store_ids })
+        else products.push({ product_id: u.product_id, kind: u.kind, store_ids: u.store_ids, default_price_micros: u.price_micros, currency: u.currency })
       }
       const game_key = s.game_key || suggestGameKey(builds.map((b) => b.app_id))
       return { ...s, builds, products, game_key }
@@ -340,7 +342,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
   return (
     <>
       <DialogHeader>
-        <DialogTitle>{existing ? `Set up ${existing.key}` : "Add an app"}</DialogTitle>
+        <DialogTitle>{existing ? `Set up ${existing.name}` : "Add an app"}</DialogTitle>
         <DialogDescription>An app is one product with any number of builds: Google Play, App Store, Amazon Appstore, ... Every step saves what it collected, so the wizard can be run again.</DialogDescription>
       </DialogHeader>
       <ol className="flex flex-wrap gap-x-4 gap-y-2 text-sm">

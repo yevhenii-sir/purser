@@ -162,6 +162,22 @@ pub fn normalize_spacetime_host(host: &str) -> Result<String, String> {
     Ok(h)
 }
 
+/// Longest display name of an app, in characters.
+pub const APP_NAME_MAX_CHARS: usize = 80;
+
+/// Validates an app's display name: trimmed, inner whitespace collapsed, no control characters,
+/// at most [`APP_NAME_MAX_CHARS`]. Empty means "no display name" (the app key is shown).
+pub fn normalize_app_name(name: &str) -> Result<String, String> {
+    if name.chars().any(|c| c.is_control() && !c.is_whitespace()) {
+        return Err("the name must not contain control characters".into());
+    }
+    let n = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if n.chars().count() > APP_NAME_MAX_CHARS {
+        return Err(format!("the name is longer than {APP_NAME_MAX_CHARS} characters"));
+    }
+    Ok(n)
+}
+
 /// `https://<allowed host>[:port][/path]` only: the token must never travel over plain http.
 pub fn is_allowed_spacetime_url<S: AsRef<str>>(url: &str, allowed_hosts: &[S]) -> bool {
     let Some(rest) = url.strip_prefix("https://") else { return false };
@@ -185,6 +201,16 @@ mod spacetime_url_tests {
         {
             assert!(normalize_spacetime_host(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn app_names_are_trimmed_and_limited() {
+        assert_eq!(normalize_app_name("  Bluff   Card\tGame ").as_deref(), Ok("Bluff Card Game"));
+        assert_eq!(normalize_app_name("").as_deref(), Ok(""));
+        assert_eq!(normalize_app_name("Карты: блеф 🃏").as_deref(), Ok("Карты: блеф 🃏"));
+        assert!(normalize_app_name("bad\u{0}name").is_err());
+        assert!(normalize_app_name(&"x".repeat(APP_NAME_MAX_CHARS + 1)).is_err());
+        assert!(normalize_app_name(&"я".repeat(APP_NAME_MAX_CHARS)).is_ok(), "characters, not bytes");
     }
 
     #[test]

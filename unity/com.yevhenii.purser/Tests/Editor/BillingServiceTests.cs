@@ -504,6 +504,33 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void FallbackPrice_IsShownWhenTheStoreHasNone_AndNotSentToTheServer()
+        {
+            m_Store.NoPrices = true;
+            m_Config.products[0].WithFallbackPrice(1.99, "eur");
+            CreateService();
+
+            var gems = m_Service.GetProduct("gems_100");
+            Assert.IsTrue(gems.IsFallbackPrice);
+            Assert.AreEqual((1.99m, "EUR", "1.99 EUR"), (gems.Price, gems.Currency, gems.LocalizedPrice));
+            Assert.IsFalse(m_Service.GetProduct("vip").IsFallbackPrice, "no fallback configured");
+
+            Buy("gems_100", FakeStore.GoogleOrder("gems_100"));
+            Assert.AreEqual(0, m_Api.VerifyRequests.Single().PriceMicros, "the game's guess is not reported as revenue");
+            Assert.IsNull(m_Api.VerifyRequests.Single().Currency);
+        }
+
+        [Test]
+        public void StorePrice_WinsOverTheFallback()
+        {
+            m_Config.products[0].WithFallbackPrice(1.99, "EUR");
+            CreateService();
+            var gems = m_Service.GetProduct("gems_100");
+            Assert.IsFalse(gems.IsFallbackPrice);
+            Assert.AreEqual((0.99m, "USD"), (gems.Price, gems.Currency));
+        }
+
+        [Test]
         public void Store_NamesTheRouteAndTheBuild()
         {
             m_Store.Store = BillingStores.Amazon;

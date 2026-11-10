@@ -29,6 +29,11 @@ namespace Purser.Editor
                     if (GUILayout.Button(m_Ping != null ? "Pinging..." : "Ping server"))
                         StartPing(config);
                 }
+                using (new EditorGUI.DisabledScope(AdminUrl(config) == null))
+                {
+                    if (GUILayout.Button(new GUIContent("Open admin panel", "Opens the billing server's admin page in the browser")))
+                        Application.OpenURL(AdminUrl(config));
+                }
             }
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -63,6 +68,16 @@ namespace Purser.Editor
                       $". Other stores use '{Application.identifier}'. The builds and product ids must exist on the server: " +
                       "copy this config into the admin panel.",
                 MessageType.None);
+        }
+
+        /// <summary>The admin page next to the HTTP API: <c>{serverBaseUrl}/admin</c>; null until the URL is set.</summary>
+        internal static string AdminUrl(BillingConfig config)
+        {
+            var url = config.serverBaseUrl?.Trim().TrimEnd('/');
+            if (string.IsNullOrEmpty(url) || url.Contains(BillingConfig.ServerUrlPlaceholder) ||
+                !url.StartsWith("https://", System.StringComparison.OrdinalIgnoreCase) || !url.EndsWith("/route"))
+                return null;
+            return url + "/admin";
         }
 
         private void PasteConfig(BillingConfig config)

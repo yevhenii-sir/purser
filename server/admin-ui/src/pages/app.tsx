@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react"
 import {
-  BellRingIcon, ChartLineIcon, Gamepad2Icon, GlobeIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PlugIcon, ReceiptIcon,
+  BellRingIcon, ChartLineIcon, Gamepad2Icon, PencilIcon, GlobeIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PlugIcon, ReceiptIcon,
   RefreshCwIcon, SendIcon, ShoppingBagIcon, SmartphoneIcon, SparklesIcon, TabletSmartphoneIcon, Trash2Icon, WebhookIcon, type LucideIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -114,6 +115,55 @@ function BuildChip({ app, level }: { app: GameApp; level?: Level }) {
   )
 }
 
+/** Edits the app's display name (`app_profile`); the key stays as it is. */
+function RenameButton({ group }: { group: AppGroup }) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState("")
+  const [busy, setBusy] = useState(false)
+  const start = () => {
+    setName(group.name === group.key ? "" : group.name)
+    setOpen(true)
+  }
+  const save = async () => {
+    setBusy(true)
+    const done = await tryAct(async () => {
+      await call("admin_set_app_name", group.key, name.trim())
+      return true
+    }, name.trim() ? "Renamed" : "Name removed")
+    setBusy(false)
+    if (done) {
+      setOpen(false)
+      appsChanged()
+    }
+  }
+  return (
+    <>
+      <Button variant="ghost" size="icon" className="size-7 shrink-0 text-muted-foreground" title="Rename" aria-label="Rename the app" onClick={start}>
+        <PencilIcon className="size-3.5" />
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rename the app</DialogTitle>
+            <DialogDescription>
+              The name shown in the admin panel. The app key <Mono>{group.key}</Mono> stays the same: paywalls, revenue and
+              shared entitlements are keyed by it.
+            </DialogDescription>
+          </DialogHeader>
+          <Field label="Display name" hint="Leave empty to show the app key.">
+            <Input value={name} maxLength={80} placeholder={group.key} autoFocus
+              onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !busy) save() }} />
+          </Field>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button onClick={save} disabled={busy}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
 export function AppPage({ appKey, tab, go, me }: PageProps & { appKey: string; tab: AppTab }) {
   const { apps, groups, error: appsError } = useApps()
   // Apps without a game_key are listed under their app id.
@@ -134,7 +184,11 @@ export function AppPage({ appKey, tab, go, me }: PageProps & { appKey: string; t
     <>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0 space-y-1">
-          <h1 className="truncate text-xl font-semibold tracking-tight">{g.key}</h1>
+          <div className="flex min-w-0 items-center gap-1">
+            <h1 className="truncate text-xl font-semibold tracking-tight">{g.name}</h1>
+            <RenameButton group={g} />
+            {g.name !== g.key && <span className="ms-1 truncate font-mono text-xs text-muted-foreground" title="App key">{g.key}</span>}
+          </div>
           <div className="flex flex-wrap gap-2 pt-1">
             {g.apps.map((a) => <BuildChip key={a.app_id} app={a} level={data.reports[a.app_id]?.summary} />)}
           </div>

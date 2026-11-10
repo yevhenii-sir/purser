@@ -13,7 +13,7 @@ import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Sect
 import { RevenueTree } from "@/components/revenue-tree"
 import { RichTable, type RichColumn } from "@/components/rich-table"
 import { call, proc } from "@/lib/api"
-import { useApps } from "@/lib/apps"
+import { useAppName, useApps } from "@/lib/apps"
 import { money, shortDay, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { revenueStats } from "@/lib/revenue"
@@ -89,6 +89,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
 
   // The game filter of the Revenue page; the app page passes its app instead.
   const apps = useApps().apps
+  const appName = useAppName()
   const games = useMemo(() => (fixedGame ? [] : [...new Set((apps || []).map((a) => a.game_key))].filter(Boolean).sort()), [fixedGame, apps])
   const { data: r, error, loading, reload } = useAsync(async ({ fresh }) => {
     const to = new Date()
@@ -124,7 +125,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
             <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value={ALL}>All apps</SelectItem>
-              {games.map((g) => <SelectItem key={g} value={g}>{g}</SelectItem>)}
+              {games.map((g) => <SelectItem key={g} value={g}>{appName(g)}</SelectItem>)}
             </SelectContent>
           </Select>
         )}

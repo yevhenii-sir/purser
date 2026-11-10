@@ -113,12 +113,12 @@ export function AppsPage({ go }: PageProps) {
             })
             .filter(({ g }) => {
               const q = query.trim().toLowerCase()
-              return !q || g.key.toLowerCase().includes(q) || g.apps.some((a) => a.app_id.toLowerCase().includes(q))
+              return !q || g.name.toLowerCase().includes(q) || g.key.toLowerCase().includes(q) || g.apps.some((a) => a.app_id.toLowerCase().includes(q))
             })
             .sort((x, y) =>
               sort === "revenue" ? y.net - x.net
-              : sort === "attention" ? (RANK[y.worst] ?? 2.5) - (RANK[x.worst] ?? 2.5) || x.g.key.localeCompare(y.g.key)
-              : x.g.key.localeCompare(y.g.key))
+              : sort === "attention" ? (RANK[y.worst] ?? 2.5) - (RANK[x.worst] ?? 2.5) || x.g.name.localeCompare(y.g.name)
+              : x.g.name.localeCompare(y.g.name))
           if (view === "table") {
             return (
               <RichTable
@@ -129,7 +129,7 @@ export function AppsPage({ go }: PageProps) {
                 onRowClick={(r) => go(appRoute(r.g.key))}
                 initialSort={{ id: "App" }}
                 columns={[
-                  { title: "App", size: 200, sort: (r) => r.g.key.toLowerCase(), cell: (r) => <span className="font-medium">{r.g.key}</span> },
+                  { title: "App", size: 200, sort: (r) => r.g.name.toLowerCase(), cell: (r) => <span className="font-medium">{r.g.name}</span> },
                   {
                     title: "Builds",
                     size: 280,
@@ -174,7 +174,7 @@ export function AppsPage({ go }: PageProps) {
               <Card key={g.key} className="cursor-pointer gap-3 transition-colors hover:bg-muted/40" onClick={() => go(appRoute(g.key))}>
                 <CardHeader>
                   <div className="flex items-start justify-between gap-2">
-                    <CardTitle className="truncate text-base">{g.key}</CardTitle>
+                    <CardTitle className="truncate text-base">{g.name}</CardTitle>
                     {worst ? <LevelBadge level={worst} /> : <Tone tone="muted">not checked</Tone>}
                   </div>
                 </CardHeader>

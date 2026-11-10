@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Unity config import and export carry prices: a pasted Unity config's fallback prices become the default prices of products that have none on the server (the server's price wins), and the wizard's Unity config includes the default prices. The Unity package fills `StoreProduct` from them where the store shows no price, and its inspector opens the admin page.
+
+- Apps can have a display name (the pencil next to an app's name in the admin page): shown in the header, the sidebar, the apps list, the command menu, revenue and player pages. The app key (`game_key`) stays as it is. New table `app_profile`, reducer `admin_set_app_name`; `seed.py` loads and exports `app_names.json`; the MCP `list_apps` tool returns the name.
+
 ## 0.2.0 - 2026-11-10
 
 - Unity package: the config is keyed by store (`builds`, per-product `storeIds`), so one game can have several web builds (Stripe and Xsolla); **Copy config for admin panel** in the inspector; fixes for purchases without a product id, Amazon receipts the server rejected, web purchases without attribution and paywall, hanging purchases and game handler exceptions. Breaking for the package API: see `unity/com.yevhenii.purser/CHANGELOG.md`.

@@ -82,6 +82,8 @@ One row = one **build**: an app in one store. The builds of the same game (Googl
 | `client_consumes` | the client consumes in Google itself (for example, while purchases still go through Adapty). Off (default): a consumable that Google reports as already consumed but that isn't in the ledger is rejected, see “Protection against double grants” |
 | `apple_refund_mode` | App Store builds: how refund requests (`CONSUMPTION_REQUEST`) are answered: empty / `off`, `inform`, `prefer`; see [docs/store-setup.md](../docs/store-setup.md#refund-requests). Answers wait in `apple_consumption_outbox` |
 
+The admin page names an app by its `game_key` unless it has a display name in `app_profile` (`game_key`, `display_name`), set with `admin_set_app_name(game_key, name)` (empty removes it) or the pencil next to the app's name. The key itself never changes: paywalls, placements, revenue and shared entitlements are keyed by it.
+
 ### SpacetimeDB hosts for delivery (`spacetime_host`)
 
 The game's `spacetime_token` is sent to `spacetime_url`. That's why delivery only goes over `https://` and only to allowed hosts. `maincloud.spacetimedb.com` is always allowed. Your own servers, e.g. `stdb.example.com`, are added to the `spacetime_host` table: in the admin panel it's Settings → Server → SpacetimeDB hosts, via CLI — `admin_add_spacetime_host` / `admin_remove_spacetime_host`, via `seed.py` — the `spacetime_hosts.json` file.

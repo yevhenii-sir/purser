@@ -52,8 +52,8 @@ export function CommandMenu({ open, setOpen, groups, go }: {
         <CommandEmpty>Nothing found.</CommandEmpty>
         <CommandGroup heading="Apps">
           {groups.map((g) => (
-            <CommandItem key={g.key} value={`${g.key} ${g.apps.map((a) => a.app_id).join(" ")}`} onSelect={() => run(appRoute(g.key))}>
-              <span className="truncate">{g.key}</span>
+            <CommandItem key={g.key} value={`${g.name} ${g.key} ${g.apps.map((a) => a.app_id).join(" ")}`} onSelect={() => run(appRoute(g.key))}>
+              <span className="truncate">{g.name}</span>
               <span className="ml-2 truncate font-mono text-xs text-muted-foreground">{g.apps.map((a) => a.app_id).join(" · ")}</span>
               <CommandShortcut><CornerDownLeftIcon className="size-3" /></CommandShortcut>
             </CommandItem>
@@ -62,8 +62,8 @@ export function CommandMenu({ open, setOpen, groups, go }: {
         {query.trim() && <CommandGroup heading="App tabs">
           {groups.flatMap((g) =>
             APP_TABS.filter((t) => t !== "setup").map((t) => (
-              <CommandItem key={`${g.key}/${t}`} value={`${g.key} ${TAB_TITLES[t]} ${g.apps.map((a) => a.app_id).join(" ")}`} onSelect={() => run(appRoute(g.key, t))}>
-                <span className="truncate">{g.key}</span>
+              <CommandItem key={`${g.key}/${t}`} value={`${g.name} ${g.key} ${TAB_TITLES[t]} ${g.apps.map((a) => a.app_id).join(" ")}`} onSelect={() => run(appRoute(g.key, t))}>
+                <span className="truncate">{g.name}</span>
                 <span className="text-muted-foreground">→ {TAB_TITLES[t]}</span>
               </CommandItem>
             )),

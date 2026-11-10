@@ -21,10 +21,15 @@ namespace Purser
         public bool AvailableToPurchase { get; }
         /// <summary>Underlying store object (Unity IAP <c>Product</c>).</summary>
         public object Native { get; }
+        /// <summary>The price is the config's <see cref="BillingProductConfig.fallbackPrice"/>: the store gave none. It is
+        /// for display only and is not reported to the server.</summary>
+        public bool IsFallbackPrice { get; }
 
         public StoreProduct(string id, string storeId, BillingProductType type, string localizedPrice, decimal price,
-            string currency, string title, string description, bool availableToPurchase, object native = null)
+            string currency, string title, string description, bool availableToPurchase, object native = null,
+            bool isFallbackPrice = false)
         {
+            IsFallbackPrice = isFallbackPrice;
             Id = id;
             StoreId = storeId;
             Type = type;

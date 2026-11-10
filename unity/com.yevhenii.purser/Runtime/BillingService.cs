@@ -162,7 +162,7 @@ namespace Purser
             await m_Store.ConnectAsync(ct);
             ThrowIfDisposed();
             var products = m_Config.products.Where(p => p != null && !string.IsNullOrEmpty(p.id)).ToList();
-            m_Products = (await m_Store.FetchProductsAsync(products, ct)).ToList();
+            m_Products = (await m_Store.FetchProductsAsync(products, ct)).Select(WithFallbackPrice).ToList();
             ThrowIfDisposed();
             m_Log.Info($"Initialized: {m_Products.Count} products, store {m_Store.Store} ({AppId})");
 
@@ -175,6 +175,18 @@ namespace Purser
             ProcessWaitingOrders();
             if (m_Config.refreshEntitlementsOnInit && CurrentUser() != null)
                 RefreshInBackground();
+        }
+
+        /// <summary>The config's fallback price for a product the store gave no price for.</summary>
+        private StoreProduct WithFallbackPrice(StoreProduct p)
+        {
+            if (p == null || p.Price > 0 || !string.IsNullOrEmpty(p.LocalizedPrice))
+                return p;
+            var config = m_Config.FindById(p.Id);
+            if (config == null || !config.HasFallbackPrice)
+                return p;
+            return new StoreProduct(p.Id, p.StoreId, p.Type, config.FallbackPriceText, (decimal)config.fallbackPrice,
+                config.fallbackCurrency.ToUpperInvariant(), p.Title, p.Description, p.AvailableToPurchase, p.Native, true);
         }
 
         private const string RefundConsentKey = "purser.refund_data_consent";
@@ -393,7 +405,8 @@ namespace Purser
 
         private async Task<VerifyRequest> BuildVerifyRequestAsync(StoreOrder order, string user)
         {
-            var product = m_Products.FirstOrDefault(p => p.StoreId == order.StoreProductId);
+            // A fallback price is the game's guess, not what the store charged: the server is not told it.
+            var product = m_Products.FirstOrDefault(p => p.StoreId == order.StoreProductId && !p.IsFallbackPrice);
             // Read before the first await: the purchase that set it may finish meanwhile.
             m_PaywallContext.TryGetValue(order.StoreProductId, out var paywall);
             return new VerifyRequest

@@ -15,6 +15,7 @@ Files in --dir (all optional), loaded in this order:
     spacetime_hosts.json  array of self-hosted SpacetimeDB hosts -> admin_add_spacetime_host
                       (owner only; loaded first because apps on those hosts are validated against it)
     apps.json         array of game apps        -> admin_upsert_game_app
+    app_names.json    {game_key: display name}  -> admin_set_app_name (the admin page's app names)
     products.json     array of products         -> admin_upsert_products
     steam.json        {"builds": [{app_id, steam_app_id?, sandbox?}]  -> admin_set_steam_build,
                        "items": [{app_id, product_id, item_id?, description?, prices?, period?,
@@ -126,6 +127,12 @@ def seed(a, d):
     for app in load(d / "apps.json") or []:
         call(a, "admin_upsert_game_app", json.dumps(app))
         print(f"app      {app['app_id']}")
+
+    for key, name in (load(d / "app_names.json") or {}).items():
+        if has_placeholder(name):
+            continue
+        call(a, "admin_set_app_name", key, name)
+        print(f"name     {key}: {name}")
 
     products = load(d / "products.json") or []
     if products:
@@ -271,6 +278,14 @@ def export(a, d, force):
     apps = sorted(sql(a, "SELECT * FROM game_app"), key=lambda r: (r["game_key"], r["app_id"]))
     if apps:
         files["apps.json"] = apps
+
+    base, tok = conn(a)
+    try:
+        names = {r["game_key"]: r["display_name"] for r in stdb.select_raw(base, a.database, tok, "SELECT * FROM app_profile")}
+    except stdb.StdbError:  # a module older than app_profile
+        names = {}
+    if names:
+        files["app_names.json"] = dict(sorted(names.items()))
 
     products = [{k: p[k] for k in ("app_id", "product_id", "kind", "default_price_micros", "currency")}
                 for p in sorted(sql(a, "SELECT * FROM product"), key=lambda p: (p["app_id"], p["product_id"]))]

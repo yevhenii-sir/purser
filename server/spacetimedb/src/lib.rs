@@ -224,6 +224,16 @@ pub struct SpacetimeHost {
     pub added_at_micros: i64,
 }
 
+/// What people call an app (a `game_key` group of builds) in the admin page. The key itself never
+/// changes: paywalls, placements, revenue and shared entitlements are keyed by it.
+#[spacetimedb::table(accessor = app_profile)]
+pub struct AppProfile {
+    #[primary_key]
+    pub game_key: String,
+    /// Display name; the app key is shown when there is no row.
+    pub display_name: String,
+}
+
 /// Repeating schedule for the ledger worker (`ledger::process_pending`).
 #[spacetimedb::table(accessor = retry_schedule, scheduled(process_pending))]
 pub struct RetrySchedule {
@@ -493,6 +503,21 @@ pub fn product_key(app_id: &str, product_id: &str) -> String {
 }
 
 /// Creates or replaces products. `json` is one `ProductInput` object or an array of them.
+/// Sets the display name of an app (`game_key`); an empty name removes it.
+#[spacetimedb::reducer]
+pub fn admin_set_app_name(ctx: &ReducerContext, game_key: String, name: String) -> Result<(), String> {
+    require_admin(ctx)?;
+    if !ctx.db.game_app().iter().any(|a| a.game_key == game_key) {
+        return Err(format!("[ERR_UNKNOWN_APP] No app {game_key}"));
+    }
+    let name = purser_core::normalize_app_name(&name).map_err(|e| format!("[ERR_BAD_NAME] {e}"))?;
+    ctx.db.app_profile().game_key().delete(&game_key);
+    if !name.is_empty() {
+        ctx.db.app_profile().insert(AppProfile { game_key, display_name: name });
+    }
+    Ok(())
+}
+
 #[spacetimedb::reducer]
 pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), String> {
     require_admin(ctx)?;

@@ -190,7 +190,11 @@ def t_list_apps(db, args):
             "allow_sandbox": a["allow_sandbox"],
             "products": sorted(by_app.get(a["app_id"], []), key=lambda p: p["product_id"]),
         })
-    return {"apps": [{"game_key": k, "builds": v} for k, v in games.items()]}
+    try:
+        names = {r["game_key"]: r["display_name"] for r in db.sql("SELECT * FROM app_profile")}
+    except stdb.StdbError:  # a module older than app_profile
+        names = {}
+    return {"apps": [{"game_key": k, "name": names.get(k, k), "builds": v} for k, v in games.items()]}
 
 
 def t_overview(db, args):

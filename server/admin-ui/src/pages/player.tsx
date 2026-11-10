@@ -9,7 +9,7 @@ import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Stat, S
 import { RichTable } from "@/components/rich-table"
 import { PurchaseSheet } from "@/components/purchase-sheet"
 import { call, proc } from "@/lib/api"
-import { useApps } from "@/lib/apps"
+import { useAppName, useApps } from "@/lib/apps"
 import { fmtMs, fmtTime, money, usd } from "@/lib/format"
 import { act, tryAct, useAsync } from "@/lib/hooks"
 import type { Purchase } from "@/lib/types"
@@ -190,6 +190,7 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
   const [revoke, setRevoke] = useState<{ title: string; purchases: ProfilePurchase[] } | null>(null)
   const { data, error, loading, reload } = useAsync(() => proc<Profile>("admin_user_profile", userId), [userId])
   const apps = useApps().apps
+  const appName = useAppName()
 
   if (error) return <ErrorBox error={error} hint="Player profiles need an admin token." />
   if (loading && !data) return <Loading rows={8} />
@@ -266,7 +267,7 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
           empty="Nothing active."
           rowKey={(r) => `${r.game_key}/${r.product_id}`}
           columns={[
-            { title: "App", cell: (r) => r.game_key },
+            { title: "App", cell: (r) => appName(r.game_key) },
             { title: "Product", cell: (r) => <Mono>{r.product_id}</Mono> },
             { title: "Type", cell: (r) => r.kind === "subscription" ? "subscription" : "non-consumable" },
             { title: "Expires", cell: (r) => <span className="whitespace-nowrap">{r.expires_ms ? fmtMs(r.expires_ms) : "never"}</span> },

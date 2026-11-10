@@ -69,12 +69,12 @@ export function Shell({ route, go, me, onSignOut, children }: {
   useEffect(() => {
     moduleVersion().then(setVersion)
   }, [])
-  const title = "key" in route ? route.key : "userId" in route ? route.userId : PAGES[route.page]?.title
   const all = groups || []
+  const title = "key" in route ? all.find((g) => g.key === route.key)?.name || route.key : "userId" in route ? route.userId : PAGES[route.page]?.title
   /** With many apps the sidebar shows a search box and only the first ones (plus the open app). */
   const visible = useMemo(() => {
     const f = filter.trim().toLowerCase()
-    if (f) return all.filter((g) => g.key.toLowerCase().includes(f) || g.apps.some((a) => a.app_id.toLowerCase().includes(f)))
+    if (f) return all.filter((g) => g.name.toLowerCase().includes(f) || g.key.toLowerCase().includes(f) || g.apps.some((a) => a.app_id.toLowerCase().includes(f)))
     const first = all.slice(0, SIDEBAR_APPS)
     const open = "key" in route ? all.find((g) => g.key === route.key) : undefined
     return open && !first.includes(open) ? [...first, open] : first
@@ -128,7 +128,7 @@ export function Shell({ route, go, me, onSignOut, children }: {
                         <SidebarMenuSubItem key={g.key}>
                           <SidebarMenuSubButton asChild isActive={"key" in route && route.key === g.key}>
                             <button type="button" title={g.apps.map((a) => a.app_id).join(", ")} onClick={() => go(appRoute(g.key, "key" in route ? route.tab : "setup"))}>
-                              <span>{g.key}</span>
+                              <span>{g.name}</span>
                             </button>
                           </SidebarMenuSubButton>
                         </SidebarMenuSubItem>

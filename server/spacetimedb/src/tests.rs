@@ -5,7 +5,7 @@
 use super::*;
 use crate::config::secret_name;
 use crate::{
-    access_token_cache, admin, credential, game_app, product, retry_schedule, AccessTokenCache, Admin, Credential, Purchase,
+    access_token_cache, admin, app_profile, credential, game_app, product, retry_schedule, AccessTokenCache, Admin, Credential, Purchase,
     RetrySchedule,
 };
 use purser_core::model::{kind, status};
@@ -605,6 +605,27 @@ fn admin_reducers_require_an_admin() {
         tx.db.admin().insert(Admin { identity: Identity::ZERO, protected: true });
     });
     assert_eq!(upsert(), Ok(()));
+}
+
+#[test]
+fn app_display_name_is_set_and_cleared() {
+    let w = World::new();
+    let game_key = w.read(|tx| tx.db.game_app().app_id().find(&APP.to_string()).unwrap().game_key);
+    let set = |key: &str, name: &str| {
+        w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_set_app_name(ctx, key.into(), name.into()))
+    };
+    let name = || w.read(|tx| tx.db.app_profile().game_key().find(&game_key).map(|p| p.display_name));
+
+    assert!(set(&game_key, "Bluff").unwrap_err().contains("ERR_ADMIN_UNAUTHORIZED"));
+    w.as_admin(false);
+    assert_eq!(set(&game_key, "  Bluff   Card Game "), Ok(()));
+    assert_eq!(name().as_deref(), Some("Bluff Card Game"));
+    assert_eq!(set(&game_key, "Bluff 2"), Ok(()));
+    assert_eq!(name().as_deref(), Some("Bluff 2"));
+    assert!(set("no-such-app", "X").unwrap_err().contains("ERR_UNKNOWN_APP"));
+    assert!(set(&game_key, &"x".repeat(81)).unwrap_err().contains("ERR_BAD_NAME"));
+    assert_eq!(set(&game_key, " "), Ok(()));
+    assert_eq!(name(), None, "an empty name shows the key again");
 }
 
 // ---------------------------------------------------------------------

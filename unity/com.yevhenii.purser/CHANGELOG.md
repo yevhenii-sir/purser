@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Fallback prices: `BillingProductConfig.fallbackPrice` / `fallbackCurrency` (`WithFallbackPrice`) fill
+  `StoreProduct.Price`, `Currency` and `LocalizedPrice` when the store gives no price (Steam, Stripe, Xsolla, the
+  Editor); `StoreProduct.IsFallbackPrice` marks them, and they are not sent to the server as the purchase price. The
+  config JSON carries them as `price` / `currency` in both directions.
+- **Open admin panel** in the config inspector.
+
 ## [0.2.0] - 2026-11-10
 
 ### Breaking

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using UnityEngine;
 
@@ -46,6 +47,14 @@ namespace Purser
         [Tooltip("Stores where the product has another id (e.g. a reverse-domain App Store id).")]
         public List<StoreProductId> storeIds = new List<StoreProductId>();
 
+        [Tooltip("Price shown when the store has none (Steam, Stripe, Xsolla, the Editor), and the default price of the " +
+                 "product when the config is imported into the admin panel. 0 = none.")]
+        [Min(0)]
+        public double fallbackPrice;
+
+        [Tooltip("ISO 4217 currency of the fallback price, e.g. USD.")]
+        public string fallbackCurrency;
+
         public BillingProductConfig() { }
 
         public BillingProductConfig(string id, BillingProductType type, params StoreProductId[] storeIds)
@@ -54,6 +63,21 @@ namespace Purser
             this.type = type;
             this.storeIds = storeIds?.ToList() ?? new List<StoreProductId>();
         }
+
+        /// <summary>Sets the fallback price (fluent, for configs built in code).</summary>
+        public BillingProductConfig WithFallbackPrice(double price, string currency)
+        {
+            fallbackPrice = price;
+            fallbackCurrency = currency;
+            return this;
+        }
+
+        /// <summary>True when a fallback price and its currency are set.</summary>
+        public bool HasFallbackPrice => fallbackPrice > 0 && !string.IsNullOrEmpty(fallbackCurrency);
+
+        /// <summary>The fallback price as text, e.g. <c>0.99 USD</c>; empty without one.</summary>
+        public string FallbackPriceText =>
+            HasFallbackPrice ? fallbackPrice.ToString("0.00", CultureInfo.InvariantCulture) + " " + fallbackCurrency.ToUpperInvariant() : "";
 
         /// <summary>Sets the product's id in one store (fluent, for configs built in code).</summary>
         public BillingProductConfig WithStoreId(string store, string storeProductId)

@@ -179,7 +179,7 @@ namespace Purser.Tests
                 ""builds"": [{""store"": ""google"", ""appId"": ""com.example.mygame""}, {""store"": ""apple"", ""appId"": ""com.example.mygame.ios""},
                              {""store"": ""stripe"", ""appId"": ""com.example.mygame.web""}],
                 ""products"": [{""id"": ""gems_100"", ""type"": ""Consumable""}, {""id"": ""no_ads"", ""type"": ""non_consumable""},
-                               {""id"": ""vip"", ""type"": ""Subscription"", ""storeIds"": {""apple"": ""vip_ios""}}]}");
+                               {""id"": ""vip"", ""type"": ""Subscription"", ""storeIds"": {""apple"": ""vip_ios""}, ""price"": 4.99, ""currency"": ""usd""}]}");
 
             Assert.AreEqual("https://maincloud.spacetimedb.com/v1/database/my-billing/route", config.serverBaseUrl);
             Assert.AreEqual("com.example.mygame.ios", config.AppIdFor(BillingStores.Apple));
@@ -190,10 +190,13 @@ namespace Purser.Tests
             Assert.AreEqual(BillingProductType.NonConsumable, config.products[1].type);
             Assert.AreEqual("vip_ios", config.products[2].StoreId(BillingStores.Apple));
             Assert.AreEqual("vip", config.products[2].StoreId(BillingStores.Google));
+            Assert.AreEqual((4.99, "USD"), (config.products[2].fallbackPrice, config.products[2].fallbackCurrency));
+            Assert.IsFalse(config.products[0].HasFallbackPrice);
             CollectionAssert.IsEmpty(config.Validate());
             Assert.Throws<FormatException>(() => config.ApplyJson(@"{""products"": [{""id"": ""x"", ""type"": ""gold""}]}"));
             Assert.Throws<FormatException>(() => config.ApplyJson(@"{""androidAppId"": ""com.example.mygame""}"), "the old format");
             Assert.Throws<FormatException>(() => config.ApplyJson("not json"));
+            Assert.Throws<FormatException>(() => config.ApplyJson(@"{""products"": [{""id"": ""x"", ""type"": ""Consumable"", ""price"": ""cheap""}]}"));
             UnityEngine.Object.DestroyImmediate(config);
         }
 
@@ -202,13 +205,16 @@ namespace Purser.Tests
         {
             var config = BillingConfig.Create("https://b.example.com/route",
                 new BillingProductConfig("gems_100", BillingProductType.Consumable),
-                new BillingProductConfig("vip", BillingProductType.Subscription).WithStoreId(BillingStores.Apple, "com.example.vip"));
+                new BillingProductConfig("vip", BillingProductType.Subscription).WithStoreId(BillingStores.Apple, "com.example.vip")
+                    .WithFallbackPrice(4.99, "EUR"));
             config.WithBuild(BillingStores.Google, "com.example.mygame").WithBuild(BillingStores.Xsolla, "com.example.mygame.web");
 
             var json = JObject.Parse(config.ToJson());
             Assert.AreEqual("xsolla", (string)json["builds"][1]["store"]);
             Assert.IsNull(json["products"][0]["storeIds"], "no overrides, no storeIds");
             Assert.AreEqual("com.example.vip", (string)json["products"][1]["storeIds"]["apple"]);
+            Assert.AreEqual((4.99, "EUR"), ((double)json["products"][1]["price"], (string)json["products"][1]["currency"]));
+            Assert.IsNull(json["products"][0]["price"], "no fallback price, no price");
 
             var copy = BillingConfig.Create("https://other.example.com/route");
             copy.ApplyJson(config.ToJson());
@@ -216,6 +222,7 @@ namespace Purser.Tests
             Assert.AreEqual("com.example.mygame.web", copy.AppIdFor(BillingStores.Xsolla));
             Assert.AreEqual("com.example.vip", copy.products[1].StoreId(BillingStores.Apple));
             Assert.AreEqual(BillingProductType.Subscription, copy.products[1].type);
+            Assert.AreEqual((4.99, "EUR"), (copy.products[1].fallbackPrice, copy.products[1].fallbackCurrency));
             UnityEngine.Object.DestroyImmediate(config);
             UnityEngine.Object.DestroyImmediate(copy);
         }
@@ -228,10 +235,12 @@ namespace Purser.Tests
             config.builds.Add(new BillingBuild("google", "com.example.other"));
             config.builds.Add(new BillingBuild("apple", ""));
             config.builds.Add(new BillingBuild("paddle", "com.example.mygame.web"));
+            config.products[0].fallbackPrice = 0.99;
             var problems = config.Validate();
             Assert.That(problems, Has.Some.Contains("Two builds for the store 'google'"));
             Assert.That(problems, Has.Some.Contains("apple build has no app id"));
             Assert.That(problems, Has.Some.Contains("Unknown store 'paddle'"));
+            Assert.That(problems, Has.Some.Contains("three-letter currency"));
             UnityEngine.Object.DestroyImmediate(config);
         }
 

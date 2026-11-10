@@ -289,8 +289,10 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
         const have = apps.map((a) => find(a, productIdIn(u, storeOf(a).id)))
         const some = have.find(Boolean)
         const status = !some ? "new" : have.every((p) => p && p.kind === u.kind) ? "same" : "changed"
+        const serverPrice = some && Number(some.default_price_micros) > 0
         return {
-          product_id: u.product_id, kind: u.kind, price_micros: some ? Number(some.default_price_micros) : 0, currency: some?.currency || "",
+          product_id: u.product_id, kind: u.kind,
+          price_micros: serverPrice ? Number(some.default_price_micros) : u.price_micros, currency: serverPrice ? some.currency : u.currency,
           billing_period_days: 0, status, local_kind: some?.kind || "",
         }
       })
@@ -308,7 +310,10 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
       const had = find(a, product_id)
       return {
         app_id: a.app_id, product_id, kind: p.kind,
-        default_price_micros: had ? Number(had.default_price_micros) : p.default_price_micros, currency: had ? had.currency : p.currency,
+        // The server's price wins; the Unity fallback price is used where there is none.
+        ...(had && Number(had.default_price_micros) > 0
+          ? { default_price_micros: Number(had.default_price_micros), currency: had.currency }
+          : { default_price_micros: p.default_price_micros, currency: p.currency }),
       }
     }))
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Saved ${picked.length} product(s)`)
