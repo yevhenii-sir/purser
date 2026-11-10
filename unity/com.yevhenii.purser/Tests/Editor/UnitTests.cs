@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
@@ -171,11 +172,11 @@ namespace Purser.Tests
         }
 
         [Test]
-        public void ApplyJson_TakesTheAdminPanelConfig()
+        public void MergeJson_TakesTheAdminPanelConfig()
         {
             var config = BillingConfig.Create(BillingConfig.DefaultServerUrl, new BillingProductConfig("old", BillingProductType.Consumable));
             config.requestTimeoutSeconds = 7;
-            config.ApplyJson(@"{""serverBaseUrl"": ""https://maincloud.spacetimedb.com/v1/database/my-billing/route/"",
+            config.MergeJson(@"{""serverBaseUrl"": ""https://maincloud.spacetimedb.com/v1/database/my-billing/route/"",
                 ""builds"": [{""store"": ""google"", ""appId"": ""com.example.mygame""}, {""store"": ""apple"", ""appId"": ""com.example.mygame.ios""},
                              {""store"": ""stripe"", ""appId"": ""com.example.mygame.web""}],
                 ""products"": [{""id"": ""gems_100"", ""type"": ""Consumable""}, {""id"": ""no_ads"", ""type"": ""non_consumable""},
@@ -186,22 +187,24 @@ namespace Purser.Tests
             Assert.AreEqual("com.example.mygame.web", config.AppIdFor(BillingStores.Stripe));
             Assert.AreEqual(Application.identifier, config.AppIdFor(BillingStores.Xsolla), "a store without a build");
             Assert.AreEqual(7, config.requestTimeoutSeconds, "fields missing in the JSON are kept");
-            Assert.AreEqual(3, config.products.Count);
-            Assert.AreEqual(BillingProductType.NonConsumable, config.products[1].type);
-            Assert.AreEqual("vip_ios", config.products[2].StoreId(BillingStores.Apple));
-            Assert.AreEqual("vip", config.products[2].StoreId(BillingStores.Google));
-            Assert.AreEqual((4.99, "USD"), (config.products[2].fallbackPrice, config.products[2].fallbackCurrency));
-            Assert.IsFalse(config.products[0].HasFallbackPrice);
+            Assert.AreEqual(4, config.products.Count, "the product only this config has stays");
+            Assert.IsNotNull(config.FindById("old"));
+            Assert.AreEqual(BillingProductType.NonConsumable, config.FindById("no_ads").type);
+            var vip = config.FindById("vip");
+            Assert.AreEqual("vip_ios", vip.StoreId(BillingStores.Apple));
+            Assert.AreEqual("vip", vip.StoreId(BillingStores.Google));
+            Assert.AreEqual((4.99, "USD"), (vip.fallbackPrice, vip.fallbackCurrency));
+            Assert.IsFalse(config.FindById("gems_100").HasFallbackPrice);
             CollectionAssert.IsEmpty(config.Validate());
-            Assert.Throws<FormatException>(() => config.ApplyJson(@"{""products"": [{""id"": ""x"", ""type"": ""gold""}]}"));
-            Assert.Throws<FormatException>(() => config.ApplyJson(@"{""androidAppId"": ""com.example.mygame""}"), "the old format");
-            Assert.Throws<FormatException>(() => config.ApplyJson("not json"));
-            Assert.Throws<FormatException>(() => config.ApplyJson(@"{""products"": [{""id"": ""x"", ""type"": ""Consumable"", ""price"": ""cheap""}]}"));
+            Assert.Throws<FormatException>(() => config.MergeJson(@"{""products"": [{""id"": ""x"", ""type"": ""gold""}]}"));
+            Assert.Throws<FormatException>(() => config.MergeJson(@"{""androidAppId"": ""com.example.mygame""}"), "the old format");
+            Assert.Throws<FormatException>(() => config.MergeJson("not json"));
+            Assert.Throws<FormatException>(() => config.MergeJson(@"{""products"": [{""id"": ""x"", ""type"": ""Consumable"", ""price"": ""cheap""}]}"));
             UnityEngine.Object.DestroyImmediate(config);
         }
 
         [Test]
-        public void ToJson_RoundTripsThroughApplyJson()
+        public void ToJson_RoundTripsThroughMergeJson()
         {
             var config = BillingConfig.Create("https://b.example.com/route",
                 new BillingProductConfig("gems_100", BillingProductType.Consumable),
@@ -217,7 +220,7 @@ namespace Purser.Tests
             Assert.IsNull(json["products"][0]["price"], "no fallback price, no price");
 
             var copy = BillingConfig.Create("https://other.example.com/route");
-            copy.ApplyJson(config.ToJson());
+            copy.MergeJson(config.ToJson());
             Assert.AreEqual(config.serverBaseUrl, copy.serverBaseUrl);
             Assert.AreEqual("com.example.mygame.web", copy.AppIdFor(BillingStores.Xsolla));
             Assert.AreEqual("com.example.vip", copy.products[1].StoreId(BillingStores.Apple));
@@ -225,6 +228,78 @@ namespace Purser.Tests
             Assert.AreEqual((4.99, "EUR"), (copy.products[1].fallbackPrice, copy.products[1].fallbackCurrency));
             UnityEngine.Object.DestroyImmediate(config);
             UnityEngine.Object.DestroyImmediate(copy);
+        }
+
+        private const string AdminConfig = @"{
+            ""builds"": [{""store"": ""google"", ""appId"": ""com.example.mygame""}, {""store"": ""apple"", ""appId"": ""com.example.mygame.ios""}],
+            ""products"": [{""id"": ""com.example.premium"", ""type"": ""Subscription"", ""price"": 12.99, ""currency"": ""USD""},
+                           {""id"": ""gems_100"", ""type"": ""Consumable""}]}";
+
+        private static BillingConfig UnityFirstConfig()
+        {
+            var config = BillingConfig.Create("https://b.example.com/route",
+                new BillingProductConfig("premium", BillingProductType.Subscription)
+                    .WithStoreId(BillingStores.Apple, "com.example.premium").WithFallbackPrice(9.99, "USD"),
+                new BillingProductConfig("unity_only", BillingProductType.Consumable));
+            config.WithBuild(BillingStores.Google, "com.example.mygame").WithBuild(BillingStores.Steam, "480");
+            return config;
+        }
+
+        [Test]
+        public void MergeJson_Additive_AddsAndUpdatesAndKeepsTheRest()
+        {
+            var config = UnityFirstConfig();
+
+            var preview = config.PreviewJson(AdminConfig).Select(c => c.ToString()).ToList();
+            Assert.AreEqual(2, config.products.Count, "a preview changes nothing");
+            Assert.AreEqual(2, config.builds.Count);
+            CollectionAssert.AreEqual(new[]
+            {
+                "+ Build apple: com.example.mygame.ios",
+                "~ Product premium: price 9.99 USD → 12.99 USD",
+                "+ Product gems_100: Consumable",
+            }, preview);
+
+            CollectionAssert.AreEqual(preview, config.MergeJson(AdminConfig).Select(c => c.ToString()));
+            Assert.AreEqual(12.99, config.FindById("premium").fallbackPrice, "matched by its App Store id");
+            Assert.AreEqual("com.example.premium", config.FindById("premium").StoreId(BillingStores.Apple));
+            Assert.IsNotNull(config.FindById("unity_only"));
+            Assert.AreEqual("480", config.AppIdFor(BillingStores.Steam));
+            CollectionAssert.IsEmpty(config.PreviewJson(AdminConfig), "nothing left to change");
+            UnityEngine.Object.DestroyImmediate(config);
+        }
+
+        [Test]
+        public void MergeJson_Mirror_RemovesWhatTheAdminPanelDoesNotHave()
+        {
+            var config = UnityFirstConfig();
+
+            var changes = config.MergeJson(AdminConfig, ConfigMergeMode.Mirror).Select(c => c.ToString()).ToList();
+
+            Assert.That(changes, Has.Member("- Build steam: 480"));
+            Assert.That(changes, Has.Member("- Product unity_only: Consumable"));
+            Assert.IsNull(config.FindById("unity_only"));
+            Assert.AreEqual(Application.identifier, config.AppIdFor(BillingStores.Steam));
+            Assert.AreEqual("com.example.premium", config.FindById("premium").StoreId(BillingStores.Apple),
+                "the store id the product was matched by is not removed");
+            CollectionAssert.AreEquivalent(new[] { "premium", "gems_100" }, config.products.Select(p => p.id));
+
+            // A JSON without products (builds only) does not empty the products.
+            config.MergeJson(@"{""builds"": [{""store"": ""google"", ""appId"": ""com.example.mygame""}]}", ConfigMergeMode.Mirror);
+            Assert.AreEqual(2, config.products.Count);
+            Assert.AreEqual(1, config.builds.Count);
+            UnityEngine.Object.DestroyImmediate(config);
+        }
+
+        [Test]
+        public void MergeJson_InvalidJson_ChangesNothing()
+        {
+            var config = UnityFirstConfig();
+            Assert.Throws<FormatException>(() => config.MergeJson(@"{""builds"": [{""store"": ""apple"", ""appId"": ""com.x""}],
+                ""products"": [{""id"": ""x"", ""type"": ""gold""}]}", ConfigMergeMode.Mirror));
+            Assert.AreEqual(2, config.builds.Count);
+            Assert.AreEqual(2, config.products.Count);
+            UnityEngine.Object.DestroyImmediate(config);
         }
 
         [Test]

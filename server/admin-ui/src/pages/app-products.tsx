@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react"
-import { ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon } from "lucide-react"
+import { ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -10,14 +10,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
-import { call, proc, sqlWhereIn } from "@/lib/api"
+import { call, proc, publicRoute, sqlWhereIn } from "@/lib/api"
 import { buildLabel, storeById, storeOf } from "@/lib/stores"
 import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { KINDS, type CatalogRow, type GameApp, type Kind, type Product } from "@/lib/types"
 import type { TabProps } from "@/pages/app"
 import { appRoute } from "@/routes"
-import { parseUnityConfig, productIdIn, type UnityBuild } from "@/lib/unity-config"
+import { parseUnityConfig, productIdIn, toUnityConfig, type UnityBuild } from "@/lib/unity-config"
 
 interface Row {
   product_id: string
@@ -55,6 +55,16 @@ export function AppProductsTab({ data, go }: TabProps) {
     if (ok !== undefined) products.reload()
   }
 
+  /** The app's builds and products as the Unity config (inspector: Paste config from admin panel). */
+  const copyUnityConfig = async () => {
+    const products = rows.map((r) => {
+      const priced = g.apps.map((a) => r.by[a.app_id]).find((p) => p && Number(p.default_price_micros) > 0)
+      return { product_id: r.product_id, kind: r.kind, default_price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "" }
+    })
+    const text = toUnityConfig(await publicRoute(), g.apps.map((a) => ({ store: storeOf(a).id, app_id: a.app_id })), products)
+    await tryAct(() => navigator.clipboard.writeText(text), "Copied: in Unity press Paste config from admin panel")
+  }
+
   return (
     <>
       <Section
@@ -69,6 +79,8 @@ export function AppProductsTab({ data, go }: TabProps) {
               <Button key={to.app_id} variant="outline" size="sm" onClick={() => copyToOther(g.apps[0], to)}><CopyIcon /> Copy missing to {buildLabel(to)}</Button>
             ))}
             <Button variant="outline" size="sm" onClick={() => setDialog("unity")}><ClipboardPasteIcon /> Import from Unity</Button>
+            <Button variant="outline" size="sm" onClick={copyUnityConfig} disabled={!products.data}
+              title="The builds and products of this app for the Unity config inspector (Paste config from admin panel)"><ClipboardCopyIcon /> Copy Unity config</Button>
             <Button variant="outline" size="sm" onClick={() => setDialog("json")}><FileJsonIcon /> JSON</Button>
             <Button size="sm" onClick={() => setEditing("new")}><PlusIcon /> Add</Button>
           </>

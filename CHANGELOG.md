@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Copy Unity config** on an app's Products tab copies its builds and products (with default prices) for the Unity inspector without running the new app wizard; Unity previews the changes and merges them (add and update, or match the admin panel).
+
 - Unity config import and export carry prices: a pasted Unity config's fallback prices become the default prices of products that have none on the server (the server's price wins), and the wizard's Unity config includes the default prices. The Unity package fills `StoreProduct` from them where the store shows no price, and its inspector opens the admin page.
 
 - Apps can have a display name (the pencil next to an app's name in the admin page): shown in the header, the sidebar, the apps list, the command menu, revenue and player pages. The app key (`game_key`) stays as it is. New table `app_profile`, reducer `admin_set_app_name`; `seed.py` loads and exports `app_names.json`; the MCP `list_apps` tool returns the name.

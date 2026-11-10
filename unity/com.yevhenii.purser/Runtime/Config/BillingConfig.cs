@@ -104,15 +104,26 @@ namespace Purser
         }
 
         /// <summary>
-        /// Applies the config JSON copied from the admin panel (or from <see cref="ToJson"/>):
-        /// <c>{"serverBaseUrl", "builds": [{"store", "appId"}], "products": [{"id", "type", "storeIds": {"apple": "..."},
-        /// "price": 0.99, "currency": "USD"}]}</c> (<c>price</c> / <c>currency</c>: the fallback price).
-        /// Missing fields keep their value; <c>builds</c> and <c>products</c>, when present, replace the lists.
-        /// <c>type</c> accepts <c>Consumable</c> / <c>NonConsumable</c> / <c>Subscription</c> or the server's
-        /// <c>consumable</c> / <c>non_consumable</c> / <c>subscription</c>.
+        /// What <see cref="MergeJson"/> would change, without changing anything.
         /// </summary>
         /// <exception cref="FormatException">The JSON is not a Purser config.</exception>
-        public void ApplyJson(string json)
+        public List<ConfigChange> PreviewJson(string json, ConfigMergeMode mode = ConfigMergeMode.Additive) => Merge(json, mode, false);
+
+        /// <summary>
+        /// Merges the config JSON copied from the admin panel (or from <see cref="ToJson"/>) into this config and returns
+        /// what changed: <c>{"serverBaseUrl", "builds": [{"store", "appId"}], "products": [{"id", "type",
+        /// "storeIds": {"apple": "..."}, "price": 0.99, "currency": "USD"}]}</c> (<c>price</c> / <c>currency</c>: the
+        /// fallback price). A build is matched by its store, a product by its id or any of its store ids.
+        /// <see cref="ConfigMergeMode.Additive"/> only adds and updates: builds and products only in this config stay.
+        /// <see cref="ConfigMergeMode.Mirror"/> also removes them and the store ids the JSON does not list, so the
+        /// config matches the admin panel (fallback prices are kept where the JSON has none). <c>type</c> accepts
+        /// <c>Consumable</c> / <c>NonConsumable</c> / <c>Subscription</c> or the server's <c>consumable</c> /
+        /// <c>non_consumable</c> / <c>subscription</c>. An invalid JSON changes nothing.
+        /// </summary>
+        /// <exception cref="FormatException">The JSON is not a Purser config.</exception>
+        public List<ConfigChange> MergeJson(string json, ConfigMergeMode mode = ConfigMergeMode.Additive) => Merge(json, mode, true);
+
+        private List<ConfigChange> Merge(string json, ConfigMergeMode mode, bool apply)
         {
             JObject o;
             try
@@ -127,13 +138,120 @@ namespace Purser
                 if (o[legacy] != null)
                     throw new FormatException($"'{legacy}' is from an older Purser: copy the config again from the admin panel");
 
-            var parsedBuilds = o["builds"] is JArray b ? ParseBuilds(b) : null;
-            var parsedProducts = o["products"] is JArray p ? ParseProducts(p) : null;
-            serverBaseUrl = ((string)o["serverBaseUrl"])?.TrimEnd('/') ?? serverBaseUrl;
-            if (parsedBuilds != null)
-                builds = parsedBuilds;
-            if (parsedProducts != null)
-                products = parsedProducts;
+            // Parse everything first: a bad item must not leave a half-merged config.
+            var incomingBuilds = o["builds"] is JArray b ? ParseBuilds(b) : new List<BillingBuild>();
+            var incomingProducts = o["products"] is JArray p ? ParseProducts(p) : new List<BillingProductConfig>();
+            // Mirror only the lists the JSON has: a config without "products" does not empty the products.
+            var mirrorBuilds = mode == ConfigMergeMode.Mirror && o["builds"] is JArray;
+            var mirrorProducts = mode == ConfigMergeMode.Mirror && o["products"] is JArray;
+            var url = ((string)o["serverBaseUrl"])?.Trim().TrimEnd('/');
+            var changes = new List<ConfigChange>();
+
+            if (!string.IsNullOrEmpty(url) && url != serverBaseUrl)
+            {
+                changes.Add(new ConfigChange(ConfigChangeKind.Updated, "Server URL", $"{serverBaseUrl} → {url}"));
+                if (apply)
+                    serverBaseUrl = url;
+            }
+
+            if (apply && builds == null)
+                builds = new List<BillingBuild>();
+            foreach (var incoming in incomingBuilds)
+            {
+                var current = builds?.Find(x => x != null && x.store == incoming.store);
+                if (current == null)
+                {
+                    changes.Add(new ConfigChange(ConfigChangeKind.Added, $"Build {incoming.store}", incoming.appId));
+                    if (apply)
+                        builds.Add(incoming);
+                }
+                else if (current.appId != incoming.appId)
+                {
+                    changes.Add(new ConfigChange(ConfigChangeKind.Updated, $"Build {incoming.store}", $"{current.appId} → {incoming.appId}"));
+                    if (apply)
+                        current.appId = incoming.appId;
+                }
+            }
+
+            if (mirrorBuilds)
+            {
+                foreach (var stale in (builds ?? new List<BillingBuild>()).Where(x => x != null && incomingBuilds.All(i => i.store != x.store)).ToList())
+                {
+                    changes.Add(new ConfigChange(ConfigChangeKind.Removed, $"Build {stale.store}", stale.appId));
+                    if (apply)
+                        builds.Remove(stale);
+                }
+            }
+
+            if (apply && products == null)
+                products = new List<BillingProductConfig>();
+            var matched = new HashSet<BillingProductConfig>();
+            foreach (var incoming in incomingProducts)
+            {
+                var current = products?.Find(x => x != null && x.id == incoming.id)
+                              ?? products?.Find(x => x != null && incoming.AllIds().Any(x.Matches));
+                if (current == null)
+                {
+                    changes.Add(new ConfigChange(ConfigChangeKind.Added, $"Product {incoming.id}", Describe(incoming)));
+                    if (apply)
+                        products.Add(incoming);
+                    matched.Add(incoming);
+                    continue;
+                }
+                matched.Add(current);
+                var staleIds = mirrorProducts
+                    ? (current.storeIds ?? new List<StoreProductId>())
+                        // A store id the incoming product is known by (it matched by it) is not stale.
+                        .Where(s => s != null && !string.IsNullOrEmpty(s.id) && !incoming.AllIds().Contains(s.id) &&
+                                    (incoming.storeIds ?? new List<StoreProductId>()).All(i => i.store != s.store))
+                        .ToList()
+                    : new List<StoreProductId>();
+                var diffs = new List<string>();
+                if (current.type != incoming.type)
+                    diffs.Add($"type {current.type} → {incoming.type}");
+                foreach (var s in incoming.storeIds ?? new List<StoreProductId>())
+                {
+                    var old = current.StoreId(s.store);
+                    if (old != s.id)
+                        diffs.Add($"{s.store} id {old} → {s.id}");
+                }
+                foreach (var s in staleIds)
+                    diffs.Add($"{s.store} id {s.id} removed");
+                var priceChanged = incoming.HasFallbackPrice && incoming.FallbackPriceText != current.FallbackPriceText;
+                if (priceChanged)
+                    diffs.Add($"price {(current.HasFallbackPrice ? current.FallbackPriceText : "none")} → {incoming.FallbackPriceText}");
+                if (diffs.Count == 0)
+                    continue;
+                changes.Add(new ConfigChange(ConfigChangeKind.Updated, $"Product {current.id}", string.Join("; ", diffs)));
+                if (!apply)
+                    continue;
+                current.type = incoming.type;
+                foreach (var s in incoming.storeIds ?? new List<StoreProductId>())
+                    current.WithStoreId(s.store, s.id);
+                foreach (var s in staleIds)
+                    current.storeIds.Remove(s);
+                if (priceChanged)
+                    current.WithFallbackPrice(incoming.fallbackPrice, incoming.fallbackCurrency.ToUpperInvariant());
+            }
+            if (mirrorProducts)
+            {
+                foreach (var stale in (products ?? new List<BillingProductConfig>()).Where(x => x != null && !matched.Contains(x)).ToList())
+                {
+                    changes.Add(new ConfigChange(ConfigChangeKind.Removed, $"Product {stale.id}", Describe(stale)));
+                    if (apply)
+                        products.Remove(stale);
+                }
+            }
+            return changes;
+        }
+
+        private static string Describe(BillingProductConfig p)
+        {
+            var parts = new List<string> { p.type.ToString() };
+            parts.AddRange((p.storeIds ?? new List<StoreProductId>()).Where(s => s != null).Select(s => $"{s.store} id {s.id}"));
+            if (p.HasFallbackPrice)
+                parts.Add(p.FallbackPriceText);
+            return string.Join("; ", parts);
         }
 
         private static List<BillingBuild> ParseBuilds(JArray items)
@@ -178,7 +296,7 @@ namespace Purser
             return parsed;
         }
 
-        /// <summary>The config as JSON for the admin panel ("Paste from Unity"); the inverse of <see cref="ApplyJson"/>.</summary>
+        /// <summary>The config as JSON for the admin panel ("Paste from Unity"); the inverse of <see cref="MergeJson"/>.</summary>
         public string ToJson()
         {
             var o = new JObject

@@ -45,7 +45,7 @@ namespace Purser.Editor
                     m_Copied = $"Copied {config.builds?.Count ?? 0} builds and {config.products?.Count ?? 0} products.";
                 }
                 if (GUILayout.Button(new GUIContent("Paste config from admin panel",
-                        "Applies the Unity config JSON copied from the admin panel")))
+                        "Shows what the Unity config JSON copied from the admin panel changes, then applies it")))
                     PasteConfig(config);
             }
 
@@ -82,17 +82,22 @@ namespace Purser.Editor
 
         private void PasteConfig(BillingConfig config)
         {
-            Undo.RecordObject(config, "Paste billing config");
+            var json = EditorGUIUtility.systemCopyBuffer;
             try
             {
-                config.ApplyJson(EditorGUIUtility.systemCopyBuffer);
-                EditorUtility.SetDirty(config);
-                m_Problems = config.Validate();
+                config.PreviewJson(json);
             }
             catch (System.Exception e)
             {
                 m_Problems = new List<string> { "The clipboard does not contain the admin panel's Unity config: " + e.Message };
+                return;
             }
+            m_Copied = null;
+            ConfigSyncWindow.Open(config, json, problems =>
+            {
+                m_Problems = problems;
+                Repaint();
+            });
         }
 
         private void StartPing(BillingConfig config)
@@ -110,6 +115,124 @@ namespace Purser.Editor
                 m_Ping = null;
                 Repaint();
             };
+        }
+    }
+
+    /// <summary>
+    /// What pasting the admin panel's config changes, before it is applied: additive (add and update) or a mirror of the
+    /// admin panel (also removes what it does not have). Applying is one undo step.
+    /// </summary>
+    internal sealed class ConfigSyncWindow : EditorWindow
+    {
+        private BillingConfig m_Config;
+        private string m_Json;
+        private System.Action<List<string>> m_Done;
+        private ConfigMergeMode m_Mode = ConfigMergeMode.Additive;
+        private List<ConfigChange> m_Changes = new List<ConfigChange>();
+        private string m_Error;
+        private Vector2 m_Scroll;
+
+        private static readonly GUIContent[] ModeLabels =
+        {
+            new GUIContent("Add and update", "Keeps builds, products and store ids that only this config has"),
+            new GUIContent("Match the admin panel", "Also removes builds, products and store ids the admin panel does not have"),
+        };
+
+        public static void Open(BillingConfig config, string json, System.Action<List<string>> done)
+        {
+            var w = CreateInstance<ConfigSyncWindow>();
+            w.titleContent = new GUIContent("Sync from admin panel");
+            w.m_Config = config;
+            w.m_Json = json;
+            w.m_Done = done;
+            w.minSize = new Vector2(560, 340);
+            w.Refresh();
+            w.ShowUtility();
+        }
+
+        private void Refresh()
+        {
+            try
+            {
+                m_Changes = m_Config.PreviewJson(m_Json, m_Mode);
+                m_Error = null;
+            }
+            catch (System.Exception e)
+            {
+                m_Changes = new List<ConfigChange>();
+                m_Error = e.Message;
+            }
+        }
+
+        private void OnGUI()
+        {
+            if (m_Config == null)
+            {
+                Close();
+                return;
+            }
+            EditorGUILayout.Space();
+            var mode = (ConfigMergeMode)GUILayout.Toolbar((int)m_Mode, ModeLabels);
+            if (mode != m_Mode)
+            {
+                m_Mode = mode;
+                Refresh();
+            }
+            EditorGUILayout.HelpBox(m_Mode == ConfigMergeMode.Additive
+                    ? "Adds new builds and products and updates the ones both sides have. What only this config has stays."
+                    : "Makes the builds and products match the admin panel: what it does not have is removed. " +
+                      "Fallback prices stay where the admin panel has no price.",
+                m_Mode == ConfigMergeMode.Additive ? MessageType.Info : MessageType.Warning);
+
+            if (m_Error != null)
+                EditorGUILayout.HelpBox(m_Error, MessageType.Error);
+            else if (m_Changes.Count == 0)
+                EditorGUILayout.HelpBox($"{m_Config.name} already matches: nothing to change.", MessageType.None);
+            else
+            {
+                var added = m_Changes.Count(c => c.Kind == ConfigChangeKind.Added);
+                var updated = m_Changes.Count(c => c.Kind == ConfigChangeKind.Updated);
+                var removed = m_Changes.Count(c => c.Kind == ConfigChangeKind.Removed);
+                EditorGUILayout.LabelField($"{m_Config.name}: {added} to add, {updated} to update, {removed} to remove", EditorStyles.boldLabel);
+                m_Scroll = EditorGUILayout.BeginScrollView(m_Scroll);
+                foreach (var c in m_Changes)
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        var (label, color) = c.Kind == ConfigChangeKind.Added ? ("Add", new Color(0.35f, 0.75f, 0.4f))
+                            : c.Kind == ConfigChangeKind.Removed ? ("Remove", new Color(0.9f, 0.4f, 0.35f))
+                            : ("Update", new Color(0.95f, 0.75f, 0.3f));
+                        var style = new GUIStyle(EditorStyles.miniBoldLabel) { normal = { textColor = color } };
+                        GUILayout.Label(label, style, GUILayout.Width(52));
+                        GUILayout.Label(c.Target, EditorStyles.boldLabel, GUILayout.Width(170));
+                        GUILayout.Label(c.Details, EditorStyles.wordWrappedLabel);
+                    }
+                }
+                EditorGUILayout.EndScrollView();
+            }
+
+            GUILayout.FlexibleSpace();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Cancel", GUILayout.Width(90)))
+                    Close();
+                using (new EditorGUI.DisabledScope(m_Error != null || m_Changes.Count == 0))
+                {
+                    if (GUILayout.Button("Apply", GUILayout.Width(90)))
+                        Apply();
+                }
+            }
+            EditorGUILayout.Space();
+        }
+
+        private void Apply()
+        {
+            Undo.RecordObject(m_Config, "Sync billing config from admin panel");
+            m_Config.MergeJson(m_Json, m_Mode);
+            EditorUtility.SetDirty(m_Config);
+            m_Done?.Invoke(m_Config.Validate());
+            Close();
         }
     }
 

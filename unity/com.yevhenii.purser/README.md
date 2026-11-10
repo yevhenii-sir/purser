@@ -30,8 +30,11 @@ To pin a specific version, append `#<tag or commit>` to the URL.
      `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route`, the builds and the products, press
      **Copy config for admin panel** and paste it in the admin panel (**Apps → Add an app → Paste from Unity**, or an
      app's **Products → Import from Unity**). The builds and products are created there.
-   - **Admin panel first**: finish **Apps → Add an app**, copy the *Unity config* from its last step and press
-     **Paste config from admin panel** in the config inspector.
+   - **Admin panel first**: copy the config from the app's **Products → Copy Unity config** (or the last step of
+     **Add an app**) and press **Paste config from admin panel** in the config inspector. A window lists what changes
+     before anything is applied, in one of two modes: **Add and update** (new builds and products are added, matching
+     ones updated, everything only Unity has stays) or **Match the admin panel** (also removes builds, products and store
+     ids the admin panel does not have). Applying is one undo step. In code: `PreviewJson` / `MergeJson(json, mode)`.
 
    The fields:
    - `builds` — one row per store the game sells in: the store (`google`, `apple`, `amazon`, `steam`, `stripe`,

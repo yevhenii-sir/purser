@@ -254,7 +254,7 @@ namespace Purser.Tests
         public void ConfigCarriesAmazonIds()
         {
             var config = BillingConfig.Create("https://b.example.com/route");
-            config.ApplyJson(@"{""builds"": [{""store"": ""google"", ""appId"": ""com.example.mygame""}, {""store"": ""amazon"", ""appId"": ""com.example.mygame.amazon""}],
+            config.MergeJson(@"{""builds"": [{""store"": ""google"", ""appId"": ""com.example.mygame""}, {""store"": ""amazon"", ""appId"": ""com.example.mygame.amazon""}],
                 ""products"": [{""id"": ""vip"", ""type"": ""subscription"", ""storeIds"": {""amazon"": ""vip_monthly""}}]}");
             Assert.AreEqual("com.example.mygame.amazon", config.AppIdFor(BillingStores.Amazon));
             Assert.AreEqual("com.example.mygame", config.AppIdFor(BillingStores.Google));
