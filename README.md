@@ -5,42 +5,43 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![SpacetimeDB 2.14.1](https://img.shields.io/badge/SpacetimeDB-2.14.1-6f42c1.svg)](https://spacetimedb.com)
 
-**In-app purchases for games on SpacetimeDB: live on maincloud in seconds, or self-hosted.** Purser is in-app purchase billing for mobile games, an open-source alternative to Adapty and RevenueCat. Google Play and App Store purchases are verified by your own SpacetimeDB module, rewards are delivered straight into the game, and the admin panel shows the setup status and the revenue.
+**In-app purchases for games on SpacetimeDB: live on maincloud in seconds, or self-hosted.** Purser is an open-source alternative to Adapty and RevenueCat: purchases from Google Play, the App Store, Amazon, Steam and the web are verified by your own SpacetimeDB module, rewards are delivered straight into the game, and the admin panel shows the setup status and the revenue.
 
-**Documentation:** [yevhenii-sir.github.io/purser](https://yevhenii-sir.github.io/purser/) (the same pages as [docs/](docs/)). **[Admin panel demo](https://yevhenii-sir.github.io/purser/demo/)**: read-only, with made-up apps and purchases, no sign-in.
+**[Documentation](https://yevhenii-sir.github.io/purser/)** · **[Admin panel demo](https://yevhenii-sir.github.io/purser/demo/)** (read-only, made-up data, no sign-in) · **[Latest release](https://github.com/yevhenii-sir/purser/releases/latest)**
 
-## Deploy in seconds
+```mermaid
+flowchart LR
+    client["<b>Game client</b><br/>Unity package<br/>or any engine over HTTP"]
+    purser["<b>Purser</b><br/>SpacetimeDB module<br/>ledger · retries<br/>revenue · admin panel"]
+    stores["<b>Stores</b><br/>Google Play · App Store<br/>Amazon · Steam<br/>Stripe · Xsolla"]
+    game["<b>Your game</b><br/>SpacetimeDB database<br/>or backend"]
+    tools["<b>Analytics and attribution</b><br/>GA4 · AppsFlyer · Adjust<br/>Tenjin · AppMetrica<br/>webhook · Cloud Storage"]
 
-Have a [SpacetimeDB](https://spacetimedb.com) account? Purser runs on SpacetimeDB **maincloud** with nothing else to set up: no server, no database, no containers. Sign in once with `spacetime login`, then:
+    client -->|"POST /verify, /restore"| purser
+    purser <-->|"verify, consume, acknowledge"| stores
+    stores -.->|"renewals, refunds"| purser
+    purser -->|"grant / revoke: reducer or signed webhook"| game
+    purser -->|"purchase events"| tools
+```
+
+## Quick start
+
+Have a [SpacetimeDB](https://spacetimedb.com) account? There is nothing else to host: no server, no database, no containers. Install the [SpacetimeDB CLI](https://spacetimedb.com/install) 2.14.1 or newer, sign in with `spacetime login`, then, outside a SpacetimeDB project folder:
 
 ```bash
 curl -LO https://github.com/yevhenii-sir/purser/releases/latest/download/purser.wasm
 spacetime publish --server maincloud --bin-path purser.wasm <your-billing-db>
 ```
 
-Open `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin`, sign in with your token (`spacetime login show --token`) and add your first app. Prefer your own hardware? The same module runs on a self-hosted SpacetimeDB ([Docker setup](deploy/docker/README.md)).
+1. Open `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin` and sign in with your token (`spacetime login show --token`).
+2. Apps → **Add an app**: package / bundle ids, how rewards reach the game, store keys ([store setup](docs/store-setup.md)), products. The last step checks everything and shows the URLs to paste into Play Console and App Store Connect.
+3. Unity: add the package, create the config (Tools → Purser → Create Config) and press **Paste config from admin panel**:
+   ```json
+   "com.yevhenii.purser": "https://github.com/yevhenii-sir/purser.git?path=/unity/com.yevhenii.purser"
+   ```
+   Other engines use plain HTTP + JSON ([OpenAPI spec](docs/openapi.yaml)); the game grants rewards in its own reducers, a webhook or on the client ([game integration](docs/game-integration.md)).
 
-## Why
-
-- **Yours, hosted either way.** One SpacetimeDB module: published to maincloud with one command, or on your own server ([Docker setup](deploy/docker/README.md)). No third-party service sits between the stores and your game.
-- **No revenue share.** MIT-licensed and free; you pay only for your own hosting.
-- **Your data.** The purchase ledger, players' entitlements and revenue live in your database. Export them to your warehouse whenever you want.
-- **Open source.** Read, audit and change how purchases are verified and rewards are delivered.
-
-```
-┌──────────── client (Unity / GameMaker / …) ────────────┐
-│  Unity: unity/com.yevhenii.purser (Unity IAP 5)        │
-└──────────────┬─────────────────────────────────────────┘
-               │ POST /verify, /restore, /entitlements
-               ▼
-┌──────── server/ — SpacetimeDB module (Rust) ───────────┐       Google Play Developer API
-│  transaction ledger, consume/acknowledge, retries,     │◀────▶ App Store Server API
-│  store notifications (RTDN, ASSN v2), revenue, GA4     │◀───── RTDN / Server Notifications
-└──────────────┬─────────────────────────────────────────┘
-               │ grant / revoke: SpacetimeDB reducer or HMAC-signed webhook
-               ▼
-          game database / backend
-```
+Prefer your own hardware? [deploy/docker](deploy/docker/README.md) runs SpacetimeDB with automatic HTTPS. **Upgrading** is publishing the new `purser.wasm` to the same database; never use `--delete-data`, it deletes the purchase ledger. Step-by-step guide: [Getting started](docs/getting-started.md).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/admin-revenue-dark.png">
@@ -52,25 +53,16 @@ Open `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admi
   <img alt="Admin panel: an app's setup check" src="docs/images/admin-setup.png">
 </picture>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/admin-integrations-dark.png">
-  <img alt="Admin panel: an app's integrations (analytics, attribution, webhook, Cloud Storage export)" src="docs/images/admin-integrations.png">
-</picture>
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/admin-player-dark.png">
-  <img alt="Admin panel: a player's purchases and entitlements" src="docs/images/admin-player.png">
-</picture>
-
 ## Features
 
-- **Server-side verification** of Google Play and App Store purchases, consume / acknowledge, restore, entitlements shared between the Android and iOS apps of a game.
-- **A ledger with retries**: rewards are delivered exactly once even when the game server is down; refunds, renewals and expirations come from store notifications.
-- **Admin panel** served by the module and organized by app (one product with its Android and iOS builds): an *Add an app* wizard, a setup check with fix hints for every store and delivery setting, products with Google Play import, integrations, keys, purchases, revenue, logs.
-- **Revenue dashboard**: net revenue, refunds, subscriptions and MRR in USD (ECB rates), by app, product and currency.
-- **Integrations**: GA4, AppsFlyer, Adjust, Tenjin and AppMetrica server-to-server events, a signed JSON webhook, raw event export to Google Cloud Storage (BigQuery), and Apple Ads campaign attribution in the Unity SDK.
-- **Unity package** on Unity IAP 5 with VContainer / Zenject adapters; any other engine works over plain HTTP + JSON ([OpenAPI spec](docs/openapi.yaml)).
-- **Runs anywhere SpacetimeDB runs**: maincloud, or your own server with [Docker Compose and automatic HTTPS](deploy/docker/README.md).
+- **Stores**: Google Play, App Store, Amazon Appstore, Steam and web payments (Stripe, Xsolla). Server-side verification, consume / acknowledge, restore, entitlements shared between all builds of a game.
+- **A ledger with retries**: rewards are delivered exactly once even when the game server is down; refunds, renewals and expirations come from store notifications. Optionally answers App Store refund requests with consumption data.
+- **Admin panel** served by the module: an *Add an app* wizard, a setup check with fix hints, products with Google Play and App Store import, players, purchases, integrations, keys, logs.
+- **Revenue**: net revenue, refunds, subscriptions and MRR in USD (ECB rates), by app, product, country and currency.
+- **Paywalls and A/B tests** as remote config, and **alerts** to Telegram, Slack, Discord or a webhook when deliveries fail or keys are rejected.
+- **Integrations**: GA4, AppsFlyer, Adjust, Tenjin and AppMetrica server-to-server events, a signed JSON webhook, raw event export to Google Cloud Storage (BigQuery).
+- **Unity package** on Unity IAP 5 with VContainer / Zenject adapters and Apple Ads attribution.
+- **Configuration as code** (`server/seed.py`: upload, export, a setup wizard) and an **[MCP server](docs/mcp.md)** to ask Claude about revenue, players and the setup.
 
 ## Compared with Adapty and RevenueCat
 
@@ -89,27 +81,6 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | Integrations | GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, webhook, Cloud Storage | Many analytics, attribution and marketing integrations |
 | Operations | You run and upgrade it | The vendor runs it |
 
-## Quick start
-
-1. Install the [SpacetimeDB CLI](https://spacetimedb.com/install) 2.14.1 or newer and sign in: `spacetime login`.
-2. Download the module from the [latest release](https://github.com/yevhenii-sir/purser/releases/latest) and publish it (outside a SpacetimeDB project folder):
-   ```bash
-   curl -LO https://github.com/yevhenii-sir/purser/releases/latest/download/purser.wasm
-   spacetime publish --server maincloud --bin-path purser.wasm <your-billing-db>
-   ```
-3. Open the admin panel at `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin` and sign in with your token (`spacetime login show --token`). If you created the database in the SpacetimeDB dashboard before publishing, the panel first asks you to **finish the installation**: one click registers you as the owner admin and starts the worker (an update does not run the module's `init`).
-4. Apps → **Add an app**: enter the package / bundle ids, choose how rewards reach the app, upload the store keys ([docs/store-setup.md](docs/store-setup.md)), import or enter products. The last step checks everything and shows the URLs to paste into Play Console and App Store Connect. The app's **Setup** tab repeats the check until it is green.
-5. Unity: add the package to `Packages/manifest.json`, create the config (Tools → Purser → Create Config) and press **Paste config from admin panel**:
-   ```json
-   "com.yevhenii.purser": "https://github.com/yevhenii-sir/purser.git?path=/unity/com.yevhenii.purser"
-   ```
-
-Prefer your own server? [deploy/docker](deploy/docker/README.md) runs SpacetimeDB, publishes the module and adds an HTTPS proxy with `docker compose`.
-
-Your game grants rewards in its own SpacetimeDB reducers or webhook, or on the client if it has no backend: see [docs/game-integration.md](docs/game-integration.md).
-
-**Upgrading:** publish the new `purser.wasm` to the same database name. Never use `--delete-data`: it deletes the purchase ledger.
-
 ## Documentation
 
 | | |
@@ -127,21 +98,6 @@ Your game grants rewards in its own SpacetimeDB reducers or webhook, or on the c
 | [docs/migrating-from-adapty.md](docs/migrating-from-adapty.md) | Running next to Adapty, legacy reducers, moving the ledger between servers |
 | [server/README.md](server/README.md) | Server reference: tables, secrets, HTTP API, admin calls, `seed.py` |
 | [unity/com.yevhenii.purser/README.md](unity/com.yevhenii.purser/README.md) | Unity package |
-
-## Configuration as code
-
-Instead of the admin panel, the configuration can live in JSON files (`server/seed.example`) and be uploaded with `server/seed.py`, which also runs the setup check:
-
-```bash
-cd server
-cp spacetime.example.json spacetime.json   # set your database name
-cp -r seed.example secrets                 # fill in apps, products and keys; secrets/ is git-ignored
-python seed.py --check
-```
-
-`python seed.py --init` walks through a first setup from the terminal instead, and `python seed.py --export backup` writes an existing database's configuration (without secret values) to files in the same format.
-
-Secrets never live in the repository: they are stored in the module's private tables and can be bound to an app, to a developer account or set as the default. The admin panel never reads them back.
 
 ## Building from source
 
