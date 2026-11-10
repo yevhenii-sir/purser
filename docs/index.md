@@ -1,12 +1,12 @@
 # Purser
 
-Self-hosted in-app purchase billing for mobile games and apps, an open-source alternative to Adapty and RevenueCat. Google Play and App Store purchases are verified by your own [SpacetimeDB](https://spacetimedb.com) module, rewards are delivered straight into the game, and the admin panel shows the setup status and the revenue.
+In-app purchase billing for mobile games and apps on [SpacetimeDB](https://spacetimedb.com), live on maincloud in seconds or self-hosted: an open-source alternative to Adapty and RevenueCat. Google Play and App Store purchases are verified by your own SpacetimeDB module, rewards are delivered straight into the game, and the admin panel shows the setup status and the revenue.
 
-[Get started](getting-started.md){ .md-button .md-button--primary } [Self-host with Docker](self-hosting.md){ .md-button } [Admin panel demo](https://yevhenii-sir.github.io/purser/demo/){ .md-button }
+[Deploy to maincloud](getting-started.md#on-maincloud){ .md-button .md-button--primary } [Self-host with Docker](self-hosting.md){ .md-button } [Admin panel demo](https://yevhenii-sir.github.io/purser/demo/){ .md-button }
 
 ```
 ┌──────────── client (Unity / GameMaker / …) ────────────┐
-│  Unity: unity/com.yevhenii.purser (Unity IAP 5)  │
+│  Unity: unity/com.yevhenii.purser (Unity IAP 5)        │
 └──────────────┬─────────────────────────────────────────┘
                │ POST /verify, /restore, /entitlements
                ▼

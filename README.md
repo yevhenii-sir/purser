@@ -5,20 +5,31 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![SpacetimeDB 2.14.1](https://img.shields.io/badge/SpacetimeDB-2.14.1-6f42c1.svg)](https://spacetimedb.com)
 
-**Self-hosted in-app purchases for games on SpacetimeDB.** Purser is in-app purchase billing for mobile games, an open-source alternative to Adapty and RevenueCat. Google Play and App Store purchases are verified by your own SpacetimeDB module, rewards are delivered straight into the game, and the admin panel shows the setup status and the revenue.
+**In-app purchases for games on SpacetimeDB: live on maincloud in seconds, or self-hosted.** Purser is in-app purchase billing for mobile games, an open-source alternative to Adapty and RevenueCat. Google Play and App Store purchases are verified by your own SpacetimeDB module, rewards are delivered straight into the game, and the admin panel shows the setup status and the revenue.
 
 **Documentation:** [yevhenii-sir.github.io/purser](https://yevhenii-sir.github.io/purser/) (the same pages as [docs/](docs/)). **[Admin panel demo](https://yevhenii-sir.github.io/purser/demo/)**: read-only, with made-up apps and purchases, no sign-in.
 
+## Deploy in seconds
+
+Have a [SpacetimeDB](https://spacetimedb.com) account? Purser runs on SpacetimeDB **maincloud** with nothing else to set up: no server, no database, no containers. Sign in once with `spacetime login`, then:
+
+```bash
+curl -LO https://github.com/yevhenii-sir/purser/releases/latest/download/purser.wasm
+spacetime publish --server maincloud --bin-path purser.wasm <your-billing-db>
+```
+
+Open `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin`, sign in with your token (`spacetime login show --token`) and add your first app. Prefer your own hardware? The same module runs on a self-hosted SpacetimeDB ([Docker setup](deploy/docker/README.md)).
+
 ## Why
 
-- **Self-hosted.** One SpacetimeDB module on maincloud or on your own server ([Docker setup](deploy/docker/README.md)). No third-party service sits between the stores and your game.
+- **Yours, hosted either way.** One SpacetimeDB module: published to maincloud with one command, or on your own server ([Docker setup](deploy/docker/README.md)). No third-party service sits between the stores and your game.
 - **No revenue share.** MIT-licensed and free; you pay only for your own hosting.
 - **Your data.** The purchase ledger, players' entitlements and revenue live in your database. Export them to your warehouse whenever you want.
 - **Open source.** Read, audit and change how purchases are verified and rewards are delivered.
 
 ```
 ┌──────────── client (Unity / GameMaker / …) ────────────┐
-│  Unity: unity/com.yevhenii.purser (Unity IAP 5)  │
+│  Unity: unity/com.yevhenii.purser (Unity IAP 5)        │
 └──────────────┬─────────────────────────────────────────┘
                │ POST /verify, /restore, /entitlements
                ▼

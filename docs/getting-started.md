@@ -6,7 +6,7 @@ From nothing to a verified test purchase. You need a Google Play and / or App St
 
 ### On maincloud
 
-Install the [SpacetimeDB CLI](https://spacetimedb.com/install) 2.14.1 or newer and sign in with `spacetime login`. Then download the module from the [latest release](https://github.com/yevhenii-sir/purser/releases/latest) and publish it (outside a SpacetimeDB project folder):
+The fastest way: with a SpacetimeDB account there is nothing to host, and the module is live a few seconds after the publish. Install the [SpacetimeDB CLI](https://spacetimedb.com/install) 2.14.1 or newer and sign in with `spacetime login`. Then download the module from the [latest release](https://github.com/yevhenii-sir/purser/releases/latest) and publish it (outside a SpacetimeDB project folder):
 
 ```bash
 curl -LO https://github.com/yevhenii-sir/purser/releases/latest/download/purser.wasm
