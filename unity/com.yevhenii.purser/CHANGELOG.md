@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-10
+
 ### Breaking
 
 - `BillingConfig` is keyed by the server's store id instead of fixed per-platform fields: `builds` (`{store, appId}`,

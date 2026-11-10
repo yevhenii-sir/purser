@@ -245,22 +245,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "purser-core"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "hex",
- "hmac",
- "p256",
- "rand 0.8.5",
- "rsa",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2959,6 +2943,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "purser"
+version = "0.2.0"
+dependencies = [
+ "http",
+ "log",
+ "p256",
+ "purser-core",
+ "serde",
+ "serde_json",
+ "spacetimedb",
+]
+
+[[package]]
+name = "purser-core"
+version = "0.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "hex",
+ "hmac",
+ "p256",
+ "rand 0.8.5",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4413,19 +4426,6 @@ dependencies = [
  "spacetimedb-query",
  "spacetimedb-schema",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "purser"
-version = "0.1.0"
-dependencies = [
- "purser-core",
- "http",
- "log",
- "p256",
- "serde",
- "serde_json",
- "spacetimedb",
 ]
 
 [[package]]
