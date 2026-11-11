@@ -69,6 +69,29 @@ pub fn period_days(iso: &str) -> u32 {
     }
 }
 
+/// Longest product title kept on a product row (the longest any store accepts; Create in store
+/// checks each store's own limit).
+pub const LISTING_TITLE_MAX: usize = 55;
+/// Longest product description kept on a product row.
+pub const LISTING_DESCRIPTION_MAX: usize = 200;
+/// Longest Apple subscription group name.
+pub const LISTING_GROUP_MAX: usize = 64;
+
+/// Checks the store listing fields of a product row (title, description, subscription period and
+/// Apple subscription group, all optional: they prefill Create in store).
+pub fn check_listing(title: &str, description: &str, period: &str, apple_group: &str) -> Result<(), String> {
+    let too_long = |what: &str, v: &str, max: usize| {
+        if v.chars().count() > max { Err(format!("{what} is longer than {max} characters")) } else { Ok(()) }
+    };
+    too_long("the title", title, LISTING_TITLE_MAX)?;
+    too_long("the description", description, LISTING_DESCRIPTION_MAX)?;
+    too_long("the Apple subscription group", apple_group, LISTING_GROUP_MAX)?;
+    if !period.is_empty() && !crate::store_create::PERIODS.contains(&period) {
+        return Err(format!("the period must be one of {}", crate::store_create::PERIODS.join(", ")));
+    }
+    Ok(())
+}
+
 /// Picks the US price, otherwise the first one.
 fn reference_price<'a>(configs: impl Iterator<Item = &'a Value>, price_key: &str) -> (i64, String) {
     let configs: Vec<&Value> = configs.collect();
@@ -366,6 +389,15 @@ mod tests {
         assert_eq!((p[1].price_micros, p[1].currency.as_str()), (99_000_000, "UAH"));
         assert_eq!((p[2].price_micros, p[2].kind.as_str()), (0, "consumable"));
         assert_eq!(parse_one_time_products("{}").unwrap(), (vec![], None));
+    }
+
+    #[test]
+    fn checks_listing_fields() {
+        assert!(check_listing("", "", "", "").is_ok());
+        assert!(check_listing("Premium", "All levels", "P1M", "Premium").is_ok());
+        assert!(check_listing("Premium", "", "P2M", "").unwrap_err().contains("P1W"));
+        assert!(check_listing(&"x".repeat(56), "", "", "").unwrap_err().contains("title"));
+        assert!(check_listing("", &"x".repeat(201), "", "").unwrap_err().contains("description"));
     }
 
     #[test]

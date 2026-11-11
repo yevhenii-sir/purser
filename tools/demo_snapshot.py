@@ -102,6 +102,14 @@ GAMES = {
         ],
     },
 }
+# Store listing of some products (title, description, period, App Store subscription group).
+LISTING = {
+    "gems_small": {"title": "Handful of gems", "description": "100 gems to speed up your mining"},
+    "no_ads": {"title": "No ads", "description": "Removes every ad, forever"},
+    "vip_monthly": {"title": "VIP", "description": "Double rewards and no ads", "period": "P1M", "apple_group": "VIP"},
+    "vip_yearly": {"title": "VIP (yearly)", "description": "Double rewards and no ads", "period": "P1Y", "apple_group": "VIP"},
+    "plus_monthly": {"title": "Word Garden Plus", "description": "Unlimited hints and daily puzzles", "period": "P1M", "apple_group": "Plus"},
+}
 COUNTRIES = [("US", "USD", 1.0, 34), ("GB", "GBP", 0.79, 8), ("DE", "EUR", 0.92, 9), ("FR", "EUR", 0.92, 6),
              ("BR", "BRL", 5.0, 9), ("JP", "JPY", 150.0, 7), ("CA", "CAD", 1.36, 6), ("AU", "AUD", 1.52, 4),
              ("IN", "INR", 83.0, 7), ("PL", "PLN", 3.95, 4), ("ES", "EUR", 0.92, 4), ("MX", "MXN", 17.0, 2)]
@@ -296,7 +304,8 @@ def main():
             if st == "google":
                 srv.call("admin_set_credential", app, "google_rtdn_secret", "%032x" % rnd.getrandbits(128))
             srv.call("admin_upsert_products", json.dumps([
-                {"app_id": app, "product_id": p, "kind": k, "default_price_micros": int(usd * 1e6), "currency": "USD"} for p, k, usd, _ in d["products"]]))
+                {"app_id": app, "product_id": p, "kind": k, "default_price_micros": int(usd * 1e6), "currency": "USD", **LISTING.get(p, {})}
+                for p, k, usd, _ in d["products"]]))
     for app in ("com.example.galaxyminer", "com.example.galaxyminer.ios"):
         srv.call("admin_upsert_integration", json.dumps({"app_id": app, "kind": "ga4", "enabled": True,
                                                           "settings": {"firebase_app_id": "1:123456789012:android:0a1b2c3d4e5f6a7b" if "ios" not in app else "1:123456789012:ios:0a1b2c3d4e5f6a7b"}}))

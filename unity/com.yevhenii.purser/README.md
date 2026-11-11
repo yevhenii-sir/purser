@@ -43,11 +43,14 @@ To pin a specific version, append `#<tag or commit>` to the URL.
      `stripe` and an `xsolla` build: each adapter sends its own app id.
    - `products` — `id` (what the game code uses), `type` (Consumable / NonConsumable / Subscription),
      `storeIds`: rows for the stores where the product has another id (e.g. a reverse-domain App Store id), and an
-     optional `fallbackPrice` + `fallbackCurrency`.
+     optional `fallbackPrice` + `fallbackCurrency`, and for subscriptions `fallbackPeriod` (`P1M`).
    - The fallback price is shown when the store gives none (Steam, Stripe, Xsolla, the Editor): `StoreProduct.Price`,
      `Currency` and `LocalizedPrice` (`0.99 USD`) are filled from it and `IsFallbackPrice` is set. It is never reported
      to the server as revenue. Copied into the admin panel, it becomes the default price of products that have none
      there; pasted back from the admin panel, the server's default prices fill it.
+   - `StoreProduct.SubscriptionPeriod` (`P1M`; `SubscriptionPeriodDays` 30) shows "$4.99 / month" and compares plans.
+     Google Play reports it; the App Store does not through Unity IAP 5, so iOS (and Steam, web stores, the Editor) use
+     `fallbackPeriod` and set `IsFallbackPeriod`. The admin panel's config fills it from the product's period.
 3. The **Validate** and **Ping server** buttons in the config inspector check the settings and whether the server is
    reachable; **Open admin panel** opens the server's admin page (`{serverBaseUrl}/admin`).
 

@@ -1,3 +1,4 @@
+import { PERIODS } from "./periods"
 import { storeById } from "./stores"
 import type { Kind, Platform } from "./types"
 
@@ -8,11 +9,12 @@ import type { Kind, Platform } from "./types"
  * {"serverBaseUrl": "https://.../route",
  *  "builds": [{"store": "google", "appId": "com.example.mygame"}],
  *  "products": [{"id": "gems_100", "type": "Consumable", "storeIds": {"apple": "com.example.gems100"},
- *                "price": 0.99, "currency": "USD"}]}
+ *                "price": 0.99, "currency": "USD", "period": "P1M"}]}
  * ```
  *
  * `store` is a registry store id; `storeIds` lists only the stores whose product id differs from `id`.
- * `price` / `currency` (optional) are the Unity fallback price and the server's default price.
+ * `price` / `currency` (optional) are the Unity fallback price and the server's default price; `period` (optional,
+ * subscriptions) is the Unity fallback period and the product's period here.
  */
 
 export interface UnityBuild {
@@ -29,6 +31,8 @@ export interface UnityProduct {
   /** Fallback price of the Unity config (0 = none). */
   price_micros: number
   currency: string
+  /** Subscriptions: fallback period (`P1M`), "" if none. */
+  period: string
 }
 
 export interface ParsedUnityConfig {
@@ -108,8 +112,10 @@ export function parseUnityConfig(text: string): ParsedUnityConfig {
       currency = str(p.currency).toUpperCase()
       if (price_micros > 0 && !/^[A-Z]{3}$/.test(currency)) throw new Error(`Product ${id}: the price needs a three-letter "currency" (USD, EUR, ...)`)
     }
+    const period = kind === "subscription" ? str(p.period).toUpperCase() : ""
+    if (period && !PERIODS.some(([v]) => v === period)) throw new Error(`Product ${id}: "period" must be one of ${PERIODS.map(([v]) => v).join(", ")}`)
     const j = products.findIndex((x) => x.product_id === id)
-    const item = { product_id: id, kind, store_ids, price_micros, currency }
+    const item = { product_id: id, kind, store_ids, price_micros, currency, period }
     if (j >= 0) products[j] = item
     else products.push(item)
   }
@@ -127,7 +133,7 @@ export function productIdIn(p: { product_id: string; store_ids?: Record<string, 
 export function toUnityConfig(
   base: string,
   builds: { store: string; app_id: string }[],
-  products: { product_id: string; kind: Kind; store_ids?: Record<string, string>; default_price_micros?: number; currency?: string }[],
+  products: { product_id: string; kind: Kind; store_ids?: Record<string, string>; default_price_micros?: number; currency?: string; period?: string }[],
 ): string {
   const stores = [...new Set(builds.map((b) => b.store))]
   return JSON.stringify(
@@ -140,7 +146,8 @@ export function toUnityConfig(
           const id = p.product_id.trim()
           const storeIds = Object.fromEntries(stores.map((s) => [s, productIdIn(p, s).trim()]).filter(([, v]) => v && v !== id))
           const price = Number(p.default_price_micros || 0) > 0 && p.currency ? { price: Number(p.default_price_micros) / 1e6, currency: p.currency } : {}
-          return { id, type: UNITY_TYPE[p.kind], ...(Object.keys(storeIds).length ? { storeIds } : {}), ...price }
+          const period = p.kind === "subscription" && p.period ? { period: p.period } : {}
+          return { id, type: UNITY_TYPE[p.kind], ...(Object.keys(storeIds).length ? { storeIds } : {}), ...price, ...period }
         }),
     },
     null,

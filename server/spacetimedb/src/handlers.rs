@@ -724,14 +724,7 @@ fn notification_fetch_error(e: StoreError) -> Outcome {
 
 /// A catalog product, or a subscription the catalog does not list (RTDN names subscriptions).
 fn product_or_subscription(app: &GameApp, product: Option<Product>, product_id: &str, default_kind: &str) -> Product {
-    product.unwrap_or_else(|| Product {
-        key: crate::product_key(&app.app_id, product_id),
-        app_id: app.app_id.clone(),
-        product_id: product_id.to_string(),
-        kind: default_kind.to_string(),
-        default_price_micros: 0,
-        currency: String::new(),
-    })
+    product.unwrap_or_else(|| Product::new(&app.app_id, product_id, default_kind))
 }
 
 /// Notification health of a build whose store authenticates notifications with a secret in the

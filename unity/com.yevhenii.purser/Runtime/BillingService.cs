@@ -171,7 +171,7 @@ namespace Purser
             await m_Store.ConnectAsync(ct);
             ThrowIfDisposed();
             var products = m_Config.products.Where(p => p != null && !string.IsNullOrEmpty(p.id)).ToList();
-            m_Products = (await m_Store.FetchProductsAsync(products, ct)).Select(WithFallbackPrice).ToList();
+            m_Products = (await m_Store.FetchProductsAsync(products, ct)).Select(WithFallbacks).ToList();
             ThrowIfDisposed();
             m_Log.Info($"Initialized: {m_Products.Count} products, store {m_Store.Store} ({AppId})");
 
@@ -186,16 +186,24 @@ namespace Purser
                 RefreshInBackground();
         }
 
-        /// <summary>The config's fallback price for a product the store gave no price for.</summary>
-        private StoreProduct WithFallbackPrice(StoreProduct p)
+        /// <summary>The config's fallback price and subscription period where the store gave none.</summary>
+        private StoreProduct WithFallbacks(StoreProduct p)
         {
-            if (p == null || p.Price > 0 || !string.IsNullOrEmpty(p.LocalizedPrice))
-                return p;
+            if (p == null)
+                return null;
             var config = m_Config.FindById(p.Id);
-            if (config == null || !config.HasFallbackPrice)
+            if (config == null)
                 return p;
-            return new StoreProduct(p.Id, p.StoreId, p.Type, config.FallbackPriceText, (decimal)config.fallbackPrice,
-                config.fallbackCurrency.ToUpperInvariant(), p.Title, p.Description, p.AvailableToPurchase, p.Native, true);
+            var price = p.Price <= 0 && string.IsNullOrEmpty(p.LocalizedPrice) && config.HasFallbackPrice;
+            var period = p.Type == BillingProductType.Subscription && p.SubscriptionPeriod.Length == 0 && config.HasFallbackPeriod;
+            if (!price && !period)
+                return p;
+            return new StoreProduct(p.Id, p.StoreId, p.Type,
+                price ? config.FallbackPriceText : p.LocalizedPrice,
+                price ? (decimal)config.fallbackPrice : p.Price,
+                price ? config.fallbackCurrency.ToUpperInvariant() : p.Currency,
+                p.Title, p.Description, p.AvailableToPurchase, p.Native, price || p.IsFallbackPrice,
+                period ? config.fallbackPeriod : p.SubscriptionPeriod, period || p.IsFallbackPeriod);
         }
 
         private const string RefundConsentKey = "purser.refund_data_consent";

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Products keep an optional store listing: title, description, and for subscriptions the billing period and the App Store subscription group (new `product` columns `title`, `description`, `period`, `apple_group`).
+  - Edited in the product dialog; Create in store starts from it and saves what it used.
+  - The store catalog import fills the period, Download JSON / From JSON carry the fields, and the Products table shows "/ month" next to a subscription's price.
+  - `admin_upsert_products` takes the fields optionally: a field left out keeps its value, so older callers (`seed.py`, scripts) do not erase them.
+- The Unity config carries a subscription's period (`period`), both ways.
+
 ## 0.4.0 - 2026-11-11
 
 - Admin roles: Owner, Admin, Editor, Support, Viewer. Every admin reducer and procedure checks the caller's role.

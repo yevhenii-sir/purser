@@ -202,7 +202,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         if (!s.products.length) {
           s.products = products
             .filter((p) => p.app_id === firstApp)
-            .map((p) => ({ product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency }))
+            .map((p) => ({ product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency, ...(p.period ? { period: p.period } : {}) }))
         }
         setW(s)
       } else if (step === 1) {
@@ -249,7 +249,10 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         const valid = w.products.filter((p) => p.product_id.trim())
         const items = apps()
           .filter((a) => a.products)
-          .flatMap((a) => valid.map((p) => ({ app_id: a.app_id, product_id: productIdIn(p, a.store).trim(), kind: p.kind, default_price_micros: p.default_price_micros || 0, currency: p.currency || "" })))
+          .flatMap((a) => valid.map((p) => ({
+            app_id: a.app_id, product_id: productIdIn(p, a.store).trim(), kind: p.kind, default_price_micros: p.default_price_micros || 0, currency: p.currency || "",
+            ...(p.period && p.kind === "subscription" ? { period: p.period } : {}),
+          })))
         if (items.length) {
           onChange()
           await call("admin_upsert_products", JSON.stringify(items))
@@ -328,8 +331,9 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         const i = products.findIndex((p) => p.product_id === u.product_id)
         // A price already entered here wins; the Unity fallback price fills the gaps.
         const priced = (p: PickedProduct) => (p.default_price_micros ? p : { ...p, default_price_micros: u.price_micros, currency: u.currency })
-        if (i >= 0) products[i] = priced({ ...products[i], kind: u.kind, store_ids: u.store_ids })
-        else products.push({ product_id: u.product_id, kind: u.kind, store_ids: u.store_ids, default_price_micros: u.price_micros, currency: u.currency })
+        const period = u.period ? { period: u.period } : {}
+        if (i >= 0) products[i] = priced({ ...period, ...products[i], kind: u.kind, store_ids: u.store_ids })
+        else products.push({ product_id: u.product_id, kind: u.kind, store_ids: u.store_ids, default_price_micros: u.price_micros, currency: u.currency, ...period })
       }
       const game_key = s.game_key || suggestGameKey(builds.map((b) => b.app_id))
       return { ...s, builds, products, game_key }

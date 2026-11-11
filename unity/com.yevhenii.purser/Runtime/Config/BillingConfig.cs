@@ -112,8 +112,8 @@ namespace Purser
         /// <summary>
         /// Merges the config JSON copied from the admin panel (or from <see cref="ToJson"/>) into this config and returns
         /// what changed: <c>{"serverBaseUrl", "builds": [{"store", "appId"}], "products": [{"id", "type",
-        /// "storeIds": {"apple": "..."}, "price": 0.99, "currency": "USD"}]}</c> (<c>price</c> / <c>currency</c>: the
-        /// fallback price). A build is matched by its store, a product by its id or any of its store ids.
+        /// "storeIds": {"apple": "..."}, "price": 0.99, "currency": "USD", "period": "P1M"}]}</c> (<c>price</c> /
+        /// <c>currency</c>: the fallback price; <c>period</c>: the fallback subscription period). A build is matched by its store, a product by its id or any of its store ids.
         /// <see cref="ConfigMergeMode.Additive"/> only adds and updates: builds and products only in this config stay.
         /// <see cref="ConfigMergeMode.Mirror"/> also removes them and the store ids the JSON does not list, so the
         /// config matches the admin panel (fallback prices are kept where the JSON has none). <c>type</c> accepts
@@ -220,6 +220,9 @@ namespace Purser
                 var priceChanged = incoming.HasFallbackPrice && incoming.FallbackPriceText != current.FallbackPriceText;
                 if (priceChanged)
                     diffs.Add($"price {(current.HasFallbackPrice ? current.FallbackPriceText : "none")} → {incoming.FallbackPriceText}");
+                var periodChanged = incoming.HasFallbackPeriod && incoming.fallbackPeriod != BillingPeriods.Normalize(current.fallbackPeriod);
+                if (periodChanged)
+                    diffs.Add($"period {(current.HasFallbackPeriod ? current.fallbackPeriod : "none")} → {incoming.fallbackPeriod}");
                 if (diffs.Count == 0)
                     continue;
                 changes.Add(new ConfigChange(ConfigChangeKind.Updated, $"Product {current.id}", string.Join("; ", diffs)));
@@ -232,6 +235,8 @@ namespace Purser
                     current.storeIds.Remove(s);
                 if (priceChanged)
                     current.WithFallbackPrice(incoming.fallbackPrice, incoming.fallbackCurrency.ToUpperInvariant());
+                if (periodChanged)
+                    current.WithFallbackPeriod(incoming.fallbackPeriod);
             }
             if (mirrorProducts)
             {
@@ -251,6 +256,8 @@ namespace Purser
             parts.AddRange((p.storeIds ?? new List<StoreProductId>()).Where(s => s != null).Select(s => $"{s.store} id {s.id}"));
             if (p.HasFallbackPrice)
                 parts.Add(p.FallbackPriceText);
+            if (p.HasFallbackPeriod)
+                parts.Add("every " + p.fallbackPeriod);
             return string.Join("; ", parts);
         }
 
@@ -287,6 +294,13 @@ namespace Purser
                         throw new FormatException($"product '{id}': price must be a number of at least 0");
                     product.WithFallbackPrice((double)price, ((string)item["currency"])?.Trim().ToUpperInvariant());
                 }
+                var period = (string)item["period"];
+                if (!string.IsNullOrWhiteSpace(period))
+                {
+                    if (BillingPeriods.Normalize(period).Length == 0)
+                        throw new FormatException($"product '{id}': period must be ISO 8601 like P1M, not '{period}'");
+                    product.WithFallbackPeriod(period);
+                }
                 if (item["storeIds"] is JObject storeIds)
                     foreach (var kv in storeIds)
                         if (!string.IsNullOrEmpty((string)kv.Value))
@@ -315,6 +329,8 @@ namespace Purser
                             item["price"] = Math.Round(p.fallbackPrice, 6);
                             item["currency"] = p.fallbackCurrency.ToUpperInvariant();
                         }
+                        if (p.HasFallbackPeriod)
+                            item["period"] = BillingPeriods.Normalize(p.fallbackPeriod);
                         var overrides = (p.storeIds ?? new List<StoreProductId>())
                             .Where(s => s != null && !string.IsNullOrEmpty(s.store) && !string.IsNullOrEmpty(s.id) && s.id != p.id)
                             .GroupBy(s => s.store)
@@ -403,6 +419,8 @@ namespace Purser
                         problems.Add($"Duplicate product id '{p.id}'.");
                     else if (p.fallbackPrice > 0 && (p.fallbackCurrency ?? "").Trim().Length != 3)
                         problems.Add($"Product '{p.id}': the fallback price needs a three-letter currency (USD, EUR, ...).");
+                    else if (!string.IsNullOrWhiteSpace(p.fallbackPeriod) && !p.HasFallbackPeriod)
+                        problems.Add($"Product '{p.id}': the fallback period must be ISO 8601 like P1M.");
                 }
             }
             return problems;

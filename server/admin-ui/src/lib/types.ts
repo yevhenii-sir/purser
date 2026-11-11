@@ -33,6 +33,19 @@ export interface Product {
   kind: Kind
   default_price_micros: number
   currency: string
+  /** Store listing used by Create in store (absent in rows read before the columns existed). */
+  title?: string
+  description?: string
+  /** Subscriptions: `P1M` etc. (`lib/periods.ts`), "" if unknown. */
+  period?: string
+  apple_group?: string
+}
+
+/** The store listing fields of a product as `admin_upsert_products` takes them (only the ones that are set). */
+export function listingOf(p: Partial<Pick<Product, "title" | "description" | "period" | "apple_group">> | undefined) {
+  const out: Record<string, string> = {}
+  for (const k of ["title", "description", "period", "apple_group"] as const) if (p?.[k]) out[k] = p[k]!
+  return out
 }
 
 export interface Purchase {
@@ -84,6 +97,8 @@ export interface CatalogRow {
   price_micros: number
   currency: string
   billing_period_days: number
+  /** Subscription period (`P1M`) when the source names it directly (a Unity config). */
+  period?: string
   status: "new" | "changed" | "same"
   local_kind: string
 }

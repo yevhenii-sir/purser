@@ -28,6 +28,8 @@ namespace Purser.Tests
         public bool RestoreCalled;
         /// <summary>The store reports no prices (like Steam or a web store).</summary>
         public bool NoPrices;
+        /// <summary>Subscription period the store reports for every subscription (like Google Play), or null.</summary>
+        public string Period;
         public bool Disposed;
 
         /// <summary>What happens on Purchase(storeId): return an order to deliver as pending, or null.</summary>
@@ -40,7 +42,8 @@ namespace Purser.Tests
             IReadOnlyList<StoreProduct> list = products
                 .Select(p => NoPrices
                     ? new StoreProduct(p.id, p.StoreId(Store), p.type, "", 0m, null, p.id, "", true)
-                    : new StoreProduct(p.id, p.StoreId(Store), p.type, "$0.99", 0.99m, "USD", p.id, "", true))
+                    : new StoreProduct(p.id, p.StoreId(Store), p.type, "$0.99", 0.99m, "USD", p.id, "", true,
+                        subscriptionPeriod: p.type == BillingProductType.Subscription ? Period : null))
                 .ToList();
             return Task.FromResult(list);
         }

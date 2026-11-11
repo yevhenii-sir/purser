@@ -461,14 +461,7 @@ pub fn fetch(ctx: &mut impl Ctx, app: &GameApp, product: &Product, r: &ReceiptRe
 }
 
 fn product_of(p: &crate::Purchase) -> Product {
-    Product {
-        key: crate::product_key(&p.app_id, &p.product_id),
-        app_id: p.app_id.clone(),
-        product_id: p.product_id.clone(),
-        kind: p.kind.clone(),
-        default_price_micros: 0,
-        currency: String::new(),
-    }
+    Product::new(&p.app_id, &p.product_id, &p.kind)
 }
 
 /// Product of a purchase the client names only by its order (Steam orders know their product).

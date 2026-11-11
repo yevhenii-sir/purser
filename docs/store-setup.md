@@ -270,6 +270,8 @@ Stripe reports the price paid (in the currency the customer paid; zero-decimal c
 - the price and currency;
 - for subscriptions, the billing period.
 
+The title, description, period and App Store subscription group start from the product's **store listing** (edited in the product dialog, and saved again after each product is created), so they are typed once for every store and build.
+
 **Check** shows, for every build and product, whether it will be created. A product the store already has is skipped and can be added to the build's products instead. Each product then runs as a job in the background; the list under the products shows its progress and errors. A finished product is added to the build's products.
 
 The store converts the price to the other countries:

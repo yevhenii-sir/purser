@@ -17,6 +17,10 @@
     "app_id": "com.example.mygame",
     "product_id": "vip_month",
     "kind": "subscription",
+    "title": "VIP",
+    "description": "All levels, no ads",
+    "period": "P1M",
+    "apple_group": "Premium",
     "default_price_micros": 4990000,
     "currency": "USD"
   },
@@ -45,6 +49,10 @@
     "app_id": "com.example.mygame.ios",
     "product_id": "vip_month",
     "kind": "subscription",
+    "title": "VIP",
+    "description": "All levels, no ads",
+    "period": "P1M",
+    "apple_group": "Premium",
     "default_price_micros": 4990000,
     "currency": "USD"
   },

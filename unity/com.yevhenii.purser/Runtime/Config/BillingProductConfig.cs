@@ -55,6 +55,11 @@ namespace Purser
         [Tooltip("ISO 4217 currency of the fallback price, e.g. USD.")]
         public string fallbackCurrency;
 
+        [Tooltip("Subscriptions: billing period shown when the store gives none (the App Store through Unity IAP, Steam, " +
+                 "web stores, the Editor), ISO 8601: P1W, P1M, P3M, P6M or P1Y. Empty = none. Comes with the admin " +
+                 "panel's config.")]
+        public string fallbackPeriod;
+
         public BillingProductConfig() { }
 
         public BillingProductConfig(string id, BillingProductType type, params StoreProductId[] storeIds)
@@ -71,6 +76,16 @@ namespace Purser
             fallbackCurrency = currency;
             return this;
         }
+
+        /// <summary>Sets the fallback subscription period, ISO 8601 such as <c>P1M</c> (fluent, for configs built in code).</summary>
+        public BillingProductConfig WithFallbackPeriod(string period)
+        {
+            fallbackPeriod = BillingPeriods.Normalize(period);
+            return this;
+        }
+
+        /// <summary>True when a valid fallback subscription period is set.</summary>
+        public bool HasFallbackPeriod => BillingPeriods.Normalize(fallbackPeriod).Length > 0;
 
         /// <summary>True when a fallback price and its currency are set.</summary>
         public bool HasFallbackPrice => fallbackPrice > 0 && !string.IsNullOrEmpty(fallbackCurrency);

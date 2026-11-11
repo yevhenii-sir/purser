@@ -135,14 +135,7 @@ impl World {
                 apple_refund_mode: String::new(),
             });
             for (id, k) in [("gems", kind::CONSUMABLE), ("no_ads", kind::NON_CONSUMABLE)] {
-                tx.db.product().insert(Product {
-                    key: crate::product_key(APP, id),
-                    app_id: APP.into(),
-                    product_id: id.into(),
-                    kind: k.into(),
-                    default_price_micros: 0,
-                    currency: String::new(),
-                });
+                tx.db.product().insert(Product::new(APP, id, k));
             }
             for (name, value) in [
                 (secret_name::GOOGLE_SERVICE_ACCOUNT_JSON, "{}"),
@@ -609,6 +602,36 @@ fn imported_ledger_prevents_granting_moved_purchases_again() {
     assert_eq!(w.purchase().status, status::COMPLETED);
     assert_eq!(w.calls("/call/"), 0);
     assert_eq!(w.calls(":consume"), 0);
+}
+
+#[test]
+fn product_listing_fields_are_kept_by_upserts_without_them() {
+    let w = World::new();
+    w.as_admin(true);
+    let upsert = |p: Value| w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_products(ctx, p.to_string()));
+    let row = || w.read(|tx| tx.db.product().key().find(crate::product_key(APP, "vip"))).unwrap();
+
+    upsert(json!({ "app_id": APP, "product_id": "vip", "kind": "subscription", "title": " VIP ", "description": "All levels",
+                   "period": "p1m", "apple_group": "Premium" }))
+    .unwrap();
+    let p = row();
+    assert_eq!((p.title.as_str(), p.description.as_str(), p.period.as_str(), p.apple_group.as_str()), ("VIP", "All levels", "P1M", "Premium"));
+
+    // A caller that does not know the fields (Unity config import, seed.py) keeps them.
+    upsert(json!({ "app_id": APP, "product_id": "vip", "kind": "subscription", "default_price_micros": 4_990_000, "currency": "USD" })).unwrap();
+    let p = row();
+    assert_eq!((p.title.as_str(), p.period.as_str(), p.default_price_micros), ("VIP", "P1M", 4_990_000));
+
+    // An empty value clears one; a bad period is refused.
+    upsert(json!({ "app_id": APP, "product_id": "vip", "kind": "subscription", "description": "" })).unwrap();
+    assert_eq!(row().description, "");
+    let err = upsert(json!({ "app_id": APP, "product_id": "vip", "kind": "subscription", "period": "P2M" })).unwrap_err();
+    assert!(err.contains("ERR_BAD_PRODUCT") && err.contains("P1W"), "{err}");
+
+    // Only subscriptions have a period and a group.
+    upsert(json!({ "app_id": APP, "product_id": "vip", "kind": "non_consumable", "period": "P1M" })).unwrap();
+    let p = row();
+    assert_eq!((p.title.as_str(), p.period.as_str(), p.apple_group.as_str()), ("VIP", "", ""));
 }
 
 #[test]
@@ -1929,12 +1952,9 @@ fn keep_google_token_valid(w: &World, days: i64) {
 fn add_subscription_product(w: &World) {
     w.write(|tx| {
         tx.db.product().insert(Product {
-            key: crate::product_key(APP, "vip"),
-            app_id: APP.into(),
-            product_id: "vip".into(),
-            kind: kind::SUBSCRIPTION.into(),
             default_price_micros: 4_990_000,
             currency: "USD".into(),
+            ..Product::new(APP, "vip", kind::SUBSCRIPTION)
         });
     });
 }
@@ -5146,6 +5166,12 @@ mod store_create_tests {
         assert!(calls.iter().any(|c| c.contains("/v1/subscriptions ") && c.contains("grp-1")), "the existing group is reused");
         assert!(!calls.iter().any(|c| c.starts_with("POST https://api.appstoreconnect.apple.com/v1/subscriptionGroups")));
         assert!(calls.iter().any(|c| c.contains("subscriptionPlanAvailabilities") && c.contains("JPN")));
+        let p = local(&w, IOS_APP, "vip_month").unwrap();
+        assert_eq!(
+            (p.title.as_str(), p.period.as_str(), p.apple_group.as_str()),
+            ("100 gems", "P1M", "Premium"),
+            "the listing used is kept for the next Create in store"
+        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DataTable, Mono, Tone } from "@/components/common"
 import { money } from "@/lib/format"
+import { periodOfDays } from "@/lib/periods"
 import type { CatalogRow, Kind } from "@/lib/types"
 
 export interface PickedProduct {
@@ -10,6 +11,8 @@ export interface PickedProduct {
   kind: Kind
   default_price_micros: number
   currency: string
+  /** Subscription period when the source knows it (store catalog, Unity config). */
+  period?: string
   /** Product id per store id where it differs from `product_id` (from a Unity config). */
   store_ids?: Record<string, string>
 }
@@ -30,7 +33,10 @@ export function CatalogPicker({ rows, onChange, empty = "The store has no produc
     onChange(
       rows
         .filter((r) => picked[r.product_id])
-        .map((r) => ({ product_id: r.product_id, kind: kinds[r.product_id], default_price_micros: r.price_micros, currency: r.currency })),
+        .map((r) => {
+          const period = kinds[r.product_id] === "subscription" ? r.period || periodOfDays(r.billing_period_days) : ""
+          return { product_id: r.product_id, kind: kinds[r.product_id], default_price_micros: r.price_micros, currency: r.currency, ...(period ? { period } : {}) }
+        }),
     )
   }, [rows, picked, kinds, onChange])
 

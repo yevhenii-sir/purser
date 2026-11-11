@@ -126,6 +126,35 @@ pub struct Product {
     /// Used for GA4 revenue when the store does not report a price (Google).
     pub default_price_micros: i64,
     pub currency: String,
+    /// Store listing, used to create the product in the stores (Create in store): English title.
+    #[default("")]
+    pub title: String,
+    #[default("")]
+    pub description: String,
+    /// Subscriptions: billing period, one of `purser_core::store_create::PERIODS` (`P1M`); "" if unknown.
+    #[default("")]
+    pub period: String,
+    /// Subscriptions: App Store subscription group (reference name).
+    #[default("")]
+    pub apple_group: String,
+}
+
+impl Product {
+    /// A product with no price and no store listing.
+    pub fn new(app_id: &str, product_id: &str, kind: &str) -> Self {
+        Product {
+            key: product_key(app_id, product_id),
+            app_id: app_id.to_string(),
+            product_id: product_id.to_string(),
+            kind: kind.to_string(),
+            default_price_micros: 0,
+            currency: String::new(),
+            title: String::new(),
+            description: String::new(),
+            period: String::new(),
+            apple_group: String::new(),
+        }
+    }
 }
 
 /// Secrets. `key` = `{scope}/{name}` where scope is an app id, an account name or `default`.
@@ -481,6 +510,15 @@ struct ProductInput {
     default_price_micros: i64,
     #[serde(default)]
     currency: String,
+    /// Store listing fields: a missing field keeps the stored value (older callers do not send them).
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    period: Option<String>,
+    #[serde(default)]
+    apple_group: Option<String>,
 }
 
 pub fn product_key(app_id: &str, product_id: &str) -> String {
@@ -522,15 +560,21 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
         if ctx.db.game_app().app_id().find(&i.app_id).is_none() {
             return Err(format!("[ERR_BAD_PRODUCT] unknown app_id {}", i.app_id));
         }
+        let old = ctx.db.product().key().find(product_key(&i.app_id, &i.product_id));
+        let keep = |new: Option<String>, old: Option<&String>| new.map(|s| s.trim().to_string()).unwrap_or_else(|| old.cloned().unwrap_or_default());
+        let subscription = i.kind == kind::SUBSCRIPTION;
         let p = Product {
-            key: product_key(&i.app_id, &i.product_id),
-            app_id: i.app_id,
-            product_id: i.product_id,
-            kind: i.kind,
+            title: keep(i.title, old.as_ref().map(|o| &o.title)),
+            description: keep(i.description, old.as_ref().map(|o| &o.description)),
+            period: if subscription { keep(i.period, old.as_ref().map(|o| &o.period)).to_ascii_uppercase() } else { String::new() },
+            apple_group: if subscription { keep(i.apple_group, old.as_ref().map(|o| &o.apple_group)) } else { String::new() },
             default_price_micros: i.default_price_micros,
             currency: i.currency,
+            ..Product::new(&i.app_id, &i.product_id, &i.kind)
         };
-        if ctx.db.product().key().find(&p.key).is_some() {
+        purser_core::catalog::check_listing(&p.title, &p.description, &p.period, &p.apple_group)
+            .map_err(|e| format!("[ERR_BAD_PRODUCT] {}: {e}", p.product_id))?;
+        if old.is_some() {
             ctx.db.product().key().update(p);
         } else {
             ctx.db.product().insert(p);

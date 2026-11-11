@@ -107,6 +107,8 @@ Every per-store fact lives in one registry, [`core/src/registry.rs`](core/src/re
 
 `kind`: `consumable` (Google consume), `non_consumable` (acknowledge), `subscription` (acknowledge). Amazon `CONSUMABLE` / `ENTITLED` / `SUBSCRIPTION` receipts must match the kind. `default_price_micros` + `currency` are used for GA4 revenue when neither the store nor the client sent a price.
 
+Optional store listing: `title`, `description`, and for subscriptions `period` (`P1W`, `P1M`, `P3M`, `P6M`, `P1Y`) and `apple_group` (App Store subscription group). They prefill **Create in store** and are written back when a product is created there; the store catalog import fills `period`, and the Unity config carries it as the fallback period. The store keeps its own copy: edits in the store consoles do not come back. In `admin_upsert_products` a field that is left out keeps its stored value; an empty string clears it.
+
 ### Secrets (`credential`) — bound to an app or an account
 
 A secret key is `{scope}/{name}`, where scope is an app id, an account name or `default`. Lookup follows the chain **`{app_id}` → `{account}` → `default`**. This way apps from different Google Play / App Store Connect accounts and games on different SpacetimeDB servers each use their own keys. The token cache is also split by the scope the key came from.

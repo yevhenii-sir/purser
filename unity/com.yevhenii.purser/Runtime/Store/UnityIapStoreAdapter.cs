@@ -170,6 +170,8 @@ namespace Purser
                 var storeId = product.definition?.storeSpecificId ?? product.definition?.id;
                 var config = FindConfig(storeId);
                 var meta = product.metadata;
+                // Google Play reports the period; Unity IAP 5 keeps the App Store's internal (the config's fallback is used).
+                var period = meta?.GetGoogleProductMetadata()?.subscriptionPeriod;
                 result.Add(new StoreProduct(
                     config?.id ?? storeId,
                     storeId,
@@ -180,7 +182,8 @@ namespace Purser
                     meta?.localizedTitle,
                     meta?.localizedDescription,
                     product.availableToPurchase,
-                    product));
+                    product,
+                    subscriptionPeriod: period));
             }
             m_Products?.TrySetResult(result);
         }

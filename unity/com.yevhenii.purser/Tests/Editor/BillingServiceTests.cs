@@ -521,6 +521,28 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void FallbackPeriod_IsUsedWhenTheStoreHasNone()
+        {
+            m_Config.FindById("premium").WithFallbackPeriod("p1m");
+            CreateService();
+
+            var premium = m_Service.GetProduct("premium");
+            Assert.AreEqual(("P1M", 30, true), (premium.SubscriptionPeriod, premium.SubscriptionPeriodDays, premium.IsFallbackPeriod));
+            Assert.IsFalse(premium.IsFallbackPrice, "the store's price stays");
+            Assert.AreEqual(("", false), (m_Service.GetProduct("gems_100").SubscriptionPeriod, m_Service.GetProduct("gems_100").IsFallbackPeriod));
+        }
+
+        [Test]
+        public void StorePeriod_WinsOverTheFallback()
+        {
+            m_Store.Period = "P1Y";
+            m_Config.FindById("premium").WithFallbackPeriod("P1M");
+            CreateService();
+            var premium = m_Service.GetProduct("premium");
+            Assert.AreEqual(("P1Y", 365, false), (premium.SubscriptionPeriod, premium.SubscriptionPeriodDays, premium.IsFallbackPeriod));
+        }
+
+        [Test]
         public void StorePrice_WinsOverTheFallback()
         {
             m_Config.products[0].WithFallbackPrice(1.99, "EUR");

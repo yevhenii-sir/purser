@@ -25,11 +25,25 @@ namespace Purser
         /// for display only and is not reported to the server.</summary>
         public bool IsFallbackPrice { get; }
 
+        /// <summary>Subscriptions: the billing period as ISO 8601 (<c>P1W</c>, <c>P1M</c>, <c>P3M</c>, <c>P6M</c>,
+        /// <c>P1Y</c>), empty when unknown. Google Play reports it; elsewhere (the App Store through Unity IAP, Steam, web
+        /// stores, the Editor) it is the config's <see cref="BillingProductConfig.fallbackPeriod"/>.</summary>
+        public string SubscriptionPeriod { get; }
+
+        /// <summary><see cref="SubscriptionPeriod"/> is the config's fallback period: the store gave none.</summary>
+        public bool IsFallbackPeriod { get; }
+
+        /// <summary><see cref="SubscriptionPeriod"/> in days (a month is 30, a year 365), 0 when unknown: to compare
+        /// the price per day of a weekly and a yearly subscription.</summary>
+        public int SubscriptionPeriodDays => BillingPeriods.Days(SubscriptionPeriod);
+
         public StoreProduct(string id, string storeId, BillingProductType type, string localizedPrice, decimal price,
             string currency, string title, string description, bool availableToPurchase, object native = null,
-            bool isFallbackPrice = false)
+            bool isFallbackPrice = false, string subscriptionPeriod = null, bool isFallbackPeriod = false)
         {
             IsFallbackPrice = isFallbackPrice;
+            SubscriptionPeriod = BillingPeriods.Normalize(subscriptionPeriod);
+            IsFallbackPeriod = isFallbackPeriod && SubscriptionPeriod.Length > 0;
             Id = id;
             StoreId = storeId;
             Type = type;
@@ -43,6 +57,33 @@ namespace Purser
         }
 
         public long PriceMicros => (long)decimal.Round(Price * 1_000_000m);
+    }
+
+    /// <summary>ISO 8601 subscription periods (<c>P1M</c>) as stores and the admin panel write them.</summary>
+    public static class BillingPeriods
+    {
+        /// <summary>The trimmed, upper-case period when it looks like <c>P&lt;n&gt;D|W|M|Y</c>; empty otherwise.</summary>
+        public static string Normalize(string iso)
+        {
+            var p = (iso ?? "").Trim().ToUpperInvariant();
+            return Days(p) > 0 ? p : "";
+        }
+
+        /// <summary>Approximate days of a period (<c>P1W</c> 7, <c>P1M</c> 30, <c>P1Y</c> 365), 0 when not a period.</summary>
+        public static int Days(string iso)
+        {
+            var p = (iso ?? "").Trim().ToUpperInvariant();
+            if (p.Length < 3 || p[0] != 'P' || !int.TryParse(p.Substring(1, p.Length - 2), out var n) || n <= 0)
+                return 0;
+            switch (p[p.Length - 1])
+            {
+                case 'D': return n;
+                case 'W': return n * 7;
+                case 'M': return n * 30;
+                case 'Y': return n * 365;
+                default: return 0;
+            }
+        }
     }
 
     /// <summary>A store transaction waiting to be verified, then finished in the store.</summary>

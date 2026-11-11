@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Subscription periods: `StoreProduct.SubscriptionPeriod` (ISO 8601, `P1M`), `SubscriptionPeriodDays` and
+  `IsFallbackPeriod`. Google Play reports the period through Unity IAP; elsewhere (the App Store, whose period Unity IAP 5
+  keeps internal, Steam, web stores, the Editor) it comes from the new `BillingProductConfig.fallbackPeriod`
+  (`WithFallbackPeriod`). The config JSON carries it as `period`, so pasting the admin panel's config fills it.
+  `BillingPeriods` parses ISO periods. No server change is needed: nothing new is sent.
+
 ## [0.4.0] - 2026-11-11
 
 - No SDK changes: released together with the server 0.4.0 (products created in the stores from the admin page, admin

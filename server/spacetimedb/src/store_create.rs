@@ -7,7 +7,7 @@ use crate::config;
 use crate::ctx::Ctx;
 use crate::net;
 use crate::stores::{self, StoreError};
-use crate::{game_app, product, product_key, GameApp, Product};
+use crate::{game_app, product, GameApp, Product};
 use purser_core::model::store;
 use purser_core::store_create::{self as sc, CreateInput, JobState, Next, Target};
 use purser_core::{stripe as st, xsolla as x};
@@ -242,13 +242,15 @@ fn save(ctx: &mut impl Ctx, job: &StoreCreateJob, state: &JobState, change: impl
 /// The store has the product: write it for the build, with the store's id.
 fn finish(tx: &TxContext, job: &StoreCreateJob, input: &CreateInput, state: &JobState, store_product_id: &str) {
     let price = if state.price_point_micros > 0 { state.price_point_micros } else { input.price_micros };
+    // The listing that was used, so the next Create in store starts from it.
     let p = Product {
-        key: product_key(&job.app_id, store_product_id),
-        app_id: job.app_id.clone(),
-        product_id: store_product_id.to_string(),
-        kind: job.kind.clone(),
         default_price_micros: price,
         currency: input.currency.clone(),
+        title: input.title.trim().to_string(),
+        description: input.description.trim().to_string(),
+        period: input.period.clone(),
+        apple_group: input.apple_group.trim().to_string(),
+        ..Product::new(&job.app_id, store_product_id, &job.kind)
     };
     if tx.db.product().key().find(&p.key).is_some() {
         tx.db.product().key().update(p);

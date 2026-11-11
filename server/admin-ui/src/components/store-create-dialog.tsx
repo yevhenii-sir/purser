@@ -12,14 +12,19 @@ import { call, proc, sqlWhereIn } from "@/lib/api"
 import { buildLabel, creatorBuilds, storeOf } from "@/lib/stores"
 import { errorText } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
-import type { GameApp, Kind, StoreCreateJob } from "@/lib/types"
+import { PERIODS } from "@/lib/periods"
+import { listingOf, type GameApp, type Kind, type StoreCreateJob } from "@/lib/types"
 
-/** A product of the app to create in the stores. */
+/** A product of the app to create in the stores, with the store listing saved on the product. */
 export interface CreateSource {
   product_id: string
   kind: Kind
   price_micros: number
   currency: string
+  title: string
+  description: string
+  period: string
+  apple_group: string
 }
 
 interface Draft {
@@ -46,8 +51,6 @@ interface Preview {
   apple_groups: Record<string, string[]>
   warnings: Record<string, string>
 }
-
-const PERIODS: [string, string][] = [["P1W", "Weekly"], ["P1M", "Monthly"], ["P3M", "Every 3 months"], ["P6M", "Every 6 months"], ["P1Y", "Yearly"]]
 
 /** What each store needs before products can be created there. */
 const CREATE_HELP: Record<string, string> = {
@@ -82,11 +85,11 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
   const builds = creatorBuilds(apps)
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() =>
     Object.fromEntries(products.map((p) => [p.product_id, {
-      on: false, title: titleOf(p.product_id), description: "",
-      price: p.price_micros > 0 ? String(p.price_micros / 1e6) : "", currency: p.currency || "USD", period: "P1M",
+      on: false, title: p.title || titleOf(p.product_id), description: p.description,
+      price: p.price_micros > 0 ? String(p.price_micros / 1e6) : "", currency: p.currency || "USD", period: p.period || "P1M",
     }])))
   const [targets, setTargets] = useState<Record<string, boolean>>(() => Object.fromEntries(builds.map((a) => [a.app_id, true])))
-  const [group, setGroup] = useState("Premium")
+  const [group, setGroup] = useState(() => products.find((p) => p.kind === "subscription" && p.apple_group)?.apple_group || "Premium")
   const [preview, setPreview] = useState<Preview | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -145,7 +148,10 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
     const byId = new Map(inputs().map((p) => [p.product_id, p]))
     const items = existing.map((r) => {
       const p = byId.get(r.product_id)
-      return { app_id: r.app_id, product_id: r.store_product_id, kind: r.kind, default_price_micros: p?.price_micros || 0, currency: p?.currency || "" }
+      return {
+        app_id: r.app_id, product_id: r.store_product_id, kind: r.kind, default_price_micros: p?.price_micros || 0, currency: p?.currency || "",
+        ...listingOf(p),
+      }
     })
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Added ${items.length} product(s)`)
     if (ok !== undefined) onStarted()

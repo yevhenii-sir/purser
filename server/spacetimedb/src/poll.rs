@@ -125,14 +125,7 @@ fn check(ctx: &mut impl Ctx, id: &str) {
     };
     match st.state {
         TxState::Active if st.expires_at_ms > p.expires_at_ms => {
-            let product = product.unwrap_or(Product {
-                key: crate::product_key(&p.app_id, &p.product_id),
-                app_id: p.app_id.clone(),
-                product_id: p.product_id.clone(),
-                kind: p.kind.clone(),
-                default_price_micros: 0,
-                currency: String::new(),
-            });
+            let product = product.unwrap_or_else(|| Product::new(&p.app_id, &p.product_id, &p.kind));
             // Re-schedules itself for the new expiry.
             let recorded = ctx.tx(|tx| ledger::record_active(tx, &product, &st, &p.user_id, &p.app_instance_id, 0, ""));
             match recorded {

@@ -16,7 +16,8 @@ import { call, proc, publicRoute, sqlWhereIn } from "@/lib/api"
 import { buildLabel, creatorBuilds, storeById, storeOf } from "@/lib/stores"
 import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
-import { KINDS, type CatalogRow, type GameApp, type Kind, type Product } from "@/lib/types"
+import { KINDS, listingOf, type CatalogRow, type GameApp, type Kind, type Product } from "@/lib/types"
+import { PERIODS, perPeriod } from "@/lib/periods"
 import type { TabProps } from "@/pages/app"
 import { appRoute } from "@/routes"
 import { useCan } from "@/lib/roles"
@@ -26,6 +27,15 @@ interface Row {
   product_id: string
   kind: Kind
   by: Record<string, Product | undefined>
+}
+
+type Listing = { title: string; description: string; period: string; apple_group: string }
+
+/** The store listing of a product: each field from the first build that has it set. */
+function listingOfRow(r: Row): Listing {
+  const ps = Object.values(r.by).filter((p): p is Product => !!p)
+  const first = (k: keyof Listing) => ps.map((p) => p[k] || "").find(Boolean) || ""
+  return { title: first("title"), description: first("description"), period: first("period"), apple_group: first("apple_group") }
 }
 
 export function AppProductsTab({ data, go }: TabProps) {
@@ -54,7 +64,7 @@ export function AppProductsTab({ data, go }: TabProps) {
   const copyToOther = async (from: GameApp, to: GameApp) => {
     const items = rows.filter((r) => r.by[from.app_id] && !r.by[to.app_id]).map((r) => {
       const p = r.by[from.app_id]!
-      return { app_id: to.app_id, product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency }
+      return { app_id: to.app_id, product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency, ...listingOf(p) }
     })
     if (!items.length) return toast.info(`Every ${buildLabel(from)} product already exists on ${buildLabel(to)}`)
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Copied ${items.length} product(s)`)
@@ -65,7 +75,7 @@ export function AppProductsTab({ data, go }: TabProps) {
   const downloadJson = () => {
     const items = rows.flatMap((r) => g.apps.flatMap((a) => {
       const p = r.by[a.app_id]
-      return p ? [{ app_id: a.app_id, product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency }] : []
+      return p ? [{ app_id: a.app_id, product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency, ...listingOf(p) }] : []
     }))
     const url = URL.createObjectURL(new Blob([JSON.stringify(items, null, 2) + "\n"], { type: "application/json" }))
     const link = Object.assign(document.createElement("a"), { href: url, download: `products-${g.key}.json` })
@@ -77,7 +87,10 @@ export function AppProductsTab({ data, go }: TabProps) {
   const copyUnityConfig = async () => {
     const products = rows.map((r) => {
       const priced = g.apps.map((a) => r.by[a.app_id]).find((p) => p && Number(p.default_price_micros) > 0)
-      return { product_id: r.product_id, kind: r.kind, default_price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "" }
+      return {
+        product_id: r.product_id, kind: r.kind, default_price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "",
+        period: listingOfRow(r).period,
+      }
     })
     const text = toUnityConfig(await publicRoute(), g.apps.map((a) => ({ store: storeOf(a).id, app_id: a.app_id })), products)
     await tryAct(() => navigator.clipboard.writeText(text), "Copied: in Unity press Paste config from admin panel")
@@ -87,7 +100,7 @@ export function AppProductsTab({ data, go }: TabProps) {
     <>
       <Section
         title="Products"
-        description="Store product ids per build. The default price is used for revenue when the store does not report one (Google one-time products)."
+        description="Store product ids per build. The default price is used for revenue when the store does not report one (Google one-time products); the title, description and period are used by Create in store."
         actions={
           <>
             {configure && (
@@ -148,7 +161,10 @@ export function AppProductsTab({ data, go }: TabProps) {
                 title: buildLabel(a),
                 cell: (r: Row) => {
                   const p = r.by[a.app_id]
-                  return p ? <span className="tabular-nums">{money(p.default_price_micros, p.currency) === "—" ? <Tone tone="ok">yes</Tone> : money(p.default_price_micros, p.currency)}</span> : <Tone tone="warn">missing</Tone>
+                  if (!p) return <Tone tone="warn">missing</Tone>
+                  const price = money(p.default_price_micros, p.currency)
+                  const per = r.kind === "subscription" ? perPeriod(p.period) : ""
+                  return price === "—" ? <Tone tone="ok">{per ? `yes · per ${per}` : "yes"}</Tone> : <span className="tabular-nums">{price}{per && <span className="text-muted-foreground"> / {per}</span>}</span>
                 },
               })),
             ]}
@@ -160,7 +176,7 @@ export function AppProductsTab({ data, go }: TabProps) {
       <StoreCreateDialog open={dialog === "create"} apps={g.apps} listed={(app, id) => !!rows.find((r) => r.product_id === id)?.by[app]} onClose={() => setDialog(null)} onStarted={() => { products.reload(); setJobsKey((k) => k + 1) }}
         products={rows.map((r) => {
           const priced = g.apps.map((a) => r.by[a.app_id]).find((p) => p && Number(p.default_price_micros) > 0)
-          return { product_id: r.product_id, kind: r.kind, price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "USD" }
+          return { product_id: r.product_id, kind: r.kind, price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "USD", ...listingOfRow(r) }
         })} />
       {importers.map((a) => (
         <StoreImportDialog key={a.app_id} open={dialog === `import:${a.app_id}`} app={a} others={g.apps.filter((o) => o !== a)} onClose={() => setDialog(null)} onSaved={products.reload} />
@@ -188,6 +204,8 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
   const [kind, setKind] = useState<Kind>(row?.kind || "consumable")
   const [price, setPrice] = useState(some?.default_price_micros ? String(Number(some.default_price_micros) / 1e6) : "")
   const [currency, setCurrency] = useState(some?.currency || "USD")
+  const [listing, setListing] = useState<Listing>(() => (row ? listingOfRow(row) : { title: "", description: "", period: "", apple_group: "" }))
+  const setL = (patch: Partial<Listing>) => setListing((l) => ({ ...l, ...patch }))
   const [on, setOn] = useState<Record<string, boolean>>(() => Object.fromEntries(apps.map((a) => [a.app_id, row ? !!row.by[a.app_id] : true])))
 
   const save = async () => {
@@ -197,6 +215,9 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
     if (removed.length && !confirm(`Remove ${id} from ${removed.map((a) => buildLabel(a)).join(" and ")}?`)) return
     const items = apps.filter((a) => on[a.app_id]).map((a) => ({
       app_id: a.app_id, product_id: id, kind, default_price_micros: Math.round(Number(price || 0) * 1e6), currency: currency.trim().toUpperCase(),
+      // Sent even when empty: clearing a field here clears it on every build.
+      title: listing.title.trim(), description: listing.description.trim(),
+      ...(kind === "subscription" ? { period: listing.period, apple_group: listing.apple_group.trim() } : {}),
     }))
     const ok = await tryAct(async () => {
       if (items.length) await call("admin_upsert_products", JSON.stringify(items))
@@ -223,6 +244,28 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
         </Field>
         <Field label="Default price"><Input type="number" step="0.01" min="0" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
         <Field label="Currency (ISO)"><Input value={currency} onChange={(e) => setCurrency(e.target.value)} /></Field>
+        <div className="space-y-3 border-t pt-4 sm:col-span-2">
+          <div>
+            <p className="text-sm font-medium">Store listing</p>
+            <p className="text-xs text-muted-foreground">Optional. Fills in Create in store; the store keeps its own copy, edits there do not come back here.</p>
+          </div>
+          <Field label="Title"><Input value={listing.title} maxLength={55} placeholder={productId.trim() ? productId.trim().replace(/[_.-]+/g, " ") : "e.g. 100 gems"} onChange={(e) => setL({ title: e.target.value })} /></Field>
+          <Field label="Description"><Textarea className="min-h-16" value={listing.description} maxLength={200} placeholder="Same as the title" onChange={(e) => setL({ description: e.target.value })} /></Field>
+          {kind === "subscription" && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Period">
+                <Select value={listing.period || "none"} onValueChange={(v) => setL({ period: v === "none" ? "" : v })}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Not set</SelectItem>
+                    {PERIODS.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="App Store subscription group"><Input value={listing.apple_group} maxLength={64} placeholder="e.g. Premium" onChange={(e) => setL({ apple_group: e.target.value })} /></Field>
+            </div>
+          )}
+        </div>
         <div className="flex flex-wrap gap-6 sm:col-span-2">
           {apps.map((a) => (
             <div key={a.app_id} className="flex items-center gap-2">
@@ -312,7 +355,10 @@ function JsonDialog({ open, appId, onClose, onSaved }: { open: boolean; appId: s
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Import products as JSON</DialogTitle>
-          <DialogDescription>An array of <code>{"{app_id, product_id, kind, default_price_micros, currency}"}</code> objects; existing products are updated.</DialogDescription>
+          <DialogDescription>
+            An array of <code>{"{app_id, product_id, kind, default_price_micros, currency}"}</code> objects, optionally with <code>title</code>, <code>description</code>,{" "}
+            <code>period</code> (<code>P1M</code>) and <code>apple_group</code>; existing products are updated, fields left out keep their values.
+          </DialogDescription>
         </DialogHeader>
         <Textarea className="min-h-56 font-mono text-xs" value={value} onChange={(e) => setText(e.target.value)} />
         <DialogFooter><Button onClick={save}>Import</Button></DialogFooter>
@@ -361,7 +407,7 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
         return {
           product_id: u.product_id, kind: u.kind,
           price_micros: serverPrice ? Number(some.default_price_micros) : u.price_micros, currency: serverPrice ? some.currency : u.currency,
-          billing_period_days: 0, status, local_kind: some?.kind || "",
+          billing_period_days: 0, period: u.period, status, local_kind: some?.kind || "",
         }
       })
       const unknown = c.builds.filter((b) => !apps.some((a) => a.app_id === b.app_id && storeOf(a).id === b.store))
@@ -382,6 +428,8 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
         ...(had && Number(had.default_price_micros) > 0
           ? { default_price_micros: Number(had.default_price_micros), currency: had.currency }
           : { default_price_micros: p.default_price_micros, currency: p.currency }),
+        // Same for the period: the Unity fallback period only where the server has none.
+        ...(p.period && !had?.period ? { period: p.period } : {}),
       }
     }))
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Saved ${picked.length} product(s)`)
