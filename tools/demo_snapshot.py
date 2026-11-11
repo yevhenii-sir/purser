@@ -276,6 +276,7 @@ def main():
     if s >= 300:
         raise SystemExit(f"publish: {s} {out[:300]}")
     print("published", srv.db)
+    srv.sql("UPDATE admin SET name = 'Alex Morgan' WHERE protected = true")
 
     now_ms = int(time.time() * 1000)
     srv.call("admin_set_setting", "public_base_url", f"https://stdb.example.com/v1/database/{a.db}/route")
@@ -324,11 +325,33 @@ def main():
                                                     "variants": [{"variant_id": "a", "paywall_id": "shop_gems", "weight": 1}, {"variant_id": "b", "paywall_id": "shop_vip_first", "weight": 1}]}))
     srv.call("admin_start_paywall_test", "galaxy-miner", "shop", "shop-ab-1")
 
+    srv.call("admin_set_app_name", "galaxy-miner", "Galaxy Miner")
+    srv.call("admin_set_app_name", "word-garden", "Word Garden")
+
+    def coworker(name, role):
+        s2 = Server(a.server, srv.db)
+        _, out2 = s2.req("POST", "/v1/identity", auth=False)
+        ident = json.loads(out2)
+        s2.token = ident["token"]
+        srv.call("admin_upsert_admin", json.dumps({"identity": ident["identity"], "name": name, "role": role}))
+        return s2
+
+    anna = coworker("Anna Petrova", "editor")
+    max_ = coworker("Max Keller", "support")
+    coworker("Lena Hoffmann", "viewer")
+    anna.call("admin_upsert_paywall", json.dumps({"game_key": "galaxy-miner", "paywall_id": "shop_vip_first", "name": "VIP first",
+                                                   "product_ids": ["vip_monthly", "vip_yearly", "gems_medium"],
+                                                   "remote_config": {"title": "Become a VIP", "highlight": "vip_yearly", "badge": "Best value"}}))
+    anna.call("admin_set_fx_override", "TRY", 34.5)
+
     rows = make_purchases(now_ms, rnd)
     attribute_paywalls(rows, now_ms, rnd)
     for i in range(0, len(rows), 500):
         srv.call("admin_import_purchases", json.dumps(rows[i:i + 500]))
     print("imported", len(rows), "purchases of", len({r["user_id"] for r in rows}), "players")
+    player = rows[-1]["user_id"]
+    max_.call("admin_grant_manual", json.dumps({"app_id": "com.example.galaxyminer", "user_id": player, "product_id": "gems_medium",
+                                                 "note": "compensation: lost gems after a crash"}))
     today = now_ms // DAY_MS
     for d in range(today - 59, today + 1):
         for v in ("a", "b"):
@@ -364,7 +387,8 @@ def main():
     checks = {app: green(srv.proc("admin_check_app", app, json.dumps({"online": False, "apple_test": False}))) for app in apps}
     tables = {}
     for t in ["game_app", "product", "purchase", "purchase_log", "integration", "app_check", "admin", "retry_schedule",
-              "alert_channel", "alert_state", "alert_log", "spacetime_host", "server_state", "paywall", "placement", "paywall_test", "integration_health"]:
+              "alert_channel", "alert_state", "alert_log", "spacetime_host", "server_state", "paywall", "placement", "paywall_test", "integration_health",
+              "app_profile", "admin_audit"]:
         tables[t] = srv.sql(f"SELECT * FROM {t}")
     tables["credential"] = srv.sql("SELECT key FROM credential")  # names only, never values
     # The purchase history is only opened for recent purchases: keep 90 days of it.
@@ -400,7 +424,7 @@ def main():
     snapshot = {
         "generated_at_ms": now_ms,
         "version": json.loads(srv.req("GET", f"/v1/database/{srv.db}/route/healthz", auth=False)[1])["version"],
-        "identity": tables["admin"][0]["identity"].replace("0x", "") if tables["admin"] else "",
+        "identity": next((r["identity"].replace("0x", "") for r in tables["admin"] if r["protected"]), ""),
         "tables": tables,
         "procs": {"admin_overview": procs["admin_overview"], "revenue": revenue, "profiles": profiles,
                   "paywall_results": paywall_results, "previews": previews, "checks": checks},
