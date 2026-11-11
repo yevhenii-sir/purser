@@ -382,6 +382,12 @@ def main():
         time.sleep(2)
     print()
 
+    # Deliveries to the made-up game hosts fail with this machine's own (possibly localized) network
+    # error: show a neutral one in the demo.
+    for p in srv.sql("SELECT id, last_error FROM purchase"):
+        if "error sending request" in p["last_error"]:
+            srv.sql(f"UPDATE purchase SET last_error = 'delivery: game database answered HTTP 503 (stdb.example.com)' WHERE id = '{p['id']}'")
+
     # --- Snapshot ------------------------------------------------------------------------------
     apps = [r["app_id"] for r in srv.sql("SELECT app_id FROM game_app")]
     checks = {app: green(srv.proc("admin_check_app", app, json.dumps({"online": False, "apple_test": False}))) for app in apps}
@@ -394,6 +400,9 @@ def main():
     # The purchase history is only opened for recent purchases: keep 90 days of it.
     recent = {r["id"] for r in tables["purchase"] if int(r["created_at_micros"]) > (now_ms - 90 * DAY_MS) * 1000}
     tables["purchase_log"] = [r for r in tables["purchase_log"] if r["purchase_id"] in recent]
+    for r in tables["purchase_log"]:
+        if "error sending request" in r["details"]:
+            r["details"] = "delivery: game database answered HTTP 503 (stdb.example.com)"
     for r in tables["app_check"]:
         if r["app_id"] in checks:
             r["report_json"] = json.dumps(checks[r["app_id"]])

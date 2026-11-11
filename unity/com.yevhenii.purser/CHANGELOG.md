@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-11
+
+- No SDK changes: released together with the server 0.4.0 (products created in the stores from the admin page, admin
+  roles, audit log). Games on 0.3.0 keep working unchanged.
+
 ## [0.3.0] - 2026-11-10
 
 - Player profile: every request carries the device model, OS, app version and SDK version (`client`; the admin page

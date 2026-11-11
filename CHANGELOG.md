@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-11
+
 - Admin roles: Owner, Admin, Editor, Support, Viewer. Every admin reducer and procedure checks the caller's role.
   - On the Admins page you add a coworker with a name and a role and generate a token for them, shown once. Admins can also be renamed, given another role, or removed. Only the owner manages admins with the Admin role.
   - Admins who are not the database owner can now use the admin page: it reads through the new `admin_read` procedure, which never returns key values, instead of `/sql`.
