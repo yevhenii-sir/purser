@@ -32,7 +32,7 @@ Google RTDN / App Store Notifications V2 / Amazon RTN ──▶ /notify/<store> 
 
 ## SpacetimeDB limitations to keep in mind
 
-- Every outgoing HTTP request from the module has a **timeout of at most 500 ms**. That's why a ledger row is written first and every external step is retryable: whatever didn't finish is completed by the `process_pending` worker (once a minute) with backoff 1m → 5m → 15m → 1h → 3h → 6h → 12h.
+- An outgoing HTTP request from the module waits up to 10 s (`net::TIMEOUT_SECS`) and can fail or time out. That's why a ledger row is written first and every external step is retryable: whatever didn't finish is completed by the `process_pending` worker (once a minute) with backoff 1m → 5m → 15m → 1h → 3h → 6h → 12h.
 - HTTP to private addresses (`127.0.0.1`, `10.x`, …) is forbidden: the webhook and the game database must be publicly reachable.
 - HTTP handlers are in beta. If the API breaks, the same logic can be called as procedures through the stable `POST /v1/database/<db>/call/<procedure>`.
 
@@ -153,6 +153,18 @@ After `integrations.json` it loads, when present: `paywalls.json` (`admin_upsert
 - GA4 (validation endpoint), AppsFlyer settings, purchases that keep failing.
 
 `options_json`: `{"online": false}` checks only the configuration (no HTTP); `{"apple_test": false}` skips the Apple test notification. `admin_ping_webhook(app_id)` sends a signed `{"event":"ping"}` to the webhook. `admin_list_store_products(app_id)` lists the store catalog compared with the configured products: Google Play (one-time products and subscriptions with US prices) or the App Store (in-app purchases and subscriptions through the App Store Connect API, without prices; needs the Team key secrets `apple_connect_key_id` and `apple_connect_private_key_p8`, see [docs/store-setup.md](../docs/store-setup.md#catalog-import-optional)).
+
+Creating products in the stores ([docs/store-setup.md](../docs/store-setup.md#creating-products-from-the-admin-page)):
+
+- `admin_store_create_preview(json)` takes `{"app_ids": [...], "products": [{"product_id", "kind", "title", "description", "price_micros", "currency", "period", "apple_group"}]}` and returns, per build and product:
+  - `create`;
+  - `exists`, with the build's id in the store as `store_product_id`;
+  - `unsupported` or `invalid`, with a `reason`;
+  - plus the App Store subscription groups.
+- `admin_store_create(json)` (a reducer, same input) queues one `store_create_job` per build and product.
+- The scheduled `run_store_create_job` makes up to 8 store calls per run. Its steps are built by `purser_core::store_create`, each safe to repeat; a transient failure retries up to 6 times with backoff.
+- A finished job writes the build's `product` row: the Stripe Price id, otherwise the product id.
+- `admin_dismiss_store_job(id)` removes a job; a pending one stops.
 
 Other admin reducers: `admin_set_setting("public_base_url", url)` (also `store_commission_percent`, `store_commission_after_year_percent`, `store_commission_by_app` for the proceeds estimate, see [docs/analytics.md](../docs/analytics.md)), `admin_delete_game_app`, `admin_delete_product`, `admin_delete_credential`, `admin_add_admin`, `admin_remove_admin`, `admin_requeue_purchase(id)` (retry now), `admin_grant_manual(json)` (manual grant: compensations and promos; goes through the same ledger and delivery, not sent to GA4), `admin_revoke_purchase(purchase_id, reason)` (procedure: revokes a purchase the player owns through the ledger; the game receives `revoke` with `reason = admin`; idempotent).
 

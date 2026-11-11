@@ -11,7 +11,7 @@
 //! sync by a test) read these facts instead of hard-coding store names. Adding a store: see
 //! "Add a store" in AGENTS.md.
 
-use crate::model::store;
+use crate::model::{kind, store};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -135,6 +135,8 @@ pub struct StoreInfo {
     pub app_id_is_store_id: bool,
     /// `admin_list_store_products` can import the catalog from the store.
     pub product_import: bool,
+    /// Product kinds the admin page can create in the store (`admin_store_create`); empty: none.
+    pub product_create: &'static [&'static str],
     /// The worker re-checks subscriptions around their expiry (stores whose renewals may not be
     /// notified; see `poll.rs` in the module).
     pub polls_subscriptions: bool,
@@ -203,6 +205,7 @@ const fn planned(
         app_id_placeholder: "",
         app_id_is_store_id: false,
         product_import: false,
+        product_create: &[],
         polls_subscriptions: false,
         docs: "",
     }
@@ -242,6 +245,7 @@ pub const GOOGLE: StoreInfo = StoreInfo {
     app_id_placeholder: "com.example.mygame",
     app_id_is_store_id: true,
     product_import: true,
+    product_create: &[kind::CONSUMABLE, kind::NON_CONSUMABLE, kind::SUBSCRIPTION],
     polls_subscriptions: false,
     docs: "google-play",
 };
@@ -296,6 +300,7 @@ pub const APPLE: StoreInfo = StoreInfo {
     app_id_placeholder: "com.example.mygame",
     app_id_is_store_id: true,
     product_import: true,
+    product_create: &[kind::CONSUMABLE, kind::NON_CONSUMABLE, kind::SUBSCRIPTION],
     polls_subscriptions: false,
     docs: "app-store",
 };

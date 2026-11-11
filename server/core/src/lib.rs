@@ -21,6 +21,7 @@ pub mod revenue;
 pub mod sns;
 pub mod stripe;
 pub mod steam;
+pub mod store_create;
 pub mod support;
 pub mod tax;
 pub mod time;

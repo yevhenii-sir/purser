@@ -235,3 +235,22 @@ export const SECRET_NAMES: [string, string][] = [
   ["alert_discord_webhook_url", "Alerts: Discord webhook URL (default scope)"],
   ["alert_webhook_secret", "Alerts: signing key of the alert webhook (default scope)"],
 ]
+
+/** A product being created in a build's store (`store_create_job`). */
+export interface StoreCreateJob {
+  id: number
+  app_id: string
+  store: string
+  product_id: string
+  kind: Kind
+  input_json: string
+  state_json: string
+  status: "pending" | "done" | "failed"
+  step: string
+  error: string
+  note: string
+  store_product_id: string
+  retries: number
+  created_at_micros: number
+  updated_at_micros: number
+}

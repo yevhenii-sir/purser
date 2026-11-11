@@ -29,7 +29,7 @@ pub struct StorePoll {
 
 /// First re-check this long after the expiry: stores renew shortly before or at it.
 const AFTER_EXPIRY_MICROS: i64 = 10 * 60 * 1_000_000;
-/// Re-checks per worker run (one store call each, 500 ms cap).
+/// Re-checks per worker run (one store call each).
 const BATCH: usize = 5;
 /// Backoff while the store has not decided yet; then the row is dropped.
 const BACKOFF_SECS: [i64; 5] = [3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600];

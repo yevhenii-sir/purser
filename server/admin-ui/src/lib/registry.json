@@ -67,6 +67,11 @@
         "android"
       ],
       "polls_subscriptions": false,
+      "product_create": [
+        "consumable",
+        "non_consumable",
+        "subscription"
+      ],
       "product_import": true,
       "refunds": "Real-time developer notifications (voided purchases)",
       "reports_price": false,
@@ -108,6 +113,11 @@
         "ios"
       ],
       "polls_subscriptions": false,
+      "product_create": [
+        "consumable",
+        "non_consumable",
+        "subscription"
+      ],
       "product_import": true,
       "refunds": "App Store Server Notifications V2 (REFUND, REVOKE, EXPIRED)",
       "reports_price": true,
@@ -177,6 +187,7 @@
         "amazon"
       ],
       "polls_subscriptions": true,
+      "product_create": [],
       "product_import": false,
       "refunds": "Real-Time Notifications (*_CANCELLED) and subscription re-checks by the worker",
       "reports_price": false,
@@ -211,6 +222,7 @@
         "steam"
       ],
       "polls_subscriptions": true,
+      "product_create": [],
       "product_import": false,
       "refunds": "GetReport polling by the worker (Refunded, Chargedback, fraud refunds)",
       "reports_price": true,
@@ -245,6 +257,11 @@
         "web"
       ],
       "polls_subscriptions": false,
+      "product_create": [
+        "consumable",
+        "non_consumable",
+        "subscription"
+      ],
       "product_import": false,
       "refunds": "Webhooks (charge.refunded, charge.dispute.created, customer.subscription.deleted)",
       "reports_price": true,
@@ -286,6 +303,10 @@
         "web"
       ],
       "polls_subscriptions": false,
+      "product_create": [
+        "consumable",
+        "non_consumable"
+      ],
       "product_import": false,
       "refunds": "Webhooks (refund, order_canceled; cancel_subscription ends subscriptions)",
       "reports_price": true,
@@ -332,6 +353,7 @@
       "notify_secret": null,
       "platforms": [],
       "polls_subscriptions": false,
+      "product_create": [],
       "product_import": false,
       "refunds": "Revoked by an admin",
       "reports_price": false,

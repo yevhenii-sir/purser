@@ -4,7 +4,7 @@
 //! Stripe is a webhook store (`purser_core::registry::Verification::Webhook`): the webhook is the
 //! source of truth; `/verify/stripe` only lets the client get its answer without waiting for it.
 //! Both go through [`apply_grant`], so a purchase is recorded once whichever comes first. Every
-//! handler makes at most one Stripe API call (500 ms cap per outbound request).
+//! handler makes at most one Stripe API call.
 //! Parsing and every decision is in `purser_core::stripe`.
 
 use crate::config;
@@ -565,7 +565,7 @@ pub fn notification(ctx: &mut impl Ctx, req: Request) -> Answer {
 // Setup check
 // ---------------------------------------------------------------------------------------------
 
-/// Prices checked per setup check (one request each, 500 ms cap).
+/// Prices checked per setup check (one request each).
 const MAX_PRICE_CHECKS: usize = 8;
 
 /// Key mode, webhook secret format, and (online) every catalog product's Price.

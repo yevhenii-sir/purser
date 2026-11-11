@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Create in store: the Products tab creates products and subscriptions in Google Play, the App Store, Stripe and Xsolla. You set the title, description, price and period; the store converts the price to the other countries, and the result is shown before anything is created. Each product runs as a background job (`store_create_job`, procedures `admin_store_create_preview`, `admin_store_create`, `admin_dismiss_store_job`) that retries transient failures. A product the store already has is skipped, and a created one is added to the build's products. New registry field `product_create`.
+- Outbound requests get an explicit 10 s timeout. The 500 ms limit noted in the docs was outdated: SpacetimeDB 2.14 allows up to 180 s.
+
 - Compatibility test: `server/spacetimedb/sdk-requests/` keeps the request bodies every released Unity SDK sends (0.1.0, 0.2.0, 0.3.0); the module tests check the server still accepts all of them and replay the purchase flow, so a change that would break shipped game builds fails CI.
 
 ## 0.3.0 - 2026-11-10

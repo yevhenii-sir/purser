@@ -107,7 +107,7 @@ pub struct SteamReport {
 
 /// `server_state` key of the last order id handed out.
 const LAST_ORDER_KEY: &str = "steam_last_order_id";
-/// Orders and builds handled per worker run (each a few calls, 500 ms cap each).
+/// Orders and builds handled per worker run (each a few calls).
 const ORDER_BATCH: usize = 5;
 const REPORT_BATCH: usize = 2;
 /// First look at an order the client never verified.

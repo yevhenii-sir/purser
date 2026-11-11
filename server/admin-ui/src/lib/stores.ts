@@ -38,6 +38,8 @@ export interface StoreInfo {
   app_id_placeholder: string
   app_id_is_store_id: boolean
   product_import: boolean
+  /** Product kinds the admin page can create in the store (`admin_store_create`). */
+  product_create: string[]
   polls_subscriptions: boolean
   docs: string
   verify_route: string | null
@@ -96,3 +98,6 @@ export const STORE_SECRETS: SecretSpec[] = STORES.flatMap((s) => s.secrets).filt
 export function storeOfSecret(name: string): StoreInfo | undefined {
   return STORES.find((s) => s.secrets.some((x) => x.name === name))
 }
+
+/** Builds whose store can create products from the admin page. */
+export const creatorBuilds = (apps: GameApp[]) => apps.filter((a) => storeOf(a).product_create.length > 0)

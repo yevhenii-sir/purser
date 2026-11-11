@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react"
-import { ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon } from "lucide-react"
+import { ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon, UploadIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -10,8 +10,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
-import { call, proc, publicRoute, sqlWhereIn } from "@/lib/api"
-import { buildLabel, storeById, storeOf } from "@/lib/stores"
+import { StoreCreateDialog, StoreJobs } from "@/components/store-create-dialog"
+import { DEMO, call, proc, publicRoute, sqlWhereIn } from "@/lib/api"
+import { buildLabel, creatorBuilds, storeById, storeOf } from "@/lib/stores"
 import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { KINDS, type CatalogRow, type GameApp, type Kind, type Product } from "@/lib/types"
@@ -29,8 +30,10 @@ export function AppProductsTab({ data, go }: TabProps) {
   const g = data.group
   const ids = g.apps.map((a) => a.app_id)
   const [editing, setEditing] = useState<Row | "new" | null>(null)
-  /** `import:<app_id>` (store catalog import of that build), `unity` or `json`. */
+  /** `import:<app_id>` (store catalog import of that build), `create`, `unity` or `json`. */
   const [dialog, setDialog] = useState<string | null>(null)
+  /** Remounts the store job list after new jobs were queued. */
+  const [jobsKey, setJobsKey] = useState(0)
   const products = useAsync(async () => {
     const all = await sqlWhereIn<Product>("product", "app_id", ids)
     const map = new Map<string, Row>()
@@ -78,6 +81,10 @@ export function AppProductsTab({ data, go }: TabProps) {
             {g.apps.slice(1).map((to) => (
               <Button key={to.app_id} variant="outline" size="sm" onClick={() => copyToOther(g.apps[0], to)}><CopyIcon /> Copy missing to {buildLabel(to)}</Button>
             ))}
+            {!DEMO && creatorBuilds(g.apps).length > 0 && (
+              <Button variant="outline" size="sm" onClick={() => setDialog("create")} disabled={!products.data}
+                title="Create the products in Google Play, the App Store, Stripe or Xsolla"><UploadIcon /> Create in store</Button>
+            )}
             <Button variant="outline" size="sm" onClick={() => setDialog("unity")}><ClipboardPasteIcon /> Import from Unity</Button>
             <Button variant="outline" size="sm" onClick={copyUnityConfig} disabled={!products.data}
               title="The builds and products of this app for the Unity config inspector (Paste config from admin panel)"><ClipboardCopyIcon /> Copy Unity config</Button>
@@ -105,7 +112,13 @@ export function AppProductsTab({ data, go }: TabProps) {
           />
         )}
       </Section>
+      {!DEMO && <StoreJobs key={jobsKey} apps={g.apps} onFinished={products.reload} />}
       <ProductDialog editing={editing} apps={g.apps} onClose={() => setEditing(null)} onSaved={products.reload} />
+      <StoreCreateDialog open={dialog === "create"} apps={g.apps} onClose={() => setDialog(null)} onStarted={() => { products.reload(); setJobsKey((k) => k + 1) }}
+        products={rows.map((r) => {
+          const priced = g.apps.map((a) => r.by[a.app_id]).find((p) => p && Number(p.default_price_micros) > 0)
+          return { product_id: r.product_id, kind: r.kind, price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "USD" }
+        })} />
       {importers.map((a) => (
         <StoreImportDialog key={a.app_id} open={dialog === `import:${a.app_id}`} app={a} others={g.apps.filter((o) => o !== a)} onClose={() => setDialog(null)} onSaved={products.reload} />
       ))}

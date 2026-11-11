@@ -71,6 +71,7 @@ pub const STORE: StoreInfo = StoreInfo {
     app_id_placeholder: "com.example.mygame.web",
     app_id_is_store_id: false,
     product_import: false,
+    product_create: &[crate::model::kind::CONSUMABLE, crate::model::kind::NON_CONSUMABLE],
     polls_subscriptions: false,
     docs: "xsolla",
 };

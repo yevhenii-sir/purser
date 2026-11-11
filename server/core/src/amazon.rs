@@ -41,6 +41,7 @@ pub const STORE: StoreInfo = StoreInfo {
     app_id_placeholder: "com.example.mygame.amazon",
     app_id_is_store_id: false,
     product_import: false,
+    product_create: &[],
     polls_subscriptions: true,
     docs: "amazon-appstore",
 };

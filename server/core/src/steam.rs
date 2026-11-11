@@ -54,6 +54,7 @@ pub const STORE: StoreInfo = StoreInfo {
     app_id_placeholder: "480",
     app_id_is_store_id: true,
     product_import: false,
+    product_create: &[],
     // Billing agreements renew without telling us: the worker asks GetUserAgreementInfo.
     polls_subscriptions: true,
     docs: "steam",

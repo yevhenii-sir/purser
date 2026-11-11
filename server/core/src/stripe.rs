@@ -67,6 +67,7 @@ pub const STORE: StoreInfo = StoreInfo {
     app_id_placeholder: "com.example.mygame.web",
     app_id_is_store_id: false,
     product_import: false,
+    product_create: &[crate::model::kind::CONSUMABLE, crate::model::kind::NON_CONSUMABLE, crate::model::kind::SUBSCRIPTION],
     polls_subscriptions: false,
     docs: "stripe",
 };
@@ -156,7 +157,7 @@ pub fn minor_to_micros(amount: i64, currency: &str) -> i64 {
 // ---------------------------------------------------------------------------------------------
 
 /// Percent-encodes a form value (`application/x-www-form-urlencoded`, RFC 3986 unreserved kept).
-fn form_encode(s: &str) -> String {
+pub fn form_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {

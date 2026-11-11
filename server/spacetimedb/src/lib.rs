@@ -34,6 +34,7 @@ mod poll;
 mod revenue;
 mod settings;
 mod steam;
+mod store_create;
 mod store_health;
 mod stores;
 mod stripe;

@@ -13,7 +13,7 @@ use purser_core::model::store;
 use serde_json::{json, Value};
 use spacetimedb::ProcedureContext;
 
-/// Pages per list: one HTTP call each (500 ms cap), 100-200 products per page.
+/// Pages per list: one HTTP call each, 100-200 products per page.
 const MAX_PAGES: usize = 10;
 
 type Parser = fn(&str) -> Result<(Vec<RemoteProduct>, Option<String>), String>;

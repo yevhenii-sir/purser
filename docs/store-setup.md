@@ -261,6 +261,38 @@ Stripe reports the price paid (in the currency the customer paid; zero-decimal c
   2. On the success page: `POST /verify/stripe` `{"app_id", "user_id", "session_id"}` → `success` once paid (`pending_or_canceled` while not: ask again in a few seconds), or read `/entitlements`.
   3. The game backend receives `grant` / `revoke` as for any store (or `delivery = none`: the page grants on `success`).
 
+## Creating products from the admin page
+
+**Create in store** on an app's Products tab creates the app's products in Google Play, the App Store, Stripe and Xsolla. You pick:
+
+- the products and the builds to create them in;
+- an English title and description;
+- the price and currency;
+- for subscriptions, the billing period.
+
+**Check** shows, for every build and product, whether it will be created. A product the store already has is skipped and can be added to the build's products instead. Each product then runs as a job in the background; the list under the products shows its progress and errors. A finished product is added to the build's products.
+
+The store converts the price to the other countries:
+
+- **Google Play.**
+  - Prices: Google converts them to every region.
+  - Activation: one-time products get an active purchase option `default`; subscriptions get an active auto-renewing base plan named after the period (e.g. `p1m`).
+  - Permissions: the service account needs **Manage store presence**.
+  - Before you start: the app needs a build with Play Billing uploaded to any track.
+- **App Store.**
+  - Key: needs the [App Store Connect API Team key](#catalog-import-optional) (App Manager or Admin role).
+  - Prices: the base price is the nearest App Store price point in the territory of the currency (USD → United States, EUR → Germany, …; the job notes when it differs). Apple fills in the other territories for in-app purchases; for subscriptions the job sets every territory's equalized price, which takes about 180 calls.
+  - Subscriptions go to the subscription group you name, which is created if missing.
+  - Left for App Store Connect: the review screenshot and the review submission. The first in-app purchase of an app must be submitted with an app version.
+- **Stripe.**
+  - Creates a Product with a default Price (recurring for subscriptions); one request, with an idempotency key.
+  - The new **Price id** becomes the build's product id: put it into the Unity config's store ids.
+  - Permissions: a restricted key needs Products: Write and Prices: Write.
+- **Xsolla.**
+  - Creates an enabled virtual item with the SKU = product id and one price.
+  - Subscriptions are not supported.
+- **Amazon Appstore and Steam:** not supported. Amazon has no API for in-app items (use the Developer Console or its CSV upload). Steam items are defined by the game itself.
+
 ## Sandbox and testers
 
 Enable **Sandbox purchases** for the builds on the app's Delivery tab for App Review, TestFlight and license testers. Sandbox purchases are excluded from revenue by default (Revenue → *Include sandbox*) and from integrations unless their *Send sandbox / test purchases* option is on.

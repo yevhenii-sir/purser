@@ -25,8 +25,8 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 
 | Path | What |
 |---|---|
-| `server/core` (`purser-core`) | Pure logic, no SpacetimeDB: the platform / store registry (`registry.rs`), store API URLs and parsers (`google.rs`, `apple.rs`, `amazon.rs`), SNS envelopes and signatures (`sns.rs`), JWT (`jwt.rs`), ledger model constants (`model.rs`), delivery contract (`event.rs`), integration payload builders (`integrations.rs`), setup-check rules (`doctor.rs`), catalog diff (`catalog.rs`), answers to Apple refund requests (`consumption.rs`), revenue rules (`revenue.rs`), FX (`fx.rs`), dates (`time.rs`), alert rules, throttle and messages (`alerts.rs`), paywall assignment and A/B results (`paywall.rs`). Native unit tests. |
-| `server/spacetimedb` (`purser`) | The module: tables and reducers (`lib.rs`), HTTP routes (`handlers.rs`), ledger state machine and worker (`ledger.rs`), store clients, token cache and the dispatch by store (`stores.rs`), subscription re-checks (`poll.rs`), store notification health of every build (`store_health.rs`), secret resolution (`config.rs`), delivery (`delivery_client.rs`), integrations outbox and per-build health (`integrations.rs`), Apple refund request answers (`consumption.rs`), setup check (`doctor.rs`), health (`health.rs`), revenue (`revenue.rs`), paywalls, placements and A/B tests (`paywalls.rs`), catalog import (`catalog.rs`), settings (`settings.rs`), owner alerts and their outbox (`alerts.rs`), HTTP wrapper (`net.rs`), `Ctx` trait (`ctx.rs`), tests (`tests.rs`). |
+| `server/core` (`purser-core`) | Pure logic, no SpacetimeDB: the platform / store registry (`registry.rs`), store API URLs and parsers (`google.rs`, `apple.rs`, `amazon.rs`), SNS envelopes and signatures (`sns.rs`), JWT (`jwt.rs`), ledger model constants (`model.rs`), delivery contract (`event.rs`), integration payload builders (`integrations.rs`), setup-check rules (`doctor.rs`), catalog diff (`catalog.rs`), store product creation steps (`store_create.rs`), answers to Apple refund requests (`consumption.rs`), revenue rules (`revenue.rs`), FX (`fx.rs`), dates (`time.rs`), alert rules, throttle and messages (`alerts.rs`), paywall assignment and A/B results (`paywall.rs`). Native unit tests. |
+| `server/spacetimedb` (`purser`) | The module: tables and reducers (`lib.rs`), HTTP routes (`handlers.rs`), product creation in the stores (`store_create.rs`, jobs run by a scheduled worker), ledger state machine and worker (`ledger.rs`), store clients, token cache and the dispatch by store (`stores.rs`), subscription re-checks (`poll.rs`), store notification health of every build (`store_health.rs`), secret resolution (`config.rs`), delivery (`delivery_client.rs`), integrations outbox and per-build health (`integrations.rs`), Apple refund request answers (`consumption.rs`), setup check (`doctor.rs`), health (`health.rs`), revenue (`revenue.rs`), paywalls, placements and A/B tests (`paywalls.rs`), catalog import (`catalog.rs`), settings (`settings.rs`), owner alerts and their outbox (`alerts.rs`), HTTP wrapper (`net.rs`), `Ctx` trait (`ctx.rs`), tests (`tests.rs`). |
 | `server/spacetimedb/admin/index.html` | **Generated** admin page (committed, embedded with `include_str!`). Never edit by hand. |
 | `server/admin-ui` | Admin page sources: Vite, React 19, TypeScript, Tailwind v4, shadcn/ui, recharts, cmdk. |
 | `server/seed.py`, `server/stdb.py`, `server/migrate.py`, `server/seed.example/` | CLI setup from JSON files, setup check from the terminal (`seed.py --check`), migration from Adapty. |
@@ -93,8 +93,11 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - `/sql` has no `SUM` / `GROUP BY`: aggregates are maintained by the module.
 - **`init` does not run on republish** and there is no upgrade hook. One-off migrations go into the
   worker (`revenue::upkeep`, called from `process_pending`), guarded by a `server_state` key.
-- Outbound HTTP: **500 ms per request**, private addresses blocked. One request per step; keep calls
-  idempotent. Delivery to self-hosted SpacetimeDB hosts needs them in the `spacetime_host` allowlist.
+- Outbound HTTP: only from procedures and HTTP handlers, outside a transaction; the procedure waits
+  for the reply. `net::send` sets a 10 s timeout (`net::TIMEOUT_SECS`; the host allows up to 180 s and
+  uses 30 s by default: the 500 ms in the `spacetimedb` crate docs is outdated). Private addresses
+  are blocked. Keep calls few per run and idempotent: a timeout on our side may still have reached
+  the store. Delivery to self-hosted SpacetimeDB hosts needs them in the `spacetime_host` allowlist.
 - The module RNG is seeded by the timestamp: never use it for secrets.
 - Maincloud tokens have no `hex_identity` claim; the UI asks the `whoami` procedure.
 - In tests use `Ctx::tx` / `try_with_tx` (see `ctx.rs`), not `with_tx` directly in code shared with tests.
@@ -210,7 +213,7 @@ in `registry::STORES`; builds cannot use it.
 3. **Secrets**: nothing to add in `config::secret_name::is_known` (store secrets come from the
    registry); add a constant to `secret_name` if module code reads the secret.
 4. **Module store client** `server/spacetimedb/src/stores.rs`: `<store>_fetch(ctx, app, product, ...)`
-   (one HTTP call per step, 500 ms cap, map statuses to `StoreError::{Invalid, Config, Transient}`,
+   (one HTTP call per step, `net::send` timeout, map statuses to `StoreError::{Invalid, Config, Transient}`,
    never put secrets into error texts), then one arm each in `stores::fetch` (client receipts),
    `stores::missing_field` (required request fields; retryable `error`, not `invalid`) and, if the
    server finishes purchases in the store, `stores::finish`.
@@ -228,12 +231,15 @@ in `registry::STORES`; builds cannot use it.
    renewals may not be notified (the worker re-checks via `stores::refetch`).
 8. **Admin page**: nothing store-specific beyond the registry snapshot; check the wizard and Keys
    tab with a build of the new store (`npm run build`).
-9. **Unity**: a `BillingPlatform` value exists for Amazon, Steam and Web. Implement `IStoreAdapter`
+9. **Creating products** (optional): if the store has a catalog API, list the kinds in
+   `product_create` and add its steps to `purser_core::store_create` (`request` / `absorb`, each step
+   safe to repeat) and its credentials to `auth` in the module's `store_create.rs`.
+10. **Unity**: a `BillingPlatform` value exists for Amazon, Steam and Web. Implement `IStoreAdapter`
    (and `IStoreNameProvider` when the platform does not imply the store) in `Runtime/Store/`, map
    the purchase to `StoreOrder` (`TransactionId`, `PurchaseToken`, `StoreUserId`) and cover it with
    a fake in `Tests/Editor`. Steam / web SDKs are not dependencies of the package: put SDK glue in a
    sample guarded by a scripting define (see `Samples~/AmazonAppstore`).
-10. **Tests and docs**: module tests in `tests.rs` (`w.script(url_substring, status, body)` for the
+11. **Tests and docs**: module tests in `tests.rs` (`w.script(url_substring, status, body)` for the
     store API, a build created through `admin_upsert_game_app`), a section in docs/store-setup.md,
     the stores table and HTTP API in server/README.md, both changelogs.
 
