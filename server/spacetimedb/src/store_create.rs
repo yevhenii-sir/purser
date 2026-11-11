@@ -250,8 +250,14 @@ fn finish(tx: &TxContext, job: &StoreCreateJob, input: &CreateInput, state: &Job
         description: input.description.trim().to_string(),
         period: input.period.clone(),
         apple_group: input.apple_group.trim().to_string(),
+        // The product the admin picked: a Stripe Price id is still the app's `vip_month`.
+        catalog_id: purser_core::catalog::normalize_catalog_id(&job.product_id, store_product_id).unwrap_or_default(),
         ..Product::new(&job.app_id, store_product_id, &job.kind)
     };
+    let taken = |p: &Product| {
+        tx.db.product().app_id().filter(&p.app_id).any(|o| o.key != p.key && o.catalog_id() == p.catalog_id())
+    };
+    let p = if taken(&p) { Product { catalog_id: String::new(), ..p } } else { p };
     if tx.db.product().key().find(&p.key).is_some() {
         tx.db.product().key().update(p);
     } else {

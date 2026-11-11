@@ -53,6 +53,7 @@ impl Fake {
             || call.contains("api.stripe.com")
             || call.contains("/consumption/")
             || call.contains("s2s.adjust.com")
+            || call.contains("hooks.example.com")
         {
             // Reducer calls (and Xsolla / Stripe API calls, store catalog writes, Apple consumption answers, Adjust
             // events) are recorded with their bodies.
@@ -2210,6 +2211,77 @@ fn paywall_route_serves_the_default_variant_with_the_build_products() {
     assert_eq!(get_paywall_for(&w, "main_paywall", "player-1").http, 404);
     let r: PaywallRequest = serde_json::from_value(json!({ "app_id": "com.other", "placement": "main_paywall" })).unwrap();
     assert_eq!(get_paywall(&mut w.ctx(), &r).err().map(|o| o.http), Some(400));
+}
+
+/// An iOS build of the app whose `no_ads` has another store id, with the catalog id `no_ads`.
+fn add_ios_build_with_its_own_store_ids(w: &World) {
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        app.app_id = IOS_APP.into();
+        app.platform = config::PLATFORM_IOS.into();
+        tx.db.game_app().insert(app);
+    });
+    let upsert = json!([
+        { "app_id": IOS_APP, "product_id": "gems", "kind": "consumable" },
+        { "app_id": IOS_APP, "product_id": "com.studio.noads", "kind": "non_consumable", "catalog_id": "no_ads" },
+    ]);
+    admin_call(w, |ctx| crate::admin_upsert_products(ctx, upsert.to_string())).unwrap();
+}
+
+#[test]
+fn paywalls_list_catalog_ids_and_each_build_gets_its_store_ids() {
+    let w = World::new();
+    setup_paywalls(&w);
+    add_ios_build_with_its_own_store_ids(&w);
+    let ios: PaywallRequest = serde_json::from_value(json!({ "app_id": IOS_APP, "placement": "main_paywall", "user_id": "player-1" })).unwrap();
+    let o = get_paywall(&mut w.ctx(), &ios).unwrap_or_else(|o| o);
+    assert_eq!(
+        o.body["products"],
+        json!([{ "id": "gems", "store_id": "gems", "kind": "consumable" }, { "id": "no_ads", "store_id": "com.studio.noads", "kind": "non_consumable" }])
+    );
+    let android = get_paywall_for(&w, "main_paywall", "player-1");
+    assert_eq!(android.body["products"][1], json!({ "id": "no_ads", "store_id": "no_ads", "kind": "non_consumable" }));
+
+    // A paywall takes catalog ids, not another build's store id.
+    let pw = |ids: Value| {
+        admin_call(&w, |ctx| {
+            crate::paywalls::admin_upsert_paywall(ctx, json!({ "game_key": "game", "paywall_id": "pw_c", "product_ids": ids }).to_string())
+        })
+    };
+    assert!(pw(json!(["com.studio.noads"])).unwrap_err().contains("not in the catalog"));
+    pw(json!(["no_ads"])).unwrap();
+
+    // One catalog id per build; an upsert without `catalog_id` keeps it, an empty one clears it.
+    let dup = json!({ "app_id": IOS_APP, "product_id": "com.studio.noads2", "kind": "non_consumable", "catalog_id": "no_ads" });
+    assert!(admin_call(&w, |ctx| crate::admin_upsert_products(ctx, dup.to_string())).unwrap_err().contains("already has the product com.studio.noads"));
+    let row = || w.read(|tx| tx.db.product().key().find(crate::product_key(IOS_APP, "com.studio.noads"))).unwrap();
+    let again = json!({ "app_id": IOS_APP, "product_id": "com.studio.noads", "kind": "non_consumable", "default_price_micros": 2_990_000 });
+    admin_call(&w, |ctx| crate::admin_upsert_products(ctx, again.to_string())).unwrap();
+    assert_eq!(row().catalog_id(), "no_ads");
+    let clear = json!({ "app_id": IOS_APP, "product_id": "com.studio.noads", "kind": "non_consumable", "catalog_id": "" });
+    admin_call(&w, |ctx| crate::admin_upsert_products(ctx, clear.to_string())).unwrap();
+    assert_eq!(row().catalog_id(), "com.studio.noads");
+}
+
+#[test]
+fn entitlements_and_webhooks_use_the_catalog_id() {
+    let w = World::new();
+    w.as_admin(true);
+    let renamed = json!({ "app_id": APP, "product_id": "no_ads", "kind": "non_consumable", "catalog_id": "remove_ads" });
+    admin_call(&w, |ctx| crate::admin_upsert_products(ctx, renamed.to_string())).unwrap();
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        app.delivery = "webhook".into();
+        app.webhook_url = "https://hooks.example.com/billing".into();
+        tx.db.game_app().app_id().update(app);
+    });
+    w.set_secret("webhook_secret", "whsec-test");
+
+    w.verify("player-1", "no_ads");
+    assert_eq!(w.entitlements("player-1")["non_consumables"], json!(["remove_ads"]));
+    let calls = w.fake.borrow().calls.clone();
+    let hook = calls.iter().find(|c| c.contains("hooks.example.com")).expect("the webhook was called");
+    assert!(hook.contains(r#""product_id":"no_ads""#) && hook.contains(r#""catalog_product_id":"remove_ads""#), "{hook}");
 }
 
 #[test]
@@ -5167,6 +5239,7 @@ mod store_create_tests {
         assert!(!calls.iter().any(|c| c.starts_with("POST https://api.appstoreconnect.apple.com/v1/subscriptionGroups")));
         assert!(calls.iter().any(|c| c.contains("subscriptionPlanAvailabilities") && c.contains("JPN")));
         let p = local(&w, IOS_APP, "vip_month").unwrap();
+        assert_eq!(p.catalog_id(), "vip_month");
         assert_eq!(
             (p.title.as_str(), p.period.as_str(), p.apple_group.as_str()),
             ("100 gems", "P1M", "Premium"),
@@ -5194,7 +5267,8 @@ mod store_create_tests {
         drive(&w);
         let j = &jobs(&w)[0];
         assert_eq!((j.status.as_str(), j.store_product_id.as_str()), ("done", "price_9"));
-        assert!(local(&w, WEB_APP, "price_9").is_some(), "a Stripe build's product id is the Price id");
+        let p = local(&w, WEB_APP, "price_9").expect("a Stripe build's product id is the Price id");
+        assert_eq!(p.catalog_id(), "gems_new", "and its catalog id is the product the admin picked");
         let call = w.fake.borrow().calls.iter().find(|c| c.contains("/v1/products")).cloned().unwrap();
         assert!(call.contains("[idempotency=purser-create-com.studio.game.web-gems_new]"), "{call}");
         assert!(call.contains("unit_amount%5D=499"), "{call}");

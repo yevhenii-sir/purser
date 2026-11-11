@@ -76,6 +76,10 @@ pub struct BillingEvent {
     pub price_micros: i64,
     pub currency: String,
     pub timestamp_ms: i64,
+    /// The app's own id of the product, the same in every store (`product_id` is this store's id).
+    /// Only in webhook bodies ([`BillingEvent::to_json`]): the `v1` reducer argument keeps its fields.
+    #[serde(skip)]
+    pub catalog_product_id: String,
 }
 
 impl BillingEvent {
@@ -108,8 +112,12 @@ impl BillingEvent {
         }
     }
 
+    /// Webhook body: the event and `catalog_product_id` (the store id when it has none).
     pub fn to_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_default()
+        let mut v = serde_json::to_value(self).unwrap_or_default();
+        let catalog = if self.catalog_product_id.is_empty() { &self.product_id } else { &self.catalog_product_id };
+        v["catalog_product_id"] = json!(catalog);
+        v.to_string()
     }
 }
 
@@ -140,7 +148,22 @@ mod tests {
             price_micros: 0,
             currency: String::new(),
             timestamp_ms: 1,
+            catalog_product_id: String::new(),
         }
+    }
+
+    #[test]
+    fn catalog_id_goes_to_webhooks_only() {
+        let mut e = ev(event_type::GRANT, "subscription");
+        e.product_id = "com.example.vip".into();
+        e.catalog_product_id = "vip".into();
+        let body: Value = serde_json::from_str(&e.to_json()).unwrap();
+        assert_eq!((body["product_id"].as_str(), body["catalog_product_id"].as_str()), (Some("com.example.vip"), Some("vip")));
+        let args = e.reducer_args(args_format::V1).unwrap();
+        assert!(args[0].get("catalog_product_id").is_none(), "the v1 reducer argument keeps its fields");
+        e.catalog_product_id.clear();
+        let body: Value = serde_json::from_str(&e.to_json()).unwrap();
+        assert_eq!(body["catalog_product_id"], "com.example.vip");
     }
 
     #[test]

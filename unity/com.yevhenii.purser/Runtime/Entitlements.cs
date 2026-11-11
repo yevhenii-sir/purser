@@ -5,7 +5,9 @@ namespace Purser
 {
     /// <summary>
     /// What the player owns according to the billing server: active subscriptions and non-consumables,
-    /// across all platforms of the same game. Keys are store product ids.
+    /// across all platforms of the same game. Keys are the app's product ids (the admin panel's catalog id, which is the
+    /// config's product <c>id</c>; a store product id for products without one). <see cref="IBillingService.IsActive"/>
+    /// checks a configured product by its id and every store id.
     /// </summary>
     public sealed class Entitlements
     {
@@ -14,7 +16,7 @@ namespace Purser
 
         public string UserId { get; }
 
-        /// <summary>Store product id → expiration (Unix ms, 0 = never).</summary>
+        /// <summary>Product id → expiration (Unix ms, 0 = never).</summary>
         public IReadOnlyDictionary<string, long> Subscriptions { get; }
 
         public IReadOnlyCollection<string> NonConsumables { get; }

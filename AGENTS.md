@@ -54,7 +54,10 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - **Secrets** (`credential` table, `{scope}/{name}`) resolve **build → account → `default`**
   (`config::require_secret`). Names are in `config::secret_name` (+ `is_known`). Never return
   secret values from any API; the admin page only learns which keys exist.
-- **Product** (`{app_id}:{product_id}`): kind `consumable` | `non_consumable` | `subscription`.
+- **Product** (`{app_id}:{product_id}`, `product_id` = the store's id): kind `consumable` | `non_consumable` |
+  `subscription`. `catalog_id` (`Product::catalog_id()`, empty = `product_id`) is the app's own id, the same in every
+  store (the Unity config's product `id`): paywalls list it, entitlements and webhook events carry it, the admin page
+  groups by it. The ledger, store calls and revenue use the store id.
 - **Purchase / ledger** id `{store}:{transaction_id}`; `purchase_token` is what the store needs to look
   the row up again (Google purchase token, Amazon user id). States (`purser_core::model::status`):
   `verified` → `granted` → `completed` (consumed / acknowledged; stores without a server-side finish

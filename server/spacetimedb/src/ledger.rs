@@ -341,6 +341,8 @@ pub struct Step {
     delivery: Option<delivery_client::Creds>,
     revoked_by_admin: bool,
     store_auth: stores::Auth,
+    /// Catalog id of the purchased product (webhook deliveries carry it).
+    catalog_id: String,
 }
 
 /// Outcome of [`lease`]: a step to [`run`], or the row as it is (nothing to do now).
@@ -362,7 +364,8 @@ fn prepare(tx: &TxContext, app: GameApp, row: Purchase) -> Lease {
     } else {
         stores::Auth::default()
     };
-    Lease::Step(Box::new(Step { app, row, delivery, revoked_by_admin, store_auth }))
+    let catalog_id = if delivers { crate::catalog_id_of(tx, &row.app_id, &row.product_id) } else { String::new() };
+    Lease::Step(Box::new(Step { app, row, delivery, revoked_by_admin, store_auth, catalog_id }))
 }
 
 /// Takes the row for processing if it has pending work: hides it from the worker for
@@ -471,6 +474,7 @@ fn billing_event(p: &Purchase, event: &str, why: &str, now_ms: i64) -> BillingEv
         price_micros: p.price_micros,
         currency: p.currency.clone(),
         timestamp_ms: now_ms,
+        catalog_product_id: String::new(),
     }
 }
 
@@ -505,7 +509,8 @@ pub fn run(ctx: &mut impl Ctx, lease: Lease) -> Option<Purchase> {
 
 /// One step of a leased purchase; `lease_next`: lease it again for the next step.
 fn run_step(ctx: &mut impl Ctx, step: Step, lease_next: bool) -> Lease {
-    let Step { app, row: p, delivery, revoked_by_admin, mut store_auth } = step;
+    let Step { app, row: p, delivery, revoked_by_admin, mut store_auth, catalog_id } = step;
+    let billing_event = |p: &Purchase, event: &str, why: &str, now_ms: i64| BillingEvent { catalog_product_id: catalog_id.clone(), ..billing_event(p, event, why, now_ms) };
     let creds = delivery.as_ref();
     let now_ms = ctx.now_ms();
     let result: Result<(&str, Option<&str>), String> = match p.status.as_str() {
@@ -590,19 +595,21 @@ pub fn entitlements(tx: &TxContext, app: &GameApp, user_id: &str) -> Value {
 
     let mut subscriptions: BTreeMap<String, i64> = BTreeMap::new();
     let mut non_consumables: BTreeSet<String> = BTreeSet::new();
+    // Keyed by catalog id: the same product bought in another store of the app is the same entitlement.
     for p in tx.db.purchase().user_id().filter(user_id) {
         if !apps.contains(&p.app_id) || !status::is_owned(&p.status) {
             continue;
         }
+        let id = crate::catalog_id_of(tx, &p.app_id, &p.product_id);
         match p.kind.as_str() {
             kind::SUBSCRIPTION if p.expires_at_ms == 0 || p.expires_at_ms > now_ms => {
-                let e = subscriptions.entry(p.product_id.clone()).or_insert(p.expires_at_ms);
+                let e = subscriptions.entry(id).or_insert(p.expires_at_ms);
                 if *e != 0 && (p.expires_at_ms == 0 || p.expires_at_ms > *e) {
                     *e = p.expires_at_ms;
                 }
             }
             kind::NON_CONSUMABLE => {
-                non_consumables.insert(p.product_id.clone());
+                non_consumables.insert(id);
             }
             _ => {}
         }

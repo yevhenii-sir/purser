@@ -16,8 +16,9 @@ between paywalls. This is the Adapty "placements / paywalls / A/B tests" model, 
 | Purchases | the ledger row remembers `paywall_placement`, `paywall_variant_id`, `paywall_test_id`, `paywall_id` | `purchase` (new columns) |
 
 Everything belongs to an **app** (a `game_key`): its Android and iOS builds share paywalls and
-placements. A paywall lists catalog product ids (the Products tab); each build answers with the
-products configured for it, in the paywall's order, and silently skips ids missing on that build
+placements. A paywall lists catalog product ids (the Products tab): a product's own id, the same in
+every store, while each build keeps the store's id next to it (a Stripe Price id, a reverse-domain App
+Store id). Each build answers with the products configured for it, in the paywall's order, and silently skips ids missing on that build
 (the admin page marks them "not on iOS").
 
 ## What a player gets
@@ -95,7 +96,8 @@ Base: `https://<host>/v1/database/<your-billing-db>/route`.
 }
 ```
 
-`id` is the catalog product id and `store_id` the id in this build's store (the same today).
+`id` is the catalog product id (the Unity config's product `id`) and `store_id` the id in this build's
+store; they are the same unless the Products tab names another store id for the build.
 Errors: `404 {"status": "not_found", "code": "ERR_PLACEMENT_NOT_FOUND" | "ERR_PAYWALL_NOT_FOUND", "message"}`,
 `400` for an unknown app or a bad `user_id`.
 

@@ -7,7 +7,7 @@
 
 use crate::config;
 use crate::ctx::Ctx;
-use crate::{game_app, product, product_key, purchase, GameApp};
+use crate::{game_app, purchase, GameApp};
 use purser_core::event::reason;
 use purser_core::fx::FxTable;
 use purser_core::paywall::{self as pw, AttributedPurchase, Attribution, Variant};
@@ -31,7 +31,7 @@ pub struct Paywall {
     pub game_key: String,
     pub paywall_id: String,
     pub name: String,
-    /// JSON array of catalog product ids, in display order.
+    /// JSON array of catalog product ids (`Product::catalog_id`, the same in every store), in display order.
     pub product_ids_json: String,
     /// Any JSON value (compact), served as `remote_config`.
     pub remote_config_json: String,
@@ -140,10 +140,11 @@ pub fn serve(ctx: &ReducerContext, app: &GameApp, placement_id: &str, user_id: &
         .find(scoped_key(&app.game_key, &variant.paywall_id))
         .ok_or_else(|| client_error(404, "ERR_PAYWALL_NOT_FOUND", format!("paywall '{}' was deleted", variant.paywall_id)))?;
     let ids: Vec<String> = serde_json::from_str(&paywall.product_ids_json).unwrap_or_default();
+    // `id`: the catalog id (the Unity config's product id); `store_id`: this build's store id.
     let products: Vec<Value> = ids
         .iter()
-        .filter_map(|id| ctx.db.product().key().find(product_key(&app.app_id, id)))
-        .map(|p| json!({ "id": p.product_id, "store_id": p.product_id, "kind": p.kind }))
+        .filter_map(|id| crate::product_by_catalog_id(ctx, &app.app_id, id))
+        .map(|p| json!({ "id": p.catalog_id(), "store_id": p.product_id, "kind": p.kind }))
         .collect();
     let remote_config: Value = serde_json::from_str(&paywall.remote_config_json).unwrap_or_else(|_| json!({}));
     Ok(json!({
@@ -290,7 +291,8 @@ struct PaywallInput {
 }
 
 /// Creates or replaces a paywall. `json`: `{game_key, paywall_id, name, product_ids: [...],
-/// remote_config: {...}}`. Every product must be in the catalog of at least one build of the app.
+/// remote_config: {...}}`. `product_ids` are catalog ids; every one must be a product of at least one
+/// build of the app.
 #[spacetimedb::reducer]
 pub fn admin_upsert_paywall(ctx: &ReducerContext, json: String) -> Result<(), String> {
     let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
@@ -305,7 +307,7 @@ pub fn admin_upsert_paywall(ctx: &ReducerContext, json: String) -> Result<(), St
     }
     pw::validate_product_ids(&i.product_ids).map_err(|e| bad("ERR_BAD_PAYWALL", e))?;
     for id in &i.product_ids {
-        if !apps.iter().any(|a| ctx.db.product().key().find(product_key(&a.app_id, id)).is_some()) {
+        if !apps.iter().any(|a| crate::product_by_catalog_id(ctx, &a.app_id, id).is_some()) {
             return Err(bad("ERR_BAD_PAYWALL", format!("product '{id}' is not in the catalog of {}", i.game_key)));
         }
     }

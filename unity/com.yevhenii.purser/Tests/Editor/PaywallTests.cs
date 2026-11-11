@@ -96,6 +96,23 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void GetPaywall_MapsCatalogIdsToTheConfig()
+        {
+            // The server lists the app's catalog id ("premium") with this build's store id.
+            CreateService();
+            m_Api.PaywallResult = FakeApi.Paywall(@"{""status"": ""ok"", ""placement"": ""main_paywall"", ""paywall_id"": ""pw"", ""variant_id"": ""a"",
+                ""products"": [{""id"": ""premium"", ""store_id"": ""premium_android"", ""kind"": ""subscription""},
+                               {""id"": ""gems_100"", ""store_id"": ""gems_100"", ""kind"": ""consumable""}]}");
+
+            var paywall = Sync.Run(m_Service.GetPaywallAsync("main_paywall"));
+
+            CollectionAssert.AreEqual(new[] { "premium", "gems_100" }, paywall.Products.Select(p => p.Id).ToArray());
+            Assert.AreEqual("premium_android", paywall.Products[0].StoreId);
+            Assert.AreEqual("$0.99", paywall.Products[0].LocalizedPrice);
+            CollectionAssert.IsEmpty(paywall.MissingProductIds);
+        }
+
+        [Test]
         public void RemoteConfig_HelpersReadTheJson()
         {
             CreateService();

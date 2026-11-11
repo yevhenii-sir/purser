@@ -418,6 +418,20 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void Entitlements_KeyedByCatalogId_MapToTheConfig()
+        {
+            // Servers key entitlements by the app's catalog id: the config's product id.
+            CreateService();
+            var expires = new DateTimeOffset(Now.AddDays(10)).ToUnixTimeMilliseconds();
+            m_Api.EntitlementsResult = FakeApi.Entitlements(new Dictionary<string, long> { ["premium"] = expires });
+            m_Api.EntitlementsResult.Value.ServerTimeMs = new DateTimeOffset(Now).ToUnixTimeMilliseconds();
+
+            Sync.Run(m_Service.RefreshEntitlementsAsync());
+            Assert.IsTrue(m_Service.IsActive("premium"));
+            Assert.IsTrue(m_Service.IsActive("premium_android"), "by a store id too");
+        }
+
+        [Test]
         public void Entitlements_ServerDown_ReturnsCachedCopy()
         {
             CreateService();

@@ -13,6 +13,7 @@ Everything here is fictional (example.com ids, random players and orders).
 """
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import random
@@ -102,6 +103,13 @@ GAMES = {
         ],
     },
 }
+def store_pid(store, pid):
+    """The product's id in a store: a Stripe build sells Price ids (`price_…`), the others use the catalog id."""
+    if store != "stripe":
+        return pid
+    return "price_1" + hashlib.sha256(pid.encode()).hexdigest()[:14]
+
+
 # Store listing of some products (title, description, period, App Store subscription group).
 LISTING = {
     "gems_small": {"title": "Handful of gems", "description": "100 gems to speed up your mining"},
@@ -159,7 +167,7 @@ def make_purchases(now_ms, rnd):
         seq += 1
         tx = tx_id(store, rnd)
         r = {
-            "id": f"{store}:{tx}", "store": store, "app_id": app, "product_id": product, "kind": kind,
+            "id": f"{store}:{tx}", "store": store, "app_id": app, "product_id": store_pid(store, product), "kind": kind,
             "transaction_id": tx, "original_transaction_id": orig or tx, "purchase_token": tx if store != "google" else "tok-%x" % rnd.getrandbits(48),
             "user_id": uid, "status": status, "reason": reason, "expires_at_ms": expires,
             "environment": "sandbox" if uid in testers else "production", "price_micros": 0 if trial else price,
@@ -304,7 +312,8 @@ def main():
             if st == "google":
                 srv.call("admin_set_credential", app, "google_rtdn_secret", "%032x" % rnd.getrandbits(128))
             srv.call("admin_upsert_products", json.dumps([
-                {"app_id": app, "product_id": p, "kind": k, "default_price_micros": int(usd * 1e6), "currency": "USD", **LISTING.get(p, {})}
+                {"app_id": app, "product_id": store_pid(st, p), "catalog_id": p, "kind": k, "default_price_micros": int(usd * 1e6), "currency": "USD",
+                 **LISTING.get(p, {})}
                 for p, k, usd, _ in d["products"]]))
     for app in ("com.example.galaxyminer", "com.example.galaxyminer.ios"):
         srv.call("admin_upsert_integration", json.dumps({"app_id": app, "kind": "ga4", "enabled": True,

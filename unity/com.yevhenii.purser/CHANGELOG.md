@@ -7,6 +7,8 @@
   keeps internal, Steam, web stores, the Editor) it comes from the new `BillingProductConfig.fallbackPeriod`
   (`WithFallbackPeriod`). The config JSON carries it as `period`, so pasting the admin panel's config fills it.
   `BillingPeriods` parses ISO periods. No server change is needed: nothing new is sent.
+- Works with servers that key paywalls and entitlements by the app's catalog id (the config's product `id`): no code
+  change, covered by tests.
 
 ## [0.4.0] - 2026-11-11
 

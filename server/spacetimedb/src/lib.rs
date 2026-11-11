@@ -137,6 +137,10 @@ pub struct Product {
     /// Subscriptions: App Store subscription group (reference name).
     #[default("")]
     pub apple_group: String,
+    /// The app's own id of the product, the same in every store (the Unity config's product `id`):
+    /// paywalls list it and entitlements are keyed by it. "" = the same as `product_id`.
+    #[default("")]
+    pub catalog_id: String,
 }
 
 impl Product {
@@ -153,8 +157,24 @@ impl Product {
             description: String::new(),
             period: String::new(),
             apple_group: String::new(),
+            catalog_id: String::new(),
         }
     }
+
+    /// The app's own id of the product ([`Product::catalog_id`] or the store id).
+    pub fn catalog_id(&self) -> &str {
+        purser_core::catalog::catalog_id_or(&self.catalog_id, &self.product_id)
+    }
+}
+
+/// Catalog id of a build's product by its store id; the store id when the build has no such product.
+pub fn catalog_id_of(ctx: &ReducerContext, app_id: &str, product_id: &str) -> String {
+    ctx.db.product().key().find(product_key(app_id, product_id)).map(|p| p.catalog_id().to_string()).unwrap_or_else(|| product_id.to_string())
+}
+
+/// A build's product by its catalog id.
+pub fn product_by_catalog_id(ctx: &ReducerContext, app_id: &str, catalog_id: &str) -> Option<Product> {
+    ctx.db.product().app_id().filter(app_id).find(|p| p.catalog_id() == catalog_id)
 }
 
 /// Secrets. `key` = `{scope}/{name}` where scope is an app id, an account name or `default`.
@@ -519,6 +539,10 @@ struct ProductInput {
     period: Option<String>,
     #[serde(default)]
     apple_group: Option<String>,
+    /// The app's own id of the product (the same in every store); missing keeps the stored one,
+    /// empty = the store id.
+    #[serde(default)]
+    catalog_id: Option<String>,
 }
 
 pub fn product_key(app_id: &str, product_id: &str) -> String {
@@ -563,7 +587,12 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
         let old = ctx.db.product().key().find(product_key(&i.app_id, &i.product_id));
         let keep = |new: Option<String>, old: Option<&String>| new.map(|s| s.trim().to_string()).unwrap_or_else(|| old.cloned().unwrap_or_default());
         let subscription = i.kind == kind::SUBSCRIPTION;
+        let catalog_id = match i.catalog_id {
+            Some(c) => purser_core::catalog::normalize_catalog_id(&c, &i.product_id).map_err(|e| format!("[ERR_BAD_PRODUCT] {}: {e}", i.product_id))?,
+            None => old.as_ref().map(|o| o.catalog_id.clone()).unwrap_or_default(),
+        };
         let p = Product {
+            catalog_id,
             title: keep(i.title, old.as_ref().map(|o| &o.title)),
             description: keep(i.description, old.as_ref().map(|o| &o.description)),
             period: if subscription { keep(i.period, old.as_ref().map(|o| &o.period)).to_ascii_uppercase() } else { String::new() },
@@ -574,6 +603,15 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
         };
         purser_core::catalog::check_listing(&p.title, &p.description, &p.period, &p.apple_group)
             .map_err(|e| format!("[ERR_BAD_PRODUCT] {}: {e}", p.product_id))?;
+        if let Some(other) = ctx.db.product().app_id().filter(&p.app_id).find(|o| o.key != p.key && o.catalog_id() == p.catalog_id()) {
+            return Err(format!(
+                "[ERR_BAD_PRODUCT] {}: {} already has the product {} with the catalog id {}",
+                p.product_id,
+                p.app_id,
+                other.product_id,
+                p.catalog_id()
+            ));
+        }
         if old.is_some() {
             ctx.db.product().key().update(p);
         } else {

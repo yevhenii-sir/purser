@@ -15,7 +15,7 @@ import { call, proc, sql, sqlStr, sqlWhereIn } from "@/lib/api"
 import { PLATFORM_LABEL } from "@/lib/apps"
 import { errorText, fmtTime, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
-import type { Product } from "@/lib/types"
+import { catalogIdOf, type Product } from "@/lib/types"
 import type { TabProps } from "@/pages/app"
 
 interface PaywallRow {
@@ -120,7 +120,8 @@ export function AppPaywallsTab({ data }: TabProps) {
   if (loaded.error) return <ErrorBox error={loaded.error} />
   if (loaded.loading && !loaded.data) return <Loading rows={6} />
   const d = loaded.data!
-  const catalog = [...new Set(d.products.map((p) => p.product_id))].sort()
+  /** The app's catalog ids (a product's own id, the same in every store). */
+  const catalog = [...new Set(d.products.map(catalogIdOf))].sort()
   const usedBy = (paywallId: string) => d.placements.filter((p) => parseList<Variant>(p.variants_json).some((v) => v.paywall_id === paywallId)).map((p) => p.placement_id)
   const selected = d.placements.find((p) => p.placement_id === resultsFor) || d.placements[0]
 
@@ -284,7 +285,7 @@ function PaywallForm({ gameKey, row, catalog, products, apps, onClose, onSaved }
     n.splice(i + by, 0, x)
     return n
   })
-  const missingIn = (pid: string) => apps.filter((a) => !products.some((p) => p.app_id === a.id && p.product_id === pid)).map((a) => a.label)
+  const missingIn = (pid: string) => apps.filter((a) => !products.some((p) => p.app_id === a.id && catalogIdOf(p) === pid)).map((a) => a.label)
 
   const save = async () => {
     const pid = id.trim()

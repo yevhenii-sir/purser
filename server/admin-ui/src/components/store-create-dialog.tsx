@@ -149,7 +149,7 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
     const items = existing.map((r) => {
       const p = byId.get(r.product_id)
       return {
-        app_id: r.app_id, product_id: r.store_product_id, kind: r.kind, default_price_micros: p?.price_micros || 0, currency: p?.currency || "",
+        app_id: r.app_id, product_id: r.store_product_id, catalog_id: r.product_id, kind: r.kind, default_price_micros: p?.price_micros || 0, currency: p?.currency || "",
         ...listingOf(p),
       }
     })

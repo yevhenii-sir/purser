@@ -20,7 +20,7 @@ import { buildLabel, platformById, storeById, storeOf, storesFor, usablePlatform
 import { errorText } from "@/lib/format"
 import { parseUnityConfig, productIdIn, suggestGameKey, toUnityConfig, type ParsedUnityConfig } from "@/lib/unity-config"
 import type { CatalogRow, Delivery, GameApp, Kind, Platform, Product, Report } from "@/lib/types"
-import { KINDS } from "@/lib/types"
+import { catalogIdOf, KINDS } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const STEPS = ["App", "Delivery", "Store keys", "Products", "Check"]
@@ -200,9 +200,14 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
           if (e) Object.assign(s, { delivery: e.delivery, spacetime_url: e.spacetime_url || s.spacetime_url, spacetime_db: e.spacetime_db, grant_reducer: e.grant_reducer, revoke_reducer: e.revoke_reducer, args_format: e.args_format, webhook_url: e.webhook_url })
         }
         if (!s.products.length) {
+          const firstStore = apps(s)[0]?.store || ""
           s.products = products
             .filter((p) => p.app_id === firstApp)
-            .map((p) => ({ product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency, ...(p.period ? { period: p.period } : {}) }))
+            .map((p) => ({
+              product_id: catalogIdOf(p), kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency,
+              ...(p.product_id !== catalogIdOf(p) ? { store_ids: { [firstStore]: p.product_id } } : {}),
+              ...(p.period ? { period: p.period } : {}),
+            }))
         }
         setW(s)
       } else if (step === 1) {
@@ -250,7 +255,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         const items = apps()
           .filter((a) => a.products)
           .flatMap((a) => valid.map((p) => ({
-            app_id: a.app_id, product_id: productIdIn(p, a.store).trim(), kind: p.kind, default_price_micros: p.default_price_micros || 0, currency: p.currency || "",
+            app_id: a.app_id, product_id: productIdIn(p, a.store).trim(), catalog_id: p.product_id.trim(), kind: p.kind, default_price_micros: p.default_price_micros || 0, currency: p.currency || "",
             ...(p.period && p.kind === "subscription" ? { period: p.period } : {}),
           })))
         if (items.length) {

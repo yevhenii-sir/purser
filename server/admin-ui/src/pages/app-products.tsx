@@ -16,17 +16,41 @@ import { call, proc, publicRoute, sqlWhereIn } from "@/lib/api"
 import { buildLabel, creatorBuilds, storeById, storeOf } from "@/lib/stores"
 import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
-import { KINDS, listingOf, type CatalogRow, type GameApp, type Kind, type Product } from "@/lib/types"
+import { catalogIdOf, KINDS, listingOf, type CatalogRow, type GameApp, type Kind, type Product } from "@/lib/types"
 import { PERIODS, perPeriod } from "@/lib/periods"
 import type { TabProps } from "@/pages/app"
 import { appRoute } from "@/routes"
 import { useCan } from "@/lib/roles"
 import { parseUnityConfig, productIdIn, toUnityConfig, type UnityBuild } from "@/lib/unity-config"
 
+/** One product of the app: its catalog id and its row in each build (whose `product_id` is the store id). */
 interface Row {
+  /** The catalog id. */
   product_id: string
   kind: Kind
   by: Record<string, Product | undefined>
+}
+
+/** The products of the app's builds grouped by catalog id. */
+function groupByCatalogId(all: Product[]): Row[] {
+  const map = new Map<string, Row>()
+  for (const p of all) {
+    const id = catalogIdOf(p)
+    const row = map.get(id) || { product_id: id, kind: p.kind, by: {} }
+    row.by[p.app_id] = p
+    map.set(id, row)
+  }
+  return [...map.values()].sort((a, b) => a.product_id.localeCompare(b.product_id))
+}
+
+/** Store ids per store where a build's product id differs from the catalog id (the Unity config's `storeIds`). */
+function storeIdsOf(r: Row, apps: GameApp[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const a of apps) {
+    const p = r.by[a.app_id]
+    if (p && p.product_id !== r.product_id && !out[storeOf(a).id]) out[storeOf(a).id] = p.product_id
+  }
+  return out
 }
 
 type Listing = { title: string; description: string; period: string; apple_group: string }
@@ -46,16 +70,7 @@ export function AppProductsTab({ data, go }: TabProps) {
   const [dialog, setDialog] = useState<string | null>(null)
   /** Remounts the store job list after new jobs were queued. */
   const [jobsKey, setJobsKey] = useState(0)
-  const products = useAsync(async () => {
-    const all = await sqlWhereIn<Product>("product", "app_id", ids)
-    const map = new Map<string, Row>()
-    for (const p of all) {
-      const row = map.get(p.product_id) || { product_id: p.product_id, kind: p.kind, by: {} }
-      row.by[p.app_id] = p
-      map.set(p.product_id, row)
-    }
-    return [...map.values()].sort((a, b) => a.product_id.localeCompare(b.product_id))
-  }, [ids.join(",")])
+  const products = useAsync(async () => groupByCatalogId(await sqlWhereIn<Product>("product", "app_id", ids)), [ids.join(",")])
   const rows = products.data || []
   const configure = useCan()("configure")
   /** Builds whose store catalog can be imported (Google Play, App Store). */
@@ -64,7 +79,10 @@ export function AppProductsTab({ data, go }: TabProps) {
   const copyToOther = async (from: GameApp, to: GameApp) => {
     const items = rows.filter((r) => r.by[from.app_id] && !r.by[to.app_id]).map((r) => {
       const p = r.by[from.app_id]!
-      return { app_id: to.app_id, product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency, ...listingOf(p) }
+      return {
+        app_id: to.app_id, product_id: p.product_id, catalog_id: r.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency,
+        ...listingOf(p),
+      }
     })
     if (!items.length) return toast.info(`Every ${buildLabel(from)} product already exists on ${buildLabel(to)}`)
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Copied ${items.length} product(s)`)
@@ -75,7 +93,10 @@ export function AppProductsTab({ data, go }: TabProps) {
   const downloadJson = () => {
     const items = rows.flatMap((r) => g.apps.flatMap((a) => {
       const p = r.by[a.app_id]
-      return p ? [{ app_id: a.app_id, product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency, ...listingOf(p) }] : []
+      return p ? [{
+        app_id: a.app_id, product_id: p.product_id, ...(p.product_id !== r.product_id ? { catalog_id: r.product_id } : {}), kind: p.kind,
+        default_price_micros: Number(p.default_price_micros), currency: p.currency, ...listingOf(p),
+      }] : []
     }))
     const url = URL.createObjectURL(new Blob([JSON.stringify(items, null, 2) + "\n"], { type: "application/json" }))
     const link = Object.assign(document.createElement("a"), { href: url, download: `products-${g.key}.json` })
@@ -88,8 +109,8 @@ export function AppProductsTab({ data, go }: TabProps) {
     const products = rows.map((r) => {
       const priced = g.apps.map((a) => r.by[a.app_id]).find((p) => p && Number(p.default_price_micros) > 0)
       return {
-        product_id: r.product_id, kind: r.kind, default_price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "",
-        period: listingOfRow(r).period,
+        product_id: r.product_id, kind: r.kind, store_ids: storeIdsOf(r, g.apps),
+        default_price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "", period: listingOfRow(r).period,
       }
     })
     const text = toUnityConfig(await publicRoute(), g.apps.map((a) => ({ store: storeOf(a).id, app_id: a.app_id })), products)
@@ -100,7 +121,7 @@ export function AppProductsTab({ data, go }: TabProps) {
     <>
       <Section
         title="Products"
-        description="Store product ids per build. The default price is used for revenue when the store does not report one (Google one-time products); the title, description and period are used by Create in store."
+        description="The app's products and their ids in each build's store. The default price is used for revenue when the store does not report one (Google one-time products); the title, description and period are used by Create in store."
         actions={
           <>
             {configure && (
@@ -164,7 +185,14 @@ export function AppProductsTab({ data, go }: TabProps) {
                   if (!p) return <Tone tone="warn">missing</Tone>
                   const price = money(p.default_price_micros, p.currency)
                   const per = r.kind === "subscription" ? perPeriod(p.period) : ""
-                  return price === "—" ? <Tone tone="ok">{per ? `yes · per ${per}` : "yes"}</Tone> : <span className="tabular-nums">{price}{per && <span className="text-muted-foreground"> / {per}</span>}</span>
+                  const shown = price === "—" ? <Tone tone="ok">{per ? `yes · per ${per}` : "yes"}</Tone> : <span className="tabular-nums">{price}{per && <span className="text-muted-foreground"> / {per}</span>}</span>
+                  if (p.product_id === r.product_id) return shown
+                  return (
+                    <div className="min-w-0">
+                      {shown}
+                      <div className="max-w-48 truncate font-mono text-xs text-muted-foreground" title={p.product_id}>{p.product_id}</div>
+                    </div>
+                  )
                 },
               })),
             ]}
@@ -207,21 +235,31 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
   const [listing, setListing] = useState<Listing>(() => (row ? listingOfRow(row) : { title: "", description: "", period: "", apple_group: "" }))
   const setL = (patch: Partial<Listing>) => setListing((l) => ({ ...l, ...patch }))
   const [on, setOn] = useState<Record<string, boolean>>(() => Object.fromEntries(apps.map((a) => [a.app_id, row ? !!row.by[a.app_id] : true])))
+  /** Store id per build where it differs from the product id (Stripe Price ids, reverse-domain App Store ids). */
+  const [storeIds, setStoreIds] = useState<Record<string, string>>(() =>
+    Object.fromEntries(apps.map((a) => {
+      const p = row?.by[a.app_id]
+      return [a.app_id, p && p.product_id !== row?.product_id ? p.product_id : ""]
+    })))
 
   const save = async () => {
     const id = productId.trim()
     if (!id) return toast.error("Enter the product id")
+    const storeIdOf = (a: GameApp) => storeIds[a.app_id]?.trim() || id
     const removed = apps.filter((a) => row?.by[a.app_id] && !on[a.app_id])
     if (removed.length && !confirm(`Remove ${id} from ${removed.map((a) => buildLabel(a)).join(" and ")}?`)) return
+    // A build whose store id changed: its old row goes (the catalog id moves to the new one).
+    const renamed = apps.filter((a) => on[a.app_id] && row?.by[a.app_id] && row.by[a.app_id]!.product_id !== storeIdOf(a))
     const items = apps.filter((a) => on[a.app_id]).map((a) => ({
-      app_id: a.app_id, product_id: id, kind, default_price_micros: Math.round(Number(price || 0) * 1e6), currency: currency.trim().toUpperCase(),
+      app_id: a.app_id, product_id: storeIdOf(a), catalog_id: id, kind,
+      default_price_micros: Math.round(Number(price || 0) * 1e6), currency: currency.trim().toUpperCase(),
       // Sent even when empty: clearing a field here clears it on every build.
       title: listing.title.trim(), description: listing.description.trim(),
       ...(kind === "subscription" ? { period: listing.period, apple_group: listing.apple_group.trim() } : {}),
     }))
     const ok = await tryAct(async () => {
+      for (const a of [...removed, ...renamed]) await call("admin_delete_product", a.app_id, row!.by[a.app_id]!.product_id)
       if (items.length) await call("admin_upsert_products", JSON.stringify(items))
-      for (const a of removed) await call("admin_delete_product", a.app_id, id)
       return true
     }, "Saved")
     if (ok) { onSaved(); onClose() }
@@ -230,51 +268,64 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
     <>
       <DialogHeader>
         <DialogTitle>{row ? row.product_id : "New product"}</DialogTitle>
-        <DialogDescription>The store product id. Usually the same id exists on both platforms.</DialogDescription>
+        <DialogDescription>
+          The product id is the app's own id: paywalls list it, entitlements are keyed by it, and the Unity config uses it. Each store uses the same id
+          unless a build below names its own.
+        </DialogDescription>
       </DialogHeader>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Product id" className="sm:col-span-2">
-          <Input className="font-mono text-xs" value={productId} onChange={(e) => setProductId(e.target.value)} readOnly={!!row} />
-        </Field>
-        <Field label="Type" className="sm:col-span-2">
-          <Select value={kind} onValueChange={(k) => setKind(k as Kind)}>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>{KINDS.map((k) => <SelectItem key={k} value={k}>{k}</SelectItem>)}</SelectContent>
-          </Select>
-        </Field>
-        <Field label="Default price"><Input type="number" step="0.01" min="0" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
-        <Field label="Currency (ISO)"><Input value={currency} onChange={(e) => setCurrency(e.target.value)} /></Field>
-        <div className="space-y-3 border-t pt-4 sm:col-span-2">
-          <div>
-            <p className="text-sm font-medium">Store listing</p>
-            <p className="text-xs text-muted-foreground">Optional. Fills in Create in store; the store keeps its own copy, edits there do not come back here.</p>
+      <DialogBody>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Product id" className="sm:col-span-2">
+            <Input className="font-mono text-xs" value={productId} onChange={(e) => setProductId(e.target.value)} readOnly={!!row} placeholder="e.g. vip_month" />
+          </Field>
+          <Field label="Type" className="sm:col-span-2">
+            <Select value={kind} onValueChange={(k) => setKind(k as Kind)}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>{KINDS.map((k) => <SelectItem key={k} value={k}>{k}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+          <Field label="Default price"><Input type="number" step="0.01" min="0" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
+          <Field label="Currency (ISO)"><Input value={currency} onChange={(e) => setCurrency(e.target.value)} /></Field>
+          <div className="space-y-2 border-t pt-4 sm:col-span-2">
+            <div>
+              <p className="text-sm font-medium">Builds and store ids</p>
+              <p className="text-xs text-muted-foreground">Leave the store id empty when the store uses the product id.</p>
+            </div>
+            {apps.map((a) => (
+              <div key={a.app_id} className="flex items-center gap-3">
+                <div className="flex w-36 shrink-0 items-center gap-2">
+                  <Checkbox id={`on-${a.app_id}`} checked={!!on[a.app_id]} onCheckedChange={(v) => setOn((o) => ({ ...o, [a.app_id]: v === true }))} />
+                  <Label htmlFor={`on-${a.app_id}`} className="min-w-0 truncate font-normal">{buildLabel(a)}</Label>
+                </div>
+                <Input className="h-8 min-w-0 font-mono text-xs" disabled={!on[a.app_id]} value={storeIds[a.app_id] || ""} placeholder={productId.trim() || "same as the product id"}
+                  onChange={(e) => setStoreIds((s) => ({ ...s, [a.app_id]: e.target.value }))} aria-label={`Store id in ${buildLabel(a)}`} />
+              </div>
+            ))}
           </div>
-          <Field label="Title"><Input value={listing.title} maxLength={55} placeholder={productId.trim() ? productId.trim().replace(/[_.-]+/g, " ") : "e.g. 100 gems"} onChange={(e) => setL({ title: e.target.value })} /></Field>
-          <Field label="Description"><Textarea className="min-h-16" value={listing.description} maxLength={200} placeholder="Same as the title" onChange={(e) => setL({ description: e.target.value })} /></Field>
-          {kind === "subscription" && (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Period">
-                <Select value={listing.period || "none"} onValueChange={(v) => setL({ period: v === "none" ? "" : v })}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Not set</SelectItem>
-                    {PERIODS.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
-                  </SelectContent>
-                </Select>
-              </Field>
-              <Field label="App Store subscription group"><Input value={listing.apple_group} maxLength={64} placeholder="e.g. Premium" onChange={(e) => setL({ apple_group: e.target.value })} /></Field>
+          <div className="space-y-3 border-t pt-4 sm:col-span-2">
+            <div>
+              <p className="text-sm font-medium">Store listing</p>
+              <p className="text-xs text-muted-foreground">Optional. Fills in Create in store; the store keeps its own copy, edits there do not come back here.</p>
             </div>
-          )}
+            <Field label="Title"><Input value={listing.title} maxLength={55} placeholder={productId.trim() ? productId.trim().replace(/[_.-]+/g, " ") : "e.g. 100 gems"} onChange={(e) => setL({ title: e.target.value })} /></Field>
+            <Field label="Description"><Textarea className="min-h-16" value={listing.description} maxLength={200} placeholder="Same as the title" onChange={(e) => setL({ description: e.target.value })} /></Field>
+            {kind === "subscription" && (
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Period">
+                  <Select value={listing.period || "none"} onValueChange={(v) => setL({ period: v === "none" ? "" : v })}>
+                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Not set</SelectItem>
+                      {PERIODS.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="App Store subscription group"><Input value={listing.apple_group} maxLength={64} placeholder="e.g. Premium" onChange={(e) => setL({ apple_group: e.target.value })} /></Field>
+              </div>
+            )}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-6 sm:col-span-2">
-          {apps.map((a) => (
-            <div key={a.app_id} className="flex items-center gap-2">
-              <Checkbox id={`on-${a.app_id}`} checked={!!on[a.app_id]} onCheckedChange={(v) => setOn((o) => ({ ...o, [a.app_id]: v === true }))} />
-              <Label htmlFor={`on-${a.app_id}`} className="font-normal">{buildLabel(a)}</Label>
-            </div>
-          ))}
-        </div>
-      </div>
+      </DialogBody>
       <DialogFooter><Button onClick={save}>Save</Button></DialogFooter>
     </>
   )
@@ -392,15 +443,16 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
   const [parsed, setParsed] = useState<{ rows: CatalogRow[]; storeIds: Record<string, Record<string, string>>; unknown: UnityBuild[] } | null>(null)
   const [picked, setPicked] = useState<PickedProduct[]>([])
   const onPick = useCallback((p: PickedProduct[]) => setPicked(p), [])
-  /** The app's product of a build by its store product id. */
-  const find = (app: GameApp, productId: string) => existing?.find((r) => r.product_id === productId)?.by[app.app_id]
+  /** The app's product of a build: by catalog id, else by the build's store id. */
+  const find = (app: GameApp, catalogId: string, storeId: string) =>
+    existing?.find((r) => r.product_id === catalogId)?.by[app.app_id] || existing?.map((r) => r.by[app.app_id]).find((p) => p?.product_id === storeId)
 
   const compare = () => {
     try {
       const c = parseUnityConfig(text)
       if (!c.products.length) throw new Error("The config has no products")
       const rows: CatalogRow[] = c.products.map((u) => {
-        const have = apps.map((a) => find(a, productIdIn(u, storeOf(a).id)))
+        const have = apps.map((a) => find(a, u.product_id, productIdIn(u, storeOf(a).id)))
         const some = have.find(Boolean)
         const status = !some ? "new" : have.every((p) => p && p.kind === u.kind) ? "same" : "changed"
         const serverPrice = some && Number(some.default_price_micros) > 0
@@ -421,9 +473,9 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
     if (!parsed) return
     const items = apps.flatMap((a) => picked.map((p) => {
       const product_id = productIdIn({ product_id: p.product_id, store_ids: parsed.storeIds[p.product_id] }, storeOf(a).id)
-      const had = find(a, product_id)
+      const had = find(a, p.product_id, product_id)
       return {
-        app_id: a.app_id, product_id, kind: p.kind,
+        app_id: a.app_id, product_id, catalog_id: p.product_id, kind: p.kind,
         // The server's price wins; the Unity fallback price is used where there is none.
         ...(had && Number(had.default_price_micros) > 0
           ? { default_price_micros: Number(had.default_price_micros), currency: had.currency }

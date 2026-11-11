@@ -69,6 +69,24 @@ pub fn period_days(iso: &str) -> u32 {
     }
 }
 
+/// The app's own id of a product, the same in every store (paywalls and entitlements use it);
+/// a product row without one is known by its store id.
+pub fn catalog_id_or<'a>(catalog_id: &'a str, product_id: &'a str) -> &'a str {
+    if catalog_id.is_empty() { product_id } else { catalog_id }
+}
+
+/// The catalog id to store for a product row: "" when it is the store id itself.
+pub fn normalize_catalog_id(catalog_id: &str, product_id: &str) -> Result<String, String> {
+    let id = catalog_id.trim();
+    if id.is_empty() || id == product_id {
+        return Ok(String::new());
+    }
+    if !crate::paywall::is_valid_id(id) {
+        return Err(format!("catalog id '{id}': use 1-64 of A-Z a-z 0-9 _ - ."));
+    }
+    Ok(id.to_string())
+}
+
 /// Longest product title kept on a product row (the longest any store accepts; Create in store
 /// checks each store's own limit).
 pub const LISTING_TITLE_MAX: usize = 55;
@@ -389,6 +407,16 @@ mod tests {
         assert_eq!((p[1].price_micros, p[1].currency.as_str()), (99_000_000, "UAH"));
         assert_eq!((p[2].price_micros, p[2].kind.as_str()), (0, "consumable"));
         assert_eq!(parse_one_time_products("{}").unwrap(), (vec![], None));
+    }
+
+    #[test]
+    fn catalog_ids_default_to_the_store_id() {
+        assert_eq!(catalog_id_or("", "com.example.vip"), "com.example.vip");
+        assert_eq!(catalog_id_or("vip", "com.example.vip"), "vip");
+        assert_eq!(normalize_catalog_id(" vip ", "com.example.vip").unwrap(), "vip");
+        assert_eq!(normalize_catalog_id("vip", "vip").unwrap(), "", "the store id itself is not stored");
+        assert_eq!(normalize_catalog_id("", "price_1Abc").unwrap(), "");
+        assert!(normalize_catalog_id("vip month", "x").is_err());
     }
 
     #[test]

@@ -4,13 +4,15 @@ How purchases reach the game: the delivery contract (SpacetimeDB reducers or a w
 
 ## Delivery events
 
-Event (`v1` argument or webhook body):
+Event (`v1` argument or webhook body; the webhook body also has `catalog_product_id`):
 
 ```json
 {"event":"grant","reason":"purchase","store":"google","environment":"production","app_id":"com.game",
  "product_id":"month_sub","kind":"subscription","transaction_id":"GPA.1234..0","original_transaction_id":"GPA.1234",
  "user_id":"c200…","expires_at_ms":1793876523123,"price_micros":2990000,"currency":"USD","timestamp_ms":1791188212478}
 ```
+
+`product_id` is the id in the store the purchase was made in. When the stores use different ids for one product (a Stripe Price id, a reverse-domain App Store id), webhook bodies also carry `catalog_product_id`, the app's own id of the product (the Products tab; the same as `product_id` when no other is set). The `v1` reducer argument keeps its fields, so grant by store id there (or keep the same id in every store). `/entitlements` is keyed by the catalog id.
 
 `event`: `grant` | `revoke`; `reason`: `purchase` | `renewal` | `refund` | `expire` | `transfer` | `admin` (revoked by support from the admin page; handle it like `refund`). An event may arrive again on retries, so the game **must be idempotent**:
 - **consumable** — grant once per `(transaction_id, event)`;

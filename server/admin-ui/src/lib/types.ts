@@ -39,7 +39,12 @@ export interface Product {
   /** Subscriptions: `P1M` etc. (`lib/periods.ts`), "" if unknown. */
   period?: string
   apple_group?: string
+  /** The app's own id of the product, the same in every store; empty = `product_id` (`catalogIdOf`). */
+  catalog_id?: string
 }
+
+/** The app's own id of a product (paywalls and entitlements use it): its catalog id, else its store id. */
+export const catalogIdOf = (p: Pick<Product, "product_id" | "catalog_id">) => p.catalog_id || p.product_id
 
 /** The store listing fields of a product as `admin_upsert_products` takes them (only the ones that are set). */
 export function listingOf(p: Partial<Pick<Product, "title" | "description" | "period" | "apple_group">> | undefined) {

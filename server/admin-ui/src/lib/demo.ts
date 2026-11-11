@@ -122,14 +122,14 @@ function storeCreatePreview(json: string) {
   const rows = (S.tables.game_app || []).filter((a: Row) => q.app_ids.includes(a.app_id)).flatMap((a: Row) => {
     const store = storeOf(a as GameApp)
     return q.products.map((p) => {
-      const has = (S.tables.product || []).some((x: Row) => x.app_id === a.app_id && x.product_id === p.product_id)
+      const has = (S.tables.product || []).find((x: Row) => x.app_id === a.app_id && (x.catalog_id || x.product_id) === p.product_id)
       const status = !store.product_create.includes(p.kind)
         ? "unsupported"
         : has ? "exists" : "create"
       const reason = status !== "unsupported" ? ""
         : store.product_create.length ? `${store.name} cannot create ${p.kind.replace("_", "-")} products here`
         : `${store.name} products are created in the store's own console`
-      return { app_id: a.app_id, store: store.id, product_id: p.product_id, kind: p.kind, status, reason, store_product_id: has ? p.product_id : "" }
+      return { app_id: a.app_id, store: store.id, product_id: p.product_id, kind: p.kind, status, reason, store_product_id: has ? String(has.product_id) : "" }
     })
   })
   const apple = (S.tables.game_app || []).filter((a: Row) => q.app_ids.includes(a.app_id) && storeOf(a as GameApp).id === "apple")

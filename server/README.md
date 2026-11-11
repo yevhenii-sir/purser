@@ -107,6 +107,8 @@ Every per-store fact lives in one registry, [`core/src/registry.rs`](core/src/re
 
 `kind`: `consumable` (Google consume), `non_consumable` (acknowledge), `subscription` (acknowledge). Amazon `CONSUMABLE` / `ENTITLED` / `SUBSCRIPTION` receipts must match the kind. `default_price_micros` + `currency` are used for GA4 revenue when neither the store nor the client sent a price.
 
+`catalog_id` is the app's own id of the product, the same in every store (the Unity config's product `id`): paywalls list it, `/entitlements` and webhook events (`catalog_product_id`) carry it, and the admin page shows one row per catalog id with each build's store id. Empty means the same as `product_id`, which is what a product needs while every store uses one id; set it when a store has its own id (a Stripe Price id, a reverse-domain App Store id, an Amazon term SKU). One catalog id per build; in `admin_upsert_products` a missing `catalog_id` keeps the stored one and an empty one clears it. Create in store sets it when the store's id differs. The ledger, store calls and revenue keep the store ids.
+
 Optional store listing: `title`, `description`, and for subscriptions `period` (`P1W`, `P1M`, `P3M`, `P6M`, `P1Y`) and `apple_group` (App Store subscription group). They prefill **Create in store** and are written back when a product is created there; the store catalog import fills `period`, and the Unity config carries it as the fallback period. The store keeps its own copy: edits in the store consoles do not come back. In `admin_upsert_products` a field that is left out keeps its stored value; an empty string clears it.
 
 ### Secrets (`credential`) — bound to an app or an account
@@ -241,7 +243,7 @@ Orders live in `steam_order` (`initiated` → `authorized` → `finalized`, or `
 
 ### `POST /entitlements`
 
-`{"app_id": "...", "user_id": "..."}` → active subscriptions and non-consumables across all apps with the same `game_key`:
+`{"app_id": "...", "user_id": "..."}` → active subscriptions and non-consumables across all apps with the same `game_key`, keyed by catalog product id (a product bought in any store of the app is the same entitlement):
 
 ```json
 {"subscriptions": {"month_sub": 1793876523123}, "non_consumables": ["one_time_sub"], "server_time_ms": 1791188212478, "game_key": "...", "user_id": "..."}
@@ -260,7 +262,8 @@ Replaces `adapty_is_purchased` / `adapty_get_subscription_expires_at_ms`.
 ### `POST /paywall`
 
 `{"app_id": "...", "placement": "main_paywall", "user_id": "..."}` → what to show at a placement:
-`{placement, paywall_id, paywall_name, variant_id, test_id, products: [{id, store_id, kind}], remote_config}`.
+`{placement, paywall_id, paywall_name, variant_id, test_id, products: [{id, store_id, kind}], remote_config}`
+(`id`: the catalog product id; `store_id`: this build's store id).
 During an A/B test the player is assigned by a hash of the test id and `user_id` (no `user_id`: the
 default variant). Unknown or disabled placement: `404 {"status": "not_found", "code": "ERR_PLACEMENT_NOT_FOUND"}`.
 `/verify` accepts optional `placement`, `variant_id`, `test_id`, `paywall_id` to attribute the purchase.

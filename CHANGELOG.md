@@ -7,6 +7,10 @@
   - The store catalog import fills the period, Download JSON / From JSON carry the fields, and the Products table shows "/ month" next to a subscription's price.
   - `admin_upsert_products` takes the fields optionally: a field left out keeps its value, so older callers (`seed.py`, scripts) do not erase them.
 - The Unity config carries a subscription's period (`period`), both ways.
+- One product id across stores: a product row's new `catalog_id` is the app's own id of the product, while `product_id` stays the store's id (Stripe Price ids, reverse-domain App Store ids). Empty means the same as the store id, so existing data keeps working.
+  - Paywalls list catalog ids; `/paywall` answers each build with its store id (`{id, store_id}`).
+  - `/entitlements` is keyed by catalog id; webhook events get `catalog_product_id` (the `v1` reducer argument is unchanged).
+  - The Products tab shows one row per product with each build's store id, and the product dialog edits the store ids per build. The Unity config import and export map the config's `id` / `storeIds` to them; Create in store keeps the picked id as the catalog id of a Stripe Price.
 
 ## 0.4.0 - 2026-11-11
 
