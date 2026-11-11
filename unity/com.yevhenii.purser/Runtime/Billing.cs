@@ -14,7 +14,7 @@ namespace Purser
     public static class PurserInfo
     {
         /// <summary>Version of the package (<c>package.json</c>), sent to the server as the SDK version.</summary>
-        public const string Version = "0.4.0";
+        public const string Version = "0.5.0";
     }
 
     /// <summary>Entry point for code-first setup and DI containers.</summary>

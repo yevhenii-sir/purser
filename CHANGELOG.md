@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-11-11
+
 - Products keep an optional store listing: title, description, and for subscriptions the billing period and the App Store subscription group (new `product` columns `title`, `description`, `period`, `apple_group`).
   - Edited in the product dialog; Create in store starts from it and saves what it used.
   - The store catalog import fills the period, Download JSON / From JSON carry the fields, and the Products table shows "/ month" next to a subscription's price.

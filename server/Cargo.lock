@@ -2944,7 +2944,7 @@ dependencies = [
 
 [[package]]
 name = "purser"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "http",
  "log",
@@ -2958,7 +2958,7 @@ dependencies = [
 
 [[package]]
 name = "purser-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
  "hex",

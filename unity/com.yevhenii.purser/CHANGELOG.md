@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-11
+
 - Subscription periods: `StoreProduct.SubscriptionPeriod` (ISO 8601, `P1M`), `SubscriptionPeriodDays` and
   `IsFallbackPeriod`. Google Play reports the period through Unity IAP; elsewhere (the App Store, whose period Unity IAP 5
   keeps internal, Steam, web stores, the Editor) it comes from the new `BillingProductConfig.fallbackPeriod`
