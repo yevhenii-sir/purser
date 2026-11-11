@@ -293,7 +293,8 @@ struct PaywallInput {
 /// remote_config: {...}}`. Every product must be in the catalog of at least one build of the app.
 #[spacetimedb::reducer]
 pub fn admin_upsert_paywall(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_upsert_paywall", "", &json);
     let i: PaywallInput = serde_json::from_str(&json).map_err(|e| bad("ERR_BAD_JSON", e))?;
     let apps = require_game(ctx, &i.game_key)?;
     if !pw::is_valid_id(&i.paywall_id) {
@@ -336,7 +337,8 @@ pub fn admin_upsert_paywall(ctx: &ReducerContext, json: String) -> Result<(), St
 /// Deletes a paywall that no placement uses.
 #[spacetimedb::reducer]
 pub fn admin_delete_paywall(ctx: &ReducerContext, game_key: String, paywall_id: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_delete_paywall", &game_key, &paywall_id);
     let used: Vec<String> = ctx
         .db
         .placement()
@@ -369,7 +371,8 @@ struct PlacementInput {
 /// paywall_id, weight}], enabled}`. While a test runs only `enabled` may change.
 #[spacetimedb::reducer]
 pub fn admin_upsert_placement(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_upsert_placement", "", &json);
     let i: PlacementInput = serde_json::from_str(&json).map_err(|e| bad("ERR_BAD_JSON", e))?;
     require_game(ctx, &i.game_key)?;
     if !pw::is_valid_id(&i.placement_id) {
@@ -414,7 +417,8 @@ pub fn admin_upsert_placement(ctx: &ReducerContext, json: String) -> Result<(), 
 /// Deletes a placement without a running test. Test history and view counts are kept.
 #[spacetimedb::reducer]
 pub fn admin_delete_placement(ctx: &ReducerContext, game_key: String, placement_id: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_delete_placement", &game_key, &placement_id);
     let key = scoped_key(&game_key, &placement_id);
     if ctx.db.placement().key().find(&key).is_some_and(|p| p.running_test().is_some()) {
         return Err(bad("ERR_TEST_RUNNING", "stop the test first"));
@@ -427,7 +431,8 @@ pub fn admin_delete_placement(ctx: &ReducerContext, game_key: String, placement_
 /// `{placement_id}-{yyyymmdd}` (with a suffix when taken). Test ids are global and never reused.
 #[spacetimedb::reducer]
 pub fn admin_start_paywall_test(ctx: &ReducerContext, game_key: String, placement_id: String, test_id: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_start_paywall_test", &format!("{game_key}/{placement_id}"), &test_id);
     let mut p = find_placement(ctx, &game_key, &placement_id).ok_or_else(|| bad("ERR_PLACEMENT_NOT_FOUND", "no such placement"))?;
     if let Some(t) = p.running_test() {
         return Err(bad("ERR_TEST_RUNNING", format!("test '{t}' is already running")));
@@ -473,7 +478,8 @@ pub fn admin_start_paywall_test(ctx: &ReducerContext, game_key: String, placemen
 /// gets it from now on; without one the first variant keeps being served.
 #[spacetimedb::reducer]
 pub fn admin_stop_paywall_test(ctx: &ReducerContext, game_key: String, placement_id: String, winner_variant_id: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_stop_paywall_test", &format!("{game_key}/{placement_id}"), &winner_variant_id);
     let mut p = find_placement(ctx, &game_key, &placement_id).ok_or_else(|| bad("ERR_PLACEMENT_NOT_FOUND", "no such placement"))?;
     let test_id = p.running_test().ok_or_else(|| bad("ERR_NO_TEST", "no test is running"))?.to_string();
     let mut variants = pw::parse_variants(&p.variants_json);
@@ -527,7 +533,7 @@ fn fx_table(ctx: &ReducerContext, purchases: &[AttributedPurchase]) -> FxTable {
 pub fn results(ctx: &mut impl Ctx, query_json: &str) -> Result<Value, String> {
     let q: ResultsQuery = serde_json::from_str(query_json).map_err(|e| bad("ERR_BAD_JSON", e))?;
     ctx.tx(|tx| {
-        crate::require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Read)?;
         let key = scoped_key(&q.game_key, &q.placement_id);
         let placement = tx.db.placement().key().find(&key);
         let today = day_of_micros(now_micros(tx));
@@ -617,7 +623,7 @@ pub fn admin_paywall_results(ctx: &mut ProcedureContext, query_json: String) -> 
 #[spacetimedb::procedure]
 pub fn admin_preview_paywall(ctx: &mut ProcedureContext, app_id: String, placement_id: String, user_id: String) -> String {
     let r: Result<Value, String> = ctx.tx(|tx| {
-        crate::require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Read)?;
         let app = config::find_app(tx, &app_id).ok_or_else(|| bad("ERR_BAD_APP", format!("unknown app {app_id}")))?;
         serve(tx, &app, &placement_id, &user_id).map_err(|e| format!("[{}] {}", e.code, e.message))
     });

@@ -28,6 +28,7 @@ import { AppProductsTab } from "@/pages/app-products"
 import { PurchasesPage } from "@/pages/purchases"
 import { RevenuePage } from "@/pages/revenue"
 import { APP_TABS, appRoute, type AppTab, type PageProps } from "@/routes"
+import { useCan } from "@/lib/roles"
 
 const TAB_TITLES: Record<AppTab, string> = {
   setup: "Setup", products: "Products", paywalls: "Paywalls", delivery: "Delivery", integrations: "Integrations", keys: "Keys", purchases: "Purchases", revenue: "Revenue",
@@ -447,6 +448,7 @@ function neededSecrets(a: GameApp, kinds: string[]): [string, boolean][] {
 
 function KeysTab({ data, reload }: TabProps) {
   const g = data.group
+  const canSet = useCan()("secrets")
   const allApps = useApps().apps
   const [target, setTarget] = useState<SecretTarget | null>(null)
   const resolve = (name: string, a: GameApp) => {
@@ -500,7 +502,7 @@ function KeysTab({ data, reload }: TabProps) {
                 return from ? <Tone tone="ok">{from}</Tone> : r.required ? <Tone tone="bad">missing</Tone> : <Tone tone="muted">not set</Tone>
               },
             })),
-            { title: "", className: "text-right", cell: (r) => <Button size="xs" variant="outline" onClick={() => open(r.name)}>Set</Button> },
+            { title: "", className: "text-right", cell: (r) => canSet && <Button size="xs" variant="outline" onClick={() => open(r.name)}>Set</Button> },
           ]}
         />
       </Section>

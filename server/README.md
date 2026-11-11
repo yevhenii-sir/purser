@@ -62,7 +62,7 @@ Only the owner can read private tables, and admin reducers check the identity ag
 
 ## Configuration
 
-Everything is configured through admin reducers. Admins are the identity that published the database (`init`) plus anyone added via `admin_add_admin`. If the module was published over a database created in the dashboard, `init` did not run: the owner adds itself with `spacetime sql <db> "INSERT INTO admin (identity, protected) VALUES (0x<your identity>, true)"` (only the owner can write private tables) and starts the worker with `spacetime call <db> admin_ensure_worker`. The admin page does both with one button. All tables are private: only the owner can read them via `spacetime sql`.
+Everything is configured through admin reducers. Admins are the identity that published the database (`init`, the **owner**) plus anyone added on the Admins page. If the module was published over a database created in the dashboard, `init` did not run: the owner adds itself with `spacetime sql <db> "INSERT INTO admin (identity, protected, role, name, added_by, added_at_micros) VALUES (0x<your identity>, true, 'admin', '', '', 0)"` (only the owner can write private tables) and starts the worker with `spacetime call <db> admin_ensure_worker`. The admin page does both with one button. All tables are private: only the owner can read them via `spacetime sql`.
 
 ### Apps (`game_app`)
 
@@ -165,6 +165,31 @@ Creating products in the stores ([docs/store-setup.md](../docs/store-setup.md#cr
 - The scheduled `run_store_create_job` makes up to 8 store calls per run. Its steps are built by `purser_core::store_create`, each safe to repeat; a transient failure retries up to 6 times with backoff.
 - A finished job writes the build's `product` row: the Stripe Price id, otherwise the product id.
 - `admin_dismiss_store_job(id)` removes a job; a pending one stops.
+
+### Admin roles and the audit log
+
+Every admin entry point checks the caller's role (`purser_core::roles`):
+
+| Role | May |
+|---|---|
+| Owner | everything; only the owner allows delivery hosts, imports purchases and manages admins with the Admin role |
+| Admin | everything else, including keys (`admin_set_credential`) and editors, support and viewers |
+| Editor | builds, products, store creation, paywalls, integrations, alerts, settings, FX, setup checks |
+| Support | manual grants, revokes and retries of purchases |
+| Viewer | read only |
+
+Every role reads everything except secret values (the page only learns key names).
+
+Managing admins:
+
+- `admin_upsert_admin(json {identity, name, role})` adds an admin or changes one.
+- `admin_remove_admin(identity)` removes one. Nobody can remove themselves or change their own role.
+- `admin_add_admin(identity)` is kept for scripts; it adds an Admin and needs the owner.
+- `admin_me()` returns the caller's `{identity, name, role, owner}`.
+
+Admins who are not the owner cannot read private tables with `/sql`. The admin page reads through `admin_read(table, column, value)` instead, which applies the role check and never returns credential values.
+
+Every change is recorded in `admin_audit`: who, the reducer, the target and a short detail with secret-looking fields hidden. Rows are kept 180 days, at most 10 000.
 
 Other admin reducers: `admin_set_setting("public_base_url", url)` (also `store_commission_percent`, `store_commission_after_year_percent`, `store_commission_by_app` for the proceeds estimate, see [docs/analytics.md](../docs/analytics.md)), `admin_delete_game_app`, `admin_delete_product`, `admin_delete_credential`, `admin_add_admin`, `admin_remove_admin`, `admin_requeue_purchase(id)` (retry now), `admin_grant_manual(json)` (manual grant: compensations and promos; goes through the same ledger and delivery, not sent to GA4), `admin_revoke_purchase(purchase_id, reason)` (procedure: revokes a purchase the player owns through the ledger; the game receives `revoke` with `reason = admin`; idempotent).
 

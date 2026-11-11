@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Admin roles: Owner, Admin, Editor, Support, Viewer. Every admin reducer and procedure checks the caller's role.
+  - On the Admins page you add a coworker with a name and a role and generate a token for them, shown once. Admins can also be renamed, given another role, or removed. Only the owner manages admins with the Admin role.
+  - Admins who are not the database owner can now use the admin page: it reads through the new `admin_read` procedure, which never returns key values, instead of `/sql`.
+  - The page hides what a role cannot use.
+  - New `admin_upsert_admin` and `admin_me`.
+  - `admin_add_admin` now needs the owner.
+  - New `admin` columns: `role`, `name`, `added_by`, `added_at_micros`. Existing admins keep the Admin role.
+- Audit log: every admin change is recorded in `admin_audit` (who, what, target; secret values never) and shown in Settings → Audit log. Rows are kept 180 days.
+- Products tab: the buttons are grouped into Import, Export and Sync menus. New: Export → Download JSON.
+
 - Create in store: the Products tab creates products and subscriptions in Google Play, the App Store, Stripe and Xsolla. You set the title, description, price and period; the store converts the price to the other countries, and the result is shown before anything is created. Each product runs as a background job (`store_create_job`, procedures `admin_store_create_preview`, `admin_store_create`, `admin_dismiss_store_job`) that retries transient failures. A product the store already has is skipped, and a created one is added to the build's products. New registry field `product_create`.
 - Outbound requests get an explicit 10 s timeout. The 500 ms limit noted in the docs was outdated: SpacetimeDB 2.14 allows up to 180 s.
 

@@ -78,7 +78,8 @@ pub fn set(ctx: &ReducerContext, key: &str, value: &str) {
 /// Changes an admin setting. An empty value removes it.
 #[spacetimedb::reducer]
 pub fn admin_set_setting(ctx: &ReducerContext, key: String, value: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_set_setting", &key, &value);
     if !ADMIN_KEYS.contains(&key.as_str()) {
         return Err(format!("[ERR_BAD_SETTING] unknown setting '{key}'"));
     }

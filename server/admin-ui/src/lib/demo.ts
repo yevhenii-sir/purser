@@ -116,6 +116,7 @@ function findPlayer(query: string) {
 
 const PROCS: Record<string, (...args: any[]) => unknown> = {
   whoami: () => "0x" + S.identity,
+  admin_me: () => ({ identity: S.identity, name: "Demo", role: "owner", owner: true }),
   admin_overview: () => S.procs.admin_overview,
   admin_revenue_stats: revenue,
   admin_list_purchases: listPurchases,

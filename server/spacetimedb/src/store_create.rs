@@ -102,7 +102,8 @@ fn schedule(tx: &ReducerContext, job_id: u64, delay_secs: u64) {
 /// create, and ones already being created, are refused with the reason.
 #[spacetimedb::reducer]
 pub fn admin_store_create(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_store_create", "", &json);
     let r = parse_request(&json)?;
     let mut problems = Vec::new();
     let mut queued = Vec::new();
@@ -160,7 +161,8 @@ pub fn admin_store_create(ctx: &ReducerContext, json: String) -> Result<(), Stri
 /// Removes a job (a pending one stops at its next step).
 #[spacetimedb::reducer]
 pub fn admin_dismiss_store_job(ctx: &ReducerContext, id: u64) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_dismiss_store_job", &id.to_string(), "");
     ctx.db.store_create_job().id().delete(id);
     Ok(())
 }
@@ -378,7 +380,7 @@ pub fn preview(ctx: &mut impl Ctx, json: &str) -> Result<Value, String> {
     let r = parse_request(json)?;
     let ids = r.app_ids.clone();
     let apps: Vec<GameApp> = ctx.tx(|tx| {
-        crate::require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Configure)?;
         ids.iter().map(|id| config::find_app(tx, id).ok_or(format!("unknown app {id}"))).collect::<Result<Vec<_>, String>>()
     })?;
     let mut rows = Vec::new();

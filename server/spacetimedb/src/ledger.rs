@@ -562,6 +562,7 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
             .take(WORKER_BATCH)
             .map(|p| p.id)
             .collect();
+        crate::access::prune_audit(tx);
         (ids, crate::revenue::upkeep(tx))
     });
     for id in ids {

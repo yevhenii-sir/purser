@@ -197,7 +197,14 @@ impl World {
     fn as_admin(&self, owner: bool) {
         self.write(|tx| {
             tx.db.admin().identity().delete(Identity::ZERO);
-            tx.db.admin().insert(Admin { identity: Identity::ZERO, protected: owner });
+            tx.db.admin().insert(Admin {
+                identity: Identity::ZERO,
+                protected: owner,
+                role: "admin".into(),
+                name: String::new(),
+                added_by: String::new(),
+                added_at_micros: 0,
+            });
         })
     }
 
@@ -615,7 +622,14 @@ fn admin_reducers_require_an_admin() {
 
     assert!(upsert().unwrap_err().contains("ERR_ADMIN_UNAUTHORIZED"));
     w.write(|tx| {
-        tx.db.admin().insert(Admin { identity: Identity::ZERO, protected: true });
+        tx.db.admin().insert(Admin {
+            identity: Identity::ZERO,
+            protected: true,
+            role: "admin".into(),
+            name: String::new(),
+            added_by: String::new(),
+            added_at_micros: 0,
+        });
     });
     assert_eq!(upsert(), Ok(()));
 }
@@ -5208,5 +5222,185 @@ mod store_create_tests {
         crate::store_create::run_job(&mut w.ctx(), id);
         assert!(jobs(&w).is_empty());
         assert_eq!(w.calls("convertRegionPrices"), 0);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Admin roles and the audit log
+
+mod role_tests {
+    use super::*;
+    use crate::access::admin_audit;
+
+    const OTHER: &str = "c200aaaa00000000000000000000000000000000000000000000000000000001";
+    const OTHER_ADMIN: &str = "c200aaaa00000000000000000000000000000000000000000000000000000002";
+
+    fn row(identity: Identity, protected: bool, role: &str) -> Admin {
+        Admin { identity, protected, role: role.into(), name: String::new(), added_by: String::new(), added_at_micros: 0 }
+    }
+
+    /// The caller (`Identity::ZERO`) becomes an admin with `role` (not the owner).
+    fn as_role(w: &World, role: &str) {
+        w.write(|tx| {
+            tx.db.admin().identity().delete(Identity::ZERO);
+            tx.db.admin().insert(row(Identity::ZERO, false, role));
+        });
+    }
+
+    fn products(app: &str, id: &str) -> String {
+        json!([{ "app_id": app, "product_id": id, "kind": "consumable" }]).to_string()
+    }
+
+    fn upsert_products(w: &World) -> Result<(), String> {
+        admin_call(w, |ctx| crate::admin_upsert_products(ctx, products(APP, "coins")))
+    }
+
+    fn set_key(w: &World) -> Result<(), String> {
+        admin_call(w, |ctx| crate::admin_set_credential(ctx, "default".into(), "webhook_secret".into(), "very-secret-value".into()))
+    }
+
+    fn grant(w: &World) -> Result<(), String> {
+        admin_call(w, |ctx| crate::admin_grant_manual(ctx, json!({ "app_id": APP, "user_id": "u1", "product_id": "gems" }).to_string()))
+    }
+
+    fn upsert_admin(w: &World, hex: &str, role: &str) -> Result<(), String> {
+        admin_call(w, |ctx| crate::access::admin_upsert_admin(ctx, json!({ "identity": hex, "name": "Ann", "role": role }).to_string()))
+    }
+
+    fn remove_admin(w: &World, hex: &str) -> Result<(), String> {
+        admin_call(w, |ctx| crate::access::admin_remove_admin(ctx, hex.into()))
+    }
+
+    fn read(w: &World, table: &str, column: &str, value: &str) -> Result<Vec<Value>, String> {
+        w.read(|tx| crate::access::read(tx, table, column, value))
+    }
+
+    #[test]
+    fn a_viewer_reads_but_cannot_change_anything() {
+        let w = World::new();
+        as_role(&w, "viewer");
+        for (what, result) in [("products", upsert_products(&w)), ("keys", set_key(&w)), ("grants", grant(&w))] {
+            assert!(result.unwrap_err().contains("ERR_ROLE"), "{what}");
+        }
+        assert!(admin_call(&w, |ctx| crate::settings::admin_set_setting(ctx, "public_base_url".into(), "https://x".into())).unwrap_err().contains("ERR_ROLE"));
+        assert!(upsert_admin(&w, OTHER, "viewer").unwrap_err().contains("ERR_ROLE"));
+        let rows = read(&w, "product", "app_id", APP).unwrap();
+        assert!(rows.iter().any(|r| r["product_id"] == "gems"), "{rows:?}");
+        assert!(read(&w, "admin", "", "").unwrap_err().contains("ERR_ROLE"), "the admin list needs the admin role");
+        let me: Value = serde_json::from_str(&crate::access::admin_me(&mut w.ctx())).unwrap();
+        assert_eq!((me["role"].as_str(), me["owner"].as_bool()), (Some("viewer"), Some(false)));
+    }
+
+    #[test]
+    fn support_grants_and_editors_configure() {
+        let w = World::new();
+        as_role(&w, "support");
+        grant(&w).unwrap();
+        assert!(upsert_products(&w).unwrap_err().contains("ERR_ROLE"));
+
+        as_role(&w, "editor");
+        upsert_products(&w).unwrap();
+        assert!(set_key(&w).unwrap_err().contains("ERR_ROLE"), "keys need the admin role");
+        assert!(grant(&w).unwrap_err().contains("ERR_ROLE"));
+
+        as_role(&w, "admin");
+        set_key(&w).unwrap();
+    }
+
+    #[test]
+    fn only_the_owner_manages_admins() {
+        let w = World::new();
+        as_role(&w, "admin");
+        upsert_admin(&w, OTHER, "viewer").unwrap();
+        upsert_admin(&w, OTHER, "support").unwrap();
+        let other = w.read(|tx| tx.db.admin().identity().find(Identity::from_hex(OTHER).unwrap())).unwrap();
+        assert_eq!((other.role.as_str(), other.name.as_str(), other.added_by.as_str()), ("support", "Ann", Identity::ZERO.to_hex().as_str()));
+        assert!(upsert_admin(&w, OTHER, "admin").unwrap_err().contains("ERR_OWNER_ONLY"));
+        assert!(upsert_admin(&w, OTHER, "owner").unwrap_err().contains("ERR_BAD_ROLE"));
+        assert!(upsert_admin(&w, &Identity::ZERO.to_hex(), "viewer").unwrap_err().contains("ERR_ADMIN_SELF"));
+
+        w.write(|tx| {
+            tx.db.admin().insert(row(Identity::from_hex(OTHER_ADMIN).unwrap(), false, "admin"));
+        });
+        assert!(remove_admin(&w, OTHER_ADMIN).unwrap_err().contains("ERR_OWNER_ONLY"));
+        remove_admin(&w, OTHER).unwrap();
+
+        w.as_admin(true);
+        remove_admin(&w, OTHER_ADMIN).unwrap();
+        upsert_admin(&w, OTHER, "admin").unwrap();
+        assert!(admin_call(&w, |ctx| crate::access::admin_add_admin(ctx, OTHER_ADMIN.into())).is_ok());
+        assert!(remove_admin(&w, &Identity::ZERO.to_hex()).unwrap_err().contains("ERR_ADMIN_SELF_REMOVE"));
+    }
+
+    #[test]
+    fn admin_actions_are_audited_without_secrets() {
+        let w = World::new();
+        as_role(&w, "admin");
+        w.write(|tx| {
+            let mut me = tx.db.admin().identity().find(Identity::ZERO).unwrap();
+            me.name = "Ann".into();
+            tx.db.admin().identity().update(me);
+        });
+        upsert_products(&w).unwrap();
+        set_key(&w).unwrap();
+        assert!(admin_call(&w, |ctx| crate::admin_upsert_products(ctx, "not json".into())).is_err());
+        let rows: Vec<crate::access::AdminAudit> = w.read(|tx| tx.db.admin_audit().iter().collect());
+        let actions: Vec<&str> = rows.iter().map(|r| r.action.as_str()).collect();
+        assert_eq!(actions, ["admin_upsert_products", "admin_set_credential"], "a failed call leaves no row");
+        assert_eq!(rows[0].name, "Ann");
+        assert!(rows[0].detail.contains("coins"));
+        assert_eq!(rows[1].target, "default/webhook_secret");
+        assert!(rows.iter().all(|r| !r.detail.contains("very-secret-value")));
+        let audit = read(&w, "admin_audit", "", "").unwrap();
+        assert_eq!(audit.len(), 2);
+    }
+
+    #[test]
+    fn the_audit_log_is_pruned() {
+        let w = World::new();
+        w.write(|tx| {
+            for at in [1_000_000i64, 2_000_000] {
+                tx.db.admin_audit().insert(crate::access::AdminAudit {
+                    id: 0,
+                    at_micros: at,
+                    identity: String::new(),
+                    name: String::new(),
+                    action: "old".into(),
+                    target: String::new(),
+                    detail: String::new(),
+                });
+            }
+        });
+        w.write(|tx| crate::access::prune_audit(tx));
+        assert_eq!(w.read(|tx| tx.db.admin_audit().count()), 0);
+    }
+
+    #[test]
+    fn reads_never_give_secret_values() {
+        let w = World::new();
+        as_role(&w, "viewer");
+        let keys = read(&w, "credential", "", "").unwrap();
+        assert!(!keys.is_empty());
+        assert!(keys.iter().all(|k| k.get("value").is_none() && k["key"].is_string()));
+        assert!(read(&w, "purchase", "", "").unwrap_err().contains("ERR_BAD_QUERY"), "purchases need a filter");
+        assert!(read(&w, "access_token_cache", "", "").unwrap_err().contains("unknown table"));
+        let schedule = read(&w, "retry_schedule", "", "").unwrap();
+        assert!(schedule.len() <= 1);
+
+        w.write(|tx| {
+            tx.db.admin().identity().delete(Identity::ZERO);
+        });
+        assert!(read(&w, "product", "", "").unwrap_err().contains("ERR_ADMIN_UNAUTHORIZED"));
+        let me: Value = serde_json::from_str(&crate::access::admin_me(&mut w.ctx())).unwrap();
+        assert!(me["error"].as_str().unwrap().contains("not an admin"));
+    }
+
+    #[test]
+    fn identities_read_as_plain_hex() {
+        let w = World::new();
+        w.as_admin(true);
+        let admins = read(&w, "admin", "", "").unwrap();
+        assert_eq!(admins[0]["identity"], Identity::ZERO.to_hex().to_string());
+        assert_eq!(admins[0]["protected"], true);
     }
 }

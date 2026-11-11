@@ -1,6 +1,6 @@
 import type { ComponentType } from "react"
 import {
-  BadgeDollarSignIcon, BellRingIcon, BuildingIcon, LayoutDashboardIcon, LayoutGridIcon, ReceiptTextIcon, ScrollTextIcon, ServerIcon, ShieldCheckIcon,
+  BadgeDollarSignIcon, BellRingIcon, BuildingIcon, HistoryIcon, LayoutDashboardIcon, LayoutGridIcon, ReceiptTextIcon, ScrollTextIcon, ServerIcon, ShieldCheckIcon,
 } from "lucide-react"
 import { OverviewPage } from "@/pages/overview"
 import { RevenuePage } from "@/pages/revenue"
@@ -11,6 +11,8 @@ import { ServerPage } from "@/pages/server"
 import { LogsPage } from "@/pages/logs"
 import { AdminsPage } from "@/pages/admins"
 import { AlertsPage } from "@/pages/alerts"
+import { AuditPage } from "@/pages/audit"
+import type { Cap } from "@/lib/roles"
 
 export interface PageProps {
   go: (route: string) => void
@@ -22,6 +24,8 @@ export interface PageDef {
   icon: ComponentType<{ className?: string }>
   component: ComponentType<PageProps>
   group: "Monitor" | "Apps" | "Settings"
+  /** Hidden from admins whose role lacks it. */
+  need?: Cap
 }
 
 /** Top-level pages. Apps (`#apps`, `#app/<key>/<tab>`) are listed separately in the sidebar. */
@@ -32,8 +36,9 @@ export const PAGES: Record<string, PageDef> = {
   apps: { title: "All apps", icon: LayoutGridIcon, component: AppsPage, group: "Apps" },
   accounts: { title: "Developer accounts", icon: BuildingIcon, component: AccountsPage, group: "Settings" },
   server: { title: "Server", icon: ServerIcon, component: ServerPage, group: "Settings" },
-  logs: { title: "Logs", icon: ScrollTextIcon, component: LogsPage, group: "Settings" },
-  admins: { title: "Admins", icon: ShieldCheckIcon, component: AdminsPage, group: "Settings" },
+  logs: { title: "Logs", icon: ScrollTextIcon, component: LogsPage, group: "Settings", need: "owner" },
+  admins: { title: "Admins", icon: ShieldCheckIcon, component: AdminsPage, group: "Settings", need: "admins" },
+  audit: { title: "Audit log", icon: HistoryIcon, component: AuditPage, group: "Settings", need: "admins" },
   alerts: { title: "Alerts", icon: BellRingIcon, component: AlertsPage, group: "Settings" },
 }
 

@@ -12,7 +12,7 @@
 
 use crate::ctx::{tx_now_micros, Ctx};
 use crate::integrations::{attribution_key, user_attribution};
-use crate::{game_app, integrations, ledger, purchase, purchase_log, require_admin, GameApp, Purchase};
+use crate::{game_app, integrations, ledger, purchase, purchase_log, GameApp, Purchase};
 use purser_core::fx::FxTable;
 use purser_core::integrations::event_kind;
 use purser_core::model::status;
@@ -89,7 +89,8 @@ pub(crate) fn error_repeats(details: &str, error: &str) -> Option<u32> {
 
 /// Moves an owned purchase to `revoke_pending` as an admin revoke. `Ok(None)`: already revoked.
 pub fn revoke(tx: &TxContext, purchase_id: &str, reason: &str) -> Result<Option<String>, String> {
-    require_admin(tx)?;
+    let who = crate::access::require(tx, purser_core::roles::Cap::Support)?;
+    crate::access::audit(tx, &who, "admin_revoke_purchase", purchase_id, reason);
     let p = tx
         .db
         .purchase()
@@ -223,7 +224,7 @@ pub fn profile(tx: &TxContext, user_id: &str) -> Value {
 #[spacetimedb::procedure]
 pub fn admin_user_profile(ctx: &mut ProcedureContext, user_id: String) -> String {
     let result = ctx.tx(|tx| {
-        require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Read)?;
         Ok::<_, String>(profile(tx, &user_id))
     });
     match result {
@@ -275,7 +276,7 @@ pub fn find_players(tx: &TxContext, query: &str) -> Vec<Value> {
 #[spacetimedb::procedure]
 pub fn admin_find_player(ctx: &mut ProcedureContext, query: String) -> String {
     let result = ctx.tx(|tx| {
-        require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Read)?;
         Ok::<_, String>(find_players(tx, &query))
     });
     match result {

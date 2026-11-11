@@ -72,7 +72,7 @@ export function ClaimPage({ me, onDone, onSignOut }: { me: string; onDone: () =>
     if (!/^[0-9a-f]{64}$/.test(me)) return
     setBusy(true)
     const ok = await tryAct(async () => {
-      await sql(`INSERT INTO admin (identity, protected) VALUES (0x${me}, true)`)
+      await sql(`INSERT INTO admin (identity, protected, role, name, added_by, added_at_micros) VALUES (0x${me}, true, 'admin', '', '', 0)`)
       await call("admin_ensure_worker")
       return true
     }, "You are the owner admin, the worker is running")

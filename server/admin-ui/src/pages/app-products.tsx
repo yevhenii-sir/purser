@@ -1,9 +1,10 @@
 import { useCallback, useState } from "react"
-import { ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon, UploadIcon } from "lucide-react"
+import { ChevronDownIcon, ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon, RefreshCwIcon, StoreIcon, UploadIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -18,6 +19,7 @@ import { tryAct, useAsync } from "@/lib/hooks"
 import { KINDS, type CatalogRow, type GameApp, type Kind, type Product } from "@/lib/types"
 import type { TabProps } from "@/pages/app"
 import { appRoute } from "@/routes"
+import { useCan } from "@/lib/roles"
 import { parseUnityConfig, productIdIn, toUnityConfig, type UnityBuild } from "@/lib/unity-config"
 
 interface Row {
@@ -45,6 +47,7 @@ export function AppProductsTab({ data, go }: TabProps) {
     return [...map.values()].sort((a, b) => a.product_id.localeCompare(b.product_id))
   }, [ids.join(",")])
   const rows = products.data || []
+  const configure = useCan()("configure")
   /** Builds whose store catalog can be imported (Google Play, App Store). */
   const importers = g.apps.filter((a) => storeOf(a).product_import)
 
@@ -56,6 +59,18 @@ export function AppProductsTab({ data, go }: TabProps) {
     if (!items.length) return toast.info(`Every ${buildLabel(from)} product already exists on ${buildLabel(to)}`)
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Copied ${items.length} product(s)`)
     if (ok !== undefined) products.reload()
+  }
+
+  /** Every build's products as the `admin_upsert_products` JSON (Import → From JSON reads it back). */
+  const downloadJson = () => {
+    const items = rows.flatMap((r) => g.apps.flatMap((a) => {
+      const p = r.by[a.app_id]
+      return p ? [{ app_id: a.app_id, product_id: p.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency }] : []
+    }))
+    const url = URL.createObjectURL(new Blob([JSON.stringify(items, null, 2) + "\n"], { type: "application/json" }))
+    const link = Object.assign(document.createElement("a"), { href: url, download: `products-${g.key}.json` })
+    link.click()
+    URL.revokeObjectURL(url)
   }
 
   /** The app's builds and products as the Unity config (inspector: Paste config from admin panel). */
@@ -75,28 +90,56 @@ export function AppProductsTab({ data, go }: TabProps) {
         description="Store product ids per build. The default price is used for revenue when the store does not report one (Google one-time products)."
         actions={
           <>
-            {importers.map((a) => (
-              <Button key={a.app_id} variant="outline" size="sm" onClick={() => setDialog(`import:${a.app_id}`)}><DownloadIcon /> Import from {storeOf(a).name}</Button>
-            ))}
-            {g.apps.slice(1).map((to) => (
-              <Button key={to.app_id} variant="outline" size="sm" onClick={() => copyToOther(g.apps[0], to)}><CopyIcon /> Copy missing to {buildLabel(to)}</Button>
-            ))}
-            {!DEMO && creatorBuilds(g.apps).length > 0 && (
-              <Button variant="outline" size="sm" onClick={() => setDialog("create")} disabled={!products.data}
-                title="Create the products in Google Play, the App Store, Stripe or Xsolla"><UploadIcon /> Create in store</Button>
+            {configure && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm"><DownloadIcon /> Import <ChevronDownIcon /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-56">
+                  {importers.map((a) => (
+                    <DropdownMenuItem key={a.app_id} onClick={() => setDialog(`import:${a.app_id}`)}>From {storeOf(a).name}{importers.length > 1 && storeOf(a).name !== buildLabel(a) ? ` (${buildLabel(a)})` : ""}</DropdownMenuItem>
+                  ))}
+                  {importers.length > 0 && <DropdownMenuSeparator />}
+                  <DropdownMenuItem onClick={() => setDialog("unity")}><ClipboardPasteIcon /> From Unity config</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setDialog("json")}><FileJsonIcon /> From JSON</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
-            <Button variant="outline" size="sm" onClick={() => setDialog("unity")}><ClipboardPasteIcon /> Import from Unity</Button>
-            <Button variant="outline" size="sm" onClick={copyUnityConfig} disabled={!products.data}
-              title="The builds and products of this app for the Unity config inspector (Paste config from admin panel)"><ClipboardCopyIcon /> Copy Unity config</Button>
-            <Button variant="outline" size="sm" onClick={() => setDialog("json")}><FileJsonIcon /> JSON</Button>
-            <Button size="sm" onClick={() => setEditing("new")}><PlusIcon /> Add</Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" disabled={!products.data}><UploadIcon /> Export <ChevronDownIcon /></Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-56">
+                <DropdownMenuItem onClick={copyUnityConfig}><ClipboardCopyIcon /> Copy Unity config</DropdownMenuItem>
+                <DropdownMenuItem onClick={downloadJson}><FileJsonIcon /> Download JSON</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {configure && (g.apps.length > 1 || (!DEMO && creatorBuilds(g.apps).length > 0)) && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" disabled={!products.data}><RefreshCwIcon /> Sync <ChevronDownIcon /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-56">
+                  {g.apps.slice(1).map((to) => (
+                    <DropdownMenuItem key={to.app_id} onClick={() => copyToOther(g.apps[0], to)}><CopyIcon /> Copy missing to {buildLabel(to)}</DropdownMenuItem>
+                  ))}
+                  {!DEMO && creatorBuilds(g.apps).length > 0 && (
+                    <>
+                      {g.apps.length > 1 && <DropdownMenuSeparator />}
+                      <DropdownMenuItem onClick={() => setDialog("create")}><StoreIcon /> Create in store…</DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            {configure && <Button size="sm" onClick={() => setEditing("new")}><PlusIcon /> Add product</Button>}
           </>
         }
       >
         {products.error ? <ErrorBox error={products.error} /> : products.loading && !products.data ? <Loading /> : (
           <DataTable
             rows={rows}
-            onRowClick={setEditing}
+            onRowClick={configure ? setEditing : undefined}
             empty="No products yet."
             columns={[
               { title: "Product", cell: (r) => <Mono>{r.product_id}</Mono> },

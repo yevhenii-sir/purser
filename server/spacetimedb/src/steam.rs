@@ -212,7 +212,8 @@ struct BuildInput {
 /// Steam settings of a build: `{"app_id", "steam_app_id"?, "sandbox"?}`.
 #[spacetimedb::reducer]
 pub fn admin_set_steam_build(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_set_steam_build", "", &json);
     let i: BuildInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
     let app = ctx.db.game_app().app_id().find(&i.app_id).ok_or_else(|| format!("[ERR_BAD_APP] unknown app_id {}", i.app_id))?;
     if !is_steam_build(&app) {
@@ -256,7 +257,8 @@ struct ItemInput {
 /// "prices"?: {"USD": 199}, "period"?, "frequency"?}`. Replaces the item.
 #[spacetimedb::reducer]
 pub fn admin_upsert_steam_items(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_upsert_steam_items", "", &json);
     let items: Vec<ItemInput> = if json.trim_start().starts_with('[') {
         serde_json::from_str(&json)
     } else {

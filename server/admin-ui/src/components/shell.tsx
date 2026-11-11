@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/sidebar"
 import { DB_NAME, DEMO, moduleVersion } from "@/lib/api"
 import { useGroups } from "@/lib/apps"
+import { can, roleLabel, useRole } from "@/lib/roles"
 import { appRoute, PAGES, type PageDef, type Route } from "@/routes"
 
 function ThemeMenu() {
@@ -36,10 +37,11 @@ function ThemeMenu() {
 }
 
 function PageLinks({ group, route, go }: { group: PageDef["group"]; route: Route; go: (r: string) => void }) {
+  const role = useRole()
   return (
     <>
       {Object.entries(PAGES)
-        .filter(([, p]) => p.group === group)
+        .filter(([, p]) => p.group === group && (!p.need || can(role, p.need)))
         .map(([key, p]) => (
           <SidebarMenuItem key={key}>
             <SidebarMenuButton isActive={route.page === key} tooltip={p.title} onClick={() => go(key)}>
@@ -62,6 +64,7 @@ export function Shell({ route, go, me, onSignOut, children }: {
   onSignOut: () => void
   children: ReactNode
 }) {
+  const role = useRole()
   const { groups } = useGroups()
   const [filter, setFilter] = useState("")
   const [palette, setPalette] = useState(false)
@@ -166,6 +169,7 @@ export function Shell({ route, go, me, onSignOut, children }: {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent side="top" align="start" className="w-72">
                   <DropdownMenuLabel className="font-mono text-xs break-all">{me || "unknown identity"}</DropdownMenuLabel>
+                  {!DEMO && <DropdownMenuLabel className="pt-0 text-xs font-normal text-muted-foreground">Role: {roleLabel(role)}</DropdownMenuLabel>}
                   {!DEMO && <DropdownMenuSeparator />}
                   {!DEMO && <DropdownMenuItem onClick={onSignOut}><LogOutIcon /> Sign out</DropdownMenuItem>}
                 </DropdownMenuContent>

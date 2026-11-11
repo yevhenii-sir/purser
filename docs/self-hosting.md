@@ -77,6 +77,15 @@ spacetime logs -s myserver <db>
 - **Admin panel:** `http://localhost:3001/v1/database/<db>/route/admin`. The page calls `/sql`, `/logs` and `/call` of its own database, so it works fully through the tunnel. At the public address it opens, but data does not load (`/sql` is closed).
 - **Public address:** set it in Settings → Server → Public address (`https://stdb.example.com/v1/database/<db>/route`), so the setup check and the Add an app wizard show the right URLs for the stores and for the Unity config while you are on `localhost`.
 
+## Giving a coworker access
+
+Admins → **Add admin** → name, role (Admin, Editor, Support or Viewer) → **Generate a token**. Send the token and the admin page link privately: the token is shown once, and if it is lost you remove that admin and add a new one. Removing an admin stops their token at once.
+
+- The server checks the role on every request. Admin-page actions are recorded in the Audit log (Settings → Audit log).
+- A coworker's token reads through `/call` (the `admin_read` procedure), not `/sql`. So their admin page works through the same tunnel as yours, or at the public address if you allow `/v1/database/<db>/route/admin` and `/call` there.
+- Logs need the owner.
+- Someone with their own SpacetimeDB login can send you their identity (`spacetime login show --identity`) instead; add it in the same dialog.
+
 ## Delivery to games on the same server
 
 The module cannot call private addresses (`127.0.0.1`, `10.x`, …). Deliveries to a game on the same machine go through the public hostname, which must be allowed by the database owner: Settings → Server → SpacetimeDB hosts → `stdb.example.com` (or `admin_add_spacetime_host`). The `call` path must be open in the proxy.

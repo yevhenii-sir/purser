@@ -14,6 +14,7 @@ import { ago, fmtMs, fmtTime, money, usd } from "@/lib/format"
 import { act, tryAct, useAsync } from "@/lib/hooks"
 import type { Purchase } from "@/lib/types"
 import { appRoute, type PageProps } from "@/routes"
+import { useCan } from "@/lib/roles"
 import { GrantDialog } from "@/pages/purchases"
 
 interface ProfilePurchase extends Purchase {
@@ -224,6 +225,7 @@ function requeue(p: Purchase, reload: () => void) {
 
 /** Everything support needs about one player, across every app of the database (`#player/<user_id>`). */
 export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
+  const can = useCan()
   const [open, setOpen] = useState<string | null>(null)
   const [grant, setGrant] = useState(false)
   const [revoke, setRevoke] = useState<{ title: string; purchases: ProfilePurchase[] } | null>(null)
@@ -238,10 +240,11 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
   const s = data.summary
   const ents = entitlementRows(data)
   const problems = data.purchases.filter((p) => p.attention)
+  const support = can("support")
   const seen = new Set(data.builds.map((b) => b.app_id))
   // The player's builds first in the grant dialog.
   const grantApps = [...(apps || [])].sort((a, b) => Number(seen.has(b.app_id)) - Number(seen.has(a.app_id)) || a.app_id.localeCompare(b.app_id))
-  const actions = (p: ProfilePurchase): ReactNode => (
+  const actions = (p: ProfilePurchase): ReactNode => support && (
     <div className="flex justify-end gap-1">
       {p.attention && (
         <Button size="sm" variant="ghost" onClick={() => requeue(p, reload)} title="Retry now"><RotateCwIcon /></Button>
@@ -276,7 +279,7 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={reload}><RefreshCwIcon /> Refresh</Button>
-          <Button onClick={() => setGrant(true)}><GiftIcon /> Manual grant</Button>
+          {support && <Button onClick={() => setGrant(true)}><GiftIcon /> Manual grant</Button>}
         </div>
       </div>
 
@@ -326,7 +329,7 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
             {
               title: "",
               cell: (r) => (
-                <div className="flex justify-end">
+                support && <div className="flex justify-end">
                   <Button size="sm" variant="ghost" className="text-destructive" disabled={!r.purchases.length}
                     onClick={() => setRevoke({ title: r.product_id, purchases: r.purchases })}>
                     <BanIcon /> Revoke
@@ -353,7 +356,7 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
               {
                 title: "",
                 cell: (r) => (
-                  <div className="flex justify-end">
+                  support && <div className="flex justify-end">
                     <Button size="sm" variant="outline" onClick={() => requeue(r, reload)}><RotateCwIcon /> Retry now</Button>
                   </div>
                 ),

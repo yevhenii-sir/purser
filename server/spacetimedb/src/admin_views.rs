@@ -6,7 +6,7 @@
 
 use crate::ctx::{tx_now_micros, Ctx};
 use crate::integrations::integration_outbox;
-use crate::{game_app, product, purchase, require_admin, Purchase};
+use crate::{game_app, product, purchase, Purchase};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use spacetimedb::{ProcedureContext, Table, TxContext};
@@ -75,7 +75,7 @@ pub fn overview(tx: &TxContext) -> Value {
 #[spacetimedb::procedure]
 pub fn admin_overview(ctx: &mut ProcedureContext) -> String {
     let result = ctx.tx(|tx| {
-        require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Read)?;
         Ok::<_, String>(overview(tx))
     });
     match result {
@@ -146,7 +146,7 @@ pub fn admin_list_purchases(ctx: &mut ProcedureContext, query_json: String) -> S
         }
     };
     let result = ctx.tx(|tx| {
-        require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Read)?;
         let (rows, more) = list_purchases(tx, &q);
         Ok::<_, String>(json!({ "rows": rows.iter().map(purchase_row).collect::<Vec<_>>(), "more": more }))
     });

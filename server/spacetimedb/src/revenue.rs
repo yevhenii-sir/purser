@@ -598,7 +598,8 @@ pub fn rebuild_at_once(tx: &ReducerContext) {
 /// until it is done.
 #[spacetimedb::reducer]
 pub fn admin_rebuild_revenue(ctx: &ReducerContext) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_rebuild_revenue", "", "");
     set_rebuild_state(ctx, &Rebuild::Clearing);
     Ok(())
 }
@@ -622,7 +623,8 @@ pub fn imported(tx: &ReducerContext) {
 /// Sets the rate of a currency the ECB does not publish (units per 1 USD, e.g. UAH 41.5).
 #[spacetimedb::reducer]
 pub fn admin_set_fx_override(ctx: &ReducerContext, currency: String, units_per_usd: f64) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_set_fx_override", &currency, &units_per_usd.to_string());
     let currency = currency.trim().to_uppercase();
     if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_alphabetic()) || !(units_per_usd > 0.0) {
         return Err("[ERR_BAD_FX] currency must be an ISO code and the rate positive".into());
@@ -638,7 +640,8 @@ pub fn admin_set_fx_override(ctx: &ReducerContext, currency: String, units_per_u
 
 #[spacetimedb::reducer]
 pub fn admin_delete_fx_override(ctx: &ReducerContext, currency: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_delete_fx_override", &currency, "");
     ctx.db.fx_override().currency().delete(&currency.trim().to_uppercase());
     Ok(())
 }
@@ -782,7 +785,7 @@ fn refresh_fx(ctx: &mut impl Ctx, plan: FxPlan) -> Result<(), String> {
 /// Fetches the latest ECB rates now.
 #[spacetimedb::procedure]
 pub fn admin_refresh_fx(ctx: &mut ProcedureContext) -> String {
-    let allowed = ctx.tx(|tx| crate::require_admin(tx));
+    let allowed = ctx.tx(|tx| crate::access::require(tx, purser_core::roles::Cap::Configure).map(|who| crate::access::audit(tx, &who, "admin_refresh_fx", "", "")));
     match allowed.and_then(|_| refresh_fx(ctx, FxPlan::Latest)) {
         Ok(()) => json!({ "ok": true }).to_string(),
         Err(e) => json!({ "error": e }).to_string(),
@@ -1015,7 +1018,7 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
         serde_json::from_str(query_json).map_err(|e| format!("bad query: {e}"))?
     };
     ctx.tx(|tx| {
-        crate::require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Read)?;
         let today = today(tx);
         let to = if q.to.is_empty() { today } else { parse_day(&q.to).ok_or("bad 'to' date")? };
         let from = if q.from.is_empty() { to - 29 } else { parse_day(&q.from).ok_or("bad 'from' date")? };

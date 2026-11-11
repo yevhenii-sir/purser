@@ -14,6 +14,7 @@ use serde::Deserialize;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
+mod access;
 mod admin_views;
 mod alerts;
 mod catalog;
@@ -56,6 +57,17 @@ pub struct Admin {
     /// Defaults to true for rows that existed before the column (the owner).
     #[default(true)]
     pub protected: bool,
+    /// `admin` | `editor` | `support` | `viewer` (`purser_core::roles`); ignored for the owner.
+    #[default("admin")]
+    pub role: String,
+    /// Who this is, for the Admins page and the audit log.
+    #[default("")]
+    pub name: String,
+    /// Identity hex of the admin who added this one.
+    #[default("")]
+    pub added_by: String,
+    #[default(0)]
+    pub added_at_micros: i64,
 }
 
 /// One build: an app in one store (Android package on Google Play, iOS bundle, Amazon Appstore
@@ -255,7 +267,14 @@ const WORKER_INTERVAL: Duration = Duration::from_secs(60);
 
 #[spacetimedb::reducer(init)]
 pub fn init(ctx: &ReducerContext) {
-    ctx.db.admin().insert(Admin { identity: ctx.sender(), protected: true });
+    ctx.db.admin().insert(Admin {
+        identity: ctx.sender(),
+        protected: true,
+        role: "admin".into(),
+        name: String::new(),
+        added_by: String::new(),
+        added_at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+    });
     ensure_worker(ctx);
 }
 
@@ -280,40 +299,25 @@ pub fn whoami(ctx: &mut spacetimedb::ProcedureContext) -> String {
 
 /// Starts the worker on a database where `init` never ran: the module was published over a
 /// database created in the SpacetimeDB dashboard (an update does not run `init`). The owner first
-/// adds itself with `INSERT INTO admin (identity, protected) VALUES (0x<identity>, true)` through
+/// adds itself with `INSERT INTO admin (identity, protected, role, name, added_by, added_at_micros)
+/// VALUES (0x<identity>, true, 'admin', '', '', 0)` through
 /// `spacetime sql` (only the owner can write private tables); the admin page does both steps.
 #[spacetimedb::reducer]
 pub fn admin_ensure_worker(ctx: &ReducerContext) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_ensure_worker", "", "");
     if ensure_worker(ctx) {
         log::info!("Ledger worker scheduled by {}", ctx.sender());
     }
     Ok(())
 }
 
-pub(crate) fn require_admin(ctx: &ReducerContext) -> Result<(), String> {
-    if ctx.db.admin().identity().find(ctx.sender()).is_some() {
-        Ok(())
-    } else {
-        Err("[ERR_ADMIN_UNAUTHORIZED] Admin only".into())
-    }
-}
-
-/// The database owner: the identity that published it (`init`). Regular admins cannot do
-/// what would let them move secrets elsewhere, such as extending the delivery host allowlist.
-pub(crate) fn require_owner(ctx: &ReducerContext) -> Result<(), String> {
-    if ctx.db.admin().identity().find(ctx.sender()).is_some_and(|a| a.protected) {
-        Ok(())
-    } else {
-        Err("[ERR_OWNER_ONLY] Only the database owner can do this".into())
-    }
-}
-
 /// Allows deliveries to a self-hosted SpacetimeDB server: `host` like `stdb.example.com`
 /// (https only, any port). The game's `spacetime_token` is sent there, so only the owner may add it.
 #[spacetimedb::reducer]
 pub fn admin_add_spacetime_host(ctx: &ReducerContext, host: String) -> Result<(), String> {
-    require_owner(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Owner)?;
+    crate::access::audit(ctx, &who, "admin_add_spacetime_host", &host, "");
     let host = purser_core::normalize_spacetime_host(&host).map_err(|e| format!("[ERR_BAD_HOST] {e}"))?;
     if purser_core::DEFAULT_SPACETIME_HOSTS.contains(&host.as_str()) || ctx.db.spacetime_host().host().find(&host).is_some() {
         return Ok(());
@@ -330,36 +334,13 @@ pub fn admin_add_spacetime_host(ctx: &ReducerContext, host: String) -> Result<()
 /// Stops deliveries to a host; apps that use it fail delivery (and retry) until they are moved.
 #[spacetimedb::reducer]
 pub fn admin_remove_spacetime_host(ctx: &ReducerContext, host: String) -> Result<(), String> {
-    require_owner(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Owner)?;
+    crate::access::audit(ctx, &who, "admin_remove_spacetime_host", &host, "");
     let host = host.trim().to_ascii_lowercase();
     if purser_core::DEFAULT_SPACETIME_HOSTS.contains(&host.as_str()) {
         return Err(format!("[ERR_BAD_HOST] {host} is built in and cannot be removed"));
     }
     ctx.db.spacetime_host().host().delete(&host);
-    Ok(())
-}
-
-#[spacetimedb::reducer]
-pub fn admin_add_admin(ctx: &ReducerContext, identity_hex: String) -> Result<(), String> {
-    require_admin(ctx)?;
-    let identity = Identity::from_hex(&identity_hex).map_err(|_| "[ERR_BAD_IDENTITY] Invalid identity hex")?;
-    if ctx.db.admin().identity().find(identity).is_none() {
-        ctx.db.admin().insert(Admin { identity, protected: false });
-    }
-    Ok(())
-}
-
-#[spacetimedb::reducer]
-pub fn admin_remove_admin(ctx: &ReducerContext, identity_hex: String) -> Result<(), String> {
-    require_admin(ctx)?;
-    let identity = Identity::from_hex(&identity_hex).map_err(|_| "[ERR_BAD_IDENTITY] Invalid identity hex")?;
-    if identity == ctx.sender() {
-        return Err("[ERR_ADMIN_SELF_REMOVE] Cannot remove yourself".into());
-    }
-    if ctx.db.admin().identity().find(identity).is_some_and(|a| a.protected) {
-        return Err("[ERR_ADMIN_PROTECTED] The database owner cannot be removed".into());
-    }
-    ctx.db.admin().identity().delete(identity);
     Ok(())
 }
 
@@ -411,7 +392,8 @@ struct GameAppInput {
 /// Creates or replaces a store application. `json` is a `GameAppInput` object.
 #[spacetimedb::reducer]
 pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_upsert_game_app", "", &json);
     let i: GameAppInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
 
     if i.app_id.trim().is_empty() {
@@ -483,7 +465,8 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
 
 #[spacetimedb::reducer]
 pub fn admin_delete_game_app(ctx: &ReducerContext, app_id: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_delete_game_app", &app_id, "");
     ctx.db.game_app().app_id().delete(&app_id);
     crate::health::delete_check(ctx, &app_id);
     Ok(())
@@ -508,7 +491,8 @@ pub fn product_key(app_id: &str, product_id: &str) -> String {
 /// Sets the display name of an app (`game_key`); an empty name removes it.
 #[spacetimedb::reducer]
 pub fn admin_set_app_name(ctx: &ReducerContext, game_key: String, name: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_set_app_name", &game_key, &name);
     if !ctx.db.game_app().iter().any(|a| a.game_key == game_key) {
         return Err(format!("[ERR_UNKNOWN_APP] No app {game_key}"));
     }
@@ -522,7 +506,8 @@ pub fn admin_set_app_name(ctx: &ReducerContext, game_key: String, name: String) 
 
 #[spacetimedb::reducer]
 pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_upsert_products", "", &json);
     let items: Vec<ProductInput> = if json.trim_start().starts_with('[') {
         serde_json::from_str(&json)
     } else {
@@ -556,7 +541,8 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
 
 #[spacetimedb::reducer]
 pub fn admin_delete_product(ctx: &ReducerContext, app_id: String, product_id: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_delete_product", &app_id, &product_id);
     ctx.db.product().key().delete(&product_key(&app_id, &product_id));
     Ok(())
 }
@@ -565,7 +551,8 @@ pub fn admin_delete_product(ctx: &ReducerContext, app_id: String, product_id: St
 /// Names: see `config::secret_name`.
 #[spacetimedb::reducer]
 pub fn admin_set_credential(ctx: &ReducerContext, scope: String, name: String, value: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Secrets)?;
+    crate::access::audit(ctx, &who, "admin_set_credential", &format!("{scope}/{name}"), "updated");
     if !config::secret_name::is_known(&name) {
         return Err(format!("[ERR_BAD_CREDENTIAL] unknown credential name '{name}'"));
     }
@@ -589,7 +576,8 @@ pub fn admin_set_credential(ctx: &ReducerContext, scope: String, name: String, v
 
 #[spacetimedb::reducer]
 pub fn admin_delete_credential(ctx: &ReducerContext, scope: String, name: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Secrets)?;
+    crate::access::audit(ctx, &who, "admin_delete_credential", &format!("{scope}/{name}"), "deleted");
     ctx.db.credential().key().delete(&config::credential_key(&scope, &name));
     Ok(())
 }
@@ -597,7 +585,8 @@ pub fn admin_delete_credential(ctx: &ReducerContext, scope: String, name: String
 /// Forces the worker to retry a purchase on its next run.
 #[spacetimedb::reducer]
 pub fn admin_requeue_purchase(ctx: &ReducerContext, purchase_id: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Support)?;
+    crate::access::audit(ctx, &who, "admin_requeue_purchase", &purchase_id, "");
     let mut p = ctx
         .db
         .purchase()
@@ -632,7 +621,8 @@ pub fn admin_grant_manual(ctx: &ReducerContext, json: String) -> Result<(), Stri
     use purser_core::event::reason;
     use purser_core::model::{environment, ledger_id, status, store, store_action};
 
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Support)?;
+    crate::access::audit(ctx, &who, "admin_grant_manual", "", &json);
     let i: ManualGrantInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
     let product = ctx
         .db
@@ -754,7 +744,8 @@ const MAX_IMPORT_ROWS: usize = 500;
 pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), String> {
     use purser_core::model::status;
 
-    require_owner(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Owner)?;
+    crate::access::audit(ctx, &who, "admin_import_purchases", "", &format!("{} bytes", json.len()));
     let rows: Vec<PurchaseImport> = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
     if rows.len() > MAX_IMPORT_ROWS {
         return Err(format!("[ERR_BAD_IMPORT] at most {MAX_IMPORT_ROWS} rows per call"));
@@ -858,7 +849,8 @@ struct IntegrationInput {
 /// `kind`: `ga4` | `appsflyer` | `tenjin` | `webhook`. Secrets go to `admin_set_credential`.
 #[spacetimedb::reducer]
 pub fn admin_upsert_integration(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_upsert_integration", "", &json);
     let i: IntegrationInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
     if ctx.db.game_app().app_id().find(&i.app_id).is_none() {
         return Err(format!("[ERR_BAD_INTEGRATION] unknown app_id {}", i.app_id));
@@ -882,7 +874,8 @@ pub fn admin_upsert_integration(ctx: &ReducerContext, json: String) -> Result<()
 
 #[spacetimedb::reducer]
 pub fn admin_delete_integration(ctx: &ReducerContext, app_id: String, kind: String) -> Result<(), String> {
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_delete_integration", &app_id, &kind);
     ctx.db.integration().key().delete(&integrations::integration_key(&app_id, &kind));
     Ok(())
 }
@@ -907,7 +900,8 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
     use purser_core::integrations::{event_kind, sanitize_attribution, OutEvent};
     use purser_core::model::environment;
 
-    require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_test_integration", "", &json);
     let i: TestIntegrationInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
     let app = ctx
         .db

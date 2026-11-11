@@ -546,7 +546,8 @@ struct ChannelInput {
 /// `credential` (`default/alert_*`) and never returned.
 #[spacetimedb::reducer]
 pub fn admin_upsert_alert_channel(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_upsert_alert_channel", "", &json);
     let i: ChannelInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
     if !channel_kind::is_known(&i.kind) {
         return Err(format!("[ERR_BAD_ALERT] unknown channel '{}'", i.kind));
@@ -585,7 +586,8 @@ pub fn admin_upsert_alert_channel(ctx: &ReducerContext, json: String) -> Result<
 /// Removes a channel and its secret.
 #[spacetimedb::reducer]
 pub fn admin_delete_alert_channel(ctx: &ReducerContext, kind: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_delete_alert_channel", &kind, "");
     ctx.db.alert_channel().kind().delete(&kind);
     if let Some(name) = secret_for(&kind) {
         ctx.db.credential().key().delete(config::credential_key(config::DEFAULT_SCOPE, name));
@@ -596,7 +598,8 @@ pub fn admin_delete_alert_channel(ctx: &ReducerContext, kind: String) -> Result<
 /// Saves the rules (`purser_core::alerts::Rules` as JSON; missing fields take the defaults).
 #[spacetimedb::reducer]
 pub fn admin_set_alert_rules(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_set_alert_rules", "", &json);
     let rules = Rules::parse(&json).map_err(|e| format!("[ERR_BAD_ALERT] {e}"))?;
     settings::set(ctx, RULES_KEY, &serde_json::to_string(&rules).unwrap_or_default());
     Ok(())
@@ -607,7 +610,8 @@ pub fn admin_set_alert_rules(ctx: &ReducerContext, json: String) -> Result<(), S
 #[spacetimedb::procedure]
 pub fn admin_test_alert(ctx: &mut ProcedureContext, channel: String) -> String {
     let prepared = ctx.tx(|tx| -> Result<_, String> {
-        crate::require_admin(tx)?;
+        let who = crate::access::require(tx, purser_core::roles::Cap::Configure)?;
+        crate::access::audit(tx, &who, "admin_test_alert", &channel, "");
         let base = settings::get(tx, key::PUBLIC_BASE_URL).unwrap_or_default();
         let msg = Message {
             rule: rule::TEST.into(),
@@ -643,7 +647,8 @@ pub fn admin_test_alert(ctx: &mut ProcedureContext, channel: String) -> String {
 /// Forgets an active problem without a "resolved" message (e.g. after fixing it by hand).
 #[spacetimedb::reducer]
 pub fn admin_dismiss_alert(ctx: &ReducerContext, key: String) -> Result<(), String> {
-    crate::require_admin(ctx)?;
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    crate::access::audit(ctx, &who, "admin_dismiss_alert", &key, "");
     if let Some(mut s) = ctx.db.alert_state().key().find(&key) {
         s.active = false;
         s.suppressed = 0;

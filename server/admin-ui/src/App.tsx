@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Shell } from "@/components/shell"
-import { call, clearToken, getToken, SERVED_BY_MODULE, sql, whoami } from "@/lib/api"
+import { call, clearToken, getToken, proc, SERVED_BY_MODULE, setReadThroughProcedure, sql, whoami } from "@/lib/api"
+import { can, RoleContext, type Role } from "@/lib/roles"
 import { AppsProvider } from "@/lib/apps"
 import { errorText } from "@/lib/format"
 import { ClaimPage, LoginPage, WrongPlacePage } from "@/pages/auth"
@@ -10,7 +11,14 @@ import { AppPage } from "@/pages/app"
 import { PlayerPage } from "@/pages/player"
 import { PAGES, parseRoute, type Route } from "@/routes"
 
-type Auth = { state: "checking" } | { state: "login"; error?: string } | { state: "claim"; me: string } | { state: "ready"; me: string }
+type Auth = { state: "checking" } | { state: "login"; error?: string } | { state: "claim"; me: string } | { state: "ready"; me: string; role: Role }
+
+interface Me {
+  identity: string
+  name: string
+  role: Role
+  owner: boolean
+}
 
 
 export default function App() {
@@ -19,22 +27,28 @@ export default function App() {
 
   const start = useCallback(async () => {
     if (!getToken()) return setAuth({ state: "login" })
-    let admins: number
+    setReadThroughProcedure(false)
+    let me: Me
     try {
-      admins = Number((await sql<{ n: number }>("SELECT COUNT(*) AS n FROM admin"))[0].n)
+      me = await proc<Me>("admin_me")
     } catch (e) {
+      // The owner of a database the module was published over (created in the dashboard): `init` never ran, there is no admin yet.
+      try {
+        if (Number((await sql<{ n: number }>("SELECT COUNT(*) AS n FROM admin"))[0].n) === 0) return setAuth({ state: "claim", me: await whoami() })
+      } catch {
+        // Not the owner either.
+      }
       clearToken()
       return setAuth({ state: "login", error: "Token rejected: " + errorText(e) })
     }
-    const me = await whoami()
-    // The module was published over a database created in the dashboard: `init` never ran.
-    if (admins === 0) return setAuth({ state: "claim", me })
+    // Only the owner can read private tables over /sql; everyone else reads through `admin_read`.
+    setReadThroughProcedure(!me.owner)
     try {
-      if (Number((await sql<{ n: number }>("SELECT COUNT(*) AS n FROM retry_schedule"))[0].n) === 0) await call("admin_ensure_worker")
+      if (can(me.role, "configure") && Number((await sql<{ n: number }>("SELECT COUNT(*) AS n FROM retry_schedule"))[0].n) === 0) await call("admin_ensure_worker")
     } catch {
-      // Not an admin: pages show the error.
+      // Pages show errors.
     }
-    setAuth({ state: "ready", me })
+    setAuth({ state: "ready", me: me.identity.replace(/^0x/, "").toLowerCase(), role: me.role })
   }, [])
 
   useEffect(() => {
@@ -63,8 +77,10 @@ export default function App() {
   else if (auth.state === "login") content = <LoginPage error={auth.error} onSignedIn={start} />
   else if (auth.state === "claim") content = <ClaimPage me={auth.me} onDone={start} onSignOut={signOut} />
   else {
-    const Page = PAGES[route.page]?.component
+    const def = PAGES[route.page]
+    const Page = def && (!def.need || can(auth.role, def.need)) ? def.component : NotForRole
     content = (
+      <RoleContext.Provider value={auth.role}>
       <AppsProvider>
         <Shell route={route} go={go} me={auth.me} onSignOut={signOut}>
           {"key" in route ? (
@@ -76,6 +92,7 @@ export default function App() {
           )}
         </Shell>
       </AppsProvider>
+      </RoleContext.Provider>
     )
   }
 
@@ -87,3 +104,6 @@ export default function App() {
   )
 }
 
+function NotForRole() {
+  return <div className="p-6 text-sm text-muted-foreground">Your role cannot open this page.</div>
+}

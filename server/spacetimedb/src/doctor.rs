@@ -90,7 +90,7 @@ const ALL_SECRETS: &[&str] = &[
 fn snapshot(ctx: &mut impl Ctx, app_id: &str) -> Result<Snapshot, String> {
     let app_id = app_id.to_string();
     ctx.tx(|tx| {
-        crate::require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Configure)?;
         let app = config::find_app(tx, &app_id).ok_or(format!("unknown app {app_id}"))?;
         let siblings = tx
             .db
@@ -751,7 +751,8 @@ pub fn admin_check_app(ctx: &mut ProcedureContext, app_id: String, options_json:
 pub fn ping_webhook(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, String> {
     let id = app_id.to_string();
     let (app, secret) = ctx.tx(|tx| {
-        crate::require_admin(tx)?;
+        let who = crate::access::require(tx, purser_core::roles::Cap::Configure)?;
+        crate::access::audit(tx, &who, "admin_ping_webhook", &id, "");
         let app = config::find_app(tx, &id).ok_or(format!("unknown app {id}"))?;
         let secret = config::require_secret(tx, &app, secret_name::WEBHOOK_SECRET)?.value;
         Ok::<_, String>((app, secret))

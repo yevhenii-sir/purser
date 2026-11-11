@@ -63,8 +63,31 @@ function unwrap(v: unknown): unknown {
   return v
 }
 
+/** Admins who are not the database owner cannot read private tables with /sql: their reads go
+ * through the `admin_read` procedure, which checks their role. Set at sign-in (`admin_me`). */
+let readThroughProcedure = false
+export function setReadThroughProcedure(on: boolean) {
+  readThroughProcedure = on
+}
+
+const SIMPLE_SELECT = /^\s*SELECT\s+(.+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(\w+)\s*=\s*'((?:[^']|'')*)')?\s*$/i
+
+/** The page's `SELECT <cols> FROM <table> [WHERE <col> = '<value>']` through `admin_read`. */
+async function readThroughAdminRead<T>(query: string): Promise<T[]> {
+  const m = SIMPLE_SELECT.exec(query)
+  if (!m) throw new Error("Only the database owner can run this query")
+  const [, cols, table, column = "", raw = ""] = m
+  const rows = await proc<Row[]>("admin_read", table, column, raw.replace(/''/g, "'"))
+  const count = /^COUNT\(\*\)\s+AS\s+(\w+)$/i.exec(cols.trim())
+  if (count) return [{ [count[1]]: rows.length }] as T[]
+  if (cols.trim() === "*") return rows as T[]
+  const names = cols.split(",").map((c) => c.trim())
+  return rows.map((r) => Object.fromEntries(names.map((n) => [n, r[n]]))) as T[]
+}
+
 export async function sql<T = Row>(query: string): Promise<T[]> {
   if (__DEMO__) return (await import("./demo")).sql(query) as T[]
+  if (readThroughProcedure) return readThroughAdminRead<T>(query)
   const res = await fetch(DB_BASE + "/sql", { method: "POST", headers: { Authorization: "Bearer " + getToken() }, body: query })
   const text = await res.text()
   if (!res.ok) throw new Error(text || "HTTP " + res.status)

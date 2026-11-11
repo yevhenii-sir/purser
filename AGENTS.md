@@ -85,7 +85,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   (`INSERT INTO admin ...`) is how the first admin is added when `init` did not run (database created
   in the maincloud dashboard). Non-owners get "no such table".
 - HTTP handlers (`handlers.rs`) get a **random `sender()` per request**: they cannot authenticate the
-  caller. Everything admin is a reducer or `#[procedure]` that calls `require_admin` (in procedures
+  caller. Everything admin is a reducer or `#[procedure]` that calls `access::require(ctx, Cap::…)` (in procedures
   inside `ctx.tx`). Admin procedures return a JSON **string** (`{"error": "..."}` on failure); `/call`
   wraps it in a JSON string literal, the UI's `proc()` unwraps both layers.
 - `/call/<name>` looks for a reducer first: every **procedure** call logs
@@ -262,7 +262,12 @@ in `registry::STORES`; builds cannot use it.
 
 ### Add an admin reducer / procedure
 
-Reducer for writes (transactional, `require_admin(ctx)?` first). `#[procedure]` when it needs
+Reducer for writes (transactional): first `let who = crate::access::require(ctx, Cap::…)?;` with the
+capability the action needs (`purser_core::roles`: `Read`, `Support`, `Configure`, `Secrets`, `Admins`,
+`Owner`), then `crate::access::audit(ctx, &who, "<reducer name>", target, detail)` (never pass secret
+values; `roles::audit_summary` hides keys named like secrets). Reads check `Cap::Read`. A new table
+the admin page reads gets an arm in `access::read` (admins who are not the owner read through
+`admin_read`; `/sql` is the owner's). `#[procedure]` when it needs
 outbound HTTP or returns data: take `&mut ProcedureContext`, check the admin inside `ctx.tx`, return a
 JSON string. Call it from the UI with `call()` (reducers) or `proc()` (procedures).
 

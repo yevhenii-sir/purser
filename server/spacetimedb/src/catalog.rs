@@ -78,7 +78,7 @@ impl Lister<'_> {
 pub fn list_store_products(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, String> {
     let id = app_id.to_string();
     let (app, local) = ctx.tx(|tx| {
-        crate::require_admin(tx)?;
+        crate::access::require(tx, purser_core::roles::Cap::Configure)?;
         let app = config::find_app(tx, &id).ok_or(format!("unknown app {id}"))?;
         let local: Vec<LocalProduct> = tx
             .db
