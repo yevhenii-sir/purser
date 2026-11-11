@@ -4,6 +4,8 @@
 // snapshot was taken, so "last 30 days" and "2 minutes ago" mean what they meant then.
 
 import snapshot from "../../demo/snapshot.json"
+import { storeOf } from "./stores"
+import type { GameApp } from "./types"
 
 type Row = Record<string, any>
 
@@ -114,7 +116,28 @@ function findPlayer(query: string) {
   return { matches }
 }
 
+/** What Create in store would do with the sample builds: products the build lists are already in the store. */
+function storeCreatePreview(json: string) {
+  const q = JSON.parse(json || "{}") as { app_ids: string[]; products: { product_id: string; kind: string }[] }
+  const rows = (S.tables.game_app || []).filter((a: Row) => q.app_ids.includes(a.app_id)).flatMap((a: Row) => {
+    const store = storeOf(a as GameApp)
+    return q.products.map((p) => {
+      const has = (S.tables.product || []).some((x: Row) => x.app_id === a.app_id && x.product_id === p.product_id)
+      const status = !store.product_create.includes(p.kind)
+        ? "unsupported"
+        : has ? "exists" : "create"
+      const reason = status !== "unsupported" ? ""
+        : store.product_create.length ? `${store.name} cannot create ${p.kind.replace("_", "-")} products here`
+        : `${store.name} products are created in the store's own console`
+      return { app_id: a.app_id, store: store.id, product_id: p.product_id, kind: p.kind, status, reason, store_product_id: has ? p.product_id : "" }
+    })
+  })
+  const apple = (S.tables.game_app || []).filter((a: Row) => q.app_ids.includes(a.app_id) && storeOf(a as GameApp).id === "apple")
+  return { rows, apple_groups: Object.fromEntries(apple.map((a: Row) => [a.app_id, ["Premium"]])), warnings: {} }
+}
+
 const PROCS: Record<string, (...args: any[]) => unknown> = {
+  admin_store_create_preview: storeCreatePreview,
   whoami: () => "0x" + S.identity,
   admin_me: () => ({ identity: S.identity, name: S.tables.admin?.find((a: Row) => a.protected)?.name || "", role: "owner", owner: true }),
   admin_overview: () => S.procs.admin_overview,
@@ -132,6 +155,11 @@ const PROCS: Record<string, (...args: any[]) => unknown> = {
     return S.procs.paywall_results[`${q.game_key}|${q.placement_id}|${q.test_id || ""}`] ?? S.procs.paywall_results[`${q.game_key}|${q.placement_id}|`] ?? { error: "No results in the demo data." }
   },
   admin_preview_paywall: (app: string, placement: string) => S.procs.previews[`${app}|${placement}`] ?? { error: "No preview for this build in the demo data." },
+}
+
+/** No identities are made in the demo. */
+export function createIdentity(): never {
+  throw new Error(READ_ONLY)
 }
 
 /** `/call/<name>`: the raw response text, like the server's. */

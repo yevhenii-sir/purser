@@ -72,11 +72,13 @@ export function StoreCreateDialog({ open, ...props }: StoreCreateProps & { open:
 interface StoreCreateProps {
   apps: GameApp[]
   products: CreateSource[]
+  /** The build already lists this product id. */
+  listed: (appId: string, productId: string) => boolean
   onClose: () => void
   onStarted: () => void
 }
 
-function StoreCreate({ apps, products, onClose, onStarted }: StoreCreateProps) {
+function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreateProps) {
   const builds = creatorBuilds(apps)
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() =>
     Object.fromEntries(products.map((p) => [p.product_id, {
@@ -138,7 +140,7 @@ function StoreCreate({ apps, products, onClose, onStarted }: StoreCreateProps) {
   }
 
   /** Products the store already has but this build does not list yet. */
-  const existing = (preview?.rows || []).filter((r) => r.status === "exists" && r.store_product_id)
+  const existing = (preview?.rows || []).filter((r) => r.status === "exists" && r.store_product_id && !listed(r.app_id, r.store_product_id))
   const addExisting = async () => {
     const byId = new Map(inputs().map((p) => [p.product_id, p]))
     const items = existing.map((r) => {

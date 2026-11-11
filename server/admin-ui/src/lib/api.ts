@@ -160,6 +160,20 @@ export async function whoami(): Promise<string> {
   }
 }
 
+/** A new SpacetimeDB identity and its token from this page's own server (`POST /v1/identity`). */
+export async function createIdentity(): Promise<{ identity: string; token: string }> {
+  if (__DEMO__) return (await import("./demo")).createIdentity()
+  const res = await fetch(location.origin + "/v1/identity", { method: "POST" })
+  if (!res.ok) {
+    throw new Error(
+      `This server does not give new identities to the admin page (POST /v1/identity: HTTP ${res.status}). ` +
+        "Ask the coworker to sign in with the SpacetimeDB CLI (spacetime login) and send you the output of spacetime login show --identity, then add that identity.",
+    )
+  }
+  const r = await res.json()
+  return { identity: String(r.identity).replace(/^0x/, ""), token: String(r.token) }
+}
+
 export async function getSetting(key: string): Promise<string> {
   const rows = await sql<{ value: string }>(`SELECT value FROM server_state WHERE key = ${sqlStr(key)}`)
   return rows[0]?.value || ""

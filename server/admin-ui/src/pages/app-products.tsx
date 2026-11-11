@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
 import { StoreCreateDialog, StoreJobs } from "@/components/store-create-dialog"
-import { DEMO, call, proc, publicRoute, sqlWhereIn } from "@/lib/api"
+import { call, proc, publicRoute, sqlWhereIn } from "@/lib/api"
 import { buildLabel, creatorBuilds, storeById, storeOf } from "@/lib/stores"
 import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
@@ -114,7 +114,7 @@ export function AppProductsTab({ data, go }: TabProps) {
                 <DropdownMenuItem onClick={downloadJson}><FileJsonIcon /> Download JSON</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            {configure && (g.apps.length > 1 || (!DEMO && creatorBuilds(g.apps).length > 0)) && (
+            {configure && (g.apps.length > 1 || creatorBuilds(g.apps).length > 0) && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm" disabled={!products.data}><RefreshCwIcon /> Sync <ChevronDownIcon /></Button>
@@ -123,7 +123,7 @@ export function AppProductsTab({ data, go }: TabProps) {
                   {g.apps.slice(1).map((to) => (
                     <DropdownMenuItem key={to.app_id} onClick={() => copyToOther(g.apps[0], to)}><CopyIcon /> Copy missing to {buildLabel(to)}</DropdownMenuItem>
                   ))}
-                  {!DEMO && creatorBuilds(g.apps).length > 0 && (
+                  {creatorBuilds(g.apps).length > 0 && (
                     <>
                       {g.apps.length > 1 && <DropdownMenuSeparator />}
                       <DropdownMenuItem onClick={() => setDialog("create")}><StoreIcon /> Create in store…</DropdownMenuItem>
@@ -155,9 +155,9 @@ export function AppProductsTab({ data, go }: TabProps) {
           />
         )}
       </Section>
-      {!DEMO && <StoreJobs key={jobsKey} apps={g.apps} onFinished={products.reload} />}
+      {<StoreJobs key={jobsKey} apps={g.apps} onFinished={products.reload} />}
       <ProductDialog editing={editing} apps={g.apps} onClose={() => setEditing(null)} onSaved={products.reload} />
-      <StoreCreateDialog open={dialog === "create"} apps={g.apps} onClose={() => setDialog(null)} onStarted={() => { products.reload(); setJobsKey((k) => k + 1) }}
+      <StoreCreateDialog open={dialog === "create"} apps={g.apps} listed={(app, id) => !!rows.find((r) => r.product_id === id)?.by[app]} onClose={() => setDialog(null)} onStarted={() => { products.reload(); setJobsKey((k) => k + 1) }}
         products={rows.map((r) => {
           const priced = g.apps.map((a) => r.by[a.app_id]).find((p) => p && Number(p.default_price_micros) > 0)
           return { product_id: r.product_id, kind: r.kind, price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "USD" }

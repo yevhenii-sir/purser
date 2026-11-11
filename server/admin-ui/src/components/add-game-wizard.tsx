@@ -13,7 +13,7 @@ import { AccountSelect, accountsOf } from "@/components/account-select"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
 import { CopyField, DialogBody, ErrorBox, Field, Loading, Tone } from "@/components/common"
 import { ReportView, reportUrls } from "@/components/report"
-import { call, genSecret, proc, publicRoute, sql, sqlStr } from "@/lib/api"
+import { call, createIdentity as newIdentity, genSecret, proc, publicRoute, sql, sqlStr } from "@/lib/api"
 import { appsChanged, useApps, type AppGroup } from "@/lib/apps"
 import { checkBuilds } from "@/lib/checks"
 import { buildLabel, platformById, storeById, storeOf, storesFor, usablePlatforms, type StoreInfo } from "@/lib/stores"
@@ -272,9 +272,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
       return
     }
     try {
-      const res = await fetch(location.origin + "/v1/identity", { method: "POST" })
-      if (!res.ok) throw new Error("POST /v1/identity: HTTP " + res.status)
-      const r = await res.json()
+      const r = await newIdentity()
       setToken(r.token)
       set("identity", r.identity)
       setIdHint(`Created ${String(r.identity).slice(0, 16)}…, saved with the next step.`)

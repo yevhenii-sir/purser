@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
-import { call, sql } from "@/lib/api"
+import { call, createIdentity, sql } from "@/lib/api"
 import { ago, errorText } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { ROLES, roleLabel, useRole, type Role } from "@/lib/roles"
@@ -136,9 +136,7 @@ function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: (
     if (!name.trim()) return toast.error("Enter a name")
     setBusy(true)
     try {
-      const res = await fetch(location.origin + "/v1/identity", { method: "POST" })
-      if (!res.ok) throw new Error(`this server does not issue identities here (POST /v1/identity: HTTP ${res.status}); add the coworker's own identity instead`)
-      const r = await res.json()
+      const r = await createIdentity()
       await save(r.identity)
       setToken(r.token)
     } catch (e) {
