@@ -1,6 +1,6 @@
 {
   "name": "com.yevhenii.purser",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "displayName": "Purser",
   "description": "Drop-in in-app purchases for Unity, verified by your self-hosted Purser server on SpacetimeDB: Google Play and App Store through Unity IAP 5, Amazon Appstore, Steam, Stripe and Xsolla. Server-side validation, consume/acknowledge, restore, entitlements, paywalls.",
   "unity": "2022.3",

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-11-12
+
 ### Security
 
 - App Store notifications must be signed by Apple: the `signedPayload` JWS is verified (ES256, its `x5c` chain up to Apple Root CA - G3, which ships with the module, and Apple's marker extensions). Before, a build without `apple_notification_secret` accepted anything; the secret is now an optional extra check.

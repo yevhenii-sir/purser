@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-12
+
 ### Security
 
 - Outside the Editor the service refuses to initialize when `serverBaseUrl` is not `https://` (plain `http://` only
