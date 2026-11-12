@@ -102,6 +102,27 @@ export function ClaimPage({ me, onDone, onSignOut }: { me: string; onDone: () =>
   )
 }
 
+/** The sign-in check failed for another reason than the token (network, server error): the token is kept. */
+export function UnreachablePage({ error, onRetry, onSignOut }: { error: string; onRetry: () => void; onSignOut: () => void }) {
+  return (
+    <Centered>
+      <Card>
+        <CardHeader>
+          <CardTitle>Cannot reach the server</CardTitle>
+          <CardDescription>The billing database did not answer the sign-in check. Your token is kept.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Alert variant="destructive"><AlertDescription className="font-mono text-xs break-all">{error}</AlertDescription></Alert>
+        </CardContent>
+        <CardFooter className="justify-between gap-2">
+          <Button variant="ghost" onClick={onSignOut}>Sign out</Button>
+          <Button onClick={onRetry}>Try again</Button>
+        </CardFooter>
+      </Card>
+    </Centered>
+  )
+}
+
 export function WrongPlacePage() {
   const [url, setUrl] = useState("https://maincloud.spacetimedb.com/v1/database/<database>/route/admin")
   return (

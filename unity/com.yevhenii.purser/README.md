@@ -51,6 +51,12 @@ To pin a specific version, append `#<tag or commit>` to the URL.
    - `StoreProduct.SubscriptionPeriod` (`P1M`; `SubscriptionPeriodDays` 30) shows "$4.99 / month" and compares plans.
      Google Play reports it; the App Store does not through Unity IAP 5, so iOS (and Steam, web stores, the Editor) use
      `fallbackPeriod` and set `IsFallbackPeriod`. The admin panel's config fills it from the product's period.
+   - The server address must be `https://` (plain `http://` only for `localhost`): outside the Editor the service
+     refuses to initialize with any other URL. `requestTimeoutSeconds` (default 30) leaves room for a slow store API
+     behind the server.
+   - `entitlementsMaxAgeDays` (default 7): `IsActive` counts subscriptions only from entitlements received at most
+     that many days ago by the device clock (and not with a clock set back before they were received), so an offline
+     device cannot keep a subscription alive forever. Non-consumables are not affected; `0` turns the limit off.
 3. The **Validate** and **Ping server** buttons in the config inspector check the settings and whether the server is
    reachable; **Open admin panel** opens the server's admin page (`{serverBaseUrl}/admin`).
 
@@ -194,7 +200,7 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
   carries the attribution ids (`IAttributionProvider`). Server side and use without Unity:
   [docs/store-setup.md#xsolla](https://github.com/yevhenii-sir/purser/blob/main/docs/store-setup.md#xsolla).
 - **Stripe (web)**: `StripeStoreAdapter`. Add a `stripe` build with the app id of the Stripe build. A purchase asks the server for a Checkout Session
-  (`/checkout/stripe`), opens its page (`StripeCheckoutOptions.OpenUrl`, default `Application.OpenURL`) and polls
+  (`/checkout/stripe`), opens its page (only an absolute `https://` page; anything else fails the purchase) (`StripeCheckoutOptions.OpenUrl`, default `Application.OpenURL`) and polls
   `/verify/stripe` with the session id until it is paid and granted; then `PurchaseSucceeded` fires as for any
   store. A payment not finished within `PaymentTimeout` (10 minutes) is reported as `PendingPayment`; the session
   is remembered and checked again at the next launch (or now with `ResumePendingOrders()`), so a same-tab
@@ -228,8 +234,12 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
   key), Steam shows its overlay, and when `MicroTxnAuthorizationResponse_t` says the player authorized it the order
   goes through `/verify/steam` (the server finalizes it) and `PurchaseSucceeded` fires as for any store. Declining is
   `Cancelled`; no answer within `SteamOptions.AuthorizationTimeout` is `Failed`. Authorized orders the server has
-  not answered yet are verified again at the next launch. Prices are set on the server and shown by the overlay
-  (`StoreProduct.LocalizedPrice` is empty).
+  not answered yet are verified again at the next launch, and so is an order the player authorizes after the game
+  was restarted. Prices are set on the server and shown by the overlay (`StoreProduct.LocalizedPrice` is empty).
+  A bridge that also implements `ISteamWebApiTicketProvider` (the sample's does) sends a Steam Web API auth ticket
+  for the identity `purser` (`ISteamUser::GetAuthTicketForWebApi`) with every checkout, so the server can check that
+  the SteamID really belongs to the player. A server whose Steam build sets `steam_require_ticket` refuses checkouts
+  without one: custom bridges must implement the interface before that setting is turned on.
 
   ```csharp
   var steam = new SteamStoreAdapter(config, new SteamworksNetBridge(() => SteamManager.Initialized));

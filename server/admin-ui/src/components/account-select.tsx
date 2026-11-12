@@ -47,8 +47,3 @@ export function AccountSelect({ value, accounts, onChange, className }: {
     </Select>
   )
 }
-
-/** Accounts named by the apps, without "default". */
-export function accountsOf(apps: { account: string }[]): string[] {
-  return [...new Set(apps.map((a) => a.account).filter((a) => a && a !== "default"))].sort()
-}

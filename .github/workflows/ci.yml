@@ -23,7 +23,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: server
       - run: cargo test -p purser-core --locked
@@ -33,7 +35,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: server
       # Builds spacetimedb-core (vendored OpenSSL, v8): slow on the first run, cached afterwards.
@@ -44,7 +48,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: server
       - run: cargo build -p purser --target wasm32-unknown-unknown --release --locked
@@ -61,6 +67,8 @@ jobs:
         working-directory: server/admin-ui
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -71,7 +79,7 @@ jobs:
       - name: The demo build works
         run: npm run build:demo
       - name: The committed page matches the sources
-        run: git diff --exit-code -- ../spacetimedb/admin/index.html || { echo "::error::Run 'npm run build' in server/admin-ui and commit server/spacetimedb/admin/index.html"; exit 1; }
+        run: git diff --exit-code -- ../spacetimedb/admin/index.html ../spacetimedb/admin/csp.txt || { echo "::error::Run 'npm run build' in server/admin-ui and commit server/spacetimedb/admin/index.html and csp.txt"; exit 1; }
 
   tooling:
     name: scripts
@@ -81,12 +89,19 @@ jobs:
         working-directory: .
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: python -m py_compile server/*.py tools/*.py
       - name: No personal infrastructure in the repository
+        env:
+          PRIVATE_NAMES_RE: ${{ vars.PRIVATE_NAMES_RE }}
         run: |
-          if git grep -n -iE '3ec1q|quantumgenius|cardsgames|oracle-tunnel' -- . ':!.github/workflows/ci.yml' ':!*.lock'; then
+          if [ -z "$PRIVATE_NAMES_RE" ]; then
+            echo "::notice::Repository variable PRIVATE_NAMES_RE is not set: skipping the check"; exit 0
+          fi
+          if git grep -n -iE "$PRIVATE_NAMES_RE" -- . ':!*.lock'; then
             echo "::error::Replace personal infrastructure with placeholders"; exit 1
           fi

@@ -1,3 +1,4 @@
+import { Gamepad2Icon, GlobeIcon, ShoppingBagIcon, SmartphoneIcon, TabletSmartphoneIcon, type LucideIcon } from "lucide-react"
 import registry from "./registry.json"
 import type { GameApp } from "./types"
 
@@ -101,3 +102,12 @@ export function storeOfSecret(name: string): StoreInfo | undefined {
 
 /** Builds whose store can create products from the admin page. */
 export const creatorBuilds = (apps: GameApp[]) => apps.filter((a) => storeOf(a).product_create.length > 0)
+
+/** Icon of a platform (`game_app.platform`). */
+export const PLATFORM_ICON: Record<string, LucideIcon> = {
+  android: SmartphoneIcon,
+  ios: TabletSmartphoneIcon,
+  amazon: ShoppingBagIcon,
+  steam: Gamepad2Icon,
+  web: GlobeIcon,
+}

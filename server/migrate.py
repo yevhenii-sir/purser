@@ -7,6 +7,10 @@ Usage (from server/, logged in with `spacetime login` as the owner of both datab
     python migrate.py --from maincloud --from-db old-billing --to myserver --to-db new-billing
     python migrate.py ... --dry-run        # only export and count
 
+Tokens: `PURSER_TOKEN` (or the `spacetime login` one) is used for both servers. When the old
+database is owned by another identity, put that identity's token in `PURSER_FROM_TOKEN`: it is
+sent only to the --from server.
+
 Before running:
   * the target database is published and its apps are configured (python seed.py --server ...);
   * for a self-hosted server behind nginx, the SSH tunnel is open (see docs/self-hosting.md), since
@@ -18,6 +22,7 @@ page shows the revenue as rebuilding until then).
 """
 import argparse
 import json
+import os
 
 from stdb import post, select, server_url, token
 
@@ -26,7 +31,9 @@ BATCH = 500
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                epilog="Environment: PURSER_TOKEN (both servers, default: the `spacetime login` "
+                                       "token), PURSER_FROM_TOKEN (only the --from server, default: the same token).")
     p.add_argument("--from", dest="src", required=True, help="CLI server nickname of the old database")
     p.add_argument("--from-db", required=True)
     p.add_argument("--to", dest="dst", required=True, help="CLI server nickname of the new database")
@@ -35,8 +42,9 @@ def main():
     a = p.parse_args()
 
     tok = token()
+    src_tok = os.environ.get("PURSER_FROM_TOKEN", "").strip() or tok
     src, dst = server_url(a.src), server_url(a.dst)
-    rows = select(src, a.from_db, tok, "SELECT * FROM purchase")
+    rows = select(src, a.from_db, src_tok, "SELECT * FROM purchase")
     pending = sum(1 for r in rows if r["next_attempt_at_micros"] > 0)
     print(f"export   {len(rows)} purchases from {a.src}/{a.from_db}, {pending} with unfinished work")
     if pending:

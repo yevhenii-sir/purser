@@ -38,6 +38,20 @@ namespace Purser.Tests
             }.ToString());
     }
 
+    /// <summary>Never answers; the request ends only when its token is cancelled.</summary>
+    internal sealed class HangingTransport : IHttpTransport
+    {
+        public readonly List<CancellationToken> Tokens = new List<CancellationToken>();
+
+        public Task<HttpResponse> SendAsync(string method, string url, string jsonBody, int timeoutSeconds, CancellationToken ct)
+        {
+            Tokens.Add(ct);
+            var tcs = new TaskCompletionSource<HttpResponse>();
+            ct.Register(() => tcs.TrySetCanceled());
+            return tcs.Task;
+        }
+    }
+
     public sealed class XsollaStoreAdapterTests
     {
         private const string User = "player-1";
@@ -191,6 +205,35 @@ namespace Purser.Tests
             Assert.AreEqual(PurchaseStatus.Failed, result.Status);
             StringAssert.Contains("sandbox purchases are disabled", result.Message);
             Assert.IsTrue((bool)m_Server.Requests.Single().Body["sandbox"]);
+            Assert.IsEmpty(m_Opened);
+        }
+
+        [Test]
+        public void PayStationPageThatIsNotHttps_IsNotOpened()
+        {
+            m_Server.Checkout = new HttpResponse(200,
+                "{\"status\":\"ok\",\"token\":\"tok-1\",\"order_id\":\"7001\",\"url\":\"http://secure.xsolla.com/paystation4/?token=tok-1\"}");
+            CreateService();
+            var result = Sync.Run(m_Service.PurchaseAsync("gems_100"));
+            Assert.AreEqual(PurchaseStatus.Failed, result.Status);
+            StringAssert.Contains("https", result.Message);
+            Assert.IsEmpty(m_Opened);
+            Assert.AreEqual(0, m_Server.StatusCalls);
+            Assert.IsNull(m_Storage.Load("purser.xsolla.pending"), "an order that was never opened is not remembered");
+        }
+
+        [Test]
+        public void Dispose_CancelsARunningCheckout()
+        {
+            var transport = new HangingTransport();
+            var adapter = new XsollaStoreAdapter(m_Config, new XsollaOptions { OpenUrl = m_Opened.Add }, transport, m_Storage);
+            adapter.PrepareCheckout(new CheckoutContext { UserId = User });
+            adapter.Purchase("gems_100");
+            Assert.IsFalse(transport.Tokens.Single().IsCancellationRequested);
+
+            adapter.Dispose();
+
+            Assert.IsTrue(transport.Tokens.Single().IsCancellationRequested);
             Assert.IsEmpty(m_Opened);
         }
 

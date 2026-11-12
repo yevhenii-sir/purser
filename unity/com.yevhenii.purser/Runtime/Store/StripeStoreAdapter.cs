@@ -10,6 +10,8 @@ namespace Purser
     /// <summary>Settings of <see cref="StripeStoreAdapter"/>.</summary>
     public sealed class StripeCheckoutOptions
     {
+        internal static readonly TimeSpan DefaultForgetAfter = TimeSpan.FromHours(25);
+
         /// <summary>https page Stripe returns to after payment (the game's page). May contain
         /// <c>{CHECKOUT_SESSION_ID}</c>: pass that id to <see cref="StripeStoreAdapter.ResumeSession"/>.</summary>
         public string SuccessUrl;
@@ -30,9 +32,9 @@ namespace Purser
 
         /// <summary>Sessions older than this are forgotten (Checkout Sessions expire after 24 hours by default; a
         /// session paid anyway is granted by the webhook and shows in the entitlements).</summary>
-        public TimeSpan ForgetAfter = TimeSpan.FromHours(25);
+        public TimeSpan ForgetAfter = DefaultForgetAfter;
 
-        /// <summary>Opens the Checkout page. Default: <c>Application.OpenURL</c> (system browser on desktop, a new
+        /// <summary>Opens the Checkout page (only https pages are opened). Default: <c>Application.OpenURL</c> (system browser on desktop, a new
         /// tab on WebGL). On WebGL a page opened after an await may be blocked as a popup: redirect the tab from a
         /// jslib instead (the session is checked again when the game loads).</summary>
         public Action<string> OpenUrl;
@@ -58,7 +60,9 @@ namespace Purser
         private readonly IStripeCheckoutApi m_Api;
         private readonly HashSet<string> m_Cancelled = new HashSet<string>();
 
+        /// <inheritdoc/>
         public override BillingPlatform Platform => BillingPlatform.Web;
+        /// <inheritdoc/>
         public override string Store => BillingStores.Stripe;
 
         /// <param name="config">Billing config: server URL and the app id of its <c>stripe</c> build.</param>
@@ -67,7 +71,7 @@ namespace Purser
         /// <param name="storage">Remembers unpaid sessions across launches (default: PlayerPrefs).</param>
         public StripeStoreAdapter(BillingConfig config, StripeCheckoutOptions options, IStripeCheckoutApi api = null,
             IBillingStorage storage = null, BillingLog log = null)
-            : base(storage, log, PendingKey, options?.ForgetAfter ?? TimeSpan.FromHours(25))
+            : base(storage, log, PendingKey, options?.ForgetAfter ?? StripeCheckoutOptions.DefaultForgetAfter)
         {
             if (config == null)
                 throw new ArgumentNullException(nameof(config));
@@ -108,13 +112,15 @@ namespace Purser
                 SuccessUrl = m_Options.SuccessUrl,
                 CancelUrl = m_Options.CancelUrl,
             };
-            var res = await m_Api.CreateStripeCheckoutAsync(request, CancellationToken.None);
+            var res = await m_Api.CreateStripeCheckoutAsync(request, Lifetime);
             var checkout = res?.Value;
             if (res == null || !res.IsHttpSuccess || string.IsNullOrEmpty(checkout?.Url) || string.IsNullOrEmpty(checkout.SessionId))
             {
                 Fail(sku, "checkout: " + (checkout?.Message ?? res?.Error ?? "no answer"));
                 return;
             }
+            if (!IsSafePage(sku, checkout.Url))
+                return;
             var order = Remember(checkout.SessionId, sku, userId);
             (m_Options.OpenUrl ?? Application.OpenURL)(checkout.Url);
             RaisePending(ToOrder(order, checkout));

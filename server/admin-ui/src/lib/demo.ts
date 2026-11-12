@@ -4,9 +4,11 @@
 // snapshot was taken, so "last 30 days" and "2 minutes ago" mean what they meant then.
 
 import snapshot from "../../demo/snapshot.json"
+import { lookups, project, type Query } from "./api"
 import { storeOf } from "./stores"
 import type { GameApp } from "./types"
 
+/** Rows of the snapshot (made by tools/demo_snapshot.py from real tables): loosely typed. */
 type Row = Record<string, any>
 
 interface Snapshot {
@@ -28,41 +30,35 @@ const S = snapshot as unknown as Snapshot
 const DAY = 86_400_000
 
 export const READ_ONLY = "This is a read-only demo with sample data: changes are not saved."
-export const DEMO_DB = "billing-demo"
-export const DEMO_TAKEN_AT = S.generated_at_ms
 
 /** Sets the page clock back to when the snapshot was taken (call before anything reads the time). */
 export function installClock() {
   const RealDate = Date
   const offset = RealDate.now() - S.generated_at_ms
   class DemoDate extends RealDate {
-    constructor(...args: any[]) {
+    constructor(...args: ConstructorParameters<DateConstructor> | []) {
       if (args.length === 0) super(RealDate.now() - offset)
-      else super(...(args as [any]))
+      else super(...(args as ConstructorParameters<DateConstructor>))
     }
     static now() {
       return RealDate.now() - offset
     }
   }
-  ;(globalThis as any).Date = DemoDate
+  globalThis.Date = DemoDate as DateConstructor
 }
 
-// --- /sql ----------------------------------------------------------------------------------------
+// --- reads ---------------------------------------------------------------------------------------
 
-/** The few query shapes the page uses: `SELECT * | cols | COUNT(*) AS n FROM t [WHERE c = v]`. */
-export function sql(query: string): Row[] {
-  const m = /^\s*SELECT\s+(.+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(\w+)\s*=\s*('(?:[^']|'')*'|[\w.x-]+))?\s*$/is.exec(query)
-  if (!m) throw new Error(READ_ONLY)
-  const [, cols, table, col, raw] = m
-  let rows = S.tables[table] || []
-  if (col) {
-    const v = raw.startsWith("'") ? raw.slice(1, -1).replace(/''/g, "'") : raw
-    rows = rows.filter((r) => String(r[col]) === v)
-  }
-  if (/^COUNT\(\*\)\s+AS\s+(\w+)$/i.test(cols.trim())) return [{ [cols.trim().split(/\s+/).pop()!]: rows.length }]
-  if (cols.trim() === "*") return rows.map((r) => ({ ...r }))
-  const names = cols.split(",").map((c) => c.trim())
-  return rows.map((r) => Object.fromEntries(names.map((n) => [n, r[n]])))
+/** A table read (`select`), answered from the snapshot the way `admin_read` filters. */
+export function select(q: Query): Row[] {
+  const rows = S.tables[q.table] || []
+  const hits = lookups(q).flatMap(([col, v]) => (col ? rows.filter((r) => String(r[col]) === v) : rows))
+  return project(hits.map((r) => ({ ...r })), q.columns)
+}
+
+/** Raw SQL only writes here (claiming the database): refused. */
+export function sql(): never {
+  throw new Error(READ_ONLY)
 }
 
 // --- /call ---------------------------------------------------------------------------------------
@@ -136,7 +132,7 @@ function storeCreatePreview(json: string) {
   return { rows, apple_groups: Object.fromEntries(apple.map((a: Row) => [a.app_id, ["Premium"]])), warnings: {} }
 }
 
-const PROCS: Record<string, (...args: any[]) => unknown> = {
+const PROCS: Record<string, (...args: never[]) => unknown> = {
   admin_store_create_preview: storeCreatePreview,
   whoami: () => "0x" + S.identity,
   admin_me: () => ({ identity: S.identity, name: S.tables.admin?.find((a: Row) => a.protected)?.name || "", role: "owner", owner: true }),
@@ -166,12 +162,12 @@ export function createIdentity(): never {
 export function call(name: string, args: unknown[]): string {
   const f = PROCS[name]
   if (!f) throw new Error(READ_ONLY)
-  return JSON.stringify(f(...args))
+  return JSON.stringify(f(...(args as never[])))
 }
 
 // --- /route, /logs -------------------------------------------------------------------------------
 
-export function route(path: string): { status: number; json: any } {
+export function route(path: string): { status: number; json: unknown } {
   if (path === "/healthz") return { status: 200, json: { status: "healthy", version: S.version } }
   return { status: 403, json: { error: READ_ONLY } }
 }

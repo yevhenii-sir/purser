@@ -5,7 +5,7 @@
 
 use spacetimedb::{ReducerContext, Table};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 #[spacetimedb::table(accessor = store_notify_health)]
 pub struct StoreNotifyHealth {
     #[primary_key]
@@ -23,6 +23,27 @@ pub struct StoreNotifyHealth {
     /// Token and API base of the last Apple test notification requested by the setup check.
     pub test_token: String,
     pub test_base: String,
+    /// Amazon: the SNS topic of the last signed message (to pin it on the build).
+    #[default("")]
+    pub last_topic: String,
+}
+
+// Written by hand: the column attribute `#[default]` clashes with `#[derive(Default)]`.
+impl Default for StoreNotifyHealth {
+    fn default() -> Self {
+        Self {
+            app_id: String::new(),
+            last_at_micros: 0,
+            last_test_at_micros: 0,
+            last_rejected_at_micros: 0,
+            last_rejected_reason: String::new(),
+            last_confirmation_at_micros: 0,
+            confirmation_token: String::new(),
+            test_token: String::new(),
+            test_base: String::new(),
+            last_topic: String::new(),
+        }
+    }
 }
 
 pub fn get(ctx: &ReducerContext, app_id: &str) -> StoreNotifyHealth {
@@ -43,6 +64,7 @@ fn negligible(old: &StoreNotifyHealth, new: &StoreNotifyHealth) -> bool {
         && old.confirmation_token == new.confirmation_token
         && old.test_token == new.test_token
         && old.test_base == new.test_base
+        && old.last_topic == new.last_topic
         && rejected(old) == rejected(new)
         && test_last(old) == test_last(new)
         && recent(old.last_at_micros, new.last_at_micros)
@@ -66,4 +88,12 @@ pub fn touch(ctx: &ReducerContext, app_id: &str, f: impl FnOnce(&mut StoreNotify
             ctx.db.store_notify_health().insert(row);
         }
     }
+}
+
+/// A notification refused (bad signature, wrong secret, foreign topic) and why.
+pub fn rejected(ctx: &ReducerContext, app_id: &str, reason: &str) {
+    touch(ctx, app_id, |h, now| {
+        h.last_rejected_at_micros = now;
+        h.last_rejected_reason = reason.to_string();
+    });
 }

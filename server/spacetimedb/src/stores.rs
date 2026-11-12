@@ -247,16 +247,16 @@ pub fn google_finish(
     if res.ok() {
         return Ok(());
     }
-    // Already consumed/acknowledged (e.g. by the client SDK) counts as done: re-check the state.
+    // Already consumed/acknowledged (e.g. by the client SDK) counts as done: the state decides; the
+    // error text only when the state cannot be read.
     if (400..500).contains(&res.status) {
-        if let Ok(st) = google_fetch(ctx, app, product, purchase_token, auth) {
-            let done = match action {
-                store_action::CONSUME => st.consumed,
-                _ => st.acknowledged,
-            };
-            if done || google::is_already_done_error(&res.body) {
-                return Ok(());
-            }
+        let done = match google_fetch(ctx, app, product, purchase_token, auth) {
+            Ok(st) if action == store_action::CONSUME => st.consumed,
+            Ok(st) => st.acknowledged,
+            Err(_) => google::is_already_done_error(&res.body),
+        };
+        if done {
+            return Ok(());
         }
     }
     Err(format!("Google {action} failed: {}", res.describe()))
@@ -353,7 +353,7 @@ pub fn amazon_fetch(
     for (base, sandbox) in amazon::rvs_bases(app.allow_sandbox) {
         let url = amazon::verify_url(base, &secret, user_id, receipt_id).map_err(StoreError::Invalid)?;
         let res = net::send(ctx.http(), "GET", &url, &[("Accept", "application/json")], ())
-            .map_err(|e| StoreError::Transient(e.replace(&url, "<Amazon RVS>")))?;
+            .map_err(|e| StoreError::Transient(e.replace(net::shown_url(&url), "Amazon RVS")))?;
         let msg = format!("Amazon RVS: HTTP {}", res.status);
         match amazon::classify_status(res.status) {
             RvsStatus::Ok => {

@@ -36,10 +36,15 @@ struct Fake {
     failing_reducer: String,
     /// Scripted responses, checked first: (substring of "METHOD url", status, body).
     overrides: Vec<(String, u16, String)>,
+    /// Seconds every call takes (moves the clock of `ctx::Budget`).
+    call_secs: i64,
 }
 
 impl Fake {
-    fn respond(&mut self, req: Request) -> Response {
+    /// A scripted status 0 is a transport failure (no reply), like a timeout.
+    fn respond(&mut self, req: Request) -> Result<Response, spacetimedb::http::Error> {
+        let url = req.uri().to_string();
+        crate::ctx::TEST_ELAPSED_MICROS.with(|c| c.set(c.get() + self.call_secs * 1_000_000));
         let mut call = format!("{} {}", req.method(), req.uri());
         let store_write = call.starts_with("PATCH ")
             || (call.starts_with("POST ")
@@ -88,7 +93,10 @@ impl Fake {
         } else {
             (404, String::new())
         };
-        http::Response::builder().status(code).body(Body::from(body)).unwrap()
+        if code == 0 {
+            return Err(spacetimedb::http::Error::new(format!("error sending request for url ({url}): operation timed out")));
+        }
+        Ok(http::Response::builder().status(code).body(Body::from(body)).unwrap())
     }
 }
 
@@ -109,6 +117,7 @@ impl World {
             game_status: 200,
             failing_reducer: String::new(),
             overrides: Vec::new(),
+            call_secs: 0,
         };
         let world = World { test, fake: Rc::new(RefCell::new(fake)) };
         world.seed();
@@ -119,7 +128,7 @@ impl World {
         self.write(|tx| {
             tx.db.game_app().insert(GameApp {
                 app_id: APP.into(),
-                platform: config::PLATFORM_ANDROID.into(),
+                platform: purser_core::registry::platform::ANDROID.into(),
                 game_key: "game".into(),
                 account: config::DEFAULT_SCOPE.into(),
                 delivery: "spacetimedb".into(),
@@ -134,6 +143,7 @@ impl World {
                 client_consumes: false,
                 store: String::new(),
                 apple_refund_mode: String::new(),
+                sns_topic_arn: String::new(),
             });
             for (id, k) in [("gems", kind::CONSUMABLE), ("no_ads", kind::NON_CONSUMABLE)] {
                 tx.db.product().insert(Product::new(APP, id, k));
@@ -159,10 +169,11 @@ impl World {
 
     /// Context of one request or worker run, at the current test clock.
     fn ctx(&self) -> ProcedureContext {
+        crate::ctx::start_test_call();
         let fake = self.fake.clone();
         self.test
             .procedure_context_builder(TestAuth::internal())
-            .http(move |_, req| Ok(fake.borrow_mut().respond(req)))
+            .http(move |_, req| fake.borrow_mut().respond(req))
             .build()
     }
 
@@ -277,6 +288,12 @@ impl World {
                 (s("id"), (s("level"), s("detail")))
             })
             .collect())
+    }
+
+    fn notify_health_of(&self, app_id: &str) -> crate::store_health::StoreNotifyHealth {
+        self.test
+            .with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(crate::store_health::get(tx, app_id)))
+            .unwrap()
     }
 
     fn notify_health(&self) -> crate::store_health::StoreNotifyHealth {
@@ -1518,7 +1535,7 @@ fn apple_offer_world(with_issuer: bool) -> World {
     w.write(|tx| {
         let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
         app.app_id = IOS_APP.into();
-        app.platform = config::PLATFORM_IOS.into();
+        app.platform = purser_core::registry::platform::IOS.into();
         tx.db.game_app().insert(app);
         let template = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
         for (id, k) in [("premium", kind::SUBSCRIPTION), ("gems", kind::CONSUMABLE)] {
@@ -2218,7 +2235,7 @@ fn add_ios_build_with_its_own_store_ids(w: &World) {
     w.write(|tx| {
         let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
         app.app_id = IOS_APP.into();
-        app.platform = config::PLATFORM_IOS.into();
+        app.platform = purser_core::registry::platform::IOS.into();
         tx.db.game_app().insert(app);
     });
     let upsert = json!([
@@ -2769,6 +2786,37 @@ fn amazon_notifications_are_signed_confirmed_and_recheck_the_receipt() {
 
     // Unknown builds are ignored (Google builds included).
     assert_eq!(amazon_notification(&w, &format!("?app={APP}"), SNS_RTN_CANCELLED).body["status"], "ignored");
+}
+
+#[test]
+fn amazon_notifications_come_from_the_pinned_topic_and_are_recent() {
+    let w = World::new();
+    add_amazon_build(&w);
+    w.script(SNS_CERT_URL, 200, SNS_CERT_PEM);
+    let q = format!("?app={AMAZON_APP}");
+    assert_eq!(amazon_notification(&w, &q, SNS_CONFIRMATION).http, 200);
+    let c = amazon_check(&w);
+    assert_eq!(c["sns_topic"].0, "warn", "not pinned yet: {:?}", c["sns_topic"]);
+    assert!(c["sns_topic"].1.contains("arn:aws:sns:us-east-1:123456789012:appstore-rtn"));
+
+    let pin = |topic: &str| {
+        w.write(|tx| {
+            let mut app = tx.db.game_app().app_id().find(&AMAZON_APP.to_string()).unwrap();
+            app.sns_topic_arn = topic.into();
+            tx.db.game_app().app_id().update(app);
+        })
+    };
+    pin("arn:aws:sns:us-east-1:999999999999:someone-else");
+    w.advance_clock(5);
+    assert_eq!(amazon_notification(&w, &q, SNS_CONFIRMATION).http, 401, "another topic cannot replace the token");
+    pin("arn:aws:sns:us-east-1:123456789012:appstore-rtn");
+    assert_eq!(amazon_notification(&w, &q, SNS_CONFIRMATION).http, 200);
+    assert_eq!(amazon_check(&w)["sns_topic"].0, "ok");
+
+    // A signed message replayed hours later is refused.
+    w.advance_clock(7 * 3600);
+    assert_eq!(amazon_notification(&w, &q, SNS_CONFIRMATION).http, 401);
+    assert!(w.notify_health_of(AMAZON_APP).last_rejected_reason.contains("stale"));
 }
 
 const SNS_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
@@ -4268,12 +4316,15 @@ fn refund_world(consent: Option<bool>, mode: &str) -> World {
 }
 
 fn refund_request(w: &World) -> Outcome {
-    let jws = |v: Value| {
-        format!("{}.{}.sig", purser_core::jwt::b64url(br#"{"alg":"ES256"}"#), purser_core::jwt::b64url(v.to_string().as_bytes()))
-    };
+    apple_notification(w, "CONSUMPTION_REQUEST", purser_core::apple::testing::sign)
+}
+
+/// An App Store notification for the iOS build's transaction, its JWS made by `sign`.
+fn apple_notification(w: &World, kind: &str, sign: fn(&str) -> String) -> Outcome {
+    let jws = |v: Value| sign(&v.to_string());
     let tx = jws(json!({ "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_APP }));
     let payload = jws(json!({
-        "notificationType": "CONSUMPTION_REQUEST", "notificationUUID": "n1",
+        "notificationType": kind, "notificationUUID": "n1",
         "data": { "bundleId": IOS_APP, "environment": "Sandbox", "signedTransactionInfo": tx },
     }));
     let req = http::Request::builder()
@@ -5408,6 +5459,22 @@ mod role_tests {
     }
 
     #[test]
+    fn alert_channel_secrets_need_the_secrets_capability() {
+        let w = World::new();
+        as_role(&w, "editor");
+        let telegram = |secret: &str| json!({ "kind": "telegram", "settings": { "chat_id": "-1001234567890" }, "secret": secret, "enabled": false });
+        assert!(super::alert_channel(&w, telegram(BOT_TOKEN)).unwrap_err().contains("ERR_ROLE"), "an editor cannot store a bot token");
+        as_role(&w, "admin");
+        super::alert_channel(&w, telegram(BOT_TOKEN)).unwrap();
+        as_role(&w, "editor");
+        super::alert_channel(&w, telegram("")).unwrap();
+        let delete = |w: &World| admin_call(w, |ctx| crate::alerts::admin_delete_alert_channel(ctx, "telegram".into()));
+        assert!(delete(&w).unwrap_err().contains("ERR_ROLE"), "nor delete it");
+        as_role(&w, "admin");
+        delete(&w).unwrap();
+    }
+
+    #[test]
     fn only_the_owner_manages_admins() {
         let w = World::new();
         as_role(&w, "admin");
@@ -5503,4 +5570,126 @@ mod role_tests {
         assert_eq!(admins[0]["identity"], Identity::ZERO.to_hex().to_string());
         assert_eq!(admins[0]["protected"], true);
     }
+}
+
+#[test]
+fn transport_errors_never_show_query_strings() {
+    let w = World::new();
+    w.script("google-analytics.com", 0, "");
+    let url = "https://www.google-analytics.com/mp/collect?firebase_app_id=1:1:android:x&api_secret=ga4-secret-value";
+    let err = crate::net::send(w.ctx().http(), "POST", url, &[], "{}").err().expect("a transport failure");
+    assert!(!err.contains("ga4-secret-value") && !err.contains("api_secret"), "{err}");
+    assert!(err.starts_with("POST https://www.google-analytics.com/mp/collect failed: "), "{err}");
+}
+
+#[test]
+fn a_voided_notification_of_another_package_leaves_the_purchase_alone() {
+    let w = World::new();
+    w.verify("player-1", "gems");
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        app.app_id = "com.example.other".into();
+        tx.db.game_app().insert(app);
+    });
+    let voided = json!({
+        "packageName": "com.example.other",
+        "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 2 },
+    });
+    assert_eq!(w.google_notification(RTDN_SECRET, voided).http, 200);
+    assert_eq!(w.purchase().status, status::COMPLETED, "the refund names another package");
+    assert_eq!(w.calls("/call/billing_revoke"), 0);
+}
+
+#[test]
+fn an_error_text_does_not_overrule_the_purchase_state() {
+    let w = World::new();
+    w.script(":consume", 400, r#"{"error":{"message":"The purchase is not acknowledged or consumed yet"}}"#);
+    w.verify("player-1", "gems");
+    assert_eq!(w.purchase().status, status::GRANTED, "the state says it is not consumed: retried later");
+}
+
+#[test]
+fn steam_checkout_can_require_an_auth_ticket_of_the_player() {
+    let w = World::new();
+    add_steam_build(&w, false);
+    let b = json!({ "app_id": STEAM_APP, "require_ticket": true });
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::steam::admin_set_steam_build(ctx, b.to_string())).unwrap();
+    w.script("GetUserInfo", 200, &steam_user_info("EUR"));
+    w.script("InitTxn", 200, &steam_ok(json!({ "orderid": "1", "transid": "9001" })));
+    let checkout = |ticket: &str| {
+        let r: crate::steam::CheckoutRequest = serde_json::from_value(json!({
+            "app_id": STEAM_APP, "product_id": "no_ads", "user_id": "player-1", "steam_id": STEAM_ID, "ticket": ticket,
+        }))
+        .unwrap();
+        crate::steam::checkout(&mut w.ctx(), &r)
+    };
+    assert_eq!(checkout("").0, 403, "no ticket");
+    assert!(steam_calls(&w, "GetUserInfo").is_empty());
+
+    let owned_by = |id: &str| json!({ "response": { "params": { "result": "OK", "steamid": id, "ownersteamid": id } } }).to_string();
+    w.script("AuthenticateUserTicket", 200, &owned_by("76561197960287931"));
+    let (http, body) = checkout("0A0B0C");
+    assert_eq!(http, 403, "{body}");
+    assert!(body["message"].as_str().unwrap().contains("another Steam account"));
+
+    w.fake.borrow_mut().overrides.retain(|(needle, _, _)| needle != "AuthenticateUserTicket");
+    w.script("AuthenticateUserTicket", 200, &owned_by(STEAM_ID));
+    let (http, body) = checkout("0A0B0C");
+    assert_eq!(http, 200, "{body}");
+    let auth = &steam_calls(&w, "AuthenticateUserTicket")[1];
+    assert!(auth.starts_with("GET https://partner.steam-api.com/ISteamUserAuth/AuthenticateUserTicket/v1/?appid=480&ticket=0A0B0C&identity=purser [key=steam-publisher-key]"), "{auth}");
+}
+
+#[test]
+fn app_store_notifications_must_be_signed_by_apple() {
+    let w = refund_world(Some(true), "inform");
+    let unsigned = |payload: &str| format!("{}.{}.sig", purser_core::jwt::b64url(br#"{"alg":"ES256"}"#), purser_core::jwt::b64url(payload.as_bytes()));
+    let lookups = w.calls("api.storekit");
+    let o = apple_notification(&w, "REFUND", unsigned);
+    assert_eq!(o.http, 401, "{}", o.body);
+    assert_eq!(w.calls("api.storekit"), lookups, "a forged refund asks Apple nothing");
+    assert!(w.notify_health_of(IOS_APP).last_rejected_reason.starts_with("not signed by Apple"), "{}", w.notify_health_of(IOS_APP).last_rejected_reason);
+    assert_eq!(refund_request(&w).http, 200, "a notification signed by the chain is accepted");
+}
+
+#[test]
+fn a_slow_store_leaves_the_rest_of_a_verify_to_the_worker() {
+    let w = World::new();
+    w.fake.borrow_mut().call_secs = 3;
+    // Look-up (3 s) and delivery (6 s): past the request budget, consume waits for the worker.
+    assert_eq!(w.verify("player-1", "gems").body["status"], "success");
+    let p = w.purchase();
+    assert_eq!(p.status, status::GRANTED);
+    assert_eq!(w.calls(":consume"), 0);
+    assert!(p.next_attempt_at_micros <= NOW_MICROS + 10 * 1_000_000, "not leased: the next run takes it");
+
+    w.fake.borrow_mut().call_secs = 0;
+    w.advance_clock(60);
+    w.run_worker();
+    assert_eq!(w.purchase().status, status::COMPLETED);
+}
+
+#[test]
+fn a_worker_run_stops_starting_calls_after_its_budget() {
+    let w = World::new();
+    w.fake.borrow_mut().game_status = 503;
+    for user in ["player-1", "player-2", "player-3"] {
+        let purchase = json!({ "orderId": format!("GPA.{user}"), "purchaseState": 0, "consumptionState": 0, "acknowledgementState": 0 });
+        w.script(&format!("{TOKEN}-{user}"), 200, &purchase.to_string());
+        let r: VerifyRequest = serde_json::from_value(json!({
+            "bundle_id": APP, "user_id": user, "product_id": "gems", "purchase_token": format!("{TOKEN}-{user}"),
+        }))
+        .unwrap();
+        verify(&mut w.ctx(), store::GOOGLE, &r);
+    }
+    w.fake.borrow_mut().game_status = 200;
+    w.advance_clock(3600);
+    w.fake.borrow_mut().call_secs = 25;
+    let before = w.calls("/call/billing_grant");
+    w.run_worker();
+    assert_eq!(w.calls("/call/billing_grant") - before, 2, "two 25 s deliveries use up the 40 s budget");
+    w.fake.borrow_mut().call_secs = 0;
+    w.advance_clock(60);
+    w.run_worker();
+    assert_eq!(w.calls("/call/billing_grant") - before, 3, "the next run delivers the others");
 }

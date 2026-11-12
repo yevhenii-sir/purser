@@ -3,7 +3,7 @@
 //! | Method | Path               | Caller                     |
 //! |--------|--------------------|----------------------------|
 //! | GET    | `/healthz`         | monitoring                 |
-//! | GET    | `/admin`           | admin UI (owner token)     |
+//! | GET    | `/admin`           | admin UI (an admin's token) |
 //! | POST   | `/verify/<store>`  | game client after purchase: `google`, `apple`, `amazon` (client-receipt stores of `purser_core::registry`) |
 //! | POST   | `/checkout/steam`  | game client: start a Steam purchase (`InitTxn`), then `/verify/steam` |
 //! | POST   | `/restore`         | game client "restore"      |
@@ -11,6 +11,7 @@
 //! | POST   | `/offers/apple/sign` | game client before a promotional offer purchase |
 //! | POST   | `/paywall`         | game client: what to show at a placement |
 //! | POST   | `/paywall/event`   | game client: paywall shown (A/B test views) |
+//! | POST   | `/attributes`      | game client: custom player attributes (shown on the admin page) |
 //! | POST   | `/notify/<store>`  | store notifications: `google` (RTDN Pub/Sub push, `?secret=`), `apple` (ASSN V2), `amazon` (RTN over SNS, `?app=`), `xsolla` and `stripe` (webhooks, `?app=`) |
 //! | POST   | `/checkout/xsolla`, `/checkout/xsolla/status` | game client / website: Xsolla payment token, order status (`xsolla.rs`) |
 //! | POST   | `/checkout/stripe` | web client: creates a Stripe Checkout Session (`stripe.rs`) |
@@ -29,6 +30,7 @@ use crate::store_health;
 use crate::ledger;
 use crate::paywalls;
 use crate::stores::{self, Auth, StoreError};
+use crate::web;
 use crate::{purchase, GameApp, Product};
 use spacetimedb::TxContext;
 use purser_core::event::delivery;
@@ -60,35 +62,18 @@ impl Outcome {
     }
 
     fn into_response(self) -> Response {
-        if self.http == 204 {
-            return crate::xsolla::respond((204, self.body));
-        }
-        http::Response::builder()
-            .status(self.http)
-            .header("Content-Type", "application/json")
-            .body(Body::from(self.body.to_string()))
-            .expect("valid response")
+        web::respond((self.http, self.body))
+    }
+}
+
+impl From<web::Answer> for Outcome {
+    fn from((http, body): web::Answer) -> Self {
+        Self::new(http, body)
     }
 }
 
 fn parse_body<T: DeserializeOwned>(req: Request) -> Result<T, Outcome> {
-    let bytes = req.into_body().into_bytes();
-    serde_json::from_slice(&bytes).map_err(|e| Outcome::status(400, "error", format!("invalid JSON body: {e}")))
-}
-
-fn query_param(req: &Request, name: &str) -> String {
-    req.uri()
-        .query()
-        .unwrap_or("")
-        .split('&')
-        .filter_map(|kv| kv.split_once('='))
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| v.to_string())
-        .unwrap_or_default()
-}
-
-fn constant_time_eq(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    web::json(req).map_err(Outcome::from)
 }
 
 pub(crate) fn valid_user_id(u: &str) -> bool {
@@ -179,14 +164,6 @@ fn likely_environment(tx: &TxContext, store_id: &str, order_id: &str) -> String 
 }
 
 /// Remembers when clients last verified (and whether the store look-up worked).
-fn touch_verify_health(tx: &TxContext, app_id: &str, fetched_ok: bool) {
-    health::touch(tx, app_id, |h, now| {
-        h.last_verify_at_micros = now;
-        if fetched_ok {
-            h.last_verify_ok_at_micros = now;
-        }
-    })
-}
 
 fn verify(ctx: &mut impl Ctx, store_name: &str, r: &VerifyRequest) -> Outcome {
     if !valid_user_id(&r.user_id) {
@@ -226,7 +203,7 @@ fn verify(ctx: &mut impl Ctx, store_name: &str, r: &VerifyRequest) -> Outcome {
 
 /// Writes the verify health alone (answers that record nothing).
 fn health_only(ctx: &mut impl Ctx, app_id: &str, fetched_ok: bool, o: Outcome) -> Outcome {
-    ctx.tx(|tx| touch_verify_health(tx, app_id, fetched_ok));
+    ctx.tx(|tx| health::verified(tx, app_id, fetched_ok));
     o
 }
 
@@ -317,7 +294,7 @@ fn verify_with(
             // One transaction: health, the replay check, attribution, the ledger row and its lease
             // (leased as it is written, so the worker cannot take it before this request runs it).
             let recorded = ctx.tx(|tx| {
-                touch_verify_health(tx, &app.app_id, fetched_ok);
+                health::verified(tx, &app.app_id, fetched_ok);
                 if ledger::consumed_elsewhere(tx, app, &product, &st) {
                     return Recorded::ConsumedElsewhere;
                 }
@@ -351,7 +328,7 @@ fn verify_with(
         TxState::Expired | TxState::Revoked => {
             let label = if st.state == TxState::Expired { status::EXPIRED } else { status::REVOKED };
             let lease = ctx.tx(|tx| {
-                touch_verify_health(tx, &app.app_id, fetched_ok);
+                health::verified(tx, &app.app_id, fetched_ok);
                 ledger::record_inactive(tx, &st, "client verify").map(|id| ledger::lease(tx, &id, Some(app)))
             });
             if let Some(lease) = lease {
@@ -477,7 +454,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
             })
             .collect();
         let auth = if r.purchases.is_empty() { Auth::default() } else { Auth::cached(tx, &app, now) };
-        Ok((app, items, auth))
+        Ok::<_, Outcome>((app, items, auth))
     })?;
     let app_store = config::app_store(&app);
     if app_store.verification != Verification::ClientReceipt {
@@ -729,23 +706,30 @@ fn product_or_subscription(app: &GameApp, product: Option<Product>, product_id: 
 
 /// Notification health of a build whose store authenticates notifications with a secret in the
 /// URL (Google RTDN, App Store).
-fn touch_notify_health(tx: &TxContext, app_id: &str, accepted: bool, is_test: bool) {
-    store_health::touch(tx, app_id, |h, now| {
-        if !accepted {
-            h.last_rejected_at_micros = now;
-            h.last_rejected_reason = "the secret in the URL does not match".into();
-        } else {
+/// Records a store notification in the build's health; a rejected one also raises the alert.
+fn record_notification(tx: &TxContext, app_id: &str, source: &str, rejected: Option<&str>, is_test: bool) {
+    match rejected {
+        Some(reason) => {
+            store_health::rejected(tx, app_id, reason);
+            crate::alerts::notification_rejected(tx, app_id, source, reason);
+        }
+        None => store_health::touch(tx, app_id, |h, now| {
             h.last_at_micros = now;
             if is_test {
                 h.last_test_at_micros = now;
             }
-        }
-    });
+        }),
+    }
 }
 
+const WRONG_SECRET: &str = "the secret in the URL does not match";
+
 fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
-    let secret = query_param(&req, "secret");
-    let body = req.into_body().into_string_lossy();
+    let secret = web::query_param(&req, "secret");
+    let body = match web::text(req) {
+        Ok(b) => b,
+        Err(a) => return a.into(),
+    };
     let n = match google::parse_rtdn_push(&body) {
         Ok(n) => n,
         Err(e) => return Outcome::status(400, "error", e),
@@ -768,10 +752,9 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     let checked = ctx.tx(|tx| {
         let app = config::find_app(tx, &package).filter(|a| config::app_store(a).id == store::GOOGLE)?;
         let expected = config::secret(tx, &app, secret_name::GOOGLE_RTDN_SECRET).map(|s| s.value);
-        let accepted = matches!(&expected, Some(exp) if constant_time_eq(exp, &secret));
-        touch_notify_health(tx, &app.app_id, accepted, is_test);
+        let accepted = matches!(&expected, Some(exp) if web::secret_matches(exp, &secret));
+        record_notification(tx, &app.app_id, "Google Play RTDN", (!accepted).then_some(WRONG_SECRET), is_test);
         if !accepted {
-            crate::alerts::notification_rejected(tx, &app.app_id, "Google Play RTDN");
             return Some((app, false, None, Auth::default()));
         }
         let product = if product_id.is_empty() { None } else { config::find_product(tx, &app.app_id, product_id) };
@@ -800,8 +783,7 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
             }
         }
         Rtdn::OneTimeProduct { token, notification_type, .. } => {
-            // 1 = purchased, 2 = canceled (pending purchase abandoned)
-            if notification_type != 1 {
+            if notification_type != google::one_time_notification::PURCHASED {
                 return Outcome::status(200, "ignored", "one-time product canceled");
             }
             let Some(product) = product else {
@@ -813,7 +795,7 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
             }
         }
         Rtdn::Voided { token, order_id, product_type, .. } => {
-            // Refund / chargeback. The endpoint is authenticated by the shared secret.
+            // Refund / chargeback of a purchase of this package (the secret may be shared by several).
             let changed = ctx.tx(|tx| {
                 let row = tx
                     .db
@@ -826,7 +808,8 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
                             .purchase_token()
                             .filter(token.as_str())
                             .max_by_key(|p| p.created_at_micros)
-                    })?;
+                    })
+                    .filter(|p| p.app_id == app.app_id)?;
                 let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
                 let id = ledger::mark_inactive(
                     tx,
@@ -847,8 +830,11 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
 }
 
 fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
-    let secret = query_param(&req, "secret");
-    let body = req.into_body().into_string_lossy();
+    let secret = web::query_param(&req, "secret");
+    let body = match web::text(req) {
+        Ok(b) => b,
+        Err(a) => return a.into(),
+    };
     // Untrusted: only used to find the app and the transaction to re-fetch from Apple.
     let n = match apple::parse_notification(&body) {
         Ok(n) => n,
@@ -856,15 +842,20 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     };
     let is_test = n.notification_type == "TEST";
     let now = ctx.now_micros();
-    // One transaction: the build, the secret check and its health, the API token.
+    // Signed by Apple (the x5c chain ends in Apple's root); the URL secret is an optional extra.
+    let signature = apple::verify_notification(&body, apple_root(), now / 1000).err();
+    // One transaction: the build, the checks and their health, the API token.
     let checked = ctx.tx(|tx| {
         let app = config::find_app(tx, &n.bundle_id).filter(|a| config::app_store(a).id == store::APPLE)?;
         let expected = config::secret(tx, &app, secret_name::APPLE_NOTIFICATION_SECRET).map(|s| s.value);
-        let accepted = expected.as_deref().map_or(true, |exp| constant_time_eq(exp, &secret));
-        touch_notify_health(tx, &app.app_id, accepted, is_test);
-        if !accepted {
-            crate::alerts::notification_rejected(tx, &app.app_id, "App Store");
-        }
+        let secret_ok = expected.as_deref().map_or(true, |exp| web::secret_matches(exp, &secret));
+        let rejected = match (&signature, secret_ok) {
+            (Some(e), _) => Some(format!("not signed by Apple: {e}")),
+            (None, false) => Some(WRONG_SECRET.to_string()),
+            (None, true) => None,
+        };
+        let accepted = rejected.is_none();
+        record_notification(tx, &app.app_id, "App Store", rejected.as_deref(), is_test);
         let fetches = accepted && !is_test && !n.transaction_id.is_empty();
         let auth = if fetches { Auth::cached(tx, &app, now) } else { Auth::default() };
         Some((app, accepted, auth))
@@ -908,9 +899,23 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
 /// The SNS signature is verified (certificate from `sns.<region>.amazonaws.com`); the RTN itself
 /// only says which receipt to look up again with RVS. The subscription confirmation's token is
 /// kept for the setup check: it is pasted into the Developer Console.
+/// The root an App Store signing chain must end in (a test chain of our own in tests).
+#[cfg(not(test))]
+fn apple_root() -> &'static [u8] {
+    apple::ROOT_CA_G3
+}
+
+#[cfg(test)]
+fn apple_root() -> &'static [u8] {
+    apple::testing::root()
+}
+
 fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
-    let app_param = query_param(&req, "app");
-    let body = req.into_body().into_string_lossy();
+    let app_param = web::query_param(&req, "app");
+    let body = match web::text(req) {
+        Ok(b) => b,
+        Err(a) => return a.into(),
+    };
     let m = match sns::parse(&body) {
         Ok(m) => m,
         Err(e) => return Outcome::status(400, "error", e),
@@ -930,7 +935,17 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     };
 
     let verified = stores::sns_certificate(ctx, &m.signing_cert_url, cached_cert)
-        .and_then(|pem| sns::verify(&m, &pem).map_err(StoreError::Invalid));
+        .and_then(|pem| sns::verify(&m, &pem).map_err(StoreError::Invalid))
+        .and_then(|()| {
+            // Any AWS account can sign: only our topic, and no replays of old messages.
+            if !m.is_from(&app.sns_topic_arn) {
+                return Err(StoreError::Invalid(format!("message from topic {}, the build expects {}", m.topic_arn, app.sns_topic_arn)));
+            }
+            if !m.is_fresh(now / 1000) {
+                return Err(StoreError::Invalid(format!("stale message (Timestamp {})", m.timestamp)));
+            }
+            Ok(())
+        });
     match verified {
         Ok(()) => {}
         Err(StoreError::Transient(e)) => {
@@ -940,15 +955,11 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         Err(e) => {
             let reason = e.message().to_string();
             log::warn!("Amazon notification for {} rejected: {reason}", app.app_id);
-            ctx.tx(|tx| {
-                store_health::touch(tx, &app.app_id, |h, now| {
-                    h.last_rejected_at_micros = now;
-                    h.last_rejected_reason = reason.clone();
-                })
-            });
-            return Outcome::status(401, "error", "invalid signature");
+            ctx.tx(|tx| store_health::rejected(tx, &app.app_id, &reason));
+            return Outcome::status(401, "error", "rejected");
         }
     }
+    let topic = m.topic_arn.clone();
 
     match m.kind.as_str() {
         sns::SUBSCRIPTION_CONFIRMATION => {
@@ -957,6 +968,7 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
                 store_health::touch(tx, &app.app_id, |h, now| {
                     h.last_confirmation_at_micros = now;
                     h.confirmation_token = token.clone();
+                    h.last_topic = topic.clone();
                 })
             });
             log::info!("Amazon RTN confirmation for {}: run the setup check to see the token", app.app_id);
@@ -972,7 +984,10 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     let id = purser_core::model::ledger_id(store::AMAZON, &rtn.receipt_id);
     // Health, the ledger row and the shared secret in one transaction.
     let found = ctx.tx(|tx| {
-        store_health::touch(tx, &app.app_id, |h, now| h.last_at_micros = now);
+        store_health::touch(tx, &app.app_id, |h, now| {
+            h.last_at_micros = now;
+            h.last_topic = topic.clone();
+        });
         if !rechecks {
             return None;
         }
@@ -1034,8 +1049,10 @@ fn offers_apple_sign(ctx: &mut HandlerContext, req: Request) -> Response {
 }
 
 /// Admin UI (single static page). It talks to `/sql`, `/call/admin_*` and `/logs` of this database
-/// with the owner's token, so the page itself contains nothing secret.
+/// with the signed-in admin's token, so the page itself contains nothing secret.
 const ADMIN_PAGE: &str = include_str!("../admin/index.html");
+/// Content-Security-Policy of the page, written by its build: the hash of its one inline script.
+const ADMIN_CSP: &str = include_str!("../admin/csp.txt");
 
 #[handler]
 fn admin_page(_ctx: &mut HandlerContext, _req: Request) -> Response {
@@ -1046,10 +1063,7 @@ fn admin_page(_ctx: &mut HandlerContext, _req: Request) -> Response {
         .header("X-Frame-Options", "DENY")
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
-        .header(
-            "Content-Security-Policy",
-            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-        )
+        .header("Content-Security-Policy", ADMIN_CSP.trim())
         .body(Body::from(ADMIN_PAGE))
         .expect("valid response")
 }

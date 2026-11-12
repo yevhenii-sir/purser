@@ -1,8 +1,9 @@
 //! Setup check ("doctor") for one app: configuration, secrets, store access, notifications and
 //! the delivery target, each with a fix hint. Called from the admin page and `seed.py --check`.
 //!
-//! Read-only except for two opt-ins: Apple test notifications (`apple_test`, on by default: Apple
-//! sends a TEST notification, which the server ignores) and `admin_ping_webhook`.
+//! Writes only its own results (`app_check`, store health, cached tokens), plus two opt-ins that
+//! reach outside: Apple test notifications (`apple_test`, on by default: Apple sends a TEST
+//! notification, which the server ignores) and `admin_ping_webhook`.
 //! Secret values never leave the module; the report only says where each one comes from.
 
 use crate::config::{self, secret_name};
@@ -26,17 +27,14 @@ use spacetimedb::ProcedureContext;
 /// Purchases retried this many times are reported as stuck.
 const STUCK_ATTEMPTS: u32 = 3;
 
-fn default_true() -> bool {
-    true
-}
 
 #[derive(Deserialize)]
 pub struct Options {
     /// Call the stores and the game. Off: only the configuration is checked (instant).
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub online: bool,
     /// iOS: ask Apple to send a TEST notification and report the previous one's delivery.
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     pub apple_test: bool,
 }
 
@@ -262,6 +260,28 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
                 when,
                 &fix,
             ),
+        );
+    }
+    if store.id == store::AMAZON && !s.store_health.last_topic.is_empty() {
+        let sh = &s.store_health;
+        r.add(
+            "sns_topic",
+            "Amazon notification topic",
+            if s.app.sns_topic_arn.is_empty() {
+                v(
+                    Level::Warn,
+                    format!("Notifications come from {}; any AWS topic would be accepted", sh.last_topic),
+                    "Pin this topic on the build (SNS topic) so only Amazon's notifications are accepted",
+                )
+            } else if s.app.sns_topic_arn == sh.last_topic {
+                v(Level::Ok, format!("Pinned to {}", sh.last_topic), "")
+            } else {
+                v(
+                    Level::Warn,
+                    format!("Pinned to {}, but the last signed message came from {}", s.app.sns_topic_arn, sh.last_topic),
+                    "Check the topic in the Amazon Developer Console",
+                )
+            },
         );
     }
     let h = &s.health;

@@ -443,11 +443,7 @@ impl ChannelSettings {
 }
 
 fn check_https(what: &str, url: &str) -> Result<(), String> {
-    if url.starts_with("https://") && url.len() > "https://".len() && !url.contains(char::is_whitespace) {
-        Ok(())
-    } else {
-        Err(format!("{what} must be an https:// URL"))
-    }
+    crate::encoding::check_public_https_url(what, url)
 }
 
 /// Validates the secret of a channel before it is stored.

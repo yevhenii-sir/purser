@@ -142,6 +142,7 @@ namespace Purser
             }
             catch (Exception)
             {
+                // The value does not convert to T: the caller's fallback is the documented answer.
                 return fallback;
             }
         }
@@ -161,20 +162,22 @@ namespace Purser
             [JsonProperty("fetched_at_ticks")] public long FetchedAtTicks;
         }
 
-        public static void Save(IBillingStorage storage, string appId, string userId, string placement, PaywallResponse response, DateTime fetchedAtUtc)
+        public static void Save(IBillingStorage storage, string appId, string userId, string placement, PaywallResponse response,
+            DateTime fetchedAtUtc, BillingLog log)
         {
             try
             {
                 var json = response == null ? "" : JsonConvert.SerializeObject(new Snapshot { Response = response, FetchedAtTicks = fetchedAtUtc.Ticks });
                 storage.Save(Key(appId, userId, placement), json);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // Cache is best effort.
+                log?.Warning($"Could not cache the paywall '{placement}' for offline starts: {e.Message}");
             }
         }
 
-        public static (PaywallResponse Response, DateTime FetchedAtUtc)? Load(IBillingStorage storage, string appId, string userId, string placement)
+        public static (PaywallResponse Response, DateTime FetchedAtUtc)? Load(IBillingStorage storage, string appId, string userId,
+            string placement, BillingLog log)
         {
             try
             {
@@ -184,8 +187,9 @@ namespace Purser
                 var s = JsonConvert.DeserializeObject<Snapshot>(json);
                 return s?.Response == null ? ((PaywallResponse, DateTime)?)null : (s.Response, new DateTime(s.FetchedAtTicks, DateTimeKind.Utc));
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                log?.Warning($"Could not read the cached paywall '{placement}': {e.Message}");
                 return null;
             }
         }

@@ -55,15 +55,7 @@ fn encode_segment(what: &str, s: &str) -> Result<String, String> {
     if s.is_empty() || s.len() > 512 || s.chars().any(|c| c.is_control() || c == ' ') {
         return Err(format!("invalid Amazon {what}"));
     }
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    Ok(out)
+    Ok(crate::encoding::percent_encode(s))
 }
 
 /// RVS bases to try, with "is the sandbox": production first, then the Cloud Sandbox for builds

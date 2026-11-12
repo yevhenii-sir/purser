@@ -97,10 +97,6 @@ pub fn sign(secret: &str, timestamp: i64, payload: &[u8]) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 /// Checks a `Stripe-Signature` header against the raw body. Any of several `v1` signatures may match
 /// (Stripe signs with every active secret while one is being rolled); `v0` is ignored.
 pub fn verify_signature(header: &str, payload: &[u8], secret: &str, now_secs: i64) -> Result<(), String> {
@@ -122,7 +118,7 @@ pub fn verify_signature(header: &str, payload: &[u8], secret: &str, now_secs: i6
         return Err("no v1 signature in Stripe-Signature".into());
     }
     let expected = sign(secret, t, payload);
-    if !signatures.iter().any(|s| constant_time_eq(s.as_bytes(), expected.as_bytes())) {
+    if !signatures.iter().any(|s| crate::encoding::constant_time_eq(s.as_bytes(), expected.as_bytes())) {
         return Err("signature does not match (wrong webhook secret?)".into());
     }
     if (now_secs - t).abs() > SIGNATURE_TOLERANCE_SECS {
@@ -155,19 +151,6 @@ pub fn minor_to_micros(amount: i64, currency: &str) -> i64 {
 // ---------------------------------------------------------------------------------------------
 // Checkout
 // ---------------------------------------------------------------------------------------------
-
-/// Percent-encodes a form value (`application/x-www-form-urlencoded`, RFC 3986 unreserved kept).
-pub fn form_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
 
 fn path_id(what: &str, id: &str) -> Result<String, String> {
     if id.is_empty() || id.len() > 255 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
@@ -245,7 +228,7 @@ pub fn checkout_form(p: &CheckoutParams) -> Result<String, String> {
         fields.push((format!("metadata[{k}]"), v));
         fields.push((format!("{nested}[metadata][{k}]"), v));
     }
-    Ok(fields.iter().map(|(k, v)| format!("{k}={}", form_encode(v))).collect::<Vec<_>>().join("&"))
+    Ok(fields.iter().map(|(k, v)| format!("{k}={}", crate::encoding::percent_encode(v))).collect::<Vec<_>>().join("&"))
 }
 
 /// `(session id, url)` of a created Checkout Session.
@@ -463,7 +446,6 @@ pub fn parse_session(v: &Value) -> Result<Session, String> {
         return Err(format!("Checkout Session mode {mode} is not a purchase"));
     }
     let m = require_meta(metadata(&v["metadata"]), "the Checkout Session")?;
-    let user_id = if m.user_id.is_empty() { s(&v["client_reference_id"]) } else { m.user_id.clone() };
     let state = match (s(&v["status"]).as_str(), s(&v["payment_status"]).as_str()) {
         ("complete", "paid" | "no_payment_required") => SessionState::Paid,
         ("expired", _) => SessionState::Expired,
@@ -476,7 +458,7 @@ pub fn parse_session(v: &Value) -> Result<Session, String> {
         state,
         app_id: m.app_id,
         product_id: m.product_id,
-        user_id,
+        user_id: m.user_id,
         subscription_id: id_of(sub),
         subscription: sub.is_object().then(|| sub.clone()),
         livemode: v["livemode"].as_bool().unwrap_or(false),

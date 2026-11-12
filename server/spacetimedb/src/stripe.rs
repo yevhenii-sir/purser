@@ -19,23 +19,10 @@ use purser_core::model::{environment, kind, ledger_id, status, store, TxState};
 use purser_core::stripe::{self as st, ApiStatus, Grant, Reversal};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use spacetimedb::http::{handler, Body, HandlerContext, Request, Response};
+use spacetimedb::http::{handler, HandlerContext, Request, Response};
 use spacetimedb::TxContext;
 
-/// HTTP status and JSON body of an answer.
-pub type Answer = (u16, Value);
-
-fn answer(http: u16, status: &str, message: impl Into<String>) -> Answer {
-    (http, json!({ "status": status, "message": message.into() }))
-}
-
-fn respond((http, body): Answer) -> Response {
-    http::Response::builder()
-        .status(http)
-        .header("Content-Type", "application/json")
-        .body(Body::from(body.to_string()))
-        .expect("valid response")
-}
+use crate::web::{answer, respond, Answer};
 
 fn store_error(e: StoreError) -> Answer {
     match e {
@@ -94,7 +81,7 @@ fn call(ctx: &mut impl Ctx, app: &GameApp, key: &mut Auth, method: &str, url: &s
         headers.push(("Content-Type", "application/x-www-form-urlencoded"));
     }
     let res = net::send(ctx.http(), method, url, &headers, form.unwrap_or_default())
-        .map_err(|e| StoreError::Transient(e.replace(&key, "<key>")))?;
+        .map_err(StoreError::Transient)?;
     match st::classify_status(res.status) {
         ApiStatus::Ok => Ok(res),
         ApiStatus::Invalid => Err(StoreError::Invalid(st::error_message(res.status, &res.body))),
@@ -180,10 +167,9 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> Answer {
 
 #[handler]
 pub fn checkout_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
-    let bytes = req.into_body().into_bytes();
-    respond(match serde_json::from_slice::<CheckoutRequest>(&bytes) {
+    respond(match crate::web::json::<CheckoutRequest>(req) {
         Ok(r) => checkout(ctx, &r),
-        Err(e) => answer(400, "error", format!("invalid JSON body: {e}")),
+        Err(a) => a,
     })
 }
 
@@ -214,7 +200,7 @@ fn apply_grant(
     // One transaction: checks, attribution, the ledger row and its lease.
     let (lease, product) = ctx.tx(|tx| -> Result<_, Answer> {
         if let Some(ok) = verify_health {
-            touch_verify_health(tx, &app.app_id, ok);
+            health::verified(tx, &app.app_id, ok);
         }
         if g.tx.app_id != app.app_id {
             return Err(answer(400, "invalid", format!("the purchase belongs to app {}", g.tx.app_id)));
@@ -232,7 +218,7 @@ fn apply_grant(
             return Err(answer(400, "invalid", format!("{} is a {} in the catalog", product.product_id, product.kind)));
         }
         if let Some(p) = tx.db.purchase().id().find(&g.tx.ledger_id()).filter(|p| !status::is_owned(&p.status)) {
-            return Err(answer(200, if p.status.starts_with("expire") { status::EXPIRED } else { status::REVOKED }, "the purchase is no longer active"));
+            return Err(answer(200, if matches!(p.status.as_str(), status::EXPIRED | status::EXPIRE_PENDING) { status::EXPIRED } else { status::REVOKED }, "the purchase is no longer active"));
         }
         integrations::save_attribution(tx, &g.tx.app_id, &claim.user_id, &client.attribution);
         let lease = ledger::record_and_lease(tx, app, &product, &g.tx, &claim).map_err(|e| answer(403, "forbidden", e))?;
@@ -244,19 +230,9 @@ fn apply_grant(
     }
 }
 
-/// Remembers when clients last verified (and whether the session look-up worked).
-fn touch_verify_health(tx: &TxContext, app_id: &str, ok: bool) {
-    health::touch(tx, app_id, |h, now| {
-        h.last_verify_at_micros = now;
-        if ok {
-            h.last_verify_ok_at_micros = now;
-        }
-    })
-}
-
 /// An answer to `/verify/stripe` that records nothing: the health alone.
 fn health_only(ctx: &mut impl Ctx, app_id: &str, ok: bool, a: Answer) -> Answer {
-    ctx.tx(|tx| touch_verify_health(tx, app_id, ok));
+    ctx.tx(|tx| health::verified(tx, app_id, ok));
     a
 }
 
@@ -359,10 +335,9 @@ pub fn verify_session(ctx: &mut impl Ctx, r: &VerifyRequest) -> Answer {
 
 #[handler]
 pub fn verify_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
-    let bytes = req.into_body().into_bytes();
-    respond(match serde_json::from_slice::<VerifyRequest>(&bytes) {
+    respond(match crate::web::json::<VerifyRequest>(req) {
         Ok(r) => verify_session(ctx, &r),
-        Err(e) => answer(400, "error", format!("invalid JSON body: {e}")),
+        Err(a) => a,
     })
 }
 
@@ -372,13 +347,7 @@ pub fn verify_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
 
 fn reject(ctx: &mut impl Ctx, app: &GameApp, reason: &str) -> Answer {
     log::warn!("Stripe webhook for {} rejected: {reason}", app.app_id);
-    let (app_id, reason_c) = (app.app_id.clone(), reason.to_string());
-    ctx.tx(|tx| {
-        store_health::touch(tx, &app_id, |h, now| {
-            h.last_rejected_at_micros = now;
-            h.last_rejected_reason = reason_c.clone();
-        })
-    });
+    ctx.tx(|tx| store_health::rejected(tx, &app.app_id, reason));
     answer(400, "error", "invalid signature")
 }
 
@@ -541,23 +510,14 @@ fn revoke(ctx: &mut impl Ctx, app: &GameApp, key: &mut Auth, r: &Reversal, sourc
     answer(200, "ok", "")
 }
 
-/// `?app=` of the notification URL.
-pub fn app_param(req: &Request) -> String {
-    req.uri()
-        .query()
-        .unwrap_or("")
-        .split('&')
-        .filter_map(|kv| kv.split_once('='))
-        .find(|(k, _)| *k == "app")
-        .map(|(_, v)| v.to_string())
-        .unwrap_or_default()
-}
-
 /// `/notify/stripe` (dispatched from `handlers::dispatch_notification`).
 pub fn notification(ctx: &mut impl Ctx, req: Request) -> Answer {
-    let app = app_param(&req);
+    let app = crate::web::query_param(&req, "app");
     let signature = req.headers().get("stripe-signature").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let body = req.into_body().into_bytes();
+    let body = match crate::web::body(req) {
+        Ok(b) => b,
+        Err(a) => return a,
+    };
     handle_notification(ctx, &app, &signature, &body)
 }
 

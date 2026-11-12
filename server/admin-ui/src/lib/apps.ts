@@ -1,5 +1,5 @@
 import { createContext, createElement, useContext, useEffect, useState, type ReactNode } from "react"
-import { sql } from "./api"
+import { select } from "./api"
 import { errorText } from "./format"
 import { PLATFORMS } from "./stores"
 import type { GameApp } from "./types"
@@ -14,8 +14,6 @@ export interface AppGroup {
   name: string
   /** Every build, ordered by platform (registry order), then app id. */
   apps: GameApp[]
-  /** First Android (Google Play) build, if any. */
-  android?: GameApp
   /** First iOS build, if any. */
   ios?: GameApp
 }
@@ -34,7 +32,6 @@ export function groupApps(apps: GameApp[], names: AppNames = {}): AppGroup[] {
     const key = a.game_key || a.app_id
     const g = map.get(key) || { key, name: names[key] || key, apps: [] }
     g.apps.push(a)
-    if (a.platform === "android" && !g.android) g.android = a
     if (a.platform === "ios" && !g.ios) g.ios = a
     map.set(key, g)
   }
@@ -68,10 +65,10 @@ export function AppsProvider({ children }: { children: ReactNode }) {
     const load = () => {
       const mine = ++seq
       // A module older than app_profile has no such table: no names then.
-      const names = sql<{ game_key: string; display_name: string }>("SELECT * FROM app_profile")
+      const names = select<{ game_key: string; display_name: string }>({ table: "app_profile" })
         .then((rows) => Object.fromEntries(rows.map((r) => [r.game_key, r.display_name])) as AppNames)
         .catch(() => ({}) as AppNames)
-      Promise.all([sql<GameApp>("SELECT * FROM game_app"), names])
+      Promise.all([select<GameApp>({ table: "game_app" }), names])
         .then(([apps, names]) => alive && mine === seq && setState({ apps, groups: groupApps(apps, names), names, error: "" }))
         .catch((e) => alive && mine === seq && setState((s) => ({ ...s, error: errorText(e) })))
     }
@@ -102,5 +99,7 @@ export function useGroups() {
   return { groups, error }
 }
 
-/** Platform names by id (from the store registry). Prefer `buildLabel` for a build. */
-export const PLATFORM_LABEL: Record<string, string> = Object.fromEntries(PLATFORMS.map((p) => [p.id, p.name]))
+/** Accounts named by the apps, without "default". */
+export function accountsOf(apps: { account: string }[]): string[] {
+  return [...new Set(apps.map((a) => a.account).filter((a) => a && a !== "default"))].sort()
+}

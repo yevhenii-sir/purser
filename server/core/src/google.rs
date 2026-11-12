@@ -6,13 +6,16 @@ use crate::model::{environment, store, StoreTx, TxState};
 use crate::time::parse_rfc3339_ms;
 use serde_json::Value;
 
-const API: &str = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications";
+/// Google Play Developer API: `{API}/{package}/...`.
+pub(crate) const API: &str = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications";
 
 /// Path segments come from clients; keep only characters that can appear in package names,
 /// product ids and purchase tokens so nobody can smuggle `/` or `?` into the URL.
 pub fn sanitize_segment(s: &str) -> Result<&str, String> {
     if !s.is_empty()
         && s.len() <= 4096
+        && s != "."
+        && s != ".."
         && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     {
         Ok(s)
@@ -83,10 +86,10 @@ pub fn parse_product_purchase(
     body: &str,
 ) -> Result<StoreTx, String> {
     let v: Value = serde_json::from_str(body).map_err(|e| format!("bad ProductPurchase: {e}"))?;
-    // purchaseState: 0 purchased, 1 canceled, 2 pending
-    let state = match v["purchaseState"].as_i64().unwrap_or(0) {
-        0 => TxState::Active,
-        2 => TxState::Pending,
+    // purchaseState: 0 purchased, 1 canceled, 2 pending; a reply without one grants nothing.
+    let state = match v["purchaseState"].as_i64() {
+        Some(0) => TxState::Active,
+        Some(2) => TxState::Pending,
         _ => TxState::Canceled,
     };
     let order_id = v["orderId"].as_str().unwrap_or("").to_string();
@@ -203,6 +206,13 @@ pub enum Rtdn {
 }
 
 /// Parses a Pub/Sub push body: `{"message": {"data": "<base64 DeveloperNotification>"}, ...}`.
+/// `oneTimeProductNotification.notificationType`.
+pub mod one_time_notification {
+    pub const PURCHASED: i64 = 1;
+    /// A pending purchase was abandoned.
+    pub const CANCELED: i64 = 2;
+}
+
 pub fn parse_rtdn_push(body: &str) -> Result<Rtdn, String> {
     let envelope: Value = serde_json::from_str(body).map_err(|e| format!("bad push body: {e}"))?;
     let data = envelope["message"]["data"].as_str().ok_or("push body without message.data")?;
@@ -249,6 +259,14 @@ pub fn is_already_done_error(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn segments_cannot_walk_the_path_and_a_missing_state_grants_nothing() {
+        assert!(sanitize_segment("..").is_err() && sanitize_segment(".").is_err());
+        assert!(sanitize_segment("com.example.game").is_ok());
+        let tx = parse_product_purchase("com.g", "gems", "t", r#"{"orderId":"GPA.1"}"#).unwrap();
+        assert_eq!(tx.state, TxState::Canceled);
+    }
     use crate::model::kind;
     use crate::model::store_action;
 

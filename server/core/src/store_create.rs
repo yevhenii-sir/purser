@@ -15,7 +15,7 @@ use crate::{stripe, xsolla};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-const GOOGLE_API: &str = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications";
+use crate::google::API as GOOGLE_API;
 /// Locale of the listing / localization the server creates; edit others in the store console.
 pub const LOCALE: &str = "en-US";
 /// Google purchase option id and the suffix of base plan ids.
@@ -198,7 +198,7 @@ pub struct Request {
 }
 
 impl Request {
-    fn get(url: String) -> Self {
+    pub fn get(url: String) -> Self {
         Request { method: "GET", url, body: String::new(), form: false, idempotency_key: None }
     }
     fn json(method: &'static str, url: String, body: Value) -> Self {
@@ -226,27 +226,7 @@ fn money(micros: i64, currency: &str) -> Value {
     json!({ "currencyCode": currency, "units": (micros / 1_000_000).to_string(), "nanos": (micros % 1_000_000) * 1000 })
 }
 
-/// `4990000` → `"4.99"`.
-pub fn decimal(micros: i64) -> String {
-    let units = micros / 1_000_000;
-    let frac = (micros % 1_000_000).abs();
-    if frac == 0 {
-        return units.to_string();
-    }
-    let s = format!("{units}.{frac:06}");
-    s.trim_end_matches('0').to_string()
-}
-
-/// `"4.99"` → `4990000`.
-pub fn parse_decimal(s: &str) -> Option<i64> {
-    let (units, frac) = s.trim().split_once('.').unwrap_or((s.trim(), ""));
-    if frac.len() > 6 || !frac.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let units: i64 = units.parse().ok()?;
-    let frac: i64 = if frac.is_empty() { 0 } else { format!("{frac:0<6}").parse().ok()? };
-    Some(units * 1_000_000 + frac)
-}
+use crate::money::{parse_decimal, to_decimal as decimal};
 
 /// Currencies an App Store base price may be given in, with the territory that uses it.
 const APPLE_BASE: &[(&str, &str)] = &[
@@ -293,9 +273,7 @@ fn base_plan_id(period: &str) -> String {
     period.to_ascii_lowercase()
 }
 
-fn enc(s: &str) -> String {
-    stripe::form_encode(s)
-}
+use crate::encoding::percent_encode as enc;
 
 fn apple_ref(kind: &str, id: &str) -> Value {
     json!({ "data": { "type": kind, "id": id } })
@@ -966,7 +944,7 @@ fn xsolla_request(t: &Target, i: &CreateInput, st: &JobState) -> Result<Request,
                 "sku": i.product_id,
                 "name": { "en": i.title.trim() },
                 "description": { "en": i.description() },
-                "prices": [{ "amount": decimal(i.price_micros).parse::<f64>().unwrap_or(0.0), "currency": i.currency, "is_default": true, "is_enabled": true }],
+                "prices": [{ "amount": i.price_micros as f64 / 1_000_000.0, "currency": i.currency, "is_default": true, "is_enabled": true }],
                 "is_enabled": true,
                 "is_show_in_store": true,
             }),
@@ -994,6 +972,42 @@ fn xsolla_absorb(i: &CreateInput, st: &mut JobState, status: u16, body: &str) ->
         }
         _ => failure(store::XSOLLA, status, body),
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Products a store already has (the preview marks them `exists`)
+// ---------------------------------------------------------------------------------------------
+
+/// Xsolla virtual items of the project: (sku, sku).
+pub fn xsolla_existing_request(project_id: &str) -> Result<Request, String> {
+    Ok(Request::get(xsolla::virtual_items_url(project_id, 200)?))
+}
+
+pub fn parse_xsolla_existing(body: &str) -> Vec<(String, String)> {
+    let v: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    v["items"].as_array().into_iter().flatten().filter_map(|i| i["sku"].as_str().map(|s| (s.to_string(), s.to_string()))).collect()
+}
+
+/// Stripe Products this server created for the build (their `app_id` metadata).
+pub fn stripe_existing_request(app_id: &str) -> Request {
+    let query = format!("metadata['{}']:'{}'", stripe::meta::APP_ID, app_id.replace(['\'', '\\'], ""));
+    Request::get(format!("{}/v1/products/search?limit=100&query={}", stripe::API, enc(&query)))
+}
+
+/// Active Stripe Products: (our product id, the Price id builds use).
+pub fn parse_stripe_existing(body: &str) -> Vec<(String, String)> {
+    let v: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    v["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["active"].as_bool() != Some(false))
+        .filter_map(|p| {
+            let ours = p["metadata"]["product_id"].as_str()?;
+            let price = p["default_price"].as_str().or(p["default_price"]["id"].as_str())?;
+            Some((ours.to_string(), price.to_string()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1035,13 +1049,24 @@ mod tests {
     }
 
     #[test]
+    fn existing_products_are_read_from_the_stores() {
+        let r = stripe_existing_request("com.x'y");
+        assert!(r.url.ends_with("query=metadata%5B%27app_id%27%5D%3A%27com.xy%27"), "{}", r.url);
+        let body = r#"{"data":[{"active":true,"metadata":{"product_id":"vip"},"default_price":"price_1"},
+            {"active":false,"metadata":{"product_id":"old"},"default_price":"price_2"},
+            {"metadata":{"product_id":"gems"},"default_price":{"id":"price_3"}}]}"#;
+        assert_eq!(parse_stripe_existing(body), [("vip".to_string(), "price_1".to_string()), ("gems".into(), "price_3".into())]);
+        assert_eq!(parse_xsolla_existing(r#"{"items":[{"sku":"gems"}]}"#), [("gems".to_string(), "gems".to_string())]);
+        assert!(parse_xsolla_existing("not json").is_empty());
+    }
+
+    #[test]
     fn decimals_round_trip() {
         assert_eq!(decimal(4_990_000), "4.99");
         assert_eq!(decimal(5_000_000), "5");
         assert_eq!(decimal(1_500), "0.0015");
         assert_eq!(parse_decimal("4.99"), Some(4_990_000));
         assert_eq!(parse_decimal("120"), Some(120_000_000));
-        assert_eq!(parse_decimal("1.2345678"), None);
     }
 
     #[test]

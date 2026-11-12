@@ -25,9 +25,9 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 
 | Path | What |
 |---|---|
-| `server/core` (`purser-core`) | Pure logic, no SpacetimeDB: the platform / store registry (`registry.rs`), store API URLs and parsers (`google.rs`, `apple.rs`, `amazon.rs`), SNS envelopes and signatures (`sns.rs`), JWT (`jwt.rs`), ledger model constants (`model.rs`), delivery contract (`event.rs`), integration payload builders (`integrations.rs`), setup-check rules (`doctor.rs`), catalog diff (`catalog.rs`), store product creation steps (`store_create.rs`), answers to Apple refund requests (`consumption.rs`), revenue rules (`revenue.rs`), FX (`fx.rs`), dates (`time.rs`), alert rules, throttle and messages (`alerts.rs`), paywall assignment and A/B results (`paywall.rs`). Native unit tests. |
-| `server/spacetimedb` (`purser`) | The module: tables and reducers (`lib.rs`), HTTP routes (`handlers.rs`), product creation in the stores (`store_create.rs`, jobs run by a scheduled worker), ledger state machine and worker (`ledger.rs`), store clients, token cache and the dispatch by store (`stores.rs`), subscription re-checks (`poll.rs`), store notification health of every build (`store_health.rs`), secret resolution (`config.rs`), delivery (`delivery_client.rs`), integrations outbox and per-build health (`integrations.rs`), Apple refund request answers (`consumption.rs`), setup check (`doctor.rs`), health (`health.rs`), revenue (`revenue.rs`), paywalls, placements and A/B tests (`paywalls.rs`), catalog import (`catalog.rs`), settings (`settings.rs`), owner alerts and their outbox (`alerts.rs`), HTTP wrapper (`net.rs`), `Ctx` trait (`ctx.rs`), tests (`tests.rs`). |
-| `server/spacetimedb/admin/index.html` | **Generated** admin page (committed, embedded with `include_str!`). Never edit by hand. |
+| `server/core` (`purser-core`) | Pure logic, no SpacetimeDB: the platform / store registry (`registry.rs`), store API URLs and parsers (`google.rs`, `apple.rs`, `amazon.rs`), SNS envelopes and signatures (`sns.rs`), JWT (`jwt.rs`), ledger model constants (`model.rs`), delivery contract (`event.rs`), integration payload builders (`integrations.rs`), setup-check rules (`doctor.rs`), catalog diff (`catalog.rs`), store product creation steps (`store_create.rs`), answers to Apple refund requests (`consumption.rs`), revenue rules (`revenue.rs`), FX (`fx.rs`), dates (`time.rs`), URL / form encodings, Basic auth and constant-time comparison (`encoding.rs`), amounts in micros (`money.rs`), X.509 / ECDSA chain checks for App Store signed payloads (`x509.rs`; the root is `apple_root_ca_g3.der`), alert rules, throttle and messages (`alerts.rs`), paywall assignment and A/B results (`paywall.rs`). Native unit tests. |
+| `server/spacetimedb` (`purser`) | The module: tables and reducers (`lib.rs`), HTTP routes (`handlers.rs`), product creation in the stores (`store_create.rs`, jobs run by a scheduled worker), ledger state machine and worker (`ledger.rs`), store clients, token cache and the dispatch by store (`stores.rs`), subscription re-checks (`poll.rs`), store notification health of every build (`store_health.rs`), secret resolution (`config.rs`), delivery (`delivery_client.rs`), integrations outbox and per-build health (`integrations.rs`), Apple refund request answers (`consumption.rs`), setup check (`doctor.rs`), health (`health.rs`), revenue (`revenue.rs`), paywalls, placements and A/B tests (`paywalls.rs`), catalog import (`catalog.rs`), settings (`settings.rs`), owner alerts and their outbox (`alerts.rs`), HTTP wrapper (`net.rs`; errors never show query strings), request plumbing: answers, body limit, query parameters (`web.rs`), `Ctx` trait and the time `Budget` of a request or worker run (`ctx.rs`), tests (`tests.rs`). |
+| `server/spacetimedb/admin/index.html`, `admin/csp.txt` | **Generated** admin page and its Content-Security-Policy (script hash), both committed and embedded with `include_str!`. Never edit by hand. |
 | `server/admin-ui` | Admin page sources: Vite, React 19, TypeScript, Tailwind v4, shadcn/ui, recharts, cmdk. |
 | `server/seed.py`, `server/stdb.py`, `server/migrate.py`, `server/seed.example/` | CLI setup from JSON files, setup check from the terminal (`seed.py --check`), migration from Adapty. |
 | `server/mcp_server.py` | MCP server (stdlib JSON-RPC over stdio) over the admin procedures; see docs/mcp.md. |
@@ -99,11 +99,13 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - Outbound HTTP: only from procedures and HTTP handlers, outside a transaction; the procedure waits
   for the reply. `net::send` sets a 10 s timeout (`net::TIMEOUT_SECS`; the host allows up to 180 s and
   uses 30 s by default: the 500 ms in the `spacetimedb` crate docs is outdated). Private addresses
-  are blocked. Keep calls few per run and idempotent: a timeout on our side may still have reached
-  the store. Delivery to self-hosted SpacetimeDB hosts needs them in the `spacetime_host` allowlist.
+  are blocked. Keep calls idempotent (a timeout on our side may still have reached the store) and
+  check `ctx::Budget::left()` before starting more work in a loop: a request starts calls for 5 s,
+  a worker run for 40 s, and the next worker run continues the rest. Delivery to self-hosted SpacetimeDB hosts needs them in the `spacetime_host` allowlist.
 - The module RNG is seeded by the timestamp: never use it for secrets.
 - Maincloud tokens have no `hex_identity` claim; the UI asks the `whoami` procedure.
-- In tests use `Ctx::tx` / `try_with_tx` (see `ctx.rs`), not `with_tx` directly in code shared with tests.
+- Open transactions through `Ctx::tx` (see `ctx.rs`), not `with_tx` directly: it records the time the
+  `Budget` reads, and tests count transactions through it.
 
 ## Schema rules (published databases upgrade in place)
 
@@ -134,7 +136,7 @@ cargo build -p purser --target wasm32-unknown-unknown --release --locked
 
 cd server/admin-ui
 npm ci
-npm run build      # writes ../spacetimedb/admin/index.html — commit it (CI checks it is fresh)
+npm run build      # writes ../spacetimedb/admin/index.html and csp.txt — commit both (CI checks they are fresh)
 npm run dev        # proxies to a local `spacetime start` on :3000 (SPACETIME_URL to change)
 
 python tools/generate_unity_meta.py          # after adding files to the Unity package

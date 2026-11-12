@@ -86,3 +86,13 @@ pub fn touch(ctx: &ReducerContext, app_id: &str, f: impl FnOnce(&mut AppHealth, 
         }
     }
 }
+
+/// A client `/verify` call; `fetched_ok`: the store look-up worked.
+pub fn verified(ctx: &ReducerContext, app_id: &str, fetched_ok: bool) {
+    touch(ctx, app_id, |h, now| {
+        h.last_verify_at_micros = now;
+        if fetched_ok {
+            h.last_verify_ok_at_micros = now;
+        }
+    });
+}

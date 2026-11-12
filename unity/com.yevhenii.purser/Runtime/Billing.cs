@@ -1,3 +1,7 @@
+using System;
+using System.Threading.Tasks;
+using UnityEngine;
+
 namespace Purser
 {
     /// <summary>
@@ -7,6 +11,7 @@ namespace Purser
     /// </summary>
     public interface IStoreAdapterFactory
     {
+        /// <summary>The store adapter for this config, or null for the default.</summary>
         IStoreAdapter CreateStore(BillingConfig config);
     }
 
@@ -36,9 +41,38 @@ namespace Purser
             });
         }
 
+        /// <summary>Creates a billing service with custom dependencies (store adapter, API client, storage, log sink).</summary>
         public static IBillingService Create(BillingConfig config, BillingDependencies dependencies)
         {
             return new BillingService(config, dependencies);
+        }
+
+        /// <summary>
+        /// Starts <see cref="IBillingService.InitializeAsync"/> for callers that do not await it (<c>Awake</c>, DI entry
+        /// points) and logs a failure to the Unity console. Returns the initialization task itself.
+        /// </summary>
+        public static Task InitializeInBackground(IBillingService service)
+        {
+            if (service == null)
+                throw new ArgumentNullException(nameof(service));
+            var task = service.InitializeAsync();
+            LogFailure(task);
+            return task;
+        }
+
+        private static async void LogFailure(Task initialization)
+        {
+            try
+            {
+                await initialization;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("[Purser] Initialization failed: " + e.Message);
+            }
         }
     }
 }

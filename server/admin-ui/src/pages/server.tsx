@@ -4,15 +4,16 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
 import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
-import { call, getSetting, ROUTE, sql } from "@/lib/api"
+import { SecretField } from "@/components/secret-field"
+import { call, getSetting, ROUTE, select } from "@/lib/api"
+import { BUILTIN_SPACETIME_HOST } from "@/lib/delivery"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { useApps } from "@/lib/apps"
+import { isFileSecret } from "@/lib/secrets"
 import { SECRET_NAMES } from "@/lib/types"
-import type { PageProps } from "@/routes"
 
-export function ServerPage(_: PageProps) {
+export function ServerPage() {
   return (
     <>
       <PageHeader title="Server" description="Settings of this billing server that are not tied to one app." />
@@ -28,8 +29,8 @@ export function ServerPage(_: PageProps) {
 /** Delivery host allowlist: an app's spacetime_token is only ever sent to these hosts (https). */
 function HostsSection() {
   const [host, setHost] = useState("")
-  const { data, reload } = useAsync(() => sql<{ host: string }>("SELECT * FROM spacetime_host"))
-  const rows = [{ host: "maincloud.spacetimedb.com", builtin: true }, ...(data || []).map((h) => ({ host: h.host, builtin: false })).sort((a, b) => a.host.localeCompare(b.host))]
+  const { data, reload } = useAsync(() => select<{ host: string }>({ table: "spacetime_host" }))
+  const rows = [{ host: BUILTIN_SPACETIME_HOST, builtin: true }, ...(data || []).map((h) => ({ host: h.host, builtin: false })).sort((a, b) => a.host.localeCompare(b.host))]
   return (
     <Section
       title="SpacetimeDB hosts"
@@ -45,8 +46,7 @@ function HostsSection() {
             cell: (r) => !r.builtin && (
               <Button variant="ghost" size="xs" className="text-destructive" onClick={async () => {
                 if (!confirm(`Stop deliveries to ${r.host}? Apps on this host fail delivery until moved.`)) return
-                await tryAct(() => call("admin_remove_spacetime_host", r.host), "Removed")
-                reload()
+                if (await tryAct(() => call("admin_remove_spacetime_host", r.host), "Removed") !== undefined) reload()
               }}>Remove</Button>
             ),
           },
@@ -54,7 +54,11 @@ function HostsSection() {
       />
       <div className="mt-4 flex gap-2">
         <Input placeholder="stdb.example.com" className="font-mono text-xs" value={host} onChange={(e) => setHost(e.target.value)} />
-        <Button onClick={async () => { await tryAct(() => call("admin_add_spacetime_host", host.trim()), "Allowed"); setHost(""); reload() }}>Allow</Button>
+        <Button disabled={!host.trim()} onClick={async () => {
+          if (await tryAct(() => call("admin_add_spacetime_host", host.trim()), "Allowed") === undefined) return
+          setHost("")
+          reload()
+        }}>Allow</Button>
       </div>
     </Section>
   )
@@ -94,7 +98,7 @@ function RawSecretsBody() {
   const [value, setValue] = useState("")
   const apps = useApps().apps
   const { data, error, loading, reload } = useAsync(async () => {
-    const keys = await sql<{ key: string }>("SELECT key FROM credential")
+    const keys = await select<{ key: string }>({ table: "credential", columns: ["key"] })
     return keys
       .map((k) => { const i = k.key.indexOf("/"); return { scope: k.key.slice(0, i), name: k.key.slice(i + 1) } })
       .sort((a, b) => (a.scope + a.name).localeCompare(b.scope + b.name))
@@ -121,8 +125,7 @@ function RawSecretsBody() {
                 cell: (r) => (
                   <Button variant="ghost" size="icon-sm" className="text-destructive" aria-label="Delete" onClick={async () => {
                     if (!confirm(`Delete secret ${r.scope}/${r.name}?`)) return
-                    await tryAct(() => call("admin_delete_credential", r.scope, r.name), "Deleted")
-                    reload()
+                    if (await tryAct(() => call("admin_delete_credential", r.scope, r.name), "Deleted") !== undefined) reload()
                   }}><Trash2Icon /></Button>
                 ),
               },
@@ -143,8 +146,7 @@ function RawSecretsBody() {
             </Select>
           </Field>
           <Field label="Value">
-            <Textarea value={value} onChange={(e) => setValue(e.target.value)} autoComplete="off" spellCheck={false} className="min-h-28 font-mono text-xs" />
-            <Input type="file" className="text-xs" onChange={async (e) => { const f = e.target.files?.[0]; if (f) setValue(await f.text()) }} />
+            <SecretField value={value} onChange={setValue} file={isFileSecret(name)} />
           </Field>
           <Button onClick={save}>Save secret</Button>
         </div>

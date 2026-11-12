@@ -263,21 +263,7 @@ pub struct Call {
     pub body: String,
 }
 
-fn encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
-fn form(pairs: &[(&str, String)]) -> String {
-    pairs.iter().map(|(k, v)| format!("{}={}", encode(k), encode(v))).collect::<Vec<_>>().join("&")
-}
+use crate::encoding::query_string as form;
 
 fn get(base: &str, method: &str, pairs: &[(&str, String)]) -> Call {
     Call { method: "GET", url: format!("{base}/{method}/?{}", form(pairs)), body: String::new() }
@@ -285,6 +271,43 @@ fn get(base: &str, method: &str, pairs: &[(&str, String)]) -> Call {
 
 fn post(base: &str, method: &str, pairs: &[(&str, String)]) -> Call {
     Call { method: "POST", url: format!("{base}/{method}/"), body: form(pairs) }
+}
+
+/// Identity the game passes to `ISteamUser::GetAuthTicketForWebApi` for checkout tickets.
+pub const TICKET_IDENTITY: &str = "purser";
+const USER_AUTH_API: &str = "https://partner.steam-api.com/ISteamUserAuth";
+
+/// `AuthenticateUserTicket`: whose session ticket the client sent (hex, as the SDK hands it out).
+pub fn authenticate_ticket_call(app_id: u32, ticket: &str) -> Result<Call, String> {
+    let ticket = ticket.trim();
+    if ticket.is_empty() || ticket.len() > 4096 || ticket.len() % 2 != 0 || !ticket.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("ticket must be the hex Web API auth ticket".into());
+    }
+    Ok(get(
+        USER_AUTH_API,
+        "AuthenticateUserTicket/v1",
+        &[("appid", app_id.to_string()), ("ticket", ticket.to_string()), ("identity", TICKET_IDENTITY.to_string())],
+    ))
+}
+
+/// The SteamID64 an `AuthenticateUserTicket` answer vouches for.
+pub fn parse_ticket_owner(http_status: u16, body: &str) -> Result<u64, SteamError> {
+    match http_status {
+        200..=299 => {}
+        401 | 403 => return Err(SteamError::Config(format!("Steam AuthenticateUserTicket: HTTP {http_status} (the publisher key was rejected)"))),
+        400 | 404 => return Err(SteamError::Denied(format!("Steam AuthenticateUserTicket: HTTP {http_status}"))),
+        _ => return Err(SteamError::Transient(format!("Steam AuthenticateUserTicket: HTTP {http_status}"))),
+    }
+    let v: Value = serde_json::from_str(body).map_err(|_| SteamError::Transient("Steam AuthenticateUserTicket: not a JSON answer".into()))?;
+    let r = &v["response"];
+    if let Some(e) = r.get("error") {
+        return Err(SteamError::Denied(format!("Steam rejected the auth ticket: {} ({})", text(&e["errordesc"]), int(&e["errorcode"]))));
+    }
+    let p = &r["params"];
+    if !text(&p["result"]).eq_ignore_ascii_case("OK") {
+        return Err(SteamError::Denied("Steam did not accept the auth ticket".into()));
+    }
+    parse_steam_id(&text(&p["steamid"])).map_err(SteamError::Transient)
 }
 
 /// `GetUserInfo`: wallet currency, country and state of the player.
@@ -685,17 +708,7 @@ pub fn next_cursor_after_page(current: &str, txns: &[Txn], max_results: u32) -> 
     next
 }
 
-pub fn parse_time_ms(s: &str) -> Option<i64> {
-    crate::time::parse_rfc3339_ms(s)
-}
-
-/// `2024-01-23T18:30:00Z` (seconds precision, UTC).
-pub fn format_rfc3339(ms: i64) -> String {
-    let secs = ms.div_euclid(1000);
-    let (y, m, d) = crate::time::civil_from_days(secs.div_euclid(86_400));
-    let sod = secs.rem_euclid(86_400);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", sod / 3600, sod % 3600 / 60, sod % 60)
-}
+use crate::time::{format_rfc3339, parse_rfc3339_ms as parse_time_ms};
 
 /// `YYYYMMDD` → milliseconds at 00:00 UTC of that day.
 pub fn parse_yyyymmdd_ms(s: &str) -> Option<i64> {
@@ -897,6 +910,18 @@ mod tests {
         assert!(parse_prices(r#"{"USD": 0}"#).is_err());
         assert!(parse_prices("[1]").is_err());
         assert!(parse_prices("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn auth_tickets_name_their_owner() {
+        let c = authenticate_ticket_call(480, "0A1b").unwrap();
+        assert_eq!(c.url, "https://partner.steam-api.com/ISteamUserAuth/AuthenticateUserTicket/v1/?appid=480&ticket=0A1b&identity=purser");
+        assert!(authenticate_ticket_call(480, "xyz").is_err() && authenticate_ticket_call(480, "abc").is_err());
+        let ok = r#"{"response":{"params":{"result":"OK","steamid":"76561197960287930","ownersteamid":"76561197960287930"}}}"#;
+        assert_eq!(parse_ticket_owner(200, ok), Ok(76561197960287930));
+        let bad = r#"{"response":{"error":{"errorcode":101,"errordesc":"Invalid ticket"}}}"#;
+        assert!(matches!(parse_ticket_owner(200, bad), Err(SteamError::Denied(m)) if m.contains("Invalid ticket")));
+        assert!(matches!(parse_ticket_owner(503, ""), Err(SteamError::Transient(_))));
     }
 
     #[test]

@@ -11,28 +11,39 @@ namespace Purser
     /// <summary>Status values of Amazon Appstore SDK responses.</summary>
     public static class AmazonStatus
     {
+        /// <summary>The request succeeded.</summary>
         public const string Successful = "SUCCESSFUL";
+        /// <summary>The request failed (or the player cancelled the purchase).</summary>
         public const string Failed = "FAILED";
+        /// <summary>The SKU is not available in Amazon's catalog.</summary>
         public const string InvalidSku = "INVALID_SKU";
+        /// <summary>The player already owns this entitlement or subscription.</summary>
         public const string AlreadyPurchased = "ALREADY_PURCHASED";
+        /// <summary>The call is not supported on this device.</summary>
         public const string NotSupported = "NOT_SUPPORTED";
     }
 
     /// <summary>Amazon <c>productType</c> values.</summary>
     public static class AmazonProductType
     {
+        /// <summary>A consumable.</summary>
         public const string Consumable = "CONSUMABLE";
+        /// <summary>An entitlement (non-consumable).</summary>
         public const string Entitled = "ENTITLED";
+        /// <summary>A subscription.</summary>
         public const string Subscription = "SUBSCRIPTION";
     }
 
     /// <summary>Amazon <c>PurchaseReceipt</c>.</summary>
     public sealed class AmazonReceipt
     {
+        /// <summary>Receipt id the server verifies with Amazon's Receipt Verification Service.</summary>
         public string ReceiptId;
+        /// <summary>Purchased SKU.</summary>
         public string Sku;
         /// <summary><see cref="AmazonProductType"/>.</summary>
         public string ProductType;
+        /// <summary>Purchase time, Unix ms.</summary>
         public long PurchaseDate;
         /// <summary>0 = not canceled.</summary>
         public long CancelDate;
@@ -41,42 +52,63 @@ namespace Purser
     /// <summary>Amazon <c>ProductData</c>.</summary>
     public sealed class AmazonProduct
     {
+        /// <summary>Product SKU.</summary>
         public string Sku;
+        /// <summary><see cref="AmazonProductType"/>.</summary>
         public string ProductType;
         /// <summary>Localized price as Amazon formats it, e.g. <c>$0.99</c>.</summary>
         public string Price;
+        /// <summary>Localized title.</summary>
         public string Title;
+        /// <summary>Localized description.</summary>
         public string Description;
     }
 
+    /// <summary>Amazon <c>GetUserDataResponse</c>.</summary>
     public sealed class AmazonUserDataResponse
     {
+        /// <summary><see cref="AmazonStatus"/>.</summary>
         public string Status;
+        /// <summary>Amazon user id of the signed-in account.</summary>
         public string UserId;
+        /// <summary>Amazon marketplace, e.g. <c>US</c>.</summary>
         public string Marketplace;
     }
 
+    /// <summary>Amazon <c>GetProductDataResponse</c>.</summary>
     public sealed class AmazonProductDataResponse
     {
+        /// <summary><see cref="AmazonStatus"/>.</summary>
         public string Status;
+        /// <summary>Products Amazon returned.</summary>
         public List<AmazonProduct> Products = new List<AmazonProduct>();
+        /// <summary>Requested SKUs Amazon does not sell.</summary>
         public List<string> UnavailableSkus = new List<string>();
     }
 
+    /// <summary>Amazon <c>PurchaseResponse</c>.</summary>
     public sealed class AmazonPurchaseResponse
     {
+        /// <summary><see cref="AmazonStatus"/>.</summary>
         public string Status;
+        /// <summary>Amazon user id of the buyer.</summary>
         public string UserId;
         /// <summary>The SKU that was requested (to report failures).</summary>
         public string Sku;
+        /// <summary>The receipt when <see cref="Status"/> is <see cref="AmazonStatus.Successful"/>.</summary>
         public AmazonReceipt Receipt;
     }
 
+    /// <summary>Amazon <c>GetPurchaseUpdatesResponse</c> (one page).</summary>
     public sealed class AmazonPurchaseUpdatesResponse
     {
+        /// <summary><see cref="AmazonStatus"/>.</summary>
         public string Status;
+        /// <summary>Amazon user id of the signed-in account.</summary>
         public string UserId;
+        /// <summary>Receipts of this page.</summary>
         public List<AmazonReceipt> Receipts = new List<AmazonReceipt>();
+        /// <summary>More pages follow: the adapter asks for them.</summary>
         public bool HasMore;
     }
 
@@ -87,14 +119,22 @@ namespace Purser
     /// </summary>
     public interface IAmazonIap
     {
+        /// <summary>Answer of <see cref="GetUserData"/>.</summary>
         event Action<AmazonUserDataResponse> UserDataReceived;
+        /// <summary>Answer of <see cref="GetProductData"/>.</summary>
         event Action<AmazonProductDataResponse> ProductDataReceived;
+        /// <summary>Answer of <see cref="Purchase"/>.</summary>
         event Action<AmazonPurchaseResponse> PurchaseReceived;
+        /// <summary>Answer of <see cref="GetPurchaseUpdates"/>, one page at a time.</summary>
         event Action<AmazonPurchaseUpdatesResponse> PurchaseUpdatesReceived;
 
+        /// <summary><c>GetUserData()</c>.</summary>
         void GetUserData();
+        /// <summary><c>GetProductData(skus)</c>.</summary>
         void GetProductData(IReadOnlyList<string> skus);
+        /// <summary><c>Purchase(sku)</c>: shows Amazon's purchase dialog.</summary>
         void Purchase(string sku);
+        /// <summary><c>GetPurchaseUpdates(reset)</c>; <paramref name="reset"/> = all receipts, not only new ones.</summary>
         void GetPurchaseUpdates(bool reset);
         /// <summary><c>NotifyFulfillment(receiptId, FULFILLED | UNAVAILABLE)</c>.</summary>
         void NotifyFulfillment(string receiptId, bool fulfilled);
@@ -128,7 +168,9 @@ namespace Purser
         private TaskCompletionSource<bool> m_StartupUpdates;
         private IReadOnlyList<BillingProductConfig> m_RequestedProducts;
 
+        /// <inheritdoc/>
         public BillingPlatform Platform => BillingPlatform.Amazon;
+        /// <inheritdoc/>
         public string Store => BillingStores.Amazon;
 
         /// <summary>Amazon user id of the signed-in Amazon account (known after <see cref="ConnectAsync"/>).</summary>
@@ -137,10 +179,13 @@ namespace Purser
         /// <summary>Amazon marketplace of the user, e.g. <c>US</c>.</summary>
         public string Marketplace { get; private set; }
 
+        /// <inheritdoc/>
         public event Action<StoreOrder> OrderPending;
         /// <summary>Amazon has no deferred purchases.</summary>
         public event Action<StoreOrder> OrderDeferred { add { } remove { } }
+        /// <inheritdoc/>
         public event Action<StorePurchaseFailure> PurchaseFailed;
+        /// <inheritdoc/>
         public event Action<StoreOrder, bool, string> OrderFinished;
 
         /// <param name="iap">Bridge to the Amazon Appstore SDK.</param>
@@ -157,6 +202,8 @@ namespace Purser
             m_Iap.PurchaseUpdatesReceived += HandlePurchaseUpdates;
         }
 
+        /// <summary>Gets the Amazon user, then raises unfinished purchases of earlier sessions through
+        /// <see cref="OrderPending"/>.</summary>
         public async Task ConnectAsync(CancellationToken ct)
         {
             m_User = new TaskCompletionSource<AmazonUserDataResponse>();
@@ -173,6 +220,7 @@ namespace Purser
             m_Iap.GetPurchaseUpdates(false);
         }
 
+        /// <inheritdoc/>
         public async Task<IReadOnlyList<StoreProduct>> FetchProductsAsync(IReadOnlyList<BillingProductConfig> products, CancellationToken ct)
         {
             m_RequestedProducts = products;
@@ -197,6 +245,7 @@ namespace Purser
         /// <summary>Amazon has no account binding field; the ledger keeps consumables with their buyer.</summary>
         public void SetAccountBinding(string userId) { }
 
+        /// <inheritdoc/>
         public void Purchase(string storeProductId) => m_Iap.Purchase(storeProductId);
 
         /// <summary><c>NotifyFulfillment</c>: FULFILLED when the server granted the purchase, UNAVAILABLE when it
@@ -210,6 +259,7 @@ namespace Purser
             OrderFinished?.Invoke(order, true, null);
         }
 
+        /// <summary>All receipts Amazon reports for the user that are not canceled.</summary>
         public async Task<IReadOnlyList<StoreOrder>> FetchPurchasesAsync(CancellationToken ct)
         {
             // Amazon has one purchase updates stream: let the startup request finish first.
@@ -236,6 +286,7 @@ namespace Purser
         /// <summary>Restoring on Amazon is <see cref="FetchPurchasesAsync"/> (all owned receipts).</summary>
         public Task<bool> RestoreTransactionsAsync(CancellationToken ct) => Task.FromResult(true);
 
+        /// <summary>Unsubscribes from the bridge.</summary>
         public void Dispose()
         {
             m_Iap.UserDataReceived -= HandleUserData;
@@ -372,8 +423,9 @@ namespace Purser
                 var json = m_Storage.Load(FulfilledKey);
                 return string.IsNullOrEmpty(json) ? new List<string>() : JsonConvert.DeserializeObject<List<string>>(json) ?? new List<string>();
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                m_Log.Warning("Could not read the fulfilled Amazon receipts (they may be verified again): " + e.Message);
                 return new List<string>();
             }
         }
@@ -385,7 +437,14 @@ namespace Purser
             m_Fulfilled.Add(receiptId);
             if (m_Fulfilled.Count > MaxRemembered)
                 m_Fulfilled.RemoveRange(0, m_Fulfilled.Count - MaxRemembered);
-            m_Storage.Save(FulfilledKey, JsonConvert.SerializeObject(m_Fulfilled));
+            try
+            {
+                m_Storage.Save(FulfilledKey, JsonConvert.SerializeObject(m_Fulfilled));
+            }
+            catch (Exception e)
+            {
+                m_Log.Warning("Could not remember the fulfilled Amazon receipt (it may be verified again at the next launch): " + e.Message);
+            }
         }
     }
 }

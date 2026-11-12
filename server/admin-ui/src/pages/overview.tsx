@@ -5,20 +5,23 @@ import { proc, route } from "@/lib/api"
 import { fmtTime, usd } from "@/lib/format"
 import { useAsync } from "@/lib/hooks"
 import { revenueSummary } from "@/lib/revenue"
-import { STATUSES, type Overview } from "@/lib/types"
+import { isPurchaseStatus, STATUSES, type Overview, type PurchaseStatus } from "@/lib/types"
 import type { PageProps } from "@/routes"
+
+/** Listed even when no purchase is in them. */
+const ALWAYS_LISTED: readonly PurchaseStatus[] = ["completed", "verified"]
 
 export function OverviewPage({ go }: PageProps) {
   const [open, setOpen] = useState<string | null>(null)
   const { data, error, loading, reload } = useAsync(async ({ fresh }) => {
     const [health, overview, stats] = await Promise.all([
-      route("/healthz"),
+      route<{ version?: string } | null>("/healthz"),
       proc<Overview>("admin_overview"),
       revenueSummary(fresh).catch(() => null),
     ])
-    const byStatus = STATUSES.map((s) => ({ status: s, n: Number(overview.by_status[s] || 0) }))
+    const byStatus: { status: string; n: number }[] = STATUSES.map((s) => ({ status: s, n: Number(overview.by_status[s] || 0) }))
     // Statuses the page does not know yet still show up.
-    for (const [s, n] of Object.entries(overview.by_status)) if (!STATUSES.includes(s)) byStatus.push({ status: s, n: Number(n) })
+    for (const [s, n] of Object.entries(overview.by_status)) if (!isPurchaseStatus(s)) byStatus.push({ status: s, n: Number(n) })
     return { health, overview, byStatus, stats }
   })
 
@@ -42,7 +45,7 @@ export function OverviewPage({ go }: PageProps) {
       <div className="grid gap-6 lg:grid-cols-[1fr_2fr]">
         <Section title="Purchases by status">
           <DataTable
-            rows={data.byStatus.filter((s) => s.n > 0 || ["completed", "verified"].includes(s.status))}
+            rows={data.byStatus.filter((s) => s.n > 0 || (isPurchaseStatus(s.status) && ALWAYS_LISTED.includes(s.status)))}
             columns={[
               { title: "Status", cell: (r) => <StatusBadge status={r.status} /> },
               { title: "Count", cell: (r) => r.n.toLocaleString(), num: true },

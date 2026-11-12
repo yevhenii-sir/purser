@@ -7,7 +7,10 @@
  * constant, so the snapshot never reaches the page served by the module. */
 export const DEMO = __DEMO__
 
-export const DB_BASE = DEMO ? "/v1/database/billing-demo" : location.pathname.replace(/\/route\/admin\/?$/, "")
+/** Name of the demo database in its URLs. Not in demo.ts: a static import of it would put the snapshot into the module page. */
+const DEMO_DB = "billing-demo"
+
+export const DB_BASE = DEMO ? `/v1/database/${DEMO_DB}` : location.pathname.replace(/\/route\/admin\/?$/, "")
 export const ROUTE = DB_BASE + "/route"
 export const DB_NAME = decodeURIComponent(DB_BASE.split("/").pop() || "")
 export const SERVED_BY_MODULE = DEMO || /\/v1\/database\/[^/]+\/route\/admin\/?$/.test(location.pathname)
@@ -22,31 +25,40 @@ function storage(kind: "local" | "session"): Storage | null {
   }
 }
 
+/** The token when the browser refuses storage (private mode, blocked site data): kept for this page load only. */
+let memoryToken = ""
+
 export function getToken(): string {
   if (__DEMO__) return "demo"
-  return storage("session")?.getItem(TOKEN_KEY) || storage("local")?.getItem(TOKEN_KEY) || ""
+  try {
+    return storage("session")?.getItem(TOKEN_KEY) || storage("local")?.getItem(TOKEN_KEY) || memoryToken
+  } catch {
+    return memoryToken
+  }
 }
 
 export function setToken(token: string, remember: boolean) {
+  memoryToken = token
   try {
     storage("session")?.setItem(TOKEN_KEY, token)
     if (remember) storage("local")?.setItem(TOKEN_KEY, token)
   } catch {
-    // Private mode: the token lives in memory only for this page load.
+    // Storage refused or full: `memoryToken` holds it.
   }
 }
 
 export function clearToken() {
+  memoryToken = ""
   try {
     storage("session")?.removeItem(TOKEN_KEY)
     storage("local")?.removeItem(TOKEN_KEY)
   } catch {
-    // ignore
+    // Nothing could be stored either.
   }
 }
 
 /** `hex_identity` claim of locally issued tokens; SpacetimeAuth tokens have none. */
-export function tokenIdentity(token: string): string {
+function tokenIdentity(token: string): string {
   try {
     const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")))
     return String(payload.hex_identity || "")
@@ -55,12 +67,37 @@ export function tokenIdentity(token: string): string {
   }
 }
 
-export type Row = Record<string, any>
+/** A table row as `/sql` and `admin_read` return it. */
+export type Row = Record<string, unknown>
+
+/** A failed HTTP call; `status` tells a rejected token (401 / 403) from an unreachable or failing server. */
+export class HttpError extends Error {
+  readonly status: number
+  constructor(status: number, text: string) {
+    super(text || `HTTP ${status}`)
+    this.status = status
+  }
+}
+
+/** The token was rejected (as opposed to the network or the server failing). */
+export function isAuthError(e: unknown): boolean {
+  if (e instanceof HttpError && (e.status === 401 || e.status === 403)) return true
+  return (e instanceof Error ? e.message : String(e)).includes("[ERR_ADMIN_UNAUTHORIZED]")
+}
 
 function unwrap(v: unknown): unknown {
   // Identity / Timestamp etc. come as single-element products: ["0x..."]
   if (Array.isArray(v) && v.length === 1 && typeof v[0] !== "object") return v[0]
   return v
+}
+
+/** A read of one table: `/sql` for the owner, the `admin_read` procedure for other admins. */
+export interface Query {
+  table: string
+  /** Columns to return; every column when absent. */
+  columns?: readonly string[]
+  /** Only rows whose `column` equals `equals` (or one of them): one indexed look-up per value. */
+  where?: { column: string; equals: string | readonly string[] }
 }
 
 /** Admins who are not the database owner cannot read private tables with /sql: their reads go
@@ -70,40 +107,48 @@ export function setReadThroughProcedure(on: boolean) {
   readThroughProcedure = on
 }
 
-const SIMPLE_SELECT = /^\s*SELECT\s+(.+?)\s+FROM\s+(\w+)(?:\s+WHERE\s+(\w+)\s*=\s*'((?:[^']|'')*)')?\s*$/i
+const sqlStr = (v: string) => "'" + v.replace(/'/g, "''") + "'"
 
-/** The page's `SELECT <cols> FROM <table> [WHERE <col> = '<value>']` through `admin_read`. */
-async function readThroughAdminRead<T>(query: string): Promise<T[]> {
-  const m = SIMPLE_SELECT.exec(query)
-  if (!m) throw new Error("Only the database owner can run this query")
-  const [, cols, table, column = "", raw = ""] = m
-  const rows = await proc<Row[]>("admin_read", table, column, raw.replace(/''/g, "'"))
-  const count = /^COUNT\(\*\)\s+AS\s+(\w+)$/i.exec(cols.trim())
-  if (count) return [{ [count[1]]: rows.length }] as T[]
-  if (cols.trim() === "*") return rows as T[]
-  const names = cols.split(",").map((c) => c.trim())
-  return rows.map((r) => Object.fromEntries(names.map((n) => [n, r[n]]))) as T[]
+/** The (column, value) filters of a query; one without a filter is ("", ""), as `admin_read` takes it. */
+export function lookups(q: Query): [column: string, value: string][] {
+  if (!q.where) return [["", ""]]
+  const values = typeof q.where.equals === "string" ? [q.where.equals] : [...new Set(q.where.equals)]
+  return values.map((v) => [q.where!.column, v])
 }
 
+/** Only the `columns` of each row (all of them when absent). */
+export function project(rows: Row[], columns?: readonly string[]): Row[] {
+  return columns?.length ? rows.map((r) => Object.fromEntries(columns.map((c) => [c, r[c]]))) : rows
+}
+
+async function lookup(q: Query, column: string, value: string): Promise<Row[]> {
+  if (readThroughProcedure) return project(await proc<Row[]>("admin_read", q.table, column, value), q.columns)
+  const cols = q.columns?.length ? q.columns.join(", ") : "*"
+  return sql(`SELECT ${cols} FROM ${q.table}${column ? ` WHERE ${column} = ${sqlStr(value)}` : ""}`)
+}
+
+/** Rows of a table, as the signed-in admin may read them. */
+export async function select<T = Row>(q: Query): Promise<T[]> {
+  if (__DEMO__) return (await import("./demo")).select(q) as T[]
+  const lists = await Promise.all(lookups(q).map(([column, value]) => lookup(q, column, value)))
+  return lists.flat() as T[]
+}
+
+interface SqlResult {
+  schema: { elements: { name: { some: string } | string }[] }
+  rows: unknown[][]
+}
+
+/** Raw `/sql`: only the database owner may run it. Reads go through `select`. */
 export async function sql<T = Row>(query: string): Promise<T[]> {
-  if (__DEMO__) return (await import("./demo")).sql(query) as T[]
-  if (readThroughProcedure) return readThroughAdminRead<T>(query)
+  if (__DEMO__) return (await import("./demo")).sql()
   const res = await fetch(DB_BASE + "/sql", { method: "POST", headers: { Authorization: "Bearer " + getToken() }, body: query })
   const text = await res.text()
-  if (!res.ok) throw new Error(text || "HTTP " + res.status)
-  const result = JSON.parse(text)[0]
+  if (!res.ok) throw new HttpError(res.status, text)
+  const result = (JSON.parse(text) as SqlResult[])[0]
   // SpacetimeDB 2.10+ canonicalizes column names with digits (a_1b → a_1_b); map them back.
-  const cols: string[] = result.schema.elements.map((e: any) => String(e.name.some ?? e.name).replace(/([a-z])_(\d)/g, "$1$2"))
-  return result.rows.map((r: unknown[]) => Object.fromEntries(cols.map((c, i) => [c, unwrap(r[i])]))) as T[]
-}
-
-export const sqlStr = (v: unknown) => "'" + String(v).replace(/'/g, "''") + "'"
-
-/** Rows of `table` whose `column` (an indexed one) equals one of `values`: one indexed query per
- * value, run in parallel, instead of reading the whole table. */
-export async function sqlWhereIn<T = Row>(table: string, column: string, values: string[], columns = "*"): Promise<T[]> {
-  const lists = await Promise.all([...new Set(values)].map((v) => sql<T>(`SELECT ${columns} FROM ${table} WHERE ${column} = ${sqlStr(v)}`)))
-  return lists.flat()
+  const cols = result.schema.elements.map((e) => (typeof e.name === "string" ? e.name : e.name.some).replace(/([a-z])_(\d)/g, "$1$2"))
+  return result.rows.map((r) => Object.fromEntries(cols.map((c, i) => [c, unwrap(r[i])]))) as T[]
 }
 
 /** Calls a reducer or procedure; returns the raw response text. */
@@ -115,27 +160,28 @@ export async function call(name: string, ...args: unknown[]): Promise<string> {
     body: JSON.stringify(args),
   })
   const text = await res.text()
-  if (!res.ok) throw new Error(text.replace(/^Error: /, "") || "HTTP " + res.status)
+  if (!res.ok) throw new HttpError(res.status, text.replace(/^Error: /, ""))
   return text
 }
 
 /** Admin procedures return a JSON document as a string: `{"error": "..."}` on failure. */
-export async function proc<T = any>(name: string, ...args: unknown[]): Promise<T> {
-  let v = JSON.parse(await call(name, ...args))
+export async function proc<T = unknown>(name: string, ...args: unknown[]): Promise<T> {
+  let v: unknown = JSON.parse(await call(name, ...args))
   if (typeof v === "string") v = JSON.parse(v)
   if (v && typeof v === "object" && "error" in v) throw new Error(String(v.error))
   return v as T
 }
 
-export async function route(path: string, body?: unknown): Promise<{ status: number; json: any }> {
-  if (__DEMO__) return (await import("./demo")).route(path)
+/** A client route of the module (`/route/<path>`): its status and the JSON (or text) it answered. */
+export async function route<T = unknown>(path: string, body?: unknown): Promise<{ status: number; json: T }> {
+  if (__DEMO__) return (await import("./demo")).route(path) as { status: number; json: T }
   const init: RequestInit = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
   const res = await fetch(ROUTE + path, init)
   const text = await res.text()
   try {
     return { status: res.status, json: JSON.parse(text) }
   } catch {
-    return { status: res.status, json: text }
+    return { status: res.status, json: text as T }
   }
 }
 
@@ -143,7 +189,7 @@ let versionPromise: Promise<string> | null = null
 
 /** Version of the billing module (`/healthz`, the crate version); empty when the server does not say. */
 export function moduleVersion(): Promise<string> {
-  versionPromise ??= route("/healthz")
+  versionPromise ??= route<{ version?: unknown } | null>("/healthz")
     .then((r) => (typeof r.json?.version === "string" ? r.json.version : ""))
     .catch(() => "")
   return versionPromise
@@ -175,7 +221,7 @@ export async function createIdentity(): Promise<{ identity: string; token: strin
 }
 
 export async function getSetting(key: string): Promise<string> {
-  const rows = await sql<{ value: string }>(`SELECT value FROM server_state WHERE key = ${sqlStr(key)}`)
+  const rows = await select<{ value: string }>({ table: "server_state", columns: ["value"], where: { column: "key", equals: key } })
   return rows[0]?.value || ""
 }
 

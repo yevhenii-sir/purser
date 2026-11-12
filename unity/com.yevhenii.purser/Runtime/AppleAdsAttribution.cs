@@ -3,11 +3,10 @@ using System.Collections.Generic;
 #if UNITY_IOS && !UNITY_EDITOR
 using System.Runtime.InteropServices;
 #endif
-using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using UnityEngine.Networking;
 
 namespace Purser
 {
@@ -20,7 +19,9 @@ namespace Purser
     /// </summary>
     public sealed class AppleAdsAttributionProvider : IAttributionProvider
     {
+        /// <summary>Apple's attribution API the AdServices token is posted to.</summary>
         public const string ApiUrl = "https://api-adservices.apple.com/api/v1/";
+        private const int TimeoutSeconds = 15;
         private const string StorageKey = "purser.apple_ads";
         /// <summary>Launches that try again while Apple answers "no record yet" or is unreachable.</summary>
         private const int MaxLaunches = 5;
@@ -31,6 +32,7 @@ namespace Purser
         private readonly Func<string> m_TokenSource;
         private readonly Func<string, Task<(long Status, string Body)>> m_Post;
         private readonly Func<TimeSpan, Task> m_Delay;
+        private readonly BillingLog m_Log;
         private Task<Dictionary<string, string>> m_Resolve;
 
         private sealed class State
@@ -43,20 +45,23 @@ namespace Purser
         /// <param name="inner">The game's own attribution provider; its values are kept.</param>
         /// <param name="tokenSource">AdServices token (tests); defaults to the native plugin.</param>
         /// <param name="post">POST of the token to <see cref="ApiUrl"/> (tests).</param>
+        /// <param name="log">Where failures are reported (default: warnings to the Unity console).</param>
         public AppleAdsAttributionProvider(IAttributionProvider inner = null, IBillingStorage storage = null,
             Func<string> tokenSource = null, Func<string, Task<(long Status, string Body)>> post = null,
-            Func<TimeSpan, Task> delay = null)
+            Func<TimeSpan, Task> delay = null, BillingLog log = null)
         {
             m_Inner = inner;
             m_Storage = storage ?? new PlayerPrefsBillingStorage();
             m_TokenSource = tokenSource ?? NativeToken;
             m_Post = post ?? PostAsync;
             m_Delay = delay ?? (d => Task.Delay(d));
+            m_Log = log ?? new BillingLog(BillingLogLevel.Warning);
         }
 
         /// <summary>Starts resolving right away (on launch), so the first purchase does not wait for Apple.</summary>
         public Task WarmUpAsync() => Resolve();
 
+        /// <summary>The inner provider's values plus the Apple Ads ids, once Apple answered.</summary>
         public async Task<IDictionary<string, string>> GetAttributionAsync()
         {
             var result = new Dictionary<string, string>();
@@ -72,9 +77,9 @@ namespace Purser
                 foreach (var kv in await Resolve())
                     result[kv.Key] = kv.Value;
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // Attribution is best effort.
+                m_Log.Warning("Apple Ads attribution unavailable: " + e.Message);
             }
             return result;
         }
@@ -149,8 +154,9 @@ namespace Purser
                 var json = m_Storage.Load(StorageKey);
                 return string.IsNullOrEmpty(json) ? new State() : JsonConvert.DeserializeObject<State>(json) ?? new State();
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                m_Log.Warning("Could not read the Apple Ads attribution state: " + e.Message);
                 return new State();
             }
         }
@@ -161,9 +167,9 @@ namespace Purser
             {
                 m_Storage.Save(StorageKey, JsonConvert.SerializeObject(state));
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // Best effort: Apple is asked again on the next launch.
+                m_Log.Warning("Could not save the Apple Ads attribution state (Apple is asked again at the next launch): " + e.Message);
             }
         }
 
@@ -179,6 +185,7 @@ namespace Purser
             }
             catch (Exception)
             {
+                // The native plugin is missing or AdServices failed: there is no token to ask Apple with.
                 return null;
             }
         }
@@ -188,20 +195,8 @@ namespace Purser
 
         private static async Task<(long Status, string Body)> PostAsync(string token)
         {
-            using (var request = new UnityWebRequest(ApiUrl, "POST"))
-            {
-                request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(token));
-                request.SetRequestHeader("Content-Type", "text/plain");
-                request.downloadHandler = new DownloadHandlerBuffer();
-                request.timeout = 15;
-                var tcs = new TaskCompletionSource<bool>();
-                var operation = request.SendWebRequest();
-                operation.completed += _ => tcs.TrySetResult(true);
-                await tcs.Task;
-                if (request.result == UnityWebRequest.Result.ConnectionError)
-                    return (0, null);
-                return (request.responseCode, request.downloadHandler?.text);
-            }
+            var res = await UnityWebRequestTransport.Send("POST", ApiUrl, token, "text/plain", TimeoutSeconds, CancellationToken.None);
+            return (res.Status, res.IsTransportError ? null : res.Body);
         }
     }
 }

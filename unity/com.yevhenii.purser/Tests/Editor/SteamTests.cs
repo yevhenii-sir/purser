@@ -8,7 +8,7 @@ using NUnit.Framework;
 
 namespace Purser.Tests
 {
-    internal sealed class FakeSteamBridge : ISteamMicroTxnBridge
+    internal class FakeSteamBridge : ISteamMicroTxnBridge
     {
         public bool IsReady { get; set; } = true;
         public ulong SteamId { get; set; } = 76561197960287930UL;
@@ -17,6 +17,19 @@ namespace Purser.Tests
 
         public void Answer(ulong orderId, bool authorized) => AuthorizationReceived?.Invoke(480, orderId, authorized);
         public int Subscribers => AuthorizationReceived?.GetInvocationList().Length ?? 0;
+    }
+
+    internal sealed class FakeSteamTicketBridge : FakeSteamBridge, ISteamWebApiTicketProvider
+    {
+        public string Ticket = "140000006A7B3C2D";
+        public Exception Error;
+        public readonly List<string> Identities = new List<string>();
+
+        public Task<string> GetWebApiTicketAsync(string identity, CancellationToken ct)
+        {
+            Identities.Add(identity);
+            return Error != null ? Task.FromException<string>(Error) : Task.FromResult(Ticket);
+        }
     }
 
     public sealed class SteamStoreAdapterTests
@@ -95,6 +108,7 @@ namespace Purser.Tests
             Assert.AreEqual(User, (string)body["user_id"]);
             Assert.AreEqual("76561197960287930", (string)body["steam_id"]);
             Assert.AreEqual("german", (string)body["language"]);
+            Assert.IsNull(body["ticket"], "no ticket without an ISteamWebApiTicketProvider");
             Assert.IsEmpty(m_Api.VerifyRequests);
 
             m_Bridge.Answer(Order, true);
@@ -197,6 +211,70 @@ namespace Purser.Tests
             m_Adapter.OrderPending += raised.Add;
             Assert.DoesNotThrow(() => Sync.Run(m_Adapter.ConnectAsync(CancellationToken.None)), "null entries are dropped");
             Assert.AreEqual("5", raised.Single().TransactionId);
+        }
+
+        [Test]
+        public void Checkout_SendsTheWebApiTicket()
+        {
+            var bridge = new FakeSteamTicketBridge();
+            m_Bridge = bridge;
+            CreateService();
+            m_Service.PurchaseAsync("gems_100");
+            var body = JObject.Parse(m_Server.Requests.Single().Body);
+            Assert.AreEqual("140000006A7B3C2D", (string)body["ticket"]);
+            CollectionAssert.AreEqual(new[] { SteamStoreAdapter.WebApiTicketIdentity }, bridge.Identities);
+            Assert.AreEqual("purser", SteamStoreAdapter.WebApiTicketIdentity, "the identity the server checks");
+        }
+
+        [Test]
+        public void NoWebApiTicket_CheckoutGoesWithoutIt()
+        {
+            var bridge = new FakeSteamTicketBridge { Error = new InvalidOperationException("Steam is offline") };
+            m_Bridge = bridge;
+            CreateService();
+            m_Service.PurchaseAsync("gems_100");
+            Assert.IsNull(JObject.Parse(m_Server.Requests.Single().Body)["ticket"]);
+
+            bridge.Error = null;
+            bridge.Ticket = "";
+            m_Server.Requests.Clear();
+            m_Service.PurchaseAsync("no_ads");
+            Assert.IsNull(JObject.Parse(m_Server.Requests.Single().Body)["ticket"], "an empty ticket is left out");
+        }
+
+        [Test]
+        public void OrderCheckedOutBeforeARestart_IsVerifiedWhenAuthorizedAfterIt()
+        {
+            CreateService();
+            m_Service.PurchaseAsync("no_ads");
+            m_Service.Dispose();
+            m_Adapter.Dispose();
+
+            m_Api = new FakeApi();
+            CreateService();
+            Assert.IsEmpty(m_Api.VerifyRequests, "a checkout the player has not answered is not verified");
+            m_Bridge.Answer(Order, true);
+
+            var verify = m_Api.VerifyRequests.Single();
+            Assert.AreEqual(Order.ToString(), verify.OrderId);
+            Assert.AreEqual("no_ads", verify.ProductId, "the product is known from the checkout");
+            Assert.AreEqual(User, verify.UserId);
+            Assert.AreEqual("[]", m_Storage.Load("purser.steam.started"));
+            Assert.AreEqual("[]", m_Storage.Load("purser.steam.authorized"));
+        }
+
+        [Test]
+        public void OrderDeclinedAfterARestart_IsForgotten()
+        {
+            CreateService();
+            m_Service.PurchaseAsync("no_ads");
+            m_Service.Dispose();
+            m_Adapter.Dispose();
+
+            CreateService();
+            m_Bridge.Answer(Order, false);
+            Assert.IsEmpty(m_Api.VerifyRequests);
+            Assert.AreEqual("[]", m_Storage.Load("purser.steam.started"));
         }
 
         [Test]

@@ -93,6 +93,14 @@ pub fn parse_day(s: &str) -> Option<i32> {
     Some(days_from_civil(y, m, d) as i32)
 }
 
+/// `2024-01-23T18:30:00Z` (seconds precision, UTC).
+pub fn format_rfc3339(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
+    let sod = secs.rem_euclid(86_400);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", sod / 3600, sod % 3600 / 60, sod % 60)
+}
+
 /// `2026-11-09 14:05 UTC` for a Unix timestamp in milliseconds.
 pub fn format_ms_utc(ms: i64) -> String {
     let secs = ms.div_euclid(1000);

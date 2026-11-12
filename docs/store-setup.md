@@ -50,7 +50,7 @@ The Issuer ID is the same as for the In-App Purchase key (`apple_issuer_id`). Th
 
 ### App Store Server Notifications
 
-App Store Connect → the app → **App Information → App Store Server Notifications**: **Version 2**, the same URL for Production and Sandbox: `https://<host>/v1/database/<db>/route/notify/apple` (add `?secret=…` if you set `apple_notification_secret`).
+App Store Connect → the app → **App Information → App Store Server Notifications**: **Version 2**, the same URL for Production and Sandbox: `https://<host>/v1/database/<db>/route/notify/apple` (add `?secret=…` if you set `apple_notification_secret`). The server accepts only notifications signed by Apple, so the secret is optional.
 
 Each setup check asks Apple to send a test notification; the next check shows whether Apple delivered it.
 
@@ -96,6 +96,7 @@ Developer Console → **Apps & Services → Shared Key** → copy it into `amazo
 1. Developer Console → the app → **App Services → Real-Time Notifications → Add an Endpoint** → the URL from the app's Setup tab: `https://<host>/v1/database/<db>/route/notify/amazon?app=<app id>`.
 2. Amazon sends a confirmation message to the endpoint. Run the setup check: it shows the **confirmation token**. Paste it into the console's *Confirmation token* field and confirm (the token is valid for 48 hours; *Resend* gets a new one).
 3. The endpoint status turns *Verified*; notifications appear as *Last notification* in the setup check.
+4. The setup check shows the SNS topic the messages come from. Copy it into **SNS topic** on the app's Delivery tab: from then on only that topic is accepted (otherwise any AWS account could send signed messages to the endpoint).
 
 Messages are verified with their Amazon SNS signature; a wrong signature shows up as *notifications are rejected*. Without RTN, Amazon subscriptions are re-checked by the server shortly after each renewal date, and refunds of consumables and entitlements are not noticed.
 
@@ -196,7 +197,7 @@ The setup check fails for products that have no price at all.
 
 ### Purchase flow
 
-1. The game calls `POST /checkout/steam` with the product, the player's user id, SteamID64 (`ISteamUser::GetSteamID`) and language (`ISteamApps::GetCurrentGameLanguage`). The server calls `GetUserInfo` and `InitTxn` and returns the order id. Steam shows the overlay.
+1. The game calls `POST /checkout/steam` with the product, the player's user id, SteamID64 (`ISteamUser::GetSteamID`), language (`ISteamApps::GetCurrentGameLanguage`) and a Web API auth ticket (`ISteamUser::GetAuthTicketForWebApi("purser")`, hex). The server checks that the ticket belongs to the SteamID, calls `GetUserInfo` and `InitTxn` and returns the order id. Steam shows the overlay.
 2. The game receives `MicroTxnAuthorizationResponse_t` and, when the player authorized, calls `POST /verify/steam` with the order id. The server calls `FinalizeTxn` and `QueryTxn`, records the purchase and delivers the reward like any other store.
 3. If the game dies in between, the worker finds the authorized order through `QueryTxn` and finishes it; the player gets the reward through delivery (or `/entitlements` / restore for owned products). Orders the player never authorizes are given up after a day.
 
@@ -207,6 +208,10 @@ Every 5 minutes per build the worker asks `GetReport` (type `GAMESALES`) for tra
 ### Subscriptions
 
 A `subscription` product is sold as a Steam-billed recurring agreement (`billingtype Steam`, `period` Day / Week / Month / Year, `frequency` periods between charges, default monthly; the renewal amount is the first charge). The ledger keeps one row per agreement: it runs until the day after `nextpayment` from `GetUserAgreementInfo`, and the worker asks again after that day; a renewal moves the expiry on (the game gets `grant` again), a canceled agreement ends when its paid period does. Renewal payments are not added to revenue as separate transactions. Steam allows one active agreement per player and game: a new agreement replaces the previous one.
+
+### Auth tickets
+
+Without a ticket, anyone who knows a player's SteamID could start orders in their name. Once every build of the game sends tickets (the Unity package does when the bridge implements `ISteamWebApiTicketProvider`, as the sample does), set `"require_ticket": true` with `admin_set_steam_build`: checkouts without a valid ticket are then refused. The setup check warns while it is off.
 
 ### Testing
 

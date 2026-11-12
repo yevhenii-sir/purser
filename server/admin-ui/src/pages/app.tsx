@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import {
-  BellRingIcon, ChartLineIcon, Gamepad2Icon, PencilIcon, GlobeIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PlugIcon, ReceiptIcon,
-  RefreshCwIcon, SendIcon, ShoppingBagIcon, SmartphoneIcon, SparklesIcon, TabletSmartphoneIcon, Trash2Icon, WebhookIcon, type LucideIcon,
+  BellRingIcon, ChartLineIcon, PencilIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PlugIcon, ReceiptIcon,
+  RefreshCwIcon, SendIcon, SmartphoneIcon, SparklesIcon, Trash2Icon, WebhookIcon, type LucideIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -10,18 +10,21 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { AccountSelect, accountsOf } from "@/components/account-select"
+import { AccountSelect } from "@/components/account-select"
 import { AddGameWizard } from "@/components/add-game-wizard"
 import { CopyField, DataTable, ErrorBox, Field, LevelBadge, Loading, Mono, Section, Tone } from "@/components/common"
-import { ReportView, reportUrls } from "@/components/report"
+import { DeliveryFields } from "@/components/delivery-fields"
+import { KINDS } from "@/components/integration-kinds"
+import { ReportView } from "@/components/report"
 import { SecretDialog, type SecretTarget } from "@/components/secret-dialog"
-import { call, genSecret, proc, publicRoute, sql, sqlStr } from "@/lib/api"
-import { appsChanged, useApps, type AppGroup } from "@/lib/apps"
-import { checkBuilds } from "@/lib/checks"
-import { buildLabel, platformById, storeOf, STORE_SECRETS } from "@/lib/stores"
-import { tryAct, useAsync } from "@/lib/hooks"
+import { call, proc, publicRoute, select } from "@/lib/api"
+import { accountsOf, appsChanged, useApps, type AppGroup } from "@/lib/apps"
+import { checkBuilds, replaceRtdnSecret, reportUrls } from "@/lib/checks"
+import { DELIVERY_DEFAULTS, type DeliverySettings } from "@/lib/delivery"
+import { buildLabel, PLATFORM_ICON, platformById, storeOf, STORE_SECRETS } from "@/lib/stores"
+import { tryAct, useAsync, useCopy } from "@/lib/hooks"
 import type { GameApp, IntegrationHealth, Level, Report } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn, parseJsonOr } from "@/lib/utils"
 import { AppIntegrationsTab } from "@/pages/app-integrations"
 import { AppPaywallsTab } from "@/pages/app-paywalls"
 import { AppProductsTab } from "@/pages/app-products"
@@ -57,26 +60,16 @@ export interface TabProps {
 
 /** Per-build rows of the app's builds, read by key (`game_app` comes from the shared `useApps`). */
 async function loadApp(ids: string[]): Promise<Omit<AppData, "group" | "accounts">> {
-  const each = async <T,>(query: (id: string) => string) => (await Promise.all(ids.map((id) => sql<T>(query(id))))).flat()
+  const byApp = { column: "app_id", equals: ids }
   const [creds, integrations, health, checks] = await Promise.all([
-    sql<{ key: string }>("SELECT key FROM credential"),
-    each<AppData["integrations"][number]>((id) => `SELECT * FROM integration WHERE app_id = ${sqlStr(id)}`),
-    each<IntegrationHealth>((id) => `SELECT * FROM integration_health WHERE app_id = ${sqlStr(id)}`),
-    each<{ app_id: string; report_json: string }>((id) => `SELECT app_id, report_json FROM app_check WHERE app_id = ${sqlStr(id)}`),
+    select<{ key: string }>({ table: "credential", columns: ["key"] }),
+    select<AppData["integrations"][number]>({ table: "integration", where: byApp }),
+    select<IntegrationHealth>({ table: "integration_health", where: byApp }),
+    select<{ app_id: string; report_json: string }>({ table: "app_check", columns: ["app_id", "report_json"], where: byApp }),
   ])
   const reports: Record<string, Report | null> = {}
-  for (const h of checks) {
-    try { reports[h.app_id] = JSON.parse(h.report_json) } catch { reports[h.app_id] = null }
-  }
+  for (const h of checks) reports[h.app_id] = parseJsonOr<Report | null>(h.report_json, null)
   return { creds: new Set(creds.map((c) => c.key)), integrations, health, reports }
-}
-
-export const PLATFORM_ICON: Record<string, LucideIcon> = {
-  android: SmartphoneIcon,
-  ios: TabletSmartphoneIcon,
-  amazon: ShoppingBagIcon,
-  steam: Gamepad2Icon,
-  web: GlobeIcon,
 }
 
 const LEVEL_DOT: Partial<Record<Level, [string, string]>> = {
@@ -89,11 +82,11 @@ const LEVEL_DOT: Partial<Record<Level, [string, string]>> = {
 function BuildChip({ app, level }: { app: GameApp; level?: Level }) {
   const Icon = PLATFORM_ICON[app.platform] || SmartphoneIcon
   const [dot, hint] = (level && LEVEL_DOT[level]) || ["bg-muted-foreground/40", "Not checked yet"]
-  const copy = () => navigator.clipboard?.writeText(app.app_id).then(() => toast.success(`Copied ${app.app_id}`))
+  const { copy } = useCopy()
   return (
     <button
       type="button"
-      onClick={copy}
+      onClick={() => copy(app.app_id, `Copied ${app.app_id}`)}
       title={`${hint}. Click to copy the app id.`}
       className={cn(
         "group inline-flex max-w-full items-center gap-2 rounded-lg border bg-card py-1 ps-1 pe-2.5 text-start shadow-xs transition-colors hover:bg-muted",
@@ -236,10 +229,11 @@ function SetupTab({ data, reload }: TabProps) {
     reload()
   }
   const newRtdn = async (appId: string) => {
-    if (!confirm("Replace the RTDN secret? Notifications fail until the Pub/Sub push URL is updated.")) return
-    const secret = genSecret()
-    const ok = await tryAct(() => call("admin_set_credential", appId, "google_rtdn_secret", secret), "New secret saved: copy the URL now")
-    if (ok !== undefined) { setSecrets({ google_rtdn_secret: secret }); await tryAct(() => proc("admin_check_app", appId, JSON.stringify({ online: false, apple_test: false }))); reload() }
+    const secret = await replaceRtdnSecret(appId)
+    if (secret) {
+      setSecrets({ google_rtdn_secret: secret })
+      reload()
+    }
   }
   return (
     <>
@@ -290,8 +284,7 @@ function SetupTab({ data, reload }: TabProps) {
 // Delivery: how rewards reach the app, shared by its builds
 // ---------------------------------------------------------------------------------------------
 
-type Common = Pick<GameApp, "delivery" | "spacetime_url" | "spacetime_db" | "grant_reducer" | "revoke_reducer" | "args_format" | "webhook_url">
-type Flags = Pick<GameApp, "enabled" | "allow_sandbox" | "client_consumes" | "account" | "apple_refund_mode">
+type Flags = Pick<GameApp, "enabled" | "allow_sandbox" | "client_consumes" | "account" | "apple_refund_mode" | "sns_topic_arn">
 
 const REFUND_MODES = [
   { value: "off", label: "Don't answer" },
@@ -302,13 +295,15 @@ const REFUND_MODES = [
 function DeliveryTab({ data, reload, go }: TabProps) {
   const g = data.group
   const first = g.apps[0]
-  const [common, setCommon] = useState<Common>({
-    delivery: first.delivery, spacetime_url: first.spacetime_url || "https://maincloud.spacetimedb.com", spacetime_db: first.spacetime_db,
-    grant_reducer: first.grant_reducer || "billing_grant", revoke_reducer: first.revoke_reducer || "billing_revoke", args_format: first.args_format || "v1", webhook_url: first.webhook_url,
+  const [common, setCommon] = useState<DeliverySettings>({
+    delivery: first.delivery, spacetime_db: first.spacetime_db, webhook_url: first.webhook_url,
+    spacetime_url: first.spacetime_url || DELIVERY_DEFAULTS.spacetime_url,
+    grant_reducer: first.grant_reducer || DELIVERY_DEFAULTS.grant_reducer,
+    revoke_reducer: first.revoke_reducer || DELIVERY_DEFAULTS.revoke_reducer,
+    args_format: first.args_format || DELIVERY_DEFAULTS.args_format,
   })
   const [flags, setFlags] = useState<Record<string, Flags>>(() =>
-    Object.fromEntries(g.apps.map((a) => [a.app_id, { enabled: a.enabled, allow_sandbox: a.allow_sandbox, client_consumes: a.client_consumes, account: a.account || "default", apple_refund_mode: a.apple_refund_mode || "off" }])))
-  const set = <K extends keyof Common>(k: K, v: Common[K]) => setCommon((c) => ({ ...c, [k]: v }))
+    Object.fromEntries(g.apps.map((a) => [a.app_id, { enabled: a.enabled, allow_sandbox: a.allow_sandbox, client_consumes: a.client_consumes, account: a.account || "default", apple_refund_mode: a.apple_refund_mode || "off", sns_topic_arn: a.sns_topic_arn || "" }])))
   const differs = g.apps.some((a) => a.delivery !== first.delivery || a.spacetime_db !== first.spacetime_db || a.webhook_url !== first.webhook_url)
 
   const save = async () => {
@@ -341,35 +336,7 @@ function DeliveryTab({ data, reload, go }: TabProps) {
       <Section title="Reward delivery" description="How purchases reach the app. Shared by all its builds."
         actions={<Button onClick={save}>Save</Button>}>
         {differs && <p className="mb-4 text-sm text-amber-700 dark:text-amber-400">The builds have different settings now; saving applies these to all of them.</p>}
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Delivery">
-            <Select value={common.delivery} onValueChange={(v) => set("delivery", v as GameApp["delivery"])}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="spacetimedb">Reducers in the app's SpacetimeDB database</SelectItem>
-                <SelectItem value="webhook">Webhook to the app backend</SelectItem>
-                <SelectItem value="none">No backend: the client grants rewards</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-          {common.delivery === "spacetimedb" && (
-            <>
-              <Field label="SpacetimeDB server (https, allowed host)"><Input value={common.spacetime_url} onChange={(e) => set("spacetime_url", e.target.value)} /></Field>
-              <Field label="Database name"><Input value={common.spacetime_db} onChange={(e) => set("spacetime_db", e.target.value)} /></Field>
-              <Field label="Grant reducer"><Input value={common.grant_reducer} onChange={(e) => set("grant_reducer", e.target.value)} /></Field>
-              <Field label="Revoke reducer"><Input value={common.revoke_reducer} onChange={(e) => set("revoke_reducer", e.target.value)} /></Field>
-              <Field label="Arguments format" hint="legacy: only for apps migrated from Adapty">
-                <Select value={common.args_format} onValueChange={(v) => set("args_format", v)}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent><SelectItem value="v1">v1</SelectItem><SelectItem value="legacy">legacy</SelectItem></SelectContent>
-                </Select>
-              </Field>
-            </>
-          )}
-          {common.delivery === "webhook" && (
-            <Field label="Webhook URL (https)" className="sm:col-span-2"><Input value={common.webhook_url} onChange={(e) => set("webhook_url", e.target.value)} /></Field>
-          )}
-        </div>
+        <DeliveryFields value={common} onChange={(patch) => setCommon((c) => ({ ...c, ...patch }))} />
       </Section>
       <Section title="Builds" description="Each build reads its store keys from its developer account: a game can be published on Google Play, the App Store and the Amazon Appstore from different accounts.">
         <DataTable
@@ -402,6 +369,13 @@ function DeliveryTab({ data, reload, go }: TabProps) {
                 </Select>
               ),
             }] : []),
+            ...(g.apps.some((a) => storeOf(a).id === "amazon") ? [{
+              title: "SNS topic",
+              cell: (a: GameApp) => storeOf(a).id !== "amazon" ? <span className="text-muted-foreground">-</span> : (
+                <Input className="h-8 w-72 font-mono text-xs" placeholder="arn:aws:sns:us-east-1:...:..." value={flags[a.app_id]?.sns_topic_arn || ""}
+                  onChange={(e) => setFlags((f) => ({ ...f, [a.app_id]: { ...f[a.app_id], sns_topic_arn: e.target.value.trim() } }))} />
+              ),
+            }] : []),
             {
               title: "",
               className: "text-right",
@@ -416,6 +390,7 @@ function DeliveryTab({ data, reload, go }: TabProps) {
         />
         <p className="mt-3 text-xs text-muted-foreground">
           Client consumes: the Android client consumes purchases itself (e.g. still through Adapty); otherwise consumed purchases unknown to the ledger are rejected as granted elsewhere.
+          SNS topic: Amazon notifications are accepted only from this topic (the setup check shows the topic they come from).
           Refund requests: when an App Store player asks for a refund, Apple asks the server whether the purchase was delivered and used; the answer is sent only for players who consented in the game (<Mono>SetRefundDataConsent</Mono> in the Unity package).
           Press Save above to apply.
         </p>
@@ -430,19 +405,20 @@ function DeliveryTab({ data, reload, go }: TabProps) {
 
 /** Secrets usually shared by a developer account; the rest belong to one build. */
 const ACCOUNT_SECRETS = new Set([
-  ...STORE_SECRETS.filter((s) => s.account_wide).map((s) => s.name), "appsflyer_s2s_key", "tenjin_sdk_key", "spacetime_token", "webhook_secret",
+  ...STORE_SECRETS.filter((s) => s.account_wide).map((s) => s.name),
+  ...Object.values(KINDS).filter((k) => k.secretScope === "account").map((k) => k.secret),
+  "spacetime_token", "webhook_secret",
 ])
-const INTEGRATION_SECRET: Record<string, string> = {
-  ga4: "ga4_api_secret", appsflyer: "appsflyer_s2s_key", tenjin: "tenjin_sdk_key", webhook: "integration_webhook_secret",
-  adjust: "adjust_s2s_token", appmetrica: "appmetrica_post_api_key", gcs: "gcs_service_account_json",
-}
 
-/** (secret, required) pairs a build needs with its current store, delivery and integrations. */
-function neededSecrets(a: GameApp, kinds: string[]): [string, boolean][] {
+/** (secret, required) pairs a build needs with its current store, delivery and enabled integrations. */
+function neededSecrets(a: GameApp, integrations: AppData["integrations"]): [string, boolean][] {
   const out: [string, boolean][] = storeOf(a).secrets.map((s) => [s.name, s.need !== "optional"])
   if (a.delivery === "spacetimedb") out.push(["spacetime_token", true])
   if (a.delivery === "webhook") out.push(["webhook_secret", true])
-  for (const k of kinds) if (INTEGRATION_SECRET[k]) out.push([INTEGRATION_SECRET[k], true])
+  for (const i of integrations) {
+    const kind = KINDS[i.kind as keyof typeof KINDS]
+    if (kind && i.app_id === a.app_id && i.enabled) out.push([kind.secret, true])
+  }
   return out
 }
 
@@ -457,17 +433,18 @@ function KeysTab({ data, reload }: TabProps) {
     }
     return null
   }
+  const needed = new Map(g.apps.map((a) => [a.app_id, neededSecrets(a, data.integrations)]))
+  const needs = (a: GameApp, name: string) => !!needed.get(a.app_id)?.some(([n]) => n === name)
   const names = new Map<string, boolean>()
-  for (const a of g.apps) {
-    const kinds = data.integrations.filter((i) => i.app_id === a.app_id && i.enabled).map((i) => i.kind)
-    for (const [n, req] of neededSecrets(a, kinds)) names.set(n, (names.get(n) || false) || req)
+  for (const list of needed.values()) {
+    for (const [n, req] of list) names.set(n, (names.get(n) || false) || req)
   }
   const rows = [...names.entries()].map(([name, required]) => ({ name, required }))
   const accounts = [...new Set(g.apps.map((a) => a.account || "default"))]
   /** Several developer accounts exist: a store key in `default` would be used by the wrong account's apps. */
   const sharedDefault = data.accounts.length > 0
   const open = (name: string) => {
-    const apps = g.apps.filter((a) => neededSecrets(a, data.integrations.filter((i) => i.app_id === a.app_id && i.enabled).map((i) => i.kind)).some(([n]) => n === name))
+    const apps = g.apps.filter((a) => needs(a, name))
     const appScopes = apps.map((a) => ({ value: a.app_id, label: `Only the ${buildLabel(a)} build (${a.app_id})` }))
     const accountScopes = [...new Set(apps.map((a) => a.account || "default"))].filter((acc) => acc !== "default").map((acc) => ({
       value: acc,
@@ -493,8 +470,7 @@ function KeysTab({ data, reload }: TabProps) {
             ...g.apps.map((a) => ({
               title: buildLabel(a),
               cell: (r: { name: string; required: boolean }) => {
-                const needed = neededSecrets(a, data.integrations.filter((i) => i.app_id === a.app_id && i.enabled).map((i) => i.kind)).some(([n]) => n === r.name)
-                if (!needed) return <span className="text-muted-foreground">—</span>
+                if (!needs(a, r.name)) return <span className="text-muted-foreground">—</span>
                 const from = resolve(r.name, a)
                 if (from === "default" && sharedDefault && ACCOUNT_SECRETS.has(r.name)) {
                   return <span title={`This key is in default, shared by every account without its own key. Set it for account ${a.account} if this build is published from its own account.`}><Tone tone="warn">default</Tone></span>

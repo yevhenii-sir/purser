@@ -7,7 +7,7 @@ use crate::model::kind;
 use serde::Serialize;
 use serde_json::Value;
 
-const API: &str = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications";
+use crate::google::API;
 pub const PAGE_SIZE: u32 = 100;
 
 /// A product as the store lists it.
@@ -52,19 +52,19 @@ pub fn money_micros(m: &Value) -> Option<(i64, String)> {
         _ => return None,
     };
     let nanos = m["nanos"].as_i64().unwrap_or(0);
-    Some((units * 1_000_000 + nanos / 1000, currency))
+    Some((crate::money::from_units_nanos(units, nanos)?, currency))
 }
 
 /// ISO 8601 billing period (`P1W`, `P1M`, `P3M`, `P1Y`, ...) → approximate days.
 pub fn period_days(iso: &str) -> u32 {
     let Some(rest) = iso.strip_prefix('P') else { return 0 };
-    let (num, unit) = rest.split_at(rest.len().saturating_sub(1));
-    let n: u32 = num.parse().unwrap_or(0);
+    let Some(unit) = rest.chars().last() else { return 0 };
+    let n: u32 = rest[..rest.len() - unit.len_utf8()].parse().unwrap_or(0);
     match unit {
-        "D" => n,
-        "W" => n * 7,
-        "M" => n * 30,
-        "Y" => n * 365,
+        'D' => n,
+        'W' => n.saturating_mul(7),
+        'M' => n.saturating_mul(30),
+        'Y' => n.saturating_mul(365),
         _ => 0,
     }
 }
@@ -257,8 +257,8 @@ pub mod apple {
             .ok_or_else(|| format!("App Store Connect has no app with bundle id {bundle_id} for this key"))
     }
 
-    /// `subscriptionPeriod` → days.
-    pub fn period_days(period: &str) -> u32 {
+    /// `subscriptionPeriod` (`ONE_MONTH`) → days.
+    pub fn subscription_period_days(period: &str) -> u32 {
         match period {
             "ONE_WEEK" => 7,
             "ONE_MONTH" => 30,
@@ -310,7 +310,7 @@ pub mod apple {
             .filter(|i| i["type"].as_str() == Some("subscriptions"))
             .filter_map(|s| {
                 let a = &s["attributes"];
-                Some(product(a["productId"].as_str()?, kind::SUBSCRIPTION, period_days(a["subscriptionPeriod"].as_str().unwrap_or(""))))
+                Some(product(a["productId"].as_str()?, kind::SUBSCRIPTION, subscription_period_days(a["subscriptionPeriod"].as_str().unwrap_or(""))))
             })
             .collect();
         Ok((products, next_link(&v)))

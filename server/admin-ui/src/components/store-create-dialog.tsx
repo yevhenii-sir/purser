@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
-import { call, proc, sqlWhereIn } from "@/lib/api"
+import { call, proc, select } from "@/lib/api"
 import { buildLabel, creatorBuilds, storeOf } from "@/lib/stores"
 import { errorText } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
@@ -290,7 +290,7 @@ const jobTone = { pending: "warn", done: "ok", failed: "bad" } as const
 /** Products being created in the stores (and the results until dismissed), refreshed while any is running. */
 export function StoreJobs({ apps, onFinished }: { apps: GameApp[]; onFinished: () => void }) {
   const ids = apps.map((a) => a.app_id)
-  const jobs = useAsync(() => sqlWhereIn<StoreCreateJob>("store_create_job", "app_id", ids), [ids.join(",")])
+  const jobs = useAsync(() => select<StoreCreateJob>({ table: "store_create_job", where: { column: "app_id", equals: ids } }), [ids.join(",")])
   const list = useMemo(() => [...(jobs.data || [])].sort((a, b) => Number(b.id) - Number(a.id)), [jobs.data])
   const pending = list.some((j) => j.status === "pending")
   const done = list.filter((j) => j.status === "done").length

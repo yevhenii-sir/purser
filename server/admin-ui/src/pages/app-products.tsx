@@ -12,7 +12,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
 import { StoreCreateDialog, StoreJobs } from "@/components/store-create-dialog"
-import { call, proc, publicRoute, sqlWhereIn } from "@/lib/api"
+import { call, proc, publicRoute, select } from "@/lib/api"
 import { buildLabel, creatorBuilds, storeById, storeOf } from "@/lib/stores"
 import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
@@ -22,6 +22,7 @@ import type { TabProps } from "@/pages/app"
 import { appRoute } from "@/routes"
 import { useCan } from "@/lib/roles"
 import { parseUnityConfig, productIdIn, toUnityConfig, type UnityBuild } from "@/lib/unity-config"
+import { downloadBlob } from "@/lib/utils"
 
 /** One product of the app: its catalog id and its row in each build (whose `product_id` is the store id). */
 interface Row {
@@ -70,7 +71,7 @@ export function AppProductsTab({ data, go }: TabProps) {
   const [dialog, setDialog] = useState<string | null>(null)
   /** Remounts the store job list after new jobs were queued. */
   const [jobsKey, setJobsKey] = useState(0)
-  const products = useAsync(async () => groupByCatalogId(await sqlWhereIn<Product>("product", "app_id", ids)), [ids.join(",")])
+  const products = useAsync(async () => groupByCatalogId(await select<Product>({ table: "product", where: { column: "app_id", equals: ids } })), [ids.join(",")])
   const rows = products.data || []
   const configure = useCan()("configure")
   /** Builds whose store catalog can be imported (Google Play, App Store). */
@@ -98,10 +99,7 @@ export function AppProductsTab({ data, go }: TabProps) {
         default_price_micros: Number(p.default_price_micros), currency: p.currency, ...listingOf(p),
       }] : []
     }))
-    const url = URL.createObjectURL(new Blob([JSON.stringify(items, null, 2) + "\n"], { type: "application/json" }))
-    const link = Object.assign(document.createElement("a"), { href: url, download: `products-${g.key}.json` })
-    link.click()
-    URL.revokeObjectURL(url)
+    downloadBlob(`products-${g.key}.json`, JSON.stringify(items, null, 2) + "\n", "application/json")
   }
 
   /** The app's builds and products as the Unity config (inspector: Paste config from admin panel). */

@@ -8,15 +8,14 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { RichTable } from "@/components/rich-table"
 import { AddGameWizard } from "@/components/add-game-wizard"
 import { ErrorBox, LevelBadge, Loading, Mono, PageHeader, Tone } from "@/components/common"
-import { sql } from "@/lib/api"
+import { select } from "@/lib/api"
 import { useApps } from "@/lib/apps"
-import { buildLabel, platformById } from "@/lib/stores"
+import { buildLabel, PLATFORM_ICON, platformById } from "@/lib/stores"
 import { usd } from "@/lib/format"
 import { useAsync } from "@/lib/hooks"
 import { revenueSummary } from "@/lib/revenue"
 import type { Level } from "@/lib/types"
 import { cn } from "@/lib/utils"
-import { PLATFORM_ICON } from "@/pages/app"
 import { appRoute, type PageProps } from "@/routes"
 
 const RANK: Record<Level, number> = { skip: 0, info: 1, ok: 2, warn: 3, fail: 4 }
@@ -50,9 +49,9 @@ export function AppsPage({ go }: PageProps) {
   const { groups, error: appsError } = useApps()
   const loaded = useAsync(async ({ fresh }) => {
     const [health, products, integrations, stats] = await Promise.all([
-      sql<{ app_id: string; summary: Level }>("SELECT app_id, summary FROM app_check"),
-      sql<{ app_id: string; product_id: string }>("SELECT app_id, product_id FROM product"),
-      sql<{ app_id: string; kind: string; enabled: boolean }>("SELECT app_id, kind, enabled FROM integration"),
+      select<{ app_id: string; summary: Level }>({ table: "app_check", columns: ["app_id", "summary"] }),
+      select<{ app_id: string; product_id: string }>({ table: "product", columns: ["app_id", "product_id"] }),
+      select<{ app_id: string; kind: string; enabled: boolean }>({ table: "integration", columns: ["app_id", "kind", "enabled"] }),
       revenueSummary(fresh).catch(() => null),
     ])
     const summary: Record<string, Level> = {}

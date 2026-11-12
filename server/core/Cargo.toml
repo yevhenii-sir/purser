@@ -18,6 +18,12 @@ hex = "0.4"
 sha1 = "0.10"
 rsa = { version = "0.9", default-features = false, features = ["std", "pem", "sha2"] }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pem", "pkcs8", "std"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
+ecdsa = { version = "0.16", default-features = false, features = ["verifying", "std"] }
+
+[features]
+# `apple::testing`: an App Store-shaped signing chain for the module's tests.
+testing = []
 
 [dev-dependencies]
 rand = "0.8"

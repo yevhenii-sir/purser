@@ -5,17 +5,24 @@ using UnityEngine;
 
 namespace Purser
 {
-    /// <summary>Key-value persistence for the entitlements cache (offline start).</summary>
+    /// <summary>Key-value persistence of the package: entitlements and paywall caches (offline starts), started
+    /// web and Steam orders, fulfilled Amazon receipts, the refund data consent.</summary>
     public interface IBillingStorage
     {
+        /// <summary>The value saved under <paramref name="key"/>, or null (or empty) when there is none.</summary>
         string Load(string key);
+
+        /// <summary>Saves <paramref name="value"/> under <paramref name="key"/>, replacing the old value.</summary>
         void Save(string key, string value);
     }
 
+    /// <summary>Default storage: <c>PlayerPrefs</c>, saved to disk on every write.</summary>
     public sealed class PlayerPrefsBillingStorage : IBillingStorage
     {
+        /// <inheritdoc/>
         public string Load(string key) => PlayerPrefs.GetString(key, null);
 
+        /// <inheritdoc/>
         public void Save(string key, string value)
         {
             PlayerPrefs.SetString(key, value);
@@ -23,12 +30,15 @@ namespace Purser
         }
     }
 
+    /// <summary>Storage that keeps nothing across launches (tests, or games that must not write to disk).</summary>
     public sealed class MemoryBillingStorage : IBillingStorage
     {
         private readonly Dictionary<string, string> m_Values = new Dictionary<string, string>();
 
+        /// <inheritdoc/>
         public string Load(string key) => m_Values.TryGetValue(key, out var v) ? v : null;
 
+        /// <inheritdoc/>
         public void Save(string key, string value) => m_Values[key] = value;
     }
 
@@ -42,20 +52,21 @@ namespace Purser
             [JsonProperty("fetched_at_ticks")] public long FetchedAtTicks;
         }
 
-        public static void Save(IBillingStorage storage, string appId, string userId, EntitlementsDto dto, DateTime fetchedAtUtc)
+        public static void Save(IBillingStorage storage, string appId, string userId, EntitlementsDto dto, DateTime fetchedAtUtc,
+            BillingLog log)
         {
             try
             {
                 var json = JsonConvert.SerializeObject(new Snapshot { Dto = dto, FetchedAtTicks = fetchedAtUtc.Ticks });
                 storage.Save(Key(appId, userId), json);
             }
-            catch (Exception)
+            catch (Exception e)
             {
-                // Cache is best effort.
+                log?.Warning("Could not cache the entitlements for offline starts: " + e.Message);
             }
         }
 
-        public static Entitlements Load(IBillingStorage storage, string appId, string userId)
+        public static Entitlements Load(IBillingStorage storage, string appId, string userId, BillingLog log)
         {
             try
             {
@@ -65,8 +76,9 @@ namespace Purser
                 var s = JsonConvert.DeserializeObject<Snapshot>(json);
                 return s?.Dto == null ? null : FromDto(userId, s.Dto, new DateTime(s.FetchedAtTicks, DateTimeKind.Utc), true);
             }
-            catch (Exception)
+            catch (Exception e)
             {
+                log?.Warning("Could not read the cached entitlements: " + e.Message);
                 return null;
             }
         }

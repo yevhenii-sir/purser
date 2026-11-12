@@ -1,17 +1,13 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
 import { Field } from "@/components/common"
+import { SecretField } from "@/components/secret-field"
 import { call } from "@/lib/api"
 import { tryAct } from "@/lib/hooks"
-import { STORE_SECRETS } from "@/lib/stores"
+import { isFileSecret } from "@/lib/secrets"
 import { SECRET_NAMES } from "@/lib/types"
-
-/** Secrets whose value is a file (JSON key, .p8) rather than a short string. */
-const FILE_SECRETS = new Set([...STORE_SECRETS.filter((s) => s.file).map((s) => s.name), "gcs_service_account_json"])
 
 export interface SecretTarget {
   name: string
@@ -30,7 +26,6 @@ export function SecretDialog({ target, onClose, onSaved }: { target: SecretTarge
 function SecretForm({ target, onClose, onSaved }: { target: SecretTarget; onClose: () => void; onSaved: () => void }) {
   const [scope, setScope] = useState(target.scopes[0]?.value || "default")
   const [value, setValue] = useState("")
-  const file = FILE_SECRETS.has(target.name)
   const save = async () => {
     if (!value.trim()) return
     const ok = await tryAct(() => call("admin_set_credential", scope, target.name, value.trim()), "Saved")
@@ -52,14 +47,7 @@ function SecretForm({ target, onClose, onSaved }: { target: SecretTarget; onClos
           </Field>
         )}
         <Field label="Value">
-          {file ? (
-            <>
-              <Textarea value={value} onChange={(e) => setValue(e.target.value)} autoComplete="off" spellCheck={false} className="min-h-28 font-mono text-xs" />
-              <Input type="file" className="text-xs" onChange={async (e) => { const f = e.target.files?.[0]; if (f) setValue(await f.text()) }} />
-            </>
-          ) : (
-            <Input type="password" value={value} onChange={(e) => setValue(e.target.value)} autoComplete="off" spellCheck={false} autoFocus />
-          )}
+          <SecretField value={value} onChange={setValue} file={isFileSecret(target.name)} autoFocus />
         </Field>
       </div>
       <DialogFooter><Button onClick={save} disabled={!value.trim()}>Save</Button></DialogFooter>

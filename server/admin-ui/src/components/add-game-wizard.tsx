@@ -9,17 +9,21 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
-import { AccountSelect, accountsOf } from "@/components/account-select"
+import { AccountSelect } from "@/components/account-select"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
 import { CopyField, DialogBody, ErrorBox, Field, Loading, Tone } from "@/components/common"
-import { ReportView, reportUrls } from "@/components/report"
-import { call, createIdentity as newIdentity, genSecret, proc, publicRoute, sql, sqlStr } from "@/lib/api"
-import { appsChanged, useApps, type AppGroup } from "@/lib/apps"
-import { checkBuilds } from "@/lib/checks"
+import { DeliveryFields } from "@/components/delivery-fields"
+import { ReportView } from "@/components/report"
+import { SecretField } from "@/components/secret-field"
+import { call, createIdentity as newIdentity, genSecret, proc, publicRoute, select } from "@/lib/api"
+import { accountsOf, appsChanged, useApps, type AppGroup } from "@/lib/apps"
+import { checkBuilds, reportUrls } from "@/lib/checks"
+import { DELIVERY_DEFAULTS, type DeliverySettings } from "@/lib/delivery"
+import { ownSecretScope } from "@/lib/secrets"
 import { buildLabel, platformById, storeById, storeOf, storesFor, usablePlatforms, type StoreInfo } from "@/lib/stores"
 import { errorText } from "@/lib/format"
 import { parseUnityConfig, productIdIn, suggestGameKey, toUnityConfig, type ParsedUnityConfig } from "@/lib/unity-config"
-import type { CatalogRow, Delivery, GameApp, Kind, Platform, Product, Report } from "@/lib/types"
+import type { CatalogRow, GameApp, Kind, Platform, Product, Report } from "@/lib/types"
 import { catalogIdOf, KINDS } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
@@ -53,31 +57,23 @@ function newBuild(platform: string, account = "default"): Build {
   return { app_id: "", platform: platform as Platform, store: storesFor(platform)[0]?.id || "", account, products: true }
 }
 
-interface WizardState {
+interface WizardState extends DeliverySettings {
   game_key: string
   /** Rows without an app id are ignored. */
   builds: Build[]
-  delivery: Delivery
-  spacetime_url: string
-  spacetime_db: string
-  grant_reducer: string
-  revoke_reducer: string
-  args_format: string
-  webhook_url: string
   identity: string
   products: PickedProduct[]
 }
 
 const INITIAL: WizardState = {
-  game_key: "", builds: [newBuild("android"), newBuild("ios")], delivery: "spacetimedb",
-  spacetime_url: "https://maincloud.spacetimedb.com", spacetime_db: "", grant_reducer: "billing_grant", revoke_reducer: "billing_revoke",
-  args_format: "v1", webhook_url: "", identity: "", products: [],
+  ...DELIVERY_DEFAULTS, game_key: "", builds: [newBuild("android"), newBuild("ios")], delivery: "spacetimedb",
+  spacetime_db: "", webhook_url: "", identity: "", products: [],
 }
 
 /** Store keys entered in step 3, per store and developer account. */
 const keyId = (store: string, account: string, name: string) => `${store}|${account}|${name}`
 
-/** File upload into a text secret (JSON key, .p8). */
+/** A secret of a step, with whether it is stored already. */
 function SecretInput({ label, value, onChange, isSet, file, hint }: {
   label: string
   value: string
@@ -91,14 +87,7 @@ function SecretInput({ label, value, onChange, isSet, file, hint }: {
       label={<span className="flex items-center gap-2">{label}{isSet && <Tone tone="ok">set, leave empty to keep</Tone>}</span>}
       hint={hint}
     >
-      {file ? (
-        <>
-          <Textarea value={value} onChange={(e) => onChange(e.target.value)} autoComplete="off" spellCheck={false} className="min-h-20 font-mono text-xs" />
-          <Input type="file" className="text-xs" onChange={async (e) => { const f = e.target.files?.[0]; if (f) onChange(await f.text()) }} />
-        </>
-      ) : (
-        <Input value={value} onChange={(e) => onChange(e.target.value)} autoComplete="off" spellCheck={false} />
-      )}
+      <SecretField value={value} onChange={onChange} file={file} />
     </Field>
   )
 }
@@ -190,8 +179,8 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         const s = { ...w, builds: w.builds.map((b) => ({ ...b, app_id: b.app_id.trim(), account: b.account || "default" })), game_key: w.game_key || ids[0] }
         const firstApp = apps(s)[0]?.app_id || ""
         const [products, credRows] = await Promise.all([
-          s.products.length ? Promise.resolve([] as Product[]) : sql<Product>(`SELECT * FROM product WHERE app_id = ${sqlStr(firstApp)}`),
-          sql<{ key: string }>("SELECT key FROM credential"),
+          s.products.length ? Promise.resolve([] as Product[]) : select<Product>({ table: "product", where: { column: "app_id", equals: firstApp } }),
+          select<{ key: string }>({ table: "credential", columns: ["key"] }),
         ])
         const existing: GameApp[] = known || []
         setCreds(new Set(credRows.map((c) => c.key)))
@@ -211,10 +200,10 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         }
         setW(s)
       } else if (step === 1) {
-        // Delivery keys are needed by every build: store them for each build's account.
-        const buildAccounts = [...new Set(apps().map((a) => a.account || "default"))]
+        // Every build needs the delivery key: saved where it replaces no key other apps use (`ownSecretScope`).
+        const scopes = (name: string, builds: Build[]) => [...new Set(builds.map((b) => ownSecretScope(name, b, creds || new Set())))]
         onChange()
-        if (w.delivery === "spacetimedb") for (const acc of buildAccounts) await saveSecret(acc, "spacetime_token", token)
+        if (w.delivery === "spacetimedb") for (const scope of scopes("spacetime_token", apps())) await saveSecret(scope, "spacetime_token", token)
         for (const a of apps()) {
           await call("admin_upsert_game_app", JSON.stringify({
             app_id: a.app_id, platform: a.platform, store: a.store, game_key: w.game_key, account: a.account || "default", delivery: w.delivery,
@@ -223,9 +212,10 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
           }))
         }
         appsChanged()
-        if (w.delivery === "webhook" && !has("webhook_secret", apps()[0])) {
+        const keyless = w.delivery === "webhook" ? apps().filter((b) => !has("webhook_secret", b)) : []
+        if (keyless.length) {
           const secret = genSecret()
-          for (const acc of buildAccounts) await saveSecret(acc, "webhook_secret", secret)
+          for (const scope of scopes("webhook_secret", keyless)) await saveSecret(scope, "webhook_secret", secret)
           setGenerated((g) => ({ ...g, webhook_secret: secret }))
         }
       } else if (step === 2) {
@@ -418,48 +408,19 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
 
           {step === 1 && (
             <>
-              <Field label="Reward delivery">
-                <Select value={w.delivery} onValueChange={(v) => set("delivery", v as Delivery)}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="spacetimedb">Reducers in the app's SpacetimeDB database</SelectItem>
-                    <SelectItem value="webhook">Webhook to the app backend</SelectItem>
-                    <SelectItem value="none">No backend: the client grants rewards</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
+              <DeliveryFields value={w} onChange={(patch) => setW((x) => ({ ...x, ...patch }))} />
               {w.delivery === "spacetimedb" && (
                 <>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <Field label="SpacetimeDB server (https, allowed host)"><Input value={w.spacetime_url} onChange={(e) => set("spacetime_url", e.target.value)} /></Field>
-                    <Field label="Database name"><Input value={w.spacetime_db} onChange={(e) => set("spacetime_db", e.target.value)} /></Field>
-                    <Field label="Grant reducer"><Input value={w.grant_reducer} onChange={(e) => set("grant_reducer", e.target.value)} /></Field>
-                    <Field label="Revoke reducer"><Input value={w.revoke_reducer} onChange={(e) => set("revoke_reducer", e.target.value)} /></Field>
-                  </div>
-                  <details className="text-sm">
-                    <summary className="cursor-pointer text-muted-foreground">Advanced</summary>
-                    <div className="mt-3 grid gap-2 sm:w-64">
-                      <Field label="Arguments format" hint="legacy: only for games migrated from Adapty">
-                        <Select value={w.args_format} onValueChange={(v) => set("args_format", v)}>
-                          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                          <SelectContent><SelectItem value="v1">v1</SelectItem><SelectItem value="legacy">legacy</SelectItem></SelectContent>
-                        </Select>
-                      </Field>
-                    </div>
-                  </details>
                   <SecretInput label="Billing token (the identity the app database trusts)" value={token} onChange={setToken}
-                    isSet={!!apps()[0] && has("spacetime_token", apps()[0])} hint={idHint} />
+                    isSet={apps().length > 0 && apps().every((b) => has("spacetime_token", b))} hint={idHint} />
                   <Button variant="outline" size="sm" onClick={createIdentity}><PlusIcon /> Create billing identity</Button>
                   <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">{reducerSnippet(w.identity)}</pre>
                 </>
               )}
               {w.delivery === "webhook" && (
-                <>
-                  <Field label="Webhook URL (https)"><Input value={w.webhook_url} onChange={(e) => set("webhook_url", e.target.value)} /></Field>
-                  <p className="text-sm text-muted-foreground">
-                    A new HMAC key is generated and shown on the last step unless one is already set. Verify <code>X-Billing-Signature</code> and answer 2xx to unknown events.
-                  </p>
-                </>
+                <p className="text-sm text-muted-foreground">
+                  A new HMAC key is generated and shown on the last step unless one is already set. Verify <code>X-Billing-Signature</code> and answer 2xx to unknown events.
+                </p>
               )}
               {w.delivery === "none" && (
                 <p className="text-sm text-muted-foreground">The server verifies purchases and keeps entitlements; the app grants rewards on <code>PurchaseSucceeded</code>.</p>

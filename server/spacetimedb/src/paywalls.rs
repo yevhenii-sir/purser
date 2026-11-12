@@ -98,9 +98,6 @@ pub fn scoped_key(game_key: &str, id: &str) -> String {
     format!("{game_key}/{id}")
 }
 
-fn now_micros(ctx: &ReducerContext) -> i64 {
-    ctx.timestamp.to_micros_since_unix_epoch()
-}
 
 /// An error for the client: HTTP status, code and message.
 pub struct ClientError {
@@ -190,7 +187,7 @@ pub fn record_event(
         .iter()
         .find(|v| v.variant_id == variant_id)
         .ok_or_else(|| client_error(400, "ERR_UNKNOWN_VARIANT", format!("no variant '{variant_id}'")))?;
-    let day = day_of_micros(now_micros(ctx));
+    let day = day_of_micros(crate::ctx::tx_now_micros(ctx));
     let key = format!("{day}|{}|{test_id}|{variant_id}", pl.key);
     match ctx.db.paywall_daily().key().find(&key) {
         Some(mut row) => {
@@ -326,7 +323,7 @@ pub fn admin_upsert_paywall(ctx: &ReducerContext, json: String) -> Result<(), St
         paywall_id: i.paywall_id,
         product_ids_json: json!(i.product_ids).to_string(),
         remote_config_json,
-        updated_at_micros: now_micros(ctx),
+        updated_at_micros: crate::ctx::tx_now_micros(ctx),
     };
     if ctx.db.paywall().key().find(&row.key).is_some() {
         ctx.db.paywall().key().update(row);
@@ -356,16 +353,13 @@ pub fn admin_delete_paywall(ctx: &ReducerContext, game_key: String, paywall_id: 
     Ok(())
 }
 
-fn default_true() -> bool {
-    true
-}
 
 #[derive(Deserialize)]
 struct PlacementInput {
     game_key: String,
     placement_id: String,
     variants: Vec<Variant>,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     enabled: bool,
 }
 
@@ -387,7 +381,7 @@ pub fn admin_upsert_placement(ctx: &ReducerContext, json: String) -> Result<(), 
         }
     }
     let key = scoped_key(&i.game_key, &i.placement_id);
-    let now = now_micros(ctx);
+    let now = crate::ctx::tx_now_micros(ctx);
     let variants_json = json!(i.variants).to_string();
     match ctx.db.placement().key().find(&key) {
         Some(mut p) => {
@@ -441,7 +435,7 @@ pub fn admin_start_paywall_test(ctx: &ReducerContext, game_key: String, placemen
     }
     let variants = pw::parse_variants(&p.variants_json);
     pw::validate_test_variants(&variants).map_err(|e| bad("ERR_BAD_TEST", e))?;
-    let now = now_micros(ctx);
+    let now = crate::ctx::tx_now_micros(ctx);
     let test_id = if test_id.trim().is_empty() {
         let base = format!("{placement_id}-{}", format_day(day_of_micros(now)).replace('-', ""));
         let base: String = base.chars().take(58).collect();
@@ -493,7 +487,7 @@ pub fn admin_stop_paywall_test(ctx: &ReducerContext, game_key: String, placement
         let winner = variants.remove(at);
         variants.insert(0, winner);
     }
-    let now = now_micros(ctx);
+    let now = crate::ctx::tx_now_micros(ctx);
     if let Some(mut t) = ctx.db.paywall_test().test_id().find(&test_id) {
         t.stopped_at_micros = now;
         t.winner_variant_id = winner_variant_id;
@@ -538,7 +532,7 @@ pub fn results(ctx: &mut impl Ctx, query_json: &str) -> Result<Value, String> {
         crate::access::require(tx, purser_core::roles::Cap::Read)?;
         let key = scoped_key(&q.game_key, &q.placement_id);
         let placement = tx.db.placement().key().find(&key);
-        let today = day_of_micros(now_micros(tx));
+        let today = day_of_micros(crate::ctx::tx_now_micros(tx));
         let (variants, from, to, test) = if q.test_id.is_empty() {
             let p = placement.clone().ok_or_else(|| bad("ERR_PLACEMENT_NOT_FOUND", "no such placement"))?;
             let to = if q.to.is_empty() { today } else { parse_day(&q.to).ok_or("bad 'to' date")? };

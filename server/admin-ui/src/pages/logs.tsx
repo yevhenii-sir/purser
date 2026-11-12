@@ -6,13 +6,14 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ErrorBox, Loading, PageHeader, Section } from "@/components/common"
 import { DB_BASE, getToken } from "@/lib/api"
+import { fmtTime } from "@/lib/format"
 import { useAsync } from "@/lib/hooks"
 import { cn } from "@/lib/utils"
-import type { PageProps } from "@/routes"
 
+/** A line of `/logs`: SpacetimeDB's JSON record, `ts` in microseconds since the epoch. */
 interface LogLine {
   level?: string
-  ts?: number | string
+  ts?: number
   message?: string
   [k: string]: unknown
 }
@@ -23,7 +24,7 @@ interface LogLine {
  */
 const CALL_NOISE = "External attempt to call nonexistent reducer"
 
-export function LogsPage(_: PageProps) {
+export function LogsPage() {
   const [filter, setFilter] = useState("")
   const [showNoise, setShowNoise] = useState(false)
   const { data, error, loading, reload } = useAsync(async () => {
@@ -64,7 +65,7 @@ export function LogsPage(_: PageProps) {
           <div className="divide-y font-mono text-xs">
             {lines.map((l, i) => {
               const level = String(l.level || "").toUpperCase()
-              const ts = l.ts ? new Date(Number(l.ts) / 1000 || String(l.ts)).toLocaleString() : ""
+              const ts = l.ts ? fmtTime(l.ts) : ""
               return (
                 <div key={i} className="flex gap-3 py-1.5">
                   <span className="shrink-0 text-muted-foreground">{ts}</span>

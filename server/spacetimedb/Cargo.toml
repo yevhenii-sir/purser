@@ -20,6 +20,7 @@ serde_json = "1.0"
 spacetimedb-sats = { version = "=2.14.1", features = ["serde"] }
 
 [dev-dependencies]
+purser-core = { path = "../core", features = ["testing"] }
 # Native unit tests against an in-memory datastore with mocked procedure HTTP (SpacetimeDB 2.12+).
 spacetimedb = { version = "=2.14.1", features = ["unstable", "test-utils"] }
 # Test-only App Store key for promotional offer signatures (same version as purser-core).

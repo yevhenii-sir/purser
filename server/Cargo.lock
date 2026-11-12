@@ -2961,9 +2961,11 @@ name = "purser-core"
 version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
+ "ecdsa",
  "hex",
  "hmac",
  "p256",
+ "p384",
  "rand 0.8.5",
  "rsa",
  "serde",

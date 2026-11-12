@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ErrorBox, Loading, Mono, PageHeader, Section } from "@/components/common"
 import { RichTable } from "@/components/rich-table"
-import { sql } from "@/lib/api"
+import { select } from "@/lib/api"
 import { useAsync } from "@/lib/hooks"
 
 interface AuditRow {
@@ -21,7 +21,7 @@ const ALL = "__all__"
 
 /** Who changed what: one row per admin action (kept 180 days). */
 export function AuditPage() {
-  const { data, error, loading } = useAsync(() => sql<AuditRow>("SELECT * FROM admin_audit"))
+  const { data, error, loading } = useAsync(() => select<AuditRow>({ table: "admin_audit" }))
   const [who, setWho] = useState(ALL)
   const [text, setText] = useState("")
   const rows = data || []

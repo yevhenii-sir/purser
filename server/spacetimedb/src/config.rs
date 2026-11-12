@@ -11,10 +11,6 @@ use crate::{access_token_cache, credential, game_app, product, spacetime_host, A
 use spacetimedb::{ReducerContext, Table, TxContext};
 
 pub const DEFAULT_SCOPE: &str = "default";
-#[allow(dead_code)]
-pub const PLATFORM_ANDROID: &str = purser_core::registry::platform::ANDROID;
-#[allow(dead_code)]
-pub const PLATFORM_IOS: &str = purser_core::registry::platform::IOS;
 
 /// The store of a build (`game_app.store`, or the platform's default). Rows are validated on
 /// write; a row that does not resolve (edited by hand) falls back to manual, which verifies nothing.

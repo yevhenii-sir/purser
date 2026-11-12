@@ -389,6 +389,9 @@ def schema(props=None, required=()):
 
 
 READ = {"readOnlyHint": True, "openWorldHint": False}
+# admin_check_app stores its report in `app_check` and, online, calls the stores, the delivery target
+# and integration endpoints.
+CHECK = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
 
 TOOLS = [
     ("list_apps", t_list_apps, READ,
@@ -422,7 +425,7 @@ TOOLS = [
              "since": {"type": "string", "description": "YYYY-MM-DD or ISO 8601 time (default: all time)"},
              "until": {"type": "string", "description": "YYYY-MM-DD (inclusive) or ISO 8601 time"},
              "limit": {"type": "integer", "description": "1-1000, default 50"}})),
-    ("check_app", t_check_app, READ,
+    ("check_app", t_check_app, CHECK,
      "Runs the setup check of a build (or every build of an app): store keys, notifications, delivery, "
      "integrations, with fix hints. Online by default (calls the store APIs and the game's delivery "
      "target); offline only checks the configuration. Never asks Apple for a test notification.",
@@ -444,7 +447,7 @@ TOOLS = [
 ]
 
 WRITE_TOOLS = [
-    ("grant_manual", t_grant_manual, {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True},
+    ("grant_manual", t_grant_manual, {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False},
      "Grants a product to a player without a store purchase (support compensation, promo). It goes "
      "through the ledger: the worker delivers it to the game and /entitlements lists it. Pass a "
      "transaction_id to make retries safe.",
@@ -497,10 +500,13 @@ class Server:
         """One request or notification -> the response dict, or None for notifications."""
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
             return rpc_error(msg.get("id") if isinstance(msg, dict) else None, -32600, "Invalid Request")
-        method, mid, params = msg["method"], msg.get("id"), msg.get("params") or {}
-        is_notification = "id" not in msg
-        if is_notification:
+        method, mid, params = msg["method"], msg.get("id"), msg.get("params")
+        if "id" not in msg:
             return None  # notifications/initialized, notifications/cancelled, ...
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            return rpc_error(mid, -32602, "params must be an object")
         if method == "initialize":
             requested = params.get("protocolVersion")
             return rpc_result(mid, {
@@ -535,6 +541,18 @@ def rpc_error(mid, code, message):
     return {"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": message}}
 
 
+def handle_safely(server, msg):
+    """`server.handle`, with any unexpected failure answered as an internal error."""
+    try:
+        return server.handle(msg)
+    except Exception:
+        traceback.print_exc(file=sys.stderr)
+        mid = msg.get("id") if isinstance(msg, dict) else None
+        if isinstance(msg, dict) and "id" not in msg:
+            return None
+        return rpc_error(mid, -32603, "Internal error")
+
+
 def serve(server, inp, out):
     for line in inp:
         line = line.strip()
@@ -546,9 +564,9 @@ def serve(server, inp, out):
             reply = rpc_error(None, -32700, "Parse error")
         else:
             if isinstance(msg, list):  # JSON-RPC batch (older protocol versions)
-                reply = [r for r in map(server.handle, msg) if r is not None] or None
+                reply = [r for r in (handle_safely(server, m) for m in msg) if r is not None] or None
             else:
-                reply = server.handle(msg)
+                reply = handle_safely(server, msg)
         if reply is not None:
             out.write(json.dumps(reply) + "\n")
             out.flush()

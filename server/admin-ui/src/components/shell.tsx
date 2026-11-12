@@ -72,7 +72,7 @@ export function Shell({ route, go, me, onSignOut, children }: {
   useEffect(() => {
     moduleVersion().then(setVersion)
   }, [])
-  const all = groups || []
+  const all = useMemo(() => groups || [], [groups])
   const title = "key" in route ? all.find((g) => g.key === route.key)?.name || route.key : "userId" in route ? route.userId : PAGES[route.page]?.title
   /** With many apps the sidebar shows a search box and only the first ones (plus the open app). */
   const visible = useMemo(() => {

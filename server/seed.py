@@ -40,7 +40,9 @@ Values starting with `<` are placeholders and are skipped.
 Secret values are never read: credentials.json lists the keys that are set, with "<set me>".
 """
 import argparse
+import getpass
 import json
+import os
 import pathlib
 import secrets
 import sys
@@ -56,6 +58,10 @@ SETTING_KEYS = ["public_base_url", "store_commission_percent", "store_commission
 # `alerts::RULES_KEY`.
 ALERT_RULES_KEY = "alert_rules"
 PLACEHOLDER = "<set me>"
+# `admin_upsert_alert_channel` in spacetimedb/src/alerts.rs: an enabled channel without a stored secret.
+ALERT_SECRET_MISSING_CODE = "[ERR_ALERT_SECRET_MISSING]"
+# Store keys that are identifiers, not secrets: --init echoes them while they are typed.
+PLAIN_KEYS = {"apple_issuer_id", "apple_key_id", "apple_connect_key_id", "xsolla_project_id"}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -115,6 +121,14 @@ def has_placeholder(v):
     if isinstance(v, list):
         return any(has_placeholder(x) for x in v)
     return False
+
+
+def alert_secret_missing(err, kind):
+    """The reducer refused an enabled channel because no secret is stored yet."""
+    if ALERT_SECRET_MISSING_CODE in err:
+        return True
+    text = err.strip()
+    return text.startswith("[ERR_BAD_ALERT]") and f"] {kind}: set " in text and text.endswith(" first")
 
 
 def seed(a, d):
@@ -192,8 +206,7 @@ def seed(a, d):
             print(f"skip     alert channel {ch['kind']} (placeholder)")
             continue
         err = try_call(a, "admin_upsert_alert_channel", json.dumps(ch))
-        if err and "first" in err and not ch.get("secret"):
-            # Enabled without a stored secret: the reducer asks for it first.
+        if err and not ch.get("secret") and alert_secret_missing(err, ch["kind"]):
             print(f"skip     alert channel {ch['kind']} ({err.split('] ', 1)[-1]})")
             continue
         if err:
@@ -377,6 +390,14 @@ def ask(label, default="", required=False):
         print("  required")
 
 
+def ask_secret(label):
+    """Like `ask`, without echoing the answer."""
+    try:
+        return getpass.getpass(f"{label}: ").strip()
+    except EOFError:
+        sys.exit("\naborted")
+
+
 def ask_yes(label, default=True):
     v = ask(f"{label} ({'Y/n' if default else 'y/N'})").lower()
     return default if not v else v.startswith("y")
@@ -395,8 +416,16 @@ def registry():
     return {s["id"]: s for s in r["stores"]}, {p["id"]: p for p in r["platforms"]}
 
 
-def write_json(path, value):
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+def write_json(path, value, private=False):
+    text = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+    if not private:
+        path.write_text(text, encoding="utf-8")
+        return
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
 
 
 def init(a):
@@ -445,7 +474,7 @@ def init(a):
             "revoke_reducer": ask("Revoke reducer (empty: none)", "billing_revoke"),
             "args_format": "v1",
         })
-        tok = ask("Long-lived token of the identity the game module trusts (empty: set it later)")
+        tok = ask_secret("Long-lived token of the identity the game module trusts (empty: set it later)")
         creds.append({"scope": account, "name": "spacetime_token", "value": tok or "<token of the identity trusted by the game module>"})
     elif delivery == "webhook":
         target["webhook_url"] = ask("Webhook URL (https://...)", required=True)
@@ -485,7 +514,8 @@ def init(a):
                         creds.append({"scope": scope, "name": s["name"], "value_file": rel})
                         continue
             else:
-                value = ask(f"  {s['label']}{suffix}")
+                prompt = ask if s["name"] in PLAIN_KEYS else ask_secret
+                value = prompt(f"  {s['label']}{suffix}")
                 if value:
                     creds.append({"scope": scope, "name": s["name"], "value": value})
                     continue
@@ -493,7 +523,7 @@ def init(a):
                 creds.append({"scope": scope, "name": s["name"], "value": f"<{s['label']}>"})
 
     write_json(d / "apps.json", apps)
-    write_json(d / "credentials.json", creds)
+    write_json(d / "credentials.json", creds, private=True)
     products_path = d / "products.json"
     if not products_path.exists():
         write_json(products_path, [])

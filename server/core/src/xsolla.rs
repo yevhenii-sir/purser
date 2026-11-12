@@ -19,7 +19,6 @@
 use crate::doctor::{Level, Verdict};
 use crate::model::{environment, store, StoreTx, TxState};
 use crate::registry::{platform, Binding, Finish, Need, SecretSpec, StoreInfo, Verification};
-use base64::Engine;
 use serde_json::{json, Value};
 
 /// Publisher Account → the project: its numeric id (not secret, stored with the keys).
@@ -118,26 +117,13 @@ pub fn virtual_items_url(project_id: &str, limit: u32) -> Result<String, String>
 
 /// `Authorization` header of the Store API admin calls: Basic `project_id:api_key`.
 pub fn basic_auth(project_id: &str, api_key: &str) -> String {
-    let raw = format!("{}:{}", project_id.trim(), api_key.trim());
-    format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(raw))
-}
-
-fn encode_query(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
+    crate::encoding::basic_auth(project_id.trim(), api_key.trim())
 }
 
 /// Pay Station page for a token (sandbox tokens open on `sandbox-secure.xsolla.com`).
 pub fn paystation_url(token: &str, sandbox: bool) -> String {
     let base = if sandbox { PAYSTATION_SANDBOX } else { PAYSTATION };
-    format!("{base}?token={}", encode_query(token))
+    format!("{base}?token={}", crate::encoding::percent_encode(token))
 }
 
 pub fn subscription_token(subscription_id: &str) -> String {
@@ -192,12 +178,7 @@ pub fn token_request_body(r: &TokenRequest) -> Result<String, String> {
     }
     let mut settings = serde_json::Map::new();
     if !r.return_url.is_empty() {
-        let ok = (r.return_url.starts_with("https://") || r.return_url.starts_with("http://"))
-            && r.return_url.len() <= 2048
-            && !r.return_url.chars().any(|c| c.is_whitespace() || c.is_control());
-        if !ok {
-            return Err("return_url must be an http(s) URL".into());
-        }
+        crate::stripe::check_return_url("return_url", &r.return_url, r.sandbox)?;
         settings.insert("return_url".into(), json!(r.return_url));
     }
     if !r.currency.is_empty() {
@@ -285,8 +266,7 @@ pub fn verify_signature(authorization: &str, body: &[u8], secret: &str) -> bool 
         return false;
     }
     let expected = signature(body, secret);
-    let got = sig.to_ascii_lowercase();
-    expected.len() == got.len() && expected.bytes().zip(got.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    crate::encoding::constant_time_eq(expected.as_bytes(), sig.to_ascii_lowercase().as_bytes())
 }
 
 /// Error body Xsolla expects with HTTP 400, e.g. `INVALID_SIGNATURE`, `INVALID_USER`, `INVALID_PARAMETER`.
@@ -360,27 +340,12 @@ fn id_str(v: &Value) -> String {
 
 /// Decimal amount (number or string) in micros; 0 when absent or malformed.
 pub fn amount_micros(v: &Value) -> i64 {
-    let s = match v {
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => s.trim().to_string(),
-        _ => return 0,
-    };
-    let (neg, s) = match s.strip_prefix('-') {
-        Some(rest) => (true, rest.to_string()),
-        None => (false, s),
-    };
-    let (int, frac) = s.split_once('.').unwrap_or((&s, ""));
-    if int.is_empty() && frac.is_empty() || !int.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) {
-        return 0;
+    match v {
+        Value::Number(n) => crate::money::parse_decimal(&n.to_string()),
+        Value::String(s) => crate::money::parse_decimal(s),
+        _ => None,
     }
-    let int: i64 = if int.is_empty() { 0 } else { int.parse().unwrap_or(0) };
-    let frac6: String = format!("{frac:0<6}").chars().take(6).collect();
-    let micros = int.saturating_mul(1_000_000).saturating_add(frac6.parse::<i64>().unwrap_or(0));
-    if neg {
-        -micros
-    } else {
-        micros
-    }
+    .unwrap_or(0)
 }
 
 fn dry_run(v: &Value) -> bool {

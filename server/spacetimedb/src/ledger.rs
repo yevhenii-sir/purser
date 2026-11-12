@@ -7,7 +7,7 @@
 use crate::integrations;
 use purser_core::integrations::event_kind;
 use crate::config;
-use crate::ctx::{tx_now_micros, Ctx};
+use crate::ctx::{tx_now_micros, Budget, Ctx};
 use crate::delivery_client;
 use crate::stores;
 use crate::{game_app, purchase, purchase_log, GameApp, Product, Purchase, PurchaseLog, RetrySchedule};
@@ -16,7 +16,7 @@ use purser_core::model::{kind, status, store, StoreTx};
 use purser_core::paywall::Attribution;
 use purser_core::retry_delay_secs;
 use serde_json::{json, Value};
-use spacetimedb::{ProcedureContext, Table, TxContext};
+use spacetimedb::{ProcedureContext, ReducerContext, Table, TxContext};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// While a row is being processed it is hidden from the worker for this long.
@@ -24,13 +24,13 @@ const LEASE_MICROS: i64 = 2 * 60 * 1_000_000;
 /// Rows handled per worker run.
 const WORKER_BATCH: usize = 25;
 
-pub fn log_event(tx: &TxContext, purchase_id: &str, event: &str, details: &str) {
-    tx.db.purchase_log().insert(PurchaseLog {
+pub fn log_event(ctx: &ReducerContext, purchase_id: &str, event: &str, details: &str) {
+    ctx.db.purchase_log().insert(PurchaseLog {
         id: 0,
         purchase_id: purchase_id.to_string(),
         event: event.to_string(),
         details: details.chars().take(1000).collect(),
-        at_micros: tx_now_micros(tx),
+        at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
     });
 }
 
@@ -74,22 +74,9 @@ impl Claim {
 
 /// Records a trusted, active store transaction for `user_id` and returns its ledger id.
 /// Idempotent: the same transaction for the same user is a no-op once processed.
-pub fn record_active(
-    tx: &TxContext,
-    product: &Product,
-    st: &StoreTx,
-    user_id: &str,
-    app_instance_id: &str,
-    client_price_micros: i64,
-    client_currency: &str,
-) -> Result<String, String> {
+pub fn record_active(tx: &TxContext, product: &Product, st: &StoreTx, user_id: &str, app_instance_id: &str) -> Result<String, String> {
     let app = config::find_app(tx, &st.app_id);
-    let claim = Claim {
-        price_micros: client_price_micros,
-        currency: client_currency.to_string(),
-        ..Claim::user(user_id, app_instance_id)
-    };
-    record(tx, app.as_ref(), product, st, &claim, false).map(|(id, _)| id)
+    record(tx, app.as_ref(), product, st, &Claim::user(user_id, app_instance_id), false).map(|(id, _)| id)
 }
 
 /// [`record_active`] for a build the caller already has, leasing the row in the same transaction
@@ -174,40 +161,19 @@ fn record(
 
     let (price_micros, currency) = pick_price(st, product, claim.price_micros, &claim.currency);
     let mut row = Purchase {
-        id: id.clone(),
-        store: st.store.to_string(),
-        app_id: st.app_id.clone(),
-        product_id: product.product_id.clone(),
-        kind: product.kind.clone(),
-        transaction_id: st.transaction_id.clone(),
         original_transaction_id: st.original_transaction_id.clone(),
         purchase_token: st.purchase_token.clone(),
-        user_id: user_id.to_string(),
-        status: status::VERIFIED.to_string(),
-        reason: if st.transaction_id == st.original_transaction_id {
-            reason::PURCHASE.to_string()
-        } else {
-            reason::RENEWAL.to_string()
-        },
+        reason: if st.transaction_id == st.original_transaction_id { reason::PURCHASE } else { reason::RENEWAL }.to_string(),
         store_action: action,
         expires_at_ms: st.expires_at_ms,
         environment: st.environment.to_string(),
         price_micros,
         currency,
         app_instance_id: claim.app_instance_id.clone(),
-        was_granted: false,
-        attempts: 0,
         next_attempt_at_micros: next_attempt,
-        last_error: String::new(),
-        created_at_micros: now,
-        updated_at_micros: now,
-        previous_user_id: String::new(),
         country: st.country.clone(),
         trial: st.trial,
-        paywall_placement: String::new(),
-        paywall_variant_id: String::new(),
-        paywall_test_id: String::new(),
-        paywall_id: String::new(),
+        ..Purchase::new(st.store, &st.transaction_id, &st.app_id, product, user_id, now)
     };
     // A renewal keeps the paywall of the subscription's first purchase; else the client's.
     crate::paywalls::inherit(tx, &mut row);
@@ -478,20 +444,22 @@ fn billing_event(p: &Purchase, event: &str, why: &str, now_ms: i64) -> BillingEv
     }
 }
 
-/// Runs the pending steps of a purchase as far as possible and returns the resulting row.
-pub fn advance(ctx: &mut impl Ctx, id: &str) -> Option<Purchase> {
-    advance_app(ctx, None, id)
+/// Runs the pending steps of a purchase as far as the budget allows and returns the resulting row.
+pub fn advance(ctx: &mut impl Ctx, id: &str, budget: Budget) -> Option<Purchase> {
+    let first = ctx.tx(|tx| lease(tx, id, None));
+    run_within(ctx, first, budget)
 }
 
-/// [`advance`] with the build, when the caller has it.
-pub fn advance_app(ctx: &mut impl Ctx, app: Option<&GameApp>, id: &str) -> Option<Purchase> {
-    let first = ctx.tx(|tx| lease(tx, id, app));
-    run(ctx, first)
+/// [`run_within`] with the budget of a client request.
+pub fn run(ctx: &mut impl Ctx, lease: Lease) -> Option<Purchase> {
+    let budget = Budget::new(ctx, crate::ctx::REQUEST_BUDGET_SECS);
+    run_within(ctx, lease, budget)
 }
 
 /// Runs a leased purchase ([`lease`], [`record_and_lease`]) as far as possible and returns the
-/// resulting row. Every step's transition leases the row for the next one in the same transaction.
-pub fn run(ctx: &mut impl Ctx, lease: Lease) -> Option<Purchase> {
+/// resulting row. Every step's transition leases the row for the next one in the same transaction,
+/// while the budget lasts; after it the row waits for the worker's next run.
+pub fn run_within(ctx: &mut impl Ctx, lease: Lease, budget: Budget) -> Option<Purchase> {
     const STEPS: usize = 4;
     let mut lease = lease;
     for i in 0..STEPS {
@@ -499,7 +467,7 @@ pub fn run(ctx: &mut impl Ctx, lease: Lease) -> Option<Purchase> {
             Lease::Idle(row) => return row,
             Lease::Step(step) => step,
         };
-        lease = run_step(ctx, *step, i + 1 < STEPS);
+        lease = run_step(ctx, *step, (i + 1 < STEPS).then_some(budget));
     }
     match lease {
         Lease::Idle(row) => row,
@@ -507,8 +475,8 @@ pub fn run(ctx: &mut impl Ctx, lease: Lease) -> Option<Purchase> {
     }
 }
 
-/// One step of a leased purchase; `lease_next`: lease it again for the next step.
-fn run_step(ctx: &mut impl Ctx, step: Step, lease_next: bool) -> Lease {
+/// One step of a leased purchase; `next_step`: lease it again for the next step if this budget allows.
+fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease {
     let Step { app, row: p, delivery, revoked_by_admin, mut store_auth, catalog_id } = step;
     let billing_event = |p: &Purchase, event: &str, why: &str, now_ms: i64| BillingEvent { catalog_product_id: catalog_id.clone(), ..billing_event(p, event, why, now_ms) };
     let creds = delivery.as_ref();
@@ -542,8 +510,10 @@ fn run_step(ctx: &mut impl Ctx, step: Step, lease_next: bool) -> Lease {
     };
     match result {
         Ok((next, ev)) => {
-            let lease_app = lease_next.then_some(&app);
-            ctx.tx(|tx| transition(tx, &p.id, &p.status, next, ev, lease_app))
+            ctx.tx(|tx| {
+                let lease_app = next_step.is_some_and(|b| b.allows(tx_now_micros(tx))).then_some(&app);
+                transition(tx, &p.id, &p.status, next, ev, lease_app)
+            })
         }
         Err(e) => Lease::Idle(ctx.tx(|tx| fail(tx, &p.id, &e))),
     }
@@ -570,15 +540,19 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
         crate::access::prune_audit(tx);
         (ids, crate::revenue::upkeep(tx))
     });
+    let budget = Budget::new(ctx, crate::ctx::WORKER_BUDGET_SECS);
     for id in ids {
-        advance(ctx, &id);
+        if !budget.left() {
+            break;
+        }
+        advance(ctx, &id, budget);
     }
     crate::revenue::refresh_rates(ctx, &upkeep);
     let due = ctx.tx(|tx| {
         crate::alerts::check_tx(tx);
         crate::poll::due(tx)
     });
-    crate::poll::run_due(ctx, due);
+    crate::poll::run_due(ctx, due, budget);
     crate::revenue::catch_up(ctx, &upkeep);
 }
 

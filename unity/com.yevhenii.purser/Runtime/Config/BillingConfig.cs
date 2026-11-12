@@ -54,7 +54,14 @@ namespace Purser
         /// <summary>Marks the part of <see cref="DefaultServerUrl"/> that must be replaced with your database name.</summary>
         public const string ServerUrlPlaceholder = "YOUR-BILLING-DB";
 
+        /// <summary>Server URL of a new config; replace <see cref="ServerUrlPlaceholder"/>.</summary>
         public const string DefaultServerUrl = "https://maincloud.spacetimedb.com/v1/database/" + ServerUrlPlaceholder + "/route";
+
+        /// <summary>Default <see cref="requestTimeoutSeconds"/>: the server waits for the store's API, which can be slow.</summary>
+        public const int DefaultRequestTimeoutSeconds = 30;
+
+        /// <summary>Default <see cref="entitlementsMaxAgeDays"/>.</summary>
+        public const int DefaultEntitlementsMaxAgeDays = 7;
 
         [Header("Server")]
         [Tooltip("Base URL of the billing HTTP API: https://<host>/v1/database/<db>/route")]
@@ -68,8 +75,10 @@ namespace Purser
                  "Amazon needs an AmazonStoreAdapter in BillingDependencies.Store (Unity IAP 5 has no Amazon store).")]
         public AndroidStore androidStore = AndroidStore.Auto;
 
+        [Tooltip("Timeout of one request to the billing server. The server may wait for a slow store API (it allows " +
+                 "itself up to about 10 s per store call), so keep it well above that.")]
         [Min(1)]
-        public int requestTimeoutSeconds = 10;
+        public int requestTimeoutSeconds = DefaultRequestTimeoutSeconds;
 
         [Tooltip("Delays between verification retries when the server is unreachable. " +
                  "After the last one the purchase stays pending and is retried on the next launch.")]
@@ -85,6 +94,12 @@ namespace Purser
 
         [Tooltip("Load entitlements from the server right after initialization.")]
         public bool refreshEntitlementsOnInit = true;
+
+        [Tooltip("IsActive trusts subscriptions from entitlements received at most this many days ago (device clock), " +
+                 "e.g. the offline cache; older ones count again after the next refresh from the server. Non-consumables " +
+                 "are not affected. 0 = no limit.")]
+        [Min(0)]
+        public int entitlementsMaxAgeDays = DefaultEntitlementsMaxAgeDays;
 
         [Tooltip("iOS: find out which Apple Ads campaign brought the install (AdServices, asked once per install) " +
                  "and send its ids with purchases. They reach the webhook and Cloud Storage exports.")]
@@ -378,8 +393,8 @@ namespace Purser
             var problems = new List<string>();
             if (string.IsNullOrWhiteSpace(serverBaseUrl))
                 problems.Add("Server base URL is empty.");
-            else if (!serverBaseUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                problems.Add("Server base URL must use https://.");
+            else if (!UrlPolicy.IsAllowedServerUrl(serverBaseUrl))
+                problems.Add("Server base URL must use https:// (plain http only for localhost); player builds refuse other URLs.");
             else if (serverBaseUrl.EndsWith("/"))
                 problems.Add("Server base URL must not end with '/'.");
             else if (serverBaseUrl.Contains(ServerUrlPlaceholder))
@@ -387,6 +402,8 @@ namespace Purser
 
             if (requestTimeoutSeconds < 1)
                 problems.Add("Request timeout must be at least 1 second.");
+            if (entitlementsMaxAgeDays < 0)
+                problems.Add("Entitlements max age must not be negative (0 = no limit).");
             if (retryDelaysSeconds == null)
                 problems.Add("Retry delays are not set.");
             else if (Array.Exists(retryDelaysSeconds, d => d < 0))

@@ -9,7 +9,7 @@
 //! then dropped (the entitlement lapses until the client verifies or restores again).
 
 use crate::config;
-use crate::ctx::{tx_now_micros, Ctx};
+use crate::ctx::{tx_now_micros, Budget, Ctx};
 use crate::ledger;
 use crate::stores::{self, StoreError};
 use crate::{purchase, Product};
@@ -90,14 +90,17 @@ pub fn due(tx: &TxContext) -> Due {
 
 /// Worker step: re-checks the due subscriptions, then Steam orders stuck after authorization and
 /// refund reports (Steam sends no store notifications).
-pub fn run_due(ctx: &mut impl Ctx, due: Due) {
+pub fn run_due(ctx: &mut impl Ctx, due: Due, budget: Budget) {
     for id in due.subscriptions {
-        check(ctx, &id);
+        if !budget.left() {
+            break;
+        }
+        check(ctx, &id, budget);
     }
-    crate::steam::run_due(ctx, due.steam);
+    crate::steam::run_due(ctx, due.steam, budget);
 }
 
-fn check(ctx: &mut impl Ctx, id: &str) {
+fn check(ctx: &mut impl Ctx, id: &str, budget: Budget) {
     let key = id.to_string();
     let loaded = ctx.tx(|tx| {
         let p = tx.db.purchase().id().find(&key)?;
@@ -127,10 +130,10 @@ fn check(ctx: &mut impl Ctx, id: &str) {
         TxState::Active if st.expires_at_ms > p.expires_at_ms => {
             let product = product.unwrap_or_else(|| Product::new(&p.app_id, &p.product_id, &p.kind));
             // Re-schedules itself for the new expiry.
-            let recorded = ctx.tx(|tx| ledger::record_active(tx, &product, &st, &p.user_id, &p.app_instance_id, 0, ""));
+            let recorded = ctx.tx(|tx| ledger::record_active(tx, &product, &st, &p.user_id, &p.app_instance_id));
             match recorded {
                 Ok(id) => {
-                    ledger::advance(ctx, &id);
+                    ledger::advance(ctx, &id, budget);
                 }
                 Err(e) => log::warn!("Subscription re-check of {id}: {e}"),
             }
@@ -140,7 +143,7 @@ fn check(ctx: &mut impl Ctx, id: &str) {
                 drop_row(tx, id);
                 ledger::record_inactive(tx, &st, "subscription re-check")
             }) {
-                ledger::advance(ctx, &changed);
+                ledger::advance(ctx, &changed, budget);
             }
         }
         // Not renewed (yet) and not ended: the backoff set above stays.

@@ -24,6 +24,8 @@ export interface GameApp {
   store: string
   /** App Store builds: how refund requests are answered (`off` / empty, `inform`, `prefer`). */
   apple_refund_mode: string
+  /** Amazon builds: the only SNS topic notifications are accepted from (empty: any). */
+  sns_topic_arn?: string
 }
 
 export interface Product {
@@ -63,7 +65,7 @@ export interface Purchase {
   original_transaction_id: string
   purchase_token: string
   user_id: string
-  status: string
+  status: PurchaseStatus
   reason: string
   environment: string
   expires_at_ms: number
@@ -235,7 +237,11 @@ export interface Overview {
   outbox: number
 }
 
-export const STATUSES = ["verified", "transfer_pending", "granted", "completed", "revoke_pending", "revoked", "expire_pending", "expired", "rejected"]
+/** Ledger states (`purser_core::model::status`). */
+export const STATUSES = ["verified", "transfer_pending", "granted", "completed", "revoke_pending", "revoked", "expire_pending", "expired", "rejected"] as const
+export type PurchaseStatus = (typeof STATUSES)[number]
+/** False for a state a newer server added. */
+export const isPurchaseStatus = (s: string): s is PurchaseStatus => (STATUSES as readonly string[]).includes(s)
 export const KINDS: Kind[] = ["consumable", "non_consumable", "subscription"]
 
 /** Every secret name with its description: the stores' (from the registry), then the rest. */

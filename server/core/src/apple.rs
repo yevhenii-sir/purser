@@ -119,7 +119,7 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
             environment::PRODUCTION
         },
         // price is in milliunits of the currency
-        price_micros: ms("price") * 1000,
+        price_micros: ms("price").saturating_mul(1000),
         currency: s("currency"),
         account_id: s("appAccountToken"),
         consumed: false,
@@ -154,6 +154,67 @@ pub struct AppleNotification {
     pub environment: String,
 }
 
+/// Apple Root CA - G3 (<https://www.apple.com/certificateauthority/>), the root of the chain in
+/// every signed App Store payload. SHA-256 fingerprint 63343ABF...653E9179.
+pub const ROOT_CA_G3: &[u8] = include_bytes!("apple_root_ca_g3.der");
+/// Marker extensions Apple puts in the leaf (`1.2.840.113635.100.6.11.1`) and intermediate
+/// (`1.2.840.113635.100.6.2.1`) certificates of App Store signing chains.
+const LEAF_MARKER: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x06, 0x0b, 0x01];
+const INTERMEDIATE_MARKER: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x06, 0x02, 0x01];
+
+/// Verifies a compact JWS signed by the App Store (notifications, transactions): ES256 with the
+/// key of `x5c[0]`, which chains through `x5c[1]` to `root` (`x5c[2]` must be exactly `root`),
+/// every certificate valid at `now_ms` and marked as an App Store one.
+pub fn verify_jws(jws: &str, root: &[u8], now_ms: i64) -> Result<(), String> {
+    use crate::x509::{verify_ecdsa_prehash, Certificate, SignatureEncoding};
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+
+    let mut parts = jws.split('.');
+    let (Some(header), Some(payload), Some(signature), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        return Err("malformed JWS".into());
+    };
+    let header: Value = crate::jwt::b64_decode_any(header)
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or("JWS header is not base64url JSON")?;
+    if header["alg"] != "ES256" {
+        return Err("JWS is not ES256".into());
+    }
+    let chain: Vec<Vec<u8>> = header["x5c"]
+        .as_array()
+        .filter(|a| a.len() == 3)
+        .ok_or("JWS without a three-certificate x5c chain")?
+        .iter()
+        .map(|c| c.as_str().and_then(|c| STANDARD.decode(c).ok()).ok_or("x5c entry is not base64"))
+        .collect::<Result<_, _>>()?;
+    if chain[2] != root {
+        return Err("x5c does not end in the Apple root certificate".into());
+    }
+    let root = Certificate::parse(&chain[2])?;
+    let intermediate = Certificate::parse(&chain[1])?;
+    let leaf = Certificate::parse(&chain[0])?;
+    for (name, c) in [("root", &root), ("intermediate", &intermediate), ("leaf", &leaf)] {
+        if !c.is_valid_at(now_ms) {
+            return Err(format!("the {name} certificate is expired or not yet valid"));
+        }
+    }
+    if !intermediate.has_extension(INTERMEDIATE_MARKER) || !leaf.has_extension(LEAF_MARKER) {
+        return Err("x5c is not an App Store signing chain".into());
+    }
+    intermediate.verify_signed_by(root.spki).map_err(|e| format!("intermediate certificate: {e}"))?;
+    leaf.verify_signed_by(intermediate.spki).map_err(|e| format!("leaf certificate: {e}"))?;
+    let sig = crate::jwt::b64_decode_any(signature).ok_or("JWS signature is not base64url")?;
+    let digest = Sha256::digest(format!("{}.{payload}", jws.split('.').next().unwrap_or("")).as_bytes());
+    verify_ecdsa_prehash(leaf.spki, &digest, &sig, SignatureEncoding::Fixed).map_err(|e| format!("JWS: {e}"))
+}
+
+/// Verifies the `signedPayload` of a notification body (see [`verify_jws`]).
+pub fn verify_notification(body: &str, root: &[u8], now_ms: i64) -> Result<(), String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad notification body: {e}"))?;
+    verify_jws(v["signedPayload"].as_str().ok_or("no signedPayload")?, root, now_ms)
+}
+
 /// Parses `{"signedPayload": "<JWS>"}`. The content is untrusted: use it only to find out which
 /// transaction to re-fetch from the App Store Server API.
 pub fn parse_notification(body: &str) -> Result<AppleNotification, String> {
@@ -181,11 +242,148 @@ pub fn parse_notification(body: &str) -> Result<AppleNotification, String> {
     })
 }
 
+/// A signing chain of our own, shaped like Apple's, for tests (the module's too, through the
+/// `testing` feature): signs payloads the way the App Store does, under [`testing::root`].
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    use crate::jwt::b64url;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use ecdsa::signature::hazmat::PrehashSigner;
+    use p256::pkcs8::EncodePublicKey;
+    use sha2::{Digest, Sha256, Sha384};
+
+    fn der(tag: u8, content: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        match content.len() {
+            n if n < 0x80 => out.push(n as u8),
+            n if n < 0x100 => out.extend([0x81, n as u8]),
+            n => out.extend([0x82, (n >> 8) as u8, n as u8]),
+        }
+        out.extend_from_slice(content);
+        out
+    }
+
+    fn seq(parts: &[Vec<u8>]) -> Vec<u8> {
+        der(0x30, &parts.concat())
+    }
+
+    pub enum Key {
+        P256(p256::ecdsa::SigningKey),
+        P384(p384::ecdsa::SigningKey),
+    }
+
+    impl Key {
+        /// A P-384 key from a seed byte (deterministic: no RNG needed).
+        pub fn p384(seed: u8) -> Self {
+            Key::P384(p384::ecdsa::SigningKey::from_slice(&[seed; 48]).expect("valid scalar"))
+        }
+        fn spki(&self) -> Vec<u8> {
+            match self {
+                Key::P256(k) => k.verifying_key().to_public_key_der().unwrap().into_vec(),
+                Key::P384(k) => k.verifying_key().to_public_key_der().unwrap().into_vec(),
+            }
+        }
+        /// DER signature over SHA-384 (what Apple's P-384 CAs use).
+        fn sign_cert(&self, tbs: &[u8]) -> Vec<u8> {
+            let digest = Sha384::digest(tbs);
+            match self {
+                Key::P256(k) => PrehashSigner::<p256::ecdsa::Signature>::sign_prehash(k, &digest).unwrap().to_der().as_bytes().to_vec(),
+                Key::P384(k) => PrehashSigner::<p384::ecdsa::Signature>::sign_prehash(k, &digest).unwrap().to_der().as_bytes().to_vec(),
+            }
+        }
+    }
+
+    /// A certificate for `subject` signed by `issuer`, valid 2020-2040, with the marker extension.
+    pub fn cert(subject: &Key, issuer: &Key, marker: &[u8]) -> Vec<u8> {
+        const ECDSA_SHA384: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03];
+        let alg = seq(&[der(0x06, ECDSA_SHA384)]);
+        let validity = seq(&[der(0x17, b"200101000000Z"), der(0x17, b"400101000000Z")]);
+        let ext = der(0xa3, &seq(&[seq(&[der(0x06, marker), der(0x04, &[0x05, 0x00])])]));
+        let tbs = seq(&[der(0xa0, &der(0x02, &[2])), der(0x02, &[1]), alg.clone(), seq(&[]), validity, seq(&[]), subject.spki(), ext]);
+        let sig = [vec![0u8], issuer.sign_cert(&tbs)].concat();
+        seq(&[tbs, alg, der(0x03, &sig)])
+    }
+
+    /// An ES256 JWS signed by `leaf` with `x5c` = `chain`.
+    pub fn jws(leaf: &p256::ecdsa::SigningKey, chain: &[&[u8]], payload: &str) -> String {
+        let x5c: Vec<String> = chain.iter().map(|c| STANDARD.encode(c)).collect();
+        let header = serde_json::json!({ "alg": "ES256", "x5c": x5c }).to_string();
+        let input = format!("{}.{}", b64url(header.as_bytes()), b64url(payload.as_bytes()));
+        let sig: p256::ecdsa::Signature = PrehashSigner::sign_prehash(leaf, &Sha256::digest(input.as_bytes())).unwrap();
+        format!("{input}.{}", b64url(&sig.to_bytes()))
+    }
+
+    pub fn leaf_key() -> p256::ecdsa::SigningKey {
+        p256::ecdsa::SigningKey::from_slice(&[3; 32]).expect("valid scalar")
+    }
+
+    fn chain() -> &'static [Vec<u8>; 3] {
+        static CHAIN: std::sync::OnceLock<[Vec<u8>; 3]> = std::sync::OnceLock::new();
+        CHAIN.get_or_init(|| {
+            let (root, ca) = (Key::p384(1), Key::p384(2));
+            let leaf = Key::P256(leaf_key());
+            [cert(&leaf, &ca, super::LEAF_MARKER), cert(&ca, &root, super::INTERMEDIATE_MARKER), cert(&root, &root, &[0x2a])]
+        })
+    }
+
+    /// The root certificate of the test chain (stands in for [`super::ROOT_CA_G3`]).
+    pub fn root() -> &'static [u8] {
+        &chain()[2]
+    }
+
+    /// `payload` as a JWS signed by the test chain, like an App Store signed payload.
+    pub fn sign(payload: &str) -> String {
+        let c = chain();
+        jws(&leaf_key(), &[&c[0], &c[1], &c[2]], payload)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::jwt::b64url;
     use crate::model::{kind, store_action};
+
+    #[test]
+    fn the_apple_root_certificate_signs_itself() {
+        let root = crate::x509::Certificate::parse(ROOT_CA_G3).unwrap();
+        root.verify_signed_by(root.spki).unwrap();
+        assert!(root.is_valid_at(1_790_000_000_000));
+        use sha2::{Digest, Sha256};
+        assert_eq!(hex::encode_upper(Sha256::digest(ROOT_CA_G3)), "63343ABFB89A6A03EBB57E9B3F5FA7BE7C4F5C756F3017B3A8C488C3653E9179");
+    }
+
+    #[test]
+    fn signed_payloads_must_chain_to_the_root() {
+        use testing::{cert, jws, Key};
+        let now = 1_790_000_000_000;
+        let (root_key, ca_key) = (Key::p384(1), Key::p384(2));
+        let leaf_signing = testing::leaf_key();
+        let leaf_key = Key::P256(leaf_signing.clone());
+        let root = testing::root().to_vec();
+        let ca = cert(&ca_key, &root_key, INTERMEDIATE_MARKER);
+        let good = testing::sign(r#"{"notificationType":"REFUND"}"#);
+        verify_jws(&good, &root, now).unwrap();
+
+        let mut parts: Vec<&str> = good.split('.').collect();
+        let forged = b64url(br#"{"notificationType":"DID_RENEW"}"#);
+        parts[1] = &forged;
+        assert!(verify_jws(&parts.join("."), &root, now).unwrap_err().contains("JWS"), "a changed payload");
+        assert!(verify_jws(&good, ROOT_CA_G3, now).unwrap_err().contains("root"), "a root of our own");
+        assert!(verify_jws(&good, &root, 2_300_000_000_000).unwrap_err().contains("expired"));
+
+        let stranger = Key::p384(9);
+        let foreign_ca = cert(&stranger, &stranger, INTERMEDIATE_MARKER);
+        let foreign_leaf = cert(&leaf_key, &stranger, LEAF_MARKER);
+        let other = jws(&leaf_signing, &[&foreign_leaf, &foreign_ca, &root], "{}");
+        assert!(verify_jws(&other, &root, now).unwrap_err().contains("intermediate"), "a CA the root did not sign");
+
+        let unmarked = cert(&leaf_key, &ca_key, &[0x2a]);
+        let plain = jws(&leaf_signing, &[&unmarked, &ca, &root], "{}");
+        assert!(verify_jws(&plain, &root, now).unwrap_err().contains("App Store"));
+        assert!(verify_jws(&fake_jws("{}"), &root, now).is_err(), "no chain at all");
+    }
 
     fn fake_jws(payload: &str) -> String {
         format!("{}.{}.sig", b64url(br#"{"alg":"ES256"}"#), b64url(payload.as_bytes()))

@@ -1,6 +1,5 @@
-import { useState, type ReactNode } from "react"
+import type { ReactNode } from "react"
 import { CheckIcon, CopyIcon } from "lucide-react"
-import { toast } from "sonner"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -10,8 +9,9 @@ import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
+import { useCopy } from "@/lib/hooks"
 import { cn } from "@/lib/utils"
-import type { Level } from "@/lib/types"
+import { isPurchaseStatus, type Level, type PurchaseStatus } from "@/lib/types"
 
 export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
   return (
@@ -96,25 +96,28 @@ export function DataTable<T>({ rows, columns, onRowClick, empty = "Nothing here"
   )
 }
 
-const STATUS_TONE: Record<string, string> = {
+type ToneKind = "ok" | "warn" | "bad" | "muted"
+
+const STATUS_TONE: Record<PurchaseStatus, ToneKind> = {
   completed: "ok",
   granted: "ok",
   verified: "warn",
   transfer_pending: "warn",
   revoke_pending: "warn",
   expire_pending: "warn",
+  expired: "muted",
   rejected: "bad",
   revoked: "bad",
 }
 
-const TONE_CLASS: Record<string, string> = {
+const TONE_CLASS: Record<ToneKind, string> = {
   ok: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
   warn: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
   bad: "border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-400",
   muted: "",
 }
 
-export function Tone({ tone, children }: { tone: "ok" | "warn" | "bad" | "muted"; children: ReactNode }) {
+export function Tone({ tone, children }: { tone: ToneKind; children: ReactNode }) {
   return (
     <Badge variant="outline" className={TONE_CLASS[tone]}>
       {children}
@@ -122,8 +125,9 @@ export function Tone({ tone, children }: { tone: "ok" | "warn" | "bad" | "muted"
   )
 }
 
+/** `status` may be one a newer server added: shown muted. */
 export function StatusBadge({ status }: { status: string }) {
-  return <Tone tone={(STATUS_TONE[status] as "ok" | "warn" | "bad") || "muted"}>{status}</Tone>
+  return <Tone tone={isPurchaseStatus(status) ? STATUS_TONE[status] : "muted"}>{status}</Tone>
 }
 
 export function LevelBadge({ level }: { level: Level }) {
@@ -146,19 +150,9 @@ export function Field({ label, children, hint, className }: { label: ReactNode; 
 }
 
 export function CopyField({ label, value }: { label: ReactNode; value: string }) {
-  const [copied, setCopied] = useState(false)
+  const { copied, copy } = useCopy("Copied")
   if (!value) return null
   const multiline = value.includes("\n")
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value)
-      setCopied(true)
-      toast.success("Copied")
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      toast.error("Copy failed: select the text and copy it")
-    }
-  }
   return (
     <Field label={label}>
       <div className="flex items-start gap-2">
@@ -167,7 +161,7 @@ export function CopyField({ label, value }: { label: ReactNode; value: string })
         ) : (
           <Input readOnly value={value} className="font-mono text-xs" onFocus={(e) => e.target.select()} />
         )}
-        <Button variant="outline" size="icon" onClick={copy} aria-label="Copy">
+        <Button variant="outline" size="icon" onClick={() => copy(value)} aria-label="Copy">
           {copied ? <CheckIcon /> : <CopyIcon />}
         </Button>
       </div>

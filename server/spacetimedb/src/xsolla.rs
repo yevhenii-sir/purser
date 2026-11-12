@@ -25,14 +25,9 @@ use purser_core::model::{kind, ledger_id, status, store};
 use purser_core::xsolla::{self as x, ApiStatus, Event};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use spacetimedb::http::{handler, Body, HandlerContext, Request, Response};
+use spacetimedb::http::{handler, HandlerContext, Request, Response};
 
-/// HTTP status and JSON body; 204 goes out without a body.
-pub(crate) type Answer = (u16, Value);
-
-fn answer(http: u16, status: &str, message: impl Into<String>) -> Answer {
-    (http, json!({ "status": status, "message": message.into() }))
-}
+use crate::web::{answer, respond, Answer};
 
 /// Webhook error in the format Xsolla shows in Publisher Account.
 fn rejected(http: u16, code: &str, message: impl Into<String>) -> Answer {
@@ -43,18 +38,7 @@ fn ok_204(status: &str, message: impl Into<String>) -> Answer {
     answer(204, status, message)
 }
 
-pub(crate) fn respond((http, body): Answer) -> Response {
-    let builder = http::Response::builder().status(http);
-    if http == 204 {
-        return builder.body(Body::empty()).expect("valid response");
-    }
-    builder.header("Content-Type", "application/json").body(Body::from(body.to_string())).expect("valid response")
-}
-
-fn parse<T: serde::de::DeserializeOwned>(req: Request) -> Result<T, Answer> {
-    let bytes = req.into_body().into_bytes();
-    serde_json::from_slice(&bytes).map_err(|e| answer(400, "error", format!("invalid JSON body: {e}")))
-}
+use crate::web::json as parse;
 
 /// The enabled Xsolla build `app_id`, inside a transaction.
 fn xsolla_app(tx: &spacetimedb::TxContext, app_id: &str) -> Result<GameApp, Answer> {
@@ -302,32 +286,14 @@ pub(crate) fn checkout_status_route(ctx: &mut HandlerContext, req: Request) -> R
 // Webhooks
 // ---------------------------------------------------------------------
 
-fn query_param(req: &Request, name: &str) -> String {
-    req.uri()
-        .query()
-        .unwrap_or("")
-        .split('&')
-        .filter_map(|kv| kv.split_once('='))
-        .find(|(k, _)| *k == name)
-        .map(|(_, v)| v.to_string())
-        .unwrap_or_default()
-}
-
-fn reject_in_health(ctx: &mut impl Ctx, app_id: &str, reason: &str) {
-    let (id, reason) = (app_id.to_string(), reason.to_string());
-    ctx.tx(|tx| {
-        store_health::touch(tx, &id, |h, now| {
-            h.last_rejected_at_micros = now;
-            h.last_rejected_reason = reason.clone();
-        })
-    });
-}
-
 /// `/notify/xsolla?app=<app_id>`.
 pub(crate) fn notification(ctx: &mut impl Ctx, req: Request) -> Answer {
-    let app_id = query_param(&req, "app");
+    let app_id = crate::web::query_param(&req, "app");
     let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let bytes = req.into_body().into_bytes();
+    let bytes = match crate::web::body(req) {
+        Ok(b) => b,
+        Err(a) => return a,
+    };
     // One transaction: the build, its webhook secret and project id.
     let loaded = ctx.tx(|tx| {
         let app = config::find_app(tx, &app_id).filter(|a| config::app_store(a).id == store::XSOLLA)?;
@@ -345,7 +311,7 @@ pub(crate) fn notification(ctx: &mut impl Ctx, req: Request) -> Answer {
     };
     if !x::verify_signature(&authorization, &bytes, &secret) {
         log::warn!("Xsolla webhook for {} rejected: invalid signature", app.app_id);
-        reject_in_health(ctx, &app.app_id, "invalid signature");
+        ctx.tx(|tx| store_health::rejected(tx, &app.app_id, "invalid signature"));
         return rejected(400, "INVALID_SIGNATURE", "invalid signature");
     }
     let body = String::from_utf8_lossy(&bytes);
@@ -356,7 +322,7 @@ pub(crate) fn notification(ctx: &mut impl Ctx, req: Request) -> Answer {
     if let Some(expected) = project_id.filter(|p| !w.project_id.is_empty() && p.trim() != w.project_id) {
         let reason = format!("webhook of project {} sent to a build of project {}", w.project_id, expected.trim());
         log::warn!("Xsolla webhook for {}: {reason}", app.app_id);
-        reject_in_health(ctx, &app.app_id, &reason);
+        ctx.tx(|tx| store_health::rejected(tx, &app.app_id, &reason));
         return rejected(400, "INVALID_PARAMETER", reason);
     }
     ctx.tx(|tx| store_health::touch(tx, &app.app_id, |h, now| h.last_at_micros = now));

@@ -14,10 +14,11 @@ import { RevenueTree } from "@/components/revenue-tree"
 import { RichTable, type RichColumn } from "@/components/rich-table"
 import { call, proc } from "@/lib/api"
 import { useAppName, useApps } from "@/lib/apps"
-import { money, shortDay, usd } from "@/lib/format"
+import { money, pct, shortDay, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { revenueStats } from "@/lib/revenue"
 import type { Cohort, Money, Stats } from "@/lib/types"
+import { downloadBlob } from "@/lib/utils"
 import type { PageProps } from "@/routes"
 
 const RANGES = [["7", "Last 7 days"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["365", "Last 365 days"]]
@@ -29,7 +30,6 @@ const subsConfig = { active: { label: "Active subscriptions", color: "var(--char
 const isoDay = (d: Date) => d.toISOString().slice(0, 10)
 const compactUsd = (micros: number) =>
   "$" + (micros / 1e6).toLocaleString(undefined, { notation: "compact", maximumFractionDigits: 1 })
-const pct = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(1)}%`)
 
 const regionNames = (() => {
   try {
@@ -47,21 +47,20 @@ const countryName = (code: string) => {
   }
 }
 
-/** Saves rows as a CSV file (values with commas or quotes are quoted). */
-function downloadCsv(name: string, rows: (string | number | null)[][]) {
-  const cell = (v: string | number | null) => {
-    const s = v === null ? "" : String(v)
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-  }
-  const a = document.createElement("a")
-  a.href = URL.createObjectURL(new Blob([rows.map((r) => r.map(cell).join(",")).join("\n")], { type: "text/csv" }))
-  a.download = name
-  a.click()
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+/** A CSV cell. Text that a spreadsheet would run as a formula (= + - @, tab, CR) gets a leading
+ * quote; numbers, negative ones included, stay numbers. Values with commas or quotes are quoted. */
+function csvCell(v: string | number | null) {
+  let s = v === null ? "" : String(v)
+  if (typeof v !== "number" && /^[=+\-@\t\r]/.test(s) && !/^[+-]?\d+(\.\d+)?$/.test(s)) s = "'" + s
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 
-function CsvButton({ onClick }: { onClick: () => void }) {
-  return <Button variant="outline" size="sm" onClick={onClick}><DownloadIcon /> CSV</Button>
+function downloadCsv(name: string, rows: (string | number | null)[][]) {
+  downloadBlob(name, rows.map((r) => r.map(csvCell).join(",")).join("\n"), "text/csv")
+}
+
+function CsvButton({ onClick, disabled }: { onClick: () => void; disabled?: boolean }) {
+  return <Button variant="outline" size="sm" onClick={onClick} disabled={disabled}><DownloadIcon /> CSV</Button>
 }
 
 function moneyColumns<T extends Money>(): RichColumn<T>[] {
@@ -134,7 +133,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
           <Label htmlFor="sandbox" className="font-normal">Include sandbox</Label>
         </div>
         <div className="ms-auto flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={exportCsv} disabled={!r}><DownloadIcon /> CSV</Button>
+          <CsvButton onClick={exportCsv} disabled={!r} />
           <Button variant="outline" size="sm" onClick={() => setFeeDialog(true)} disabled={!r}><PercentIcon /> Store fee</Button>
           <Button variant="outline" size="sm" onClick={() => tryAct(() => proc("admin_refresh_fx"), "Rates updated").then(reload)}><RefreshCwIcon /> Rates</Button>
           <Button

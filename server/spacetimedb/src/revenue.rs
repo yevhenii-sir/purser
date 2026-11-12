@@ -284,12 +284,9 @@ fn apply(tx: &ReducerContext, p: &Purchase, day: i32, d: &Delta) {
     b.save(tx);
 }
 
-fn now_micros(tx: &ReducerContext) -> i64 {
-    tx.timestamp.to_micros_since_unix_epoch()
-}
 
 fn today(tx: &ReducerContext) -> i32 {
-    day_of_micros(now_micros(tx))
+    day_of_micros(crate::ctx::tx_now_micros(tx))
 }
 
 /// Trial / conversion / paid-year facts of a purchase, from the periods of the same subscription
@@ -506,7 +503,7 @@ fn scan_step(tx: &ReducerContext, cursor: Option<(i64, String)>) -> bool {
 /// One rebuild step (one transaction). True when there is nothing more to do now: no rebuild is
 /// needed, it just finished, or it waits until purchase imports have stopped.
 fn rebuild_step(tx: &ReducerContext) -> bool {
-    if now_micros(tx) - settings::get_i64(tx, key::LAST_IMPORT_AT) < IMPORT_QUIET_MICROS {
+    if crate::ctx::tx_now_micros(tx) - settings::get_i64(tx, key::LAST_IMPORT_AT) < IMPORT_QUIET_MICROS {
         return true;
     }
     match rebuild_state(tx) {
@@ -616,7 +613,7 @@ pub fn invalidate(tx: &ReducerContext) {
 /// Ledger rows were imported: rebuilt once imports have stopped for a few minutes, so a large
 /// import in batches is not followed by a rebuild after every batch.
 pub fn imported(tx: &ReducerContext) {
-    settings::set(tx, key::LAST_IMPORT_AT, &now_micros(tx).to_string());
+    settings::set(tx, key::LAST_IMPORT_AT, &crate::ctx::tx_now_micros(tx).to_string());
     invalidate(tx);
 }
 
@@ -652,7 +649,7 @@ pub fn admin_delete_fx_override(ctx: &ReducerContext, currency: String) -> Resul
 /// Renewals of one subscription are counted once (latest row). Only rows that expire after now
 /// are read (index range).
 fn active_subscriptions(tx: &ReducerContext) -> BTreeMap<(String, String, String, String), (u32, i64)> {
-    let now_ms = now_micros(tx) / 1000;
+    let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
     let mut latest: BTreeMap<(String, String), Purchase> = BTreeMap::new();
     for p in tx.db.purchase().expires_at_ms().filter((now_ms + 1)..) {
         if p.kind != kind::SUBSCRIPTION || p.store == store::MANUAL || !status::is_owned(&p.status) {
@@ -697,7 +694,7 @@ fn snapshot_subscriptions(tx: &ReducerContext, day: i32) {
 // --- FX --------------------------------------------------------------------------------------
 
 fn store_rates(tx: &ReducerContext, day: i32, rates: &Rates) {
-    let row = FxDay { day, rates_json: serde_json::to_string(rates).unwrap_or_default(), fetched_at_micros: now_micros(tx) };
+    let row = FxDay { day, rates_json: serde_json::to_string(rates).unwrap_or_default(), fetched_at_micros: crate::ctx::tx_now_micros(tx) };
     if tx.db.fx_day().day().find(day).is_some() {
         tx.db.fx_day().day().update(row);
     } else {
@@ -725,7 +722,7 @@ enum FxPlan {
 }
 
 fn fx_plan(tx: &ReducerContext, force: bool) -> FxPlan {
-    let now = now_micros(tx);
+    let now = crate::ctx::tx_now_micros(tx);
     let has_rates = tx.db.fx_day().iter().next().is_some();
     if force || !has_rates || now - settings::get_i64(tx, key::FX_LAST_ATTEMPT) >= FX_REFRESH_MICROS {
         return FxPlan::Latest;
@@ -752,7 +749,7 @@ fn refresh_fx(ctx: &mut impl Ctx, plan: FxPlan) -> Result<(), String> {
             let (day, rates) = fx::parse_latest(&fetch(ctx, &fx::latest_url())?)?;
             ctx.tx(|tx| {
                 store_rates(tx, day, &rates);
-                settings::set(tx, key::FX_LAST_OK, &now_micros(tx).to_string());
+                settings::set(tx, key::FX_LAST_OK, &crate::ctx::tx_now_micros(tx).to_string());
                 if settings::get(tx, key::FX_BACKFILL_FROM).is_none() {
                     settings::set(tx, key::FX_BACKFILL_FROM, &day.to_string());
                 }
@@ -773,7 +770,7 @@ fn refresh_fx(ctx: &mut impl Ctx, plan: FxPlan) -> Result<(), String> {
                 for (day, rates) in &series {
                     store_rates(tx, *day, rates);
                 }
-                settings::set(tx, key::FX_LAST_OK, &now_micros(tx).to_string());
+                settings::set(tx, key::FX_LAST_OK, &crate::ctx::tx_now_micros(tx).to_string());
                 settings::set(tx, key::FX_BACKFILL_FROM, &start.to_string());
             });
             log::info!("FX history backfilled to {}", format_day(start));
@@ -846,6 +843,7 @@ pub fn catch_up(ctx: &mut impl Ctx, u: &Upkeep) {
         ctx.tx(|tx| snapshot_subscriptions(tx, day));
     }
     if u.rebuild {
+        // Scheduled ticks never fire under `test_utils`: tests run the batches inline.
         if cfg!(test) {
             run_rebuild(ctx, REBUILD_STEPS_PER_RUN);
         } else {
@@ -1124,7 +1122,7 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
 
         // Cohorts reach up to today: they need the rates after `to` too.
         let ledger_fx = if to >= today { table } else { load_fx(tx, from, today) };
-        let ledger = rv::ledger_metrics(&ledger_rows(tx, &keep, from, to), &ledger_fx, &query, now_micros(tx));
+        let ledger = rv::ledger_metrics(&ledger_rows(tx, &keep, from, to), &ledger_fx, &query, crate::ctx::tx_now_micros(tx));
         if let (Some(r), Some(l)) = (report.as_object_mut(), ledger.as_object()) {
             r.extend(l.clone());
         }

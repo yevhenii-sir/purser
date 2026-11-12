@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils"
 import { ErrorBox, Loading, Section } from "@/components/common"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { usd } from "@/lib/format"
+import { pct, usd } from "@/lib/format"
 import { useAsync } from "@/lib/hooks"
 import { revenueStats } from "@/lib/revenue"
 import type { Money } from "@/lib/types"
@@ -83,7 +83,6 @@ function metrics(s: TreeSummary): Metrics {
 const isoDay = (d: Date) => d.toISOString().slice(0, 10)
 const DAY = 86_400_000
 const share = (part: number, whole: number) => (whole > 0 ? part / whole : null)
-const pct = (v: number | null, digits = 1) => (v === null ? "—" : `${(v * 100).toFixed(digits)}%`)
 /** An edge label: nothing when the ratio has no base. */
 const rate = (v: number | null, digits = 1) => (v === null ? null : pct(v, digits))
 /** Purchases per paywall view; above 100% most purchases happen outside paywalls, so no label. */

@@ -8,7 +8,7 @@
 //! timed-out call left behind.
 
 use crate::config::{self, secret_name};
-use crate::ctx::{tx_now_micros, Ctx};
+use crate::ctx::{tx_now_micros, Budget, Ctx};
 use crate::ledger;
 use crate::net;
 use crate::settings;
@@ -34,6 +34,10 @@ pub struct SteamBuild {
     /// Use `ISteamMicroTxnSandbox`: no money moves, purchases are recorded as sandbox.
     pub sandbox: bool,
     pub updated_at_micros: i64,
+    /// `/checkout/steam` needs a Web API auth ticket of the `steam_id` (otherwise any client can
+    /// start an order for any SteamID).
+    #[default(false)]
+    pub require_ticket: bool,
 }
 
 /// How a product is sold on Steam. No row: item id from the product id, description = product id,
@@ -145,21 +149,34 @@ pub(crate) struct Api {
     base: &'static str,
     app_id: u32,
     sandbox: bool,
+    require_ticket: bool,
 }
 
-fn build_settings(tx: &TxContext, app: &GameApp) -> (u32, bool, Result<u32, String>) {
+struct BuildSettings {
+    /// What the App ID was read from (the build's `app_id` or `steam_app_id`).
+    steam_app: String,
+    app_id: Result<u32, String>,
+    sandbox: bool,
+    require_ticket: bool,
+}
+
+fn build_settings(tx: &TxContext, app: &GameApp) -> BuildSettings {
     let row = tx.db.steam_build().app_id().find(&app.app_id);
-    let sandbox = row.as_ref().is_some_and(|b| b.sandbox);
+    let (sandbox, require_ticket) = row.as_ref().map_or((false, false), |b| (b.sandbox, b.require_ticket));
     let steam_app = row.map(|b| b.steam_app_id).filter(|v| !v.is_empty()).unwrap_or_else(|| app.app_id.clone());
-    let parsed = s::parse_app_id(&steam_app);
-    (*parsed.as_ref().unwrap_or(&0), sandbox, parsed)
+    BuildSettings { app_id: s::parse_app_id(&steam_app), steam_app, sandbox, require_ticket }
+}
+
+impl Api {
+    fn new(key: String, b: BuildSettings) -> Result<Self, StoreError> {
+        let app_id = b.app_id.map_err(StoreError::Config)?;
+        Ok(Api { key, base: s::api_base(b.sandbox), app_id, sandbox: b.sandbox, require_ticket: b.require_ticket })
+    }
 }
 
 fn api_with_key(ctx: &mut impl Ctx, app: &GameApp, key: String) -> Result<Api, StoreError> {
     let app_c = app.clone();
-    let (_, sandbox, app_id) = ctx.tx(|tx| build_settings(tx, &app_c));
-    let app_id = app_id.map_err(StoreError::Config)?;
-    Ok(Api { key, base: s::api_base(sandbox), app_id, sandbox })
+    Api::new(key, ctx.tx(|tx| build_settings(tx, &app_c)))
 }
 
 pub(crate) fn api(ctx: &mut impl Ctx, app: &GameApp) -> Result<Api, StoreError> {
@@ -170,9 +187,7 @@ pub(crate) fn api(ctx: &mut impl Ctx, app: &GameApp) -> Result<Api, StoreError> 
 /// Publisher key and build settings, inside a transaction the caller opens anyway.
 fn api_tx(tx: &TxContext, app: &GameApp) -> Result<Api, StoreError> {
     let key = config::require_secret(tx, app, secret_name::STEAM_PUBLISHER_KEY).map_err(StoreError::Config)?.value;
-    let (_, sandbox, app_id) = build_settings(tx, app);
-    let app_id = app_id.map_err(StoreError::Config)?;
-    Ok(Api { key, base: s::api_base(sandbox), app_id, sandbox })
+    Api::new(key, build_settings(tx, app))
 }
 
 fn item_of(tx: &TxContext, product: &Product) -> SteamItem {
@@ -207,9 +222,12 @@ struct BuildInput {
     steam_app_id: String,
     #[serde(default)]
     sandbox: bool,
+    /// Missing keeps the stored value.
+    #[serde(default)]
+    require_ticket: Option<bool>,
 }
 
-/// Steam settings of a build: `{"app_id", "steam_app_id"?, "sandbox"?}`.
+/// Steam settings of a build: `{"app_id", "steam_app_id"?, "sandbox"?, "require_ticket"?}`.
 #[spacetimedb::reducer]
 pub fn admin_set_steam_build(ctx: &ReducerContext, json: String) -> Result<(), String> {
     let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
@@ -222,13 +240,15 @@ pub fn admin_set_steam_build(ctx: &ReducerContext, json: String) -> Result<(), S
     let steam_app_id = i.steam_app_id.trim().to_string();
     s::parse_app_id(if steam_app_id.is_empty() { &app.app_id } else { &steam_app_id })
         .map_err(|e| format!("[ERR_BAD_APP] {e}: set steam_app_id when the build's app_id is not the Steam App ID"))?;
+    let existing = ctx.db.steam_build().app_id().find(&app.app_id);
     let row = SteamBuild {
         app_id: app.app_id.clone(),
         steam_app_id,
         sandbox: i.sandbox,
         updated_at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+        require_ticket: i.require_ticket.unwrap_or_else(|| existing.as_ref().is_some_and(|b| b.require_ticket)),
     };
-    if ctx.db.steam_build().app_id().find(&row.app_id).is_some() {
+    if existing.is_some() {
         ctx.db.steam_build().app_id().update(row);
     } else {
         ctx.db.steam_build().insert(row);
@@ -311,21 +331,30 @@ pub fn admin_upsert_steam_items(ctx: &ReducerContext, json: String) -> Result<()
 // ---------------------------------------------------------------------
 
 fn call(ctx: &mut impl Ctx, api: &Api, what: &str, c: s::Call) -> Result<Value, SteamError> {
+    let res = send(ctx, api, c).map_err(|e| SteamError::Transient(format!("Steam {what}: {}", e.message())))?;
+    s::parse_reply(what, res.status, &res.body)
+}
+
+/// One Web API request with the publisher key (only in a header: URLs and bodies in errors are
+/// safe to log).
+fn send(ctx: &mut impl Ctx, api: &Api, c: s::Call) -> Result<net::HttpResult, SteamError> {
     let mut headers: Vec<(&str, &str)> = vec![(s::KEY_HEADER, api.key.as_str()), ("Accept", "application/json")];
     if c.method == "POST" {
         headers.push(("Content-Type", "application/x-www-form-urlencoded"));
     }
-    // The key is only in a header: URLs and bodies in errors are safe to log.
-    let res = net::send(ctx.http(), c.method, &c.url, &headers, c.body).map_err(|e| SteamError::Transient(format!("Steam {what}: {e}")))?;
-    s::parse_reply(what, res.status, &res.body)
+    net::send(ctx.http(), c.method, &c.url, &headers, c.body).map_err(SteamError::Transient)
+}
+
+/// Steam refused the publisher key: alert the owner.
+fn credentials_rejected(ctx: &mut impl Ctx, app: &GameApp, message: &str) {
+    ctx.tx(|tx| crate::alerts::store_credentials_rejected(tx, &app.app_id, message));
 }
 
 /// Maps what is left of a Steam error after the caller handled the cases it cares about.
 fn store_error(ctx: &mut impl Ctx, app: &GameApp, e: SteamError) -> StoreError {
     match e {
         SteamError::Config(m) => {
-            let (app_id, msg) = (app.app_id.clone(), m.clone());
-            ctx.tx(|tx| crate::alerts::store_credentials_rejected(tx, &app_id, &msg));
+            credentials_rejected(ctx, app, &m);
             StoreError::Config(m)
         }
         SteamError::Transient(m) => StoreError::Transient(m),
@@ -361,25 +390,26 @@ pub struct CheckoutRequest {
     /// `ISteamApps::GetCurrentGameLanguage` (`english`) or a Web API code (`en`).
     #[serde(default)]
     language: String,
+    /// Hex Web API auth ticket (`GetAuthTicketForWebApi("purser")`) proving the player is `steam_id`.
+    #[serde(default)]
+    ticket: String,
 }
 
-fn reply(http: u16, status: &str, message: impl Into<String>) -> (u16, Value) {
-    (http, json!({ "status": status, "message": message.into() }))
-}
+use crate::web::answer;
 
 fn checkout_error(ctx: &mut impl Ctx, app: &GameApp, e: SteamError) -> (u16, Value) {
     match e {
-        SteamError::Denied(m) => reply(403, "forbidden", m),
+        SteamError::Denied(m) => answer(403, "forbidden", m),
         SteamError::Transient(m) => {
             log::warn!("Steam checkout for {}: {m}", app.app_id);
-            reply(502, "error", "Steam is temporarily unavailable, retry later")
+            answer(502, "error", "Steam is temporarily unavailable, retry later")
         }
         e => match store_error(ctx, app, e) {
             StoreError::Config(m) => {
                 log::error!("Steam configuration error for {}: {m}", app.app_id);
-                reply(500, "error", "store credentials are not configured correctly")
+                answer(500, "error", "store credentials are not configured correctly")
             }
-            other => reply(400, "error", other.message()),
+            other => answer(400, "error", other.message()),
         },
     }
 }
@@ -388,7 +418,7 @@ fn checkout_error(ctx: &mut impl Ctx, app: &GameApp, e: SteamError) -> (u16, Val
 /// gets `MicroTxnAuthorizationResponse_t` and calls `/verify/steam` with the order id.
 pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> (u16, Value) {
     if !crate::handlers::valid_user_id(&r.user_id) {
-        return reply(400, "error", "invalid user_id");
+        return answer(400, "error", "invalid user_id");
     }
     let steam_id = match s::parse_steam_id(&match &r.steam_id {
         Value::String(v) => v.clone(),
@@ -396,7 +426,7 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> (u16, Value) {
         _ => String::new(),
     }) {
         Ok(id) => id,
-        Err(e) => return reply(400, "error", e),
+        Err(e) => return answer(400, "error", e),
     };
     // One transaction: the build, the product, the key and the item settings.
     let (app, product, settings) = ctx.tx(|tx| {
@@ -409,21 +439,38 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> (u16, Value) {
         (app, product, settings)
     });
     let Some(app) = app.filter(|a| a.enabled) else {
-        return reply(400, "error", format!("unknown app {}", r.app_id));
+        return answer(400, "error", format!("unknown app {}", r.app_id));
     };
     if !is_steam_build(&app) {
-        return reply(400, "error", format!("{} is not a Steam build", app.app_id));
+        return answer(400, "error", format!("{} is not a Steam build", app.app_id));
     }
     let (Some(product), Some((api, item))) = (product, settings) else {
-        return reply(400, "error", format!("unknown product {}", r.product_id));
+        return answer(400, "error", format!("unknown product {}", r.product_id));
     };
     let api = match api {
         Ok(a) => a,
         Err(e) => {
             log::error!("Steam checkout for {}: {}", app.app_id, e.message());
-            return reply(500, "error", "store credentials are not configured correctly");
+            return answer(500, "error", "store credentials are not configured correctly");
         }
     };
+
+    // 0. The player is who the client says (required when the build asks for it).
+    if !r.ticket.is_empty() || api.require_ticket {
+        if r.ticket.is_empty() {
+            return answer(403, "forbidden", "this build needs a Steam auth ticket (GetAuthTicketForWebApi(\"purser\"))");
+        }
+        let owner = match s::authenticate_ticket_call(api.app_id, &r.ticket) {
+            Ok(c) => send(ctx, &api, c).and_then(|res| s::parse_ticket_owner(res.status, &res.body)),
+            Err(e) => return answer(400, "error", e),
+        };
+        match owner {
+            Ok(id) if id == steam_id => {}
+            Ok(_) => return answer(403, "forbidden", "the auth ticket belongs to another Steam account"),
+            Err(SteamError::Denied(m)) => return answer(403, "forbidden", m),
+            Err(e) => return checkout_error(ctx, &app, e),
+        }
+    }
 
     // 1. The player's wallet: currency and billing country.
     let user = match call(ctx, &api, "GetUserInfo", s::user_info_call(api.base, api.app_id, steam_id))
@@ -433,14 +480,14 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> (u16, Value) {
         Err(e) => return checkout_error(ctx, &app, e),
     };
     if user.locked() {
-        return reply(403, "forbidden", "this Steam account cannot make purchases (locked)");
+        return answer(403, "forbidden", "this Steam account cannot make purchases (locked)");
     }
     let prices = s::parse_prices(&item.prices_json).unwrap_or_default();
     let (currency, amount) = match s::pick_price(&prices, product.default_price_micros, &product.currency, &user.currency) {
         Ok(p) => p,
         Err(e) => {
             log::error!("Steam checkout for {}:{}: {e}", app.app_id, product.product_id);
-            return reply(500, "error", format!("no Steam price configured for {}", product.product_id));
+            return answer(500, "error", format!("no Steam price configured for {}", product.product_id));
         }
     };
 
@@ -506,7 +553,7 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> (u16, Value) {
                 o.next_check_at_micros = 0;
                 o.last_error = e.clone();
             });
-            return reply(500, "error", e);
+            return answer(500, "error", e);
         }
     };
     match call(ctx, &api, "InitTxn", request).and_then(|p| s::parse_init(&p).map_err(SteamError::Transient)) {
@@ -733,23 +780,23 @@ fn describe(ctx: &mut impl Ctx, api: &Api, app: &GameApp, product: &Product, ord
 // ---------------------------------------------------------------------
 
 /// Records what the worker learned (the client did not verify, or not completely).
-fn record(ctx: &mut impl Ctx, app: &GameApp, product: &Product, user_id: &str, st: StoreTx, source: &str) {
+fn record(ctx: &mut impl Ctx, app: &GameApp, product: &Product, user_id: &str, st: StoreTx, source: &str, budget: Budget) {
     match st.state {
         TxState::Active => {
             if st.environment == environment::SANDBOX && !app.allow_sandbox {
                 log::warn!("{source}: sandbox purchase {} for {} ignored (sandbox disabled)", st.ledger_id(), app.app_id);
                 return;
             }
-            match ctx.tx(|tx| ledger::record_active(tx, product, &st, user_id, "", 0, "")) {
+            match ctx.tx(|tx| ledger::record_active(tx, product, &st, user_id, "")) {
                 Ok(id) => {
-                    ledger::advance(ctx, &id);
+                    ledger::advance(ctx, &id, budget);
                 }
                 Err(e) => log::warn!("{source}: {e}"),
             }
         }
         TxState::Revoked | TxState::Expired => {
             if let Some(id) = ctx.tx(|tx| ledger::record_inactive(tx, &st, source)) {
-                ledger::advance(ctx, &id);
+                ledger::advance(ctx, &id, budget);
             }
         }
         _ => {}
@@ -789,11 +836,14 @@ pub fn due(tx: &TxContext) -> Due {
 
 /// Worker step (from `poll::run_due`): re-checks due orders, polls refund reports and, once a
 /// day, forgets old orders that never became purchases.
-pub fn run_due(ctx: &mut impl Ctx, due: Due) {
+pub fn run_due(ctx: &mut impl Ctx, due: Due, budget: Budget) {
     for id in due.orders {
-        recheck_order(ctx, id);
+        if !budget.left() {
+            return;
+        }
+        recheck_order(ctx, id, budget);
     }
-    poll_reports(ctx, due.reports);
+    poll_reports(ctx, due.reports, budget);
     if due.prune {
         ctx.tx(|tx| prune_orders(tx));
     }
@@ -837,7 +887,7 @@ pub(crate) fn next_report_delay(previous_delay_micros: i64, count: u32) -> i64 {
     }
 }
 
-fn recheck_order(ctx: &mut impl Ctx, order_id: u64) {
+fn recheck_order(ctx: &mut impl Ctx, order_id: u64, budget: Budget) {
     let loaded = ctx.tx(|tx| {
         let o = tx.db.steam_order().order_id().find(order_id)?;
         let app = config::find_app(tx, &o.app_id)?;
@@ -881,7 +931,7 @@ fn recheck_order(ctx: &mut impl Ctx, order_id: u64) {
     if !open {
         // Finalized, but the ledger never got it.
         match describe(ctx, &api, &app, &product, &order, false) {
-            Ok(st) => record(ctx, &app, &product, &user_id, st, &source),
+            Ok(st) => record(ctx, &app, &product, &user_id, st, &source, budget),
             Err(e) => log::warn!("{source}: {}", e.message()),
         }
         return;
@@ -893,7 +943,7 @@ fn recheck_order(ctx: &mut impl Ctx, order_id: u64) {
         Ok(t) => match t.status.as_str() {
             // Authorized but never finalized (the game died), or finalized without our noticing.
             "Approved" | "Succeeded" => match settle(ctx, &api, &app, &product, order) {
-                Ok(st) => record(ctx, &app, &product, &user_id, st, &source),
+                Ok(st) => record(ctx, &app, &product, &user_id, st, &source, budget),
                 Err(e) => log::warn!("{source}: {}", e.message()),
             },
             "Init" if age > ABANDON_AFTER_MICROS => close_order(ctx, order_id, order_status::FAILED, "never authorized"),
@@ -919,7 +969,7 @@ fn close_order(ctx: &mut impl Ctx, order_id: u64, new_status: &str, why: &str) {
 fn report_row(tx: &TxContext, app_id: &str) -> SteamReport {
     tx.db.steam_report().app_id().find(&app_id.to_string()).unwrap_or_else(|| SteamReport {
         app_id: app_id.to_string(),
-        cursor: s::format_rfc3339(tx_now_micros(tx) / 1000 - REPORT_LOOKBACK_MS),
+        cursor: purser_core::time::format_rfc3339(tx_now_micros(tx) / 1000 - REPORT_LOOKBACK_MS),
         next_poll_at_micros: 0,
         last_polled_at_micros: 0,
         last_count: 0,
@@ -936,8 +986,11 @@ fn save_report(tx: &TxContext, row: SteamReport) {
 }
 
 /// Polls `GetReport` of the due Steam builds and takes refunded / charged-back purchases back.
-fn poll_reports(ctx: &mut impl Ctx, due: Vec<(GameApp, SteamReport)>) {
+fn poll_reports(ctx: &mut impl Ctx, due: Vec<(GameApp, SteamReport)>, budget: Budget) {
     for (app, mut row) in due {
+        if !budget.left() {
+            return;
+        }
         let now = ctx.now_micros();
         let previous_delay = row.next_poll_at_micros - row.last_polled_at_micros;
         row.next_poll_at_micros = now + REPORT_INTERVAL_MICROS;
@@ -966,7 +1019,7 @@ fn poll_reports(ctx: &mut impl Ctx, due: Vec<(GameApp, SteamReport)>) {
                         .collect()
                 });
                 for (t, (order, purchase)) in txns.iter().zip(known) {
-                    apply_report_txn(ctx, &app, t, order, purchase);
+                    apply_report_txn(ctx, &app, t, order, purchase, budget);
                 }
                 row.cursor = s::next_cursor_after_page(&row.cursor, &txns, s::REPORT_MAX_RESULTS);
                 row.last_count = txns.len() as u32;
@@ -976,8 +1029,8 @@ fn poll_reports(ctx: &mut impl Ctx, due: Vec<(GameApp, SteamReport)>) {
             Err(e) => {
                 log::warn!("Steam GetReport for {}: {}", app.app_id, e.message());
                 row.last_error = e.message().to_string();
-                if let SteamError::Config(_) = e {
-                    store_error(ctx, &app, e);
+                if let SteamError::Config(m) = &e {
+                    credentials_rejected(ctx, &app, m);
                 }
             }
         }
@@ -986,7 +1039,7 @@ fn poll_reports(ctx: &mut impl Ctx, due: Vec<(GameApp, SteamReport)>) {
 }
 
 /// One transaction of a report page, with its order (of this build) and ledger row looked up.
-fn apply_report_txn(ctx: &mut impl Ctx, app: &GameApp, t: &s::Txn, order: Option<SteamOrder>, purchase: Option<Purchase>) {
+fn apply_report_txn(ctx: &mut impl Ctx, app: &GameApp, t: &s::Txn, order: Option<SteamOrder>, purchase: Option<Purchase>, budget: Budget) {
     let item_id = order.as_ref().map_or(0, |o| o.item_id);
     match s::txn_state(t, item_id) {
         TxState::Revoked => {
@@ -1011,7 +1064,7 @@ fn apply_report_txn(ctx: &mut impl Ctx, app: &GameApp, t: &s::Txn, order: Option
             });
             if let Some(id) = changed {
                 log::info!("Steam {} for {}: {} revoked", t.status, app.app_id, id);
-                ledger::advance(ctx, &id);
+                ledger::advance(ctx, &id, budget);
             }
         }
         TxState::Active => {
@@ -1046,13 +1099,24 @@ fn verdict(level: Level, detail: impl Into<String>, fix: impl Into<String>) -> (
 /// Steam part of the setup check: App ID, sandbox mode, prices, the key (online) and refund polling.
 pub fn doctor_check(ctx: &mut impl Ctx, app: &GameApp, key: Option<&str>, online: bool, r: &mut Report) {
     let app_c = app.clone();
-    let (steam_app, sandbox, parsed, products, items, report) = ctx.tx(|tx| {
-        let (steam_app, sandbox, parsed) = build_settings(tx, &app_c);
+    let (BuildSettings { steam_app, app_id: parsed, sandbox, require_ticket }, products, items, report) = ctx.tx(|tx| {
         let products: Vec<Product> = tx.db.product().app_id().filter(app_c.app_id.as_str()).collect();
         let items: Vec<SteamItem> = products.iter().map(|p| item_of(tx, p)).collect();
-        let report = tx.db.steam_report().app_id().find(&app_c.app_id);
-        (steam_app, sandbox, parsed, products, items, report)
+        (build_settings(tx, &app_c), products, items, tx.db.steam_report().app_id().find(&app_c.app_id))
     });
+    r.add(
+        "steam_ticket",
+        "Steam auth ticket",
+        if require_ticket {
+            verdict(Level::Ok, "/checkout/steam needs the player's Web API auth ticket", "")
+        } else {
+            verdict(
+                Level::Warn,
+                "/checkout/steam trusts the steam_id the client sends",
+                "Update the game to send auth tickets (ISteamWebApiTicketProvider in the Unity SDK), then set require_ticket with admin_set_steam_build",
+            )
+        },
+    );
     r.add(
         "steam_app",
         "Steam App ID",
@@ -1113,7 +1177,7 @@ pub fn doctor_check(ctx: &mut impl Ctx, app: &GameApp, key: Option<&str>, online
         (Some(key), Ok(_), true) => {
             let checked = match api_with_key(ctx, app, key.to_string()) {
                 Ok(api) => {
-                    let since = s::format_rfc3339(ctx.now_ms());
+                    let since = purser_core::time::format_rfc3339(ctx.now_ms());
                     let c = s::report_call(api.base, api.app_id, s::REPORT_TYPE, &since, 1);
                     let headers = [(s::KEY_HEADER, api.key.as_str()), ("Accept", "application/json")];
                     match net::send(ctx.http(), c.method, &c.url, &headers, c.body) {

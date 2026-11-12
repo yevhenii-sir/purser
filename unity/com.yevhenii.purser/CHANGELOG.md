@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+### Security
+
+- Outside the Editor the service refuses to initialize when `serverBaseUrl` is not `https://` (plain `http://` only
+  for `localhost` / loopback addresses), and `BillingApiClient` and the Steam / Xsolla adapters refuse to send to such
+  a URL. `BillingConfig.Validate` accepts `http://localhost`.
+- Stripe and Xsolla open only an absolute `https://` payment page returned by the server; anything else fails the
+  purchase.
+- Entitlements: a device clock set back no longer makes time run backwards (`Entitlements.EstimatedServerNowMs`
+  never goes below the server's time). New `BillingConfig.entitlementsMaxAgeDays` (default 7, `0` = no limit):
+  `IsActive` ignores subscriptions from entitlements older than that by the device clock, or received "in the future"
+  (clock set back), until the next refresh. Non-consumables are not affected. `Entitlements.IsFresh`.
+- Steam: new optional `ISteamWebApiTicketProvider` on the bridge. When the bridge implements it, every
+  `/checkout/steam` carries `ticket`, the hex-encoded Steam Web API auth ticket for the identity `purser`
+  (`SteamStoreAdapter.WebApiTicketIdentity`); `SteamOptions.TicketTimeout` (10 s) bounds the wait. The Steam sample's
+  bridge implements it with Steamworks.NET (20.2+). Servers can require the ticket with the Steam build setting
+  `steam_require_ticket`: update custom bridges before turning it on.
+
+### Changed
+
+- Default request timeout is 30 s (`BillingConfig.requestTimeoutSeconds`, `BillingConfig.DefaultRequestTimeoutSeconds`,
+  and the defaults of `BillingApiClient`, `SteamStoreAdapter` and `XsollaStoreAdapter`): the server may wait for a
+  slow store API. Existing config assets keep their saved value; raise it from 10.
+- `ServerCheckoutStoreAdapter` cancels running checkouts and polls on `Dispose` (`Lifetime`, `IsDisposed` for derived
+  adapters; overrides of `Dispose` call the base).
+- `Billing.InitializeInBackground(service)` starts initialization and logs a failure; `BillingBootstrap` and the
+  VContainer / Zenject entry points use it.
+- Failures to read or write the local caches (entitlements, paywalls, Amazon receipts, Apple Ads state) are logged as
+  warnings instead of being ignored; `AppleAdsAttributionProvider` takes an optional `BillingLog`.
+- XML docs for `BillingLog`, `IBillingStorage`, `PurchaseStatus`, `PurchaseResult`, `HttpResponse`, `ApiResult` and
+  the Amazon types.
+
+### Fixed
+
+- Steam: an order checked out before the game restarted and authorized after it is verified (it was dropped unless
+  another purchase started first). Checked-out orders are remembered under `purser.steam.started`.
+- `BillingService.Dispose` disposes its cancellation source; an Apple Ads attribution failure at launch is logged
+  instead of being left unobserved.
+- Basic Shop sample: unsubscribes from the service in `OnDestroy` and reports purchase / restore errors.
+
 ## [0.5.0] - 2026-11-11
 
 - Subscription periods: `StoreProduct.SubscriptionPeriod` (ISO 8601, `P1M`), `SubscriptionPeriodDays` and

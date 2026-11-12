@@ -7,6 +7,8 @@ server/secrets/
 *.p8
 *service-account*.json
 *-credentials.json
+credentials.json
+!server/seed.example/credentials.json
 .env
 .env.*
 !.env.example

@@ -26,3 +26,6 @@ export const shortDay = (day: string) =>
 export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
+
+/** A fraction as a percentage ("12.5%"); "—" when unknown. */
+export const pct = (v: number | null | undefined, digits = 1) => (v === null || v === undefined ? "—" : `${(v * 100).toFixed(digits)}%`)

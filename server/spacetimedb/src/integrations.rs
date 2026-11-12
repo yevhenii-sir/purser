@@ -4,6 +4,7 @@
 //! `send_integration_event` delivers it with retries.
 
 use crate::config::{self, secret_name};
+use crate::ctx::Ctx;
 use crate::net;
 use crate::{game_app, GameApp, Purchase};
 use purser_core::integrations::{
@@ -275,7 +276,9 @@ pub fn enqueue_event(tx: &ReducerContext, app: &GameApp, purchase_id: &str, even
 fn build_call(tx: &TxContext, row: &IntegrationOutbox, event: &OutEvent, access_token: &str) -> Result<Built, String> {
     let app = config::find_app(tx, &row.app_id).ok_or("app is not configured")?;
     let integration = tx.db.integration().key().find(&integration_key(&row.app_id, &row.kind));
-    let integration = integration.filter(|i| i.enabled).ok_or(format!("{} integration is disabled", row.kind))?;
+    let Some(integration) = integration.filter(|i| i.enabled) else {
+        return Ok(Built::Skip(format!("{} integration is disabled", row.kind)));
+    };
     let secret = |name: &str| config::require_secret(tx, &app, name).map(|s| s.value);
     // What the analytics integrations report as revenue; the webhook and the export carry all amounts.
     let priced = event.with_revenue_mode(revenue_mode::of_settings(&integration.settings_json)?);
@@ -321,14 +324,14 @@ pub fn send_integration_event(ctx: &mut ProcedureContext, row: IntegrationOutbox
         Err(e) => {
             log::error!("Integration {label}: bad event json: {e}");
             let error = format!("bad event json: {e}");
-            crate::ctx::Ctx::tx(ctx, |tx| record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &error, last: true }));
+            ctx.tx(|tx| record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &error, last: true }));
             return;
         }
     };
     let access_token = if row.kind == integration_kind::GCS {
-        let Some(app) = ctx.with_tx(|tx| config::find_app(tx, &row.app_id)) else {
+        let Some(app) = ctx.tx(|tx| config::find_app(tx, &row.app_id)) else {
             log::error!("Integration {label} not sent: app is not configured");
-            crate::ctx::Ctx::tx(ctx, |tx| record(tx, &row.app_id, &row.kind, Outcome::Failed { error: "the build is not configured", last: true }));
+            ctx.tx(|tx| record(tx, &row.app_id, &row.kind, Outcome::Failed { error: "the build is not configured", last: true }));
             return;
         };
         match crate::stores::google_token(ctx, &app, secret_name::GCS_SERVICE_ACCOUNT_JSON, gcs::SCOPE, "gcs") {
@@ -340,7 +343,7 @@ pub fn send_integration_event(ctx: &mut ProcedureContext, row: IntegrationOutbox
             Err(e) => {
                 log::error!("Integration {label} not sent: {}", e.message());
                 let text = format!("{label}: not sent: {}", e.message());
-                crate::ctx::Ctx::tx(ctx, |tx| {
+                ctx.tx(|tx| {
                     record(tx, &row.app_id, &row.kind, Outcome::Failed { error: e.message(), last: true });
                     crate::alerts::integration_failed(tx, &row.app_id, &text)
                 });
@@ -350,24 +353,22 @@ pub fn send_integration_event(ctx: &mut ProcedureContext, row: IntegrationOutbox
     } else {
         String::new()
     };
-    let call = match ctx.with_tx(|tx| build_call(tx, &row, &event, &access_token)) {
+    let call = match ctx.tx(|tx| build_call(tx, &row, &event, &access_token)) {
         Ok(Built::Send(call)) => call,
         Ok(Built::Skip(reason)) => {
             log::info!("Integration {label} skipped: {reason}");
             if purser_core::integrations::is_missing_client_id(&reason) {
-                crate::ctx::Ctx::tx(ctx, |tx| record(tx, &row.app_id, &row.kind, Outcome::MissingId(&reason)));
+                ctx.tx(|tx| record(tx, &row.app_id, &row.kind, Outcome::MissingId(&reason)));
             }
             return;
         }
         Err(e) => {
             log::error!("Integration {label} not sent: {e}");
-            if !e.ends_with("is disabled") {
-                let detail = format!("{} event of {} not sent to {}: {e}", event.kind, row.purchase_id, row.kind);
-                crate::ctx::Ctx::tx(ctx, |tx| {
-                    record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &e, last: true });
-                    crate::alerts::integration_failed(tx, &row.app_id, &detail)
-                });
-            }
+            let detail = format!("{} event of {} not sent to {}: {e}", event.kind, row.purchase_id, row.kind);
+            ctx.tx(|tx| {
+                record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &e, last: true });
+                crate::alerts::integration_failed(tx, &row.app_id, &detail)
+            });
             return;
         }
     };
@@ -375,7 +376,7 @@ pub fn send_integration_event(ctx: &mut ProcedureContext, row: IntegrationOutbox
     let (status, detail) = match send(ctx, &call) {
         Ok(res) if res.ok() => {
             log::info!("Integration {label}: {} sent", event.kind);
-            crate::ctx::Ctx::tx(ctx, |tx| record(tx, &row.app_id, &row.kind, Outcome::Sent));
+            ctx.tx(|tx| record(tx, &row.app_id, &row.kind, Outcome::Sent));
             return;
         }
         Ok(res) => (res.status, res.describe()),
@@ -391,7 +392,7 @@ fn retry(ctx: &mut ProcedureContext, row: &IntegrationOutbox, label: &str, statu
     if !is_retryable_status(status) || attempts >= MAX_ATTEMPTS {
         log::error!("Integration {label} failed after {attempts} attempt(s): {detail}");
         let text = format!("{label}: dropped after {attempts} attempt(s): {detail}");
-        crate::ctx::Ctx::tx(ctx, |tx| {
+        ctx.tx(|tx| {
             record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &detail, last: true });
             crate::alerts::integration_failed(tx, &row.app_id, &text)
         });
@@ -399,7 +400,7 @@ fn retry(ctx: &mut ProcedureContext, row: &IntegrationOutbox, label: &str, statu
     }
     let delay = retry_delay_secs(row.attempts);
     log::warn!("Integration {label} failed ({detail}), retry {attempts} in {delay}s");
-    ctx.with_tx(|tx| {
+    ctx.tx(|tx| {
         record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &detail, last: false });
         tx.db.integration_outbox().insert(IntegrationOutbox {
             id: 0,

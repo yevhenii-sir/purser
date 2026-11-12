@@ -123,9 +123,6 @@ fn channel_secret(tx: &ReducerContext, kind: &str) -> String {
         .unwrap_or_default()
 }
 
-fn now_micros(tx: &ReducerContext) -> i64 {
-    tx.timestamp.to_micros_since_unix_epoch()
-}
 
 pub fn rules(tx: &ReducerContext) -> Rules {
     Rules::load(&settings::get(tx, RULES_KEY).unwrap_or_default())
@@ -173,7 +170,7 @@ fn occurrence(tx: &ReducerContext, rule: &str, app_id: &str, detail: &str, condi
     if !rules.enabled(rule) {
         return;
     }
-    let now = now_micros(tx);
+    let now = crate::ctx::tx_now_micros(tx);
     let mut s = load_state(tx, rule, app_id);
     if condition && s.active {
         // The same lasting problem: nothing new to count.
@@ -232,12 +229,12 @@ fn queue(tx: &ReducerContext, rule: &str, msg_state: &str, app_id: &str, detail:
         repeats,
         link: al::admin_link(&base, &al::admin_hash(rule, &game_key)),
         server: al::server_label(&base),
-        at_ms: now_micros(tx) / 1000,
+        at_ms: crate::ctx::tx_now_micros(tx) / 1000,
     };
     let channels: Vec<String> = tx.db.alert_channel().iter().filter(|c| c.enabled).map(|c| c.kind).collect();
     let log = tx.db.alert_log().insert(AlertLog {
         id: 0,
-        at_micros: now_micros(tx),
+        at_micros: crate::ctx::tx_now_micros(tx),
         rule: rule.to_string(),
         state: msg_state.to_string(),
         app_id: app_id.to_string(),
@@ -300,15 +297,15 @@ pub fn integration_failed(tx: &ReducerContext, app_id: &str, detail: &str) {
     raise(tx, rule::INTEGRATION_FAILED, app_id, detail);
 }
 
-/// A store notification came with a wrong or missing secret.
-pub fn notification_rejected(tx: &ReducerContext, app_id: &str, source: &str) {
-    raise(tx, rule::NOTIFICATION_REJECTED, app_id, &format!("{source} notification rejected: the secret in its URL is wrong or not configured"));
+/// A store notification was refused (wrong secret, bad signature).
+pub fn notification_rejected(tx: &ReducerContext, app_id: &str, source: &str, reason: &str) {
+    raise(tx, rule::NOTIFICATION_REJECTED, app_id, &format!("{source} notification rejected: {reason}"));
 }
 
 /// An FX refresh failed (`revenue::refresh_rates`); the worker alerts when it lasts.
 pub fn fx_failed(tx: &ReducerContext, error: &str) {
     if settings::get_i64(tx, FX_FAILING_SINCE) == 0 {
-        settings::set(tx, FX_FAILING_SINCE, &now_micros(tx).to_string());
+        settings::set(tx, FX_FAILING_SINCE, &crate::ctx::tx_now_micros(tx).to_string());
     }
     settings::set(tx, FX_LAST_ERROR, &clip(error));
 }
@@ -321,7 +318,7 @@ pub fn fx_failed(tx: &ReducerContext, error: &str) {
 /// transaction that also reads the due store re-checks (`ledger::process_pending`).
 pub fn check_tx(tx: &ReducerContext) {
     let rules = rules(tx);
-    let now = now_micros(tx);
+    let now = crate::ctx::tx_now_micros(tx);
 
     // Resolutions of event rules.
     let active: Vec<AlertState> = tx.db.alert_state().iter().filter(|s| s.active).collect();
@@ -524,14 +521,11 @@ pub fn send_alert(ctx: &mut ProcedureContext, row: AlertOutbox) {
 // Admin
 // ---------------------------------------------------------------------
 
-fn default_true() -> bool {
-    true
-}
 
 #[derive(Deserialize)]
 struct ChannelInput {
     kind: String,
-    #[serde(default = "default_true")]
+    #[serde(default = "crate::default_true")]
     enabled: bool,
     /// Telegram `{"chat_id": "..."}`, webhook `{"url": "https://..."}`, Slack / Discord `{}`.
     #[serde(default)]
@@ -557,6 +551,7 @@ pub fn admin_upsert_alert_channel(ctx: &ReducerContext, json: String) -> Result<
     let secret_name = secret_for(&i.kind).expect("known kind");
     let secret = i.secret.trim();
     if !secret.is_empty() {
+        crate::access::require(ctx, purser_core::roles::Cap::Secrets)?;
         al::validate_secret(&i.kind, secret).map_err(|e| format!("[ERR_BAD_ALERT] {e}"))?;
         let key = config::credential_key(config::DEFAULT_SCOPE, secret_name);
         let row = Credential { key: key.clone(), value: secret.to_string() };
@@ -567,13 +562,13 @@ pub fn admin_upsert_alert_channel(ctx: &ReducerContext, json: String) -> Result<
         }
     }
     if i.enabled && i.kind != channel_kind::WEBHOOK && channel_secret(ctx, &i.kind).is_empty() {
-        return Err(format!("[ERR_BAD_ALERT] {}: set {secret_name} first", i.kind));
+        return Err(format!("[ERR_ALERT_SECRET_MISSING] {}: set {secret_name} first", i.kind));
     }
     let row = AlertChannel {
         kind: i.kind.clone(),
         enabled: i.enabled,
         settings_json: serde_json::to_string(&settings).unwrap_or_default(),
-        updated_at_micros: now_micros(ctx),
+        updated_at_micros: crate::ctx::tx_now_micros(ctx),
     };
     if ctx.db.alert_channel().kind().find(&i.kind).is_some() {
         ctx.db.alert_channel().kind().update(row);
@@ -583,14 +578,18 @@ pub fn admin_upsert_alert_channel(ctx: &ReducerContext, json: String) -> Result<
     Ok(())
 }
 
-/// Removes a channel and its secret.
+/// Removes a channel and its secret (deleting a stored secret needs the secrets capability).
 #[spacetimedb::reducer]
 pub fn admin_delete_alert_channel(ctx: &ReducerContext, kind: String) -> Result<(), String> {
     let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let secret_key = secret_for(&kind).map(|name| config::credential_key(config::DEFAULT_SCOPE, name));
+    if secret_key.as_ref().is_some_and(|k| ctx.db.credential().key().find(k).is_some()) {
+        crate::access::require(ctx, purser_core::roles::Cap::Secrets)?;
+    }
     crate::access::audit(ctx, &who, "admin_delete_alert_channel", &kind, "");
     ctx.db.alert_channel().kind().delete(&kind);
-    if let Some(name) = secret_for(&kind) {
-        ctx.db.credential().key().delete(config::credential_key(config::DEFAULT_SCOPE, name));
+    if let Some(key) = secret_key {
+        ctx.db.credential().key().delete(key);
     }
     Ok(())
 }
@@ -621,7 +620,7 @@ pub fn admin_test_alert(ctx: &mut ProcedureContext, channel: String) -> String {
             repeats: 0,
             link: al::admin_link(&base, "alerts"),
             server: al::server_label(&base),
-            at_ms: now_micros(tx) / 1000,
+            at_ms: crate::ctx::tx_now_micros(tx) / 1000,
         };
         let (call, secrets) = build_call(tx, &channel, &msg, false)?;
         let log_id = queue(tx, rule::TEST, state::TEST, "", &msg.detail, 0);

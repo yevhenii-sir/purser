@@ -12,6 +12,8 @@ namespace Purser.VContainer
     /// </summary>
     public static class PurserVContainerExtensions
     {
+        /// <summary>Registers <see cref="IBillingService"/> for <paramref name="config"/>; with
+        /// <paramref name="initializeOnStart"/> it is initialized by an entry point (failures are logged).</summary>
         public static void RegisterPurser(this IContainerBuilder builder, BillingConfig config,
             bool initializeOnStart = true, Lifetime lifetime = Lifetime.Singleton)
         {
@@ -41,16 +43,6 @@ namespace Purser.VContainer
             m_Billing = billing;
         }
 
-        public async void Start()
-        {
-            try
-            {
-                await m_Billing.InitializeAsync();
-            }
-            catch (Exception e)
-            {
-                UnityEngine.Debug.LogError("[Purser] Initialization failed: " + e.Message);
-            }
-        }
+        public void Start() => Billing.InitializeInBackground(m_Billing);
     }
 }

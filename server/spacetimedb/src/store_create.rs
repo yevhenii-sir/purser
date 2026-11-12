@@ -4,7 +4,7 @@
 //! and writes the product row once the store has it.
 
 use crate::config;
-use crate::ctx::Ctx;
+use crate::ctx::{Budget, Ctx};
 use crate::net;
 use crate::stores::{self, StoreError};
 use crate::{game_app, product, GameApp, Product};
@@ -22,7 +22,8 @@ pub mod job_status {
     pub const FAILED: &str = "failed";
 }
 
-/// Store calls per worker run; the job continues in the next run right away.
+/// Store calls per run at most (also while the time budget lasts); the job continues in the next
+/// run right away.
 const CALLS_PER_RUN: u32 = 8;
 /// Retries of one step after transient failures.
 const MAX_RETRIES: u32 = 6;
@@ -217,11 +218,7 @@ fn send(ctx: &impl Ctx, auth: &Auth, req: &sc::Request) -> Result<net::HttpResul
     if let Some(key) = &req.idempotency_key {
         headers.push(("Idempotency-Key", key.as_str()));
     }
-    let secret = match auth {
-        Auth::Bearer(t) => t.clone(),
-        Auth::Basic(b) => b.clone(),
-    };
-    net::send(ctx.http(), req.method, &req.url, &headers, req.body.clone()).map_err(|e| e.replace(&secret, "<key>"))
+    net::send(ctx.http(), req.method, &req.url, &headers, req.body.clone())
 }
 
 /// Saves the job's state and status in one transaction.
@@ -299,7 +296,11 @@ pub fn run_job(ctx: &mut impl Ctx, job_id: u64) {
             });
         }
     };
+    let budget = Budget::new(ctx, crate::ctx::WORKER_BUDGET_SECS);
     for _ in 0..CALLS_PER_RUN {
+        if !budget.left() {
+            break;
+        }
         let req = match sc::request(&job.store, &target, &input, &state) {
             Ok(r) => r,
             Err(e) => {
@@ -441,39 +442,19 @@ fn existing_in_store(ctx: &mut impl Ctx, app: &GameApp) -> Result<Vec<(String, S
         }
         store::XSOLLA => {
             let (auth, target) = auth(ctx, app, info.id).map_err(|e| e.message().to_string())?;
-            let url = x::virtual_items_url(&target.xsolla_project_id, 200)?;
-            let res = send(ctx, &auth, &sc::Request { method: "GET", url, body: String::new(), form: false, idempotency_key: None })?;
+            let res = send(ctx, &auth, &sc::xsolla_existing_request(&target.xsolla_project_id)?)?;
             if !res.ok() {
                 return Err(res.describe());
             }
-            let v: Value = serde_json::from_str(&res.body).unwrap_or(Value::Null);
-            Ok(v["items"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|i| i["sku"].as_str().map(|s| (s.to_string(), s.to_string())))
-                .collect())
+            Ok(sc::parse_xsolla_existing(&res.body))
         }
         store::STRIPE => {
             let (auth, _) = auth(ctx, app, info.id).map_err(|e| e.message().to_string())?;
-            let query = format!("metadata['{}']:'{}'", st::meta::APP_ID, app.app_id.replace('\'', ""));
-            let url = format!("{}/v1/products/search?limit=100&query={}", st::API, st::form_encode(&query));
-            let res = send(ctx, &auth, &sc::Request { method: "GET", url, body: String::new(), form: false, idempotency_key: None })?;
+            let res = send(ctx, &auth, &sc::stripe_existing_request(&app.app_id))?;
             if !res.ok() {
                 return Err(st::error_message(res.status, &res.body));
             }
-            let v: Value = serde_json::from_str(&res.body).unwrap_or(Value::Null);
-            Ok(v["data"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|p| p["active"].as_bool() != Some(false))
-                .filter_map(|p| {
-                    let ours = p["metadata"]["product_id"].as_str()?;
-                    let price = p["default_price"].as_str().or(p["default_price"]["id"].as_str())?;
-                    Some((ours.to_string(), price.to_string()))
-                })
-                .collect())
+            Ok(sc::parse_stripe_existing(&res.body))
         }
         _ => Ok(Vec::new()),
     }
@@ -482,19 +463,13 @@ fn existing_in_store(ctx: &mut impl Ctx, app: &GameApp) -> Result<Vec<(String, S
 /// Reference names of the App Store subscription groups of an iOS build.
 fn apple_groups(ctx: &mut impl Ctx, app: &GameApp) -> Result<Vec<String>, String> {
     let (auth, _) = auth(ctx, app, store::APPLE).map_err(|e| e.message().to_string())?;
-    let res = send(ctx, &auth, &sc::Request {
-        method: "GET",
-        url: purser_core::catalog::apple::apps_url(&app.app_id)?,
-        body: String::new(),
-        form: false,
-        idempotency_key: None,
-    })?;
+    let res = send(ctx, &auth, &sc::Request::get(purser_core::catalog::apple::apps_url(&app.app_id)?))?;
     let apple_id = purser_core::catalog::apple::parse_app_id(&res.body, &app.app_id)?;
     let url = format!(
         "{}/v1/apps/{apple_id}/subscriptionGroups?limit=200&fields%5BsubscriptionGroups%5D=referenceName",
         purser_core::catalog::apple::API
     );
-    let res = send(ctx, &auth, &sc::Request { method: "GET", url, body: String::new(), form: false, idempotency_key: None })?;
+    let res = send(ctx, &auth, &sc::Request::get(url))?;
     if !res.ok() {
         return Err(res.describe());
     }

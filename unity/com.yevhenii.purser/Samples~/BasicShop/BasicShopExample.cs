@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using Purser;
 using UnityEngine;
@@ -17,32 +18,61 @@ public sealed class BasicShopExample : MonoBehaviour
     private void Start()
     {
         var bootstrap = BillingBootstrap.Current;
-        if (bootstrap == null)
+        if (bootstrap == null || bootstrap.Service == null)
         {
-            m_Status = "Add a BillingBootstrap to the scene.";
+            m_Status = "Add a BillingBootstrap with a BillingConfig to the scene.";
             return;
         }
         m_Billing = bootstrap.Service;
         m_Billing.SetUserId(userId);
-        m_Billing.Initialized += () => m_Status = "Ready";
-        m_Billing.PurchaseSucceeded += r => m_Status = $"Bought {r.ProductId} ({r.Status})";
-        m_Billing.PurchasePending += r => m_Status = $"Pending {r.ProductId}: {r.Message}";
-        m_Billing.PurchaseFailed += r => m_Status = $"Failed {r.ProductId}: {r.Status} {r.Message}";
+        m_Billing.Initialized += OnInitialized;
+        m_Billing.PurchaseSucceeded += OnPurchaseSucceeded;
+        m_Billing.PurchasePending += OnPurchasePending;
+        m_Billing.PurchaseFailed += OnPurchaseFailed;
         if (m_Billing.IsInitialized)
             m_Status = "Ready";
     }
 
+    private void OnDestroy()
+    {
+        if (m_Billing == null)
+            return;
+        m_Billing.Initialized -= OnInitialized;
+        m_Billing.PurchaseSucceeded -= OnPurchaseSucceeded;
+        m_Billing.PurchasePending -= OnPurchasePending;
+        m_Billing.PurchaseFailed -= OnPurchaseFailed;
+    }
+
+    private void OnInitialized() => m_Status = "Ready";
+    private void OnPurchaseSucceeded(PurchaseResult r) => m_Status = $"Bought {r.ProductId} ({r.Status})";
+    private void OnPurchasePending(PurchaseResult r) => m_Status = $"Pending {r.ProductId}: {r.Message}";
+    private void OnPurchaseFailed(PurchaseResult r) => m_Status = $"Failed {r.ProductId}: {r.Status} {r.Message}";
+
     private async void Buy(string productId)
     {
         m_Status = "Buying " + productId + "...";
-        await m_Billing.PurchaseAsync(productId);
+        try
+        {
+            await m_Billing.PurchaseAsync(productId);
+        }
+        catch (Exception e)
+        {
+            m_Status = "Purchase error: " + e.Message;
+        }
     }
 
     private async void Restore()
     {
         m_Status = "Restoring...";
-        var entitlements = await m_Billing.RestoreAsync();
-        m_Status = $"Restored: {entitlements.NonConsumables.Count} items, {entitlements.Subscriptions.Count} subscriptions";
+        try
+        {
+            var entitlements = await m_Billing.RestoreAsync();
+            m_Status = $"Restored: {entitlements.NonConsumables.Count} items, {entitlements.Subscriptions.Count} subscriptions";
+        }
+        catch (Exception e)
+        {
+            m_Status = "Restore failed: " + e.Message;
+        }
     }
 
     private void OnGUI()

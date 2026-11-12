@@ -101,12 +101,7 @@ pub fn derive_nonce(secret: &str, counter: u64, context: &str) -> String {
     mac.update(&counter.to_be_bytes());
     mac.update(context.as_bytes());
     let digest = mac.finalize().into_bytes();
-    let mut b = [0u8; 16];
-    b.copy_from_slice(&digest[..16]);
-    b[6] = (b[6] & 0x0f) | 0x80; // version 8 (custom)
-    b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
-    let h = hex::encode(b);
-    format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
+    crate::uuid_v8(&digest)
 }
 
 /// Product and offer identifiers as App Store Connect allows them: letters, digits, `.`, `_`, `-`.

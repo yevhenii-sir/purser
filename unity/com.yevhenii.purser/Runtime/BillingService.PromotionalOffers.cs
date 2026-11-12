@@ -6,6 +6,7 @@ namespace Purser
 {
     public sealed partial class BillingService
     {
+        /// <inheritdoc/>
         public async Task<ApplePromotionalOffer> GetApplePromotionalOfferAsync(string productId, string offerId,
             CancellationToken ct = default)
         {
@@ -18,6 +19,7 @@ namespace Purser
             return offer ?? throw new BillingException(error);
         }
 
+        /// <inheritdoc/>
         public async Task<PurchaseResult> PurchaseWithPromotionalOfferAsync(string productId, string offerId,
             CancellationToken ct = default)
         {

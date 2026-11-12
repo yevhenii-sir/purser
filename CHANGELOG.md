@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Security
+
+- App Store notifications must be signed by Apple: the `signedPayload` JWS is verified (ES256, its `x5c` chain up to Apple Root CA - G3, which ships with the module, and Apple's marker extensions). Before, a build without `apple_notification_secret` accepted anything; the secret is now an optional extra check.
+- Amazon SNS messages older than 6 hours are refused (replays), and a build can pin the SNS topic its notifications must come from (new `game_app.sns_topic_arn`, "SNS topic" on the Delivery tab; the setup check shows the topic last seen). Before, any AWS account could subscribe its own topic and replace the confirmation token.
+- `/checkout/steam` checks the player's Web API auth ticket when the client sends one (`ticket`: hex of `GetAuthTicketForWebApi("purser")`, verified with `ISteamUserAuth/AuthenticateUserTicket`) and requires it when the build sets `require_ticket` (new `steam_build.require_ticket`, via `admin_set_steam_build`). Before, any client could start an order for any SteamID.
+- Errors of outbound requests never contain the query string: GA4 `api_secret` and AppMetrica `post_api_key` could reach logs, `integration_health`, the setup check and alert messages on a timeout.
+- Storing or deleting an alert channel's secret needs the secrets capability (Admin), not Configure (Editor).
+- A Google RTDN refund only revokes purchases of the package that sent it.
+- Google consume / acknowledge: the purchase state Google reports decides whether it is done; the error text only when the state cannot be read.
+- Webhook integrations and alert channels accept only https URLs of public host names (no user info, IP address or local name). Xsolla `return_url` follows the Stripe rules (https; http only to localhost on sandbox builds).
+- Request bodies are limited to 256 KiB; query parameters are percent-decoded.
+- `admin_delete_credential` drops cached access tokens like `admin_set_credential`; `admin_grant_manual` validates the user and transaction ids and needs an enabled build.
+- Google account binding compares user ids exactly (Apple tokens stay case-insensitive); a Google purchase without `purchaseState` grants nothing; path segments `.` / `..` are refused.
+- The admin page is served with a CSP that allows only its own inline script (by hash, `admin/csp.txt` written by the build) instead of `'unsafe-inline'`; the demo build carries the same policy in a meta tag.
+- Admin page: secret fields are masked, the setup wizard no longer overwrites the delivery token or webhook secret of a shared developer account, the sign-in token is kept after network errors, and CSV exports neutralize formula-like cells.
+- Scripts: `seed.py --init` reads keys without echo and writes `credentials.json` with mode 0600 (now gitignored); `stdb.py` sends the token only over https or to localhost and drops it on cross-host redirects; `migrate.py` takes `PURSER_FROM_TOKEN` for a source server on another host; the MCP server answers malformed requests with errors instead of exiting.
+- CI and release: checkouts no longer keep the token, the release builds without write access and publishes in a separate job, third-party actions are pinned by commit, and the personal-names check reads its pattern from the `PRIVATE_NAMES_RE` repository variable.
+
+### Changed
+
+- Outbound work is limited by time instead of by counts sized for the old 500 ms cap: a client request starts store and delivery calls for at most 5 s (`ctx::REQUEST_BUDGET_SECS`) and leaves the rest to the worker; a worker run starts calls for at most 40 s (`ctx::WORKER_BUDGET_SECS`). A slow store can no longer hold a run for minutes.
+- New error code `[ERR_ALERT_SECRET_MISSING]` when an alert channel is enabled without its secret (was `[ERR_BAD_ALERT]`).
+- Internal cleanup: shared HTTP plumbing in the module (`web.rs`), one implementation of percent-encoding, Basic auth and constant-time comparison (`purser_core::encoding`), amounts (`purser_core::money`, with overflow checks), dates, UUIDs and X.509 / DER (`purser_core::x509`); `Purchase::new`; dead code and stale comments removed.
+
 ## 0.5.0 - 2026-11-11
 
 - Products keep an optional store listing: title, description, and for subscriptions the billing period and the App Store subscription group (new `product` columns `title`, `description`, `period`, `apple_group`).

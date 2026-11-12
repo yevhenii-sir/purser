@@ -6,7 +6,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
-import { call, createIdentity, sql } from "@/lib/api"
+import { call, createIdentity, select } from "@/lib/api"
 import { ago, errorText } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { ROLES, roleLabel, useRole, type Role } from "@/lib/roles"
@@ -28,7 +28,7 @@ const roleOf = (a: AdminRow): Role => (a.protected ? "owner" : ((ROLES.some((r) 
 export function AdminsPage({ me }: PageProps) {
   const myRole = useRole()
   const [adding, setAdding] = useState(false)
-  const { data, error, loading, reload } = useAsync(() => sql<AdminRow>("SELECT * FROM admin"))
+  const { data, error, loading, reload } = useAsync(() => select<AdminRow>({ table: "admin" }))
   /** Roles the signed-in admin may give or take away (only the owner manages admins). */
   const manageable = (r: Role) => r !== "owner" && (myRole === "owner" || r !== "admin")
   const names = new Map((data || []).map((a) => [hex(a.identity), a.name]))

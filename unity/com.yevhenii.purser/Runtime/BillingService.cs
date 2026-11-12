@@ -85,22 +85,34 @@ namespace Purser
         private string m_BoundUser;
         private bool m_Disposed;
 
+        /// <inheritdoc/>
         public bool IsInitialized { get; private set; }
+        /// <inheritdoc/>
         public BillingPlatform Platform { get; }
+        /// <inheritdoc/>
         public string Store => m_Store.Store;
+        /// <inheritdoc/>
         public IReadOnlyList<StoreProduct> Products => m_Products;
+        /// <inheritdoc/>
         public Entitlements Entitlements => m_Entitlements;
 
+        /// <inheritdoc/>
         public event Action Initialized;
+        /// <inheritdoc/>
         public event Action<PurchaseResult> PurchaseSucceeded;
+        /// <inheritdoc/>
         public event Action<PurchaseResult> PurchasePending;
+        /// <inheritdoc/>
         public event Action<PurchaseResult> PurchaseFailed;
+        /// <inheritdoc/>
         public event Action<Entitlements> EntitlementsChanged;
 
         private string AppId => m_Config.AppIdFor(m_Store.Store);
 
         private bool SkipServer => m_IsEditor && m_Config.editorMode == EditorVerificationMode.SkipServer;
 
+        /// <summary>Creates the service; nothing is loaded until <see cref="InitializeAsync"/>.</summary>
+        /// <exception cref="BillingException">The store adapter names no store, or an Amazon build has no Amazon adapter.</exception>
         public BillingService(BillingConfig config, BillingDependencies dependencies = null)
         {
             m_Config = config ? config : throw new ArgumentNullException(nameof(config));
@@ -126,7 +138,7 @@ namespace Purser
                 SdkVersion = PurserInfo.Version,
             };
             if (config.collectAppleAdsAttribution && Platform == BillingPlatform.Apple && !(m_Attribution is AppleAdsAttributionProvider))
-                m_Attribution = new AppleAdsAttributionProvider(m_Attribution, m_Storage);
+                m_Attribution = new AppleAdsAttributionProvider(m_Attribution, m_Storage, log: m_Log);
 
             m_Store.OrderPending += OnOrderPending;
             m_Store.OrderDeferred += OnOrderDeferred;
@@ -152,6 +164,9 @@ namespace Purser
         // Initialization & user
         // ------------------------------------------------------------------
 
+        /// <inheritdoc/>
+        /// <exception cref="BillingException">The platform has no in-app purchases, the server URL is not https outside
+        /// the Editor, or the store failed to connect.</exception>
         public Task InitializeAsync(CancellationToken ct = default)
         {
             if (m_InitTask == null || m_InitTask.IsFaulted || m_InitTask.IsCanceled)
@@ -164,6 +179,9 @@ namespace Purser
             ThrowIfDisposed();
             foreach (var problem in m_Config.Validate())
                 m_Log.Warning("Config: " + problem);
+            var insecure = UrlPolicy.ServerUrlProblem(m_Config.serverBaseUrl, m_IsEditor);
+            if (insecure != null)
+                throw new BillingException(insecure);
             if (Platform == BillingPlatform.Unsupported && !m_IsEditor)
                 throw new BillingException($"In-app purchases are not supported on {Application.platform}");
 
@@ -177,7 +195,7 @@ namespace Purser
 
             LoadCachedEntitlements(CurrentUser());
             if (m_Attribution is AppleAdsAttributionProvider appleAds)
-                _ = appleAds.WarmUpAsync();
+                LogFailure(appleAds.WarmUpAsync(), "Apple Ads attribution");
             IsInitialized = true;
             Initialized?.Invoke();
 
@@ -206,13 +224,27 @@ namespace Purser
                 period ? config.fallbackPeriod : p.SubscriptionPeriod, period || p.IsFallbackPeriod);
         }
 
+        private async void LogFailure(Task task, string what)
+        {
+            try
+            {
+                await task;
+            }
+            catch (Exception e)
+            {
+                m_Log.Warning($"{what} failed: {e.Message}");
+            }
+        }
+
         private const string RefundConsentKey = "purser.refund_data_consent";
 
+        /// <inheritdoc/>
         public void SetRefundDataConsent(bool consented)
         {
             m_Storage.Save(RefundConsentKey, consented ? "true" : "false");
         }
 
+        /// <inheritdoc/>
         public async Task<bool> SetCustomAttributesAsync(IDictionary<string, object> attributes, CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -231,6 +263,7 @@ namespace Purser
             return response.IsHttpSuccess;
         }
 
+        /// <inheritdoc/>
         public void SetUserId(string userId)
         {
             var previous = CurrentUser();
@@ -273,12 +306,15 @@ namespace Purser
         // Purchases
         // ------------------------------------------------------------------
 
+        /// <inheritdoc/>
         public StoreProduct GetProduct(string productId) =>
             m_Products.FirstOrDefault(p => p.Id == productId) ?? m_Products.FirstOrDefault(p => p.StoreId == productId);
 
+        /// <inheritdoc/>
         public Task<PurchaseResult> PurchaseAsync(string productId, CancellationToken ct = default) =>
             PurchaseCoreAsync(productId, null, ct);
 
+        /// <inheritdoc/>
         public Task<PurchaseResult> PurchaseAsync(string productId, Paywall paywall, CancellationToken ct = default) =>
             PurchaseCoreAsync(productId, paywall, ct);
 
@@ -646,6 +682,7 @@ namespace Purser
         // Entitlements & restore
         // ------------------------------------------------------------------
 
+        /// <inheritdoc/>
         public async Task<Entitlements> RestoreAsync(CancellationToken ct = default)
         {
             if (!IsInitialized)
@@ -700,6 +737,7 @@ namespace Purser
             return m_Entitlements;
         }
 
+        /// <inheritdoc/>
         public async Task<Entitlements> RefreshEntitlementsAsync(CancellationToken ct = default)
         {
             var user = CurrentUser();
@@ -721,6 +759,8 @@ namespace Purser
 
         private async void RefreshInBackground()
         {
+            if (m_Disposed)
+                return;
             try
             {
                 await RefreshEntitlementsAsync(m_Lifetime.Token);
@@ -739,7 +779,7 @@ namespace Purser
             if (user != CurrentUser())
                 return; // the player changed while the request was running
             var now = m_UtcNow();
-            EntitlementsCache.Save(m_Storage, AppId, user, dto, now);
+            EntitlementsCache.Save(m_Storage, AppId, user, dto, now, m_Log);
             SetEntitlements(EntitlementsCache.FromDto(user, dto, now, false));
         }
 
@@ -751,16 +791,24 @@ namespace Purser
 
         private void LoadCachedEntitlements(string user)
         {
-            var cached = user == null ? null : EntitlementsCache.Load(m_Storage, AppId, user);
+            var cached = user == null ? null : EntitlementsCache.Load(m_Storage, AppId, user, m_Log);
             SetEntitlements(cached ?? Entitlements.Empty);
         }
 
+        /// <inheritdoc/>
+        /// <remarks>Subscriptions count only while the entitlements are fresh (<see cref="BillingConfig.entitlementsMaxAgeDays"/>,
+        /// <see cref="Entitlements.IsFresh"/>); non-consumables always do.</remarks>
         public bool IsActive(string productId)
         {
             var now = m_UtcNow();
-            return ProductIds(productId).Any(id => m_Entitlements.IsActive(id, now));
+            var entitlements = m_Entitlements;
+            var maxAgeDays = m_Config.entitlementsMaxAgeDays;
+            var subscriptionsTrusted = maxAgeDays <= 0 || entitlements.IsFresh(now, TimeSpan.FromDays(maxAgeDays));
+            return ProductIds(productId).Any(id =>
+                entitlements.Owns(id) || (subscriptionsTrusted && entitlements.IsSubscriptionActive(id, now)));
         }
 
+        /// <inheritdoc/>
         public DateTime? GetExpiration(string productId)
         {
             return ProductIds(productId)
@@ -782,6 +830,7 @@ namespace Purser
         // Paywalls & A/B tests
         // ------------------------------------------------------------------
 
+        /// <inheritdoc/>
         public async Task<Paywall> GetPaywallAsync(string placementId, CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -792,21 +841,21 @@ namespace Purser
             if (response.IsHttpSuccess && response.Value != null)
             {
                 var now = m_UtcNow();
-                PaywallCache.Save(m_Storage, AppId, user, placementId, response.Value, now);
+                PaywallCache.Save(m_Storage, AppId, user, placementId, response.Value, now, m_Log);
                 return ToPaywall(placementId, response.Value, false, now);
             }
 
             if (response.HttpStatus == 404)
             {
                 // The placement was removed or disabled on purpose: forget the cached answer.
-                PaywallCache.Save(m_Storage, AppId, user, placementId, null, m_UtcNow());
+                PaywallCache.Save(m_Storage, AppId, user, placementId, null, m_UtcNow(), m_Log);
                 throw new PaywallNotFoundException(placementId, response.Value?.Code ?? "ERR_PLACEMENT_NOT_FOUND",
                     response.Value?.Message ?? $"no placement '{placementId}'");
             }
             if (response.HttpStatus >= 400 && response.HttpStatus < 500)
                 throw new BillingException($"Paywall request for '{placementId}' was refused: {response.Value?.Message ?? response.Error}");
 
-            var cached = PaywallCache.Load(m_Storage, AppId, user, placementId);
+            var cached = PaywallCache.Load(m_Storage, AppId, user, placementId, m_Log);
             if (cached.HasValue)
             {
                 m_Log.Warning($"Paywall request failed ({response}); using the cached answer for '{placementId}'.");
@@ -844,6 +893,7 @@ namespace Purser
                 remoteConfig, fromCache, fetchedAtUtc);
         }
 
+        /// <inheritdoc/>
         public async Task<bool> LogPaywallShownAsync(Paywall paywall, CancellationToken ct = default)
         {
             if (paywall == null || string.IsNullOrEmpty(paywall.VariantId) || m_Disposed)
@@ -884,12 +934,14 @@ namespace Purser
                 throw new ObjectDisposedException(nameof(BillingService));
         }
 
+        /// <inheritdoc/>
         public void Dispose()
         {
             if (m_Disposed)
                 return;
             m_Disposed = true;
             m_Lifetime.Cancel();
+            m_Lifetime.Dispose();
             m_Store.OrderPending -= OnOrderPending;
             m_Store.OrderDeferred -= OnOrderDeferred;
             m_Store.PurchaseFailed -= OnStorePurchaseFailed;

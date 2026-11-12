@@ -154,6 +154,23 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void CheckoutPageThatIsNotHttps_IsNotOpened()
+        {
+            CreateService();
+            foreach (var url in new[] { "http://checkout.example.com/pay", "javascript:alert(1)", "/c/pay/cs_test_1" })
+            {
+                m_Stripe.CheckoutResult = new ApiResult<StripeCheckoutResponse>(200,
+                    new StripeCheckoutResponse { Status = "ok", SessionId = "cs_test_1", Url = url }, null);
+                var result = Sync.Run(m_Service.PurchaseAsync("gems_100"));
+                Assert.AreEqual(PurchaseStatus.Failed, result.Status, url);
+                StringAssert.Contains("https", result.Message);
+            }
+            Assert.IsEmpty(m_Opened);
+            Assert.IsEmpty(m_Adapter.PendingSessionIds, "a session that was never opened is not remembered");
+            Assert.IsEmpty(m_Stripe.SessionChecks);
+        }
+
+        [Test]
         public void CancelCheckout_StopsWaiting()
         {
             m_Stripe.SessionStatuses[0] = VerifyStatus.PendingOrCanceled;

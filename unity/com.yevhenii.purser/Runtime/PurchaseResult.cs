@@ -1,5 +1,6 @@
 namespace Purser
 {
+    /// <summary>Outcome of a purchase (<see cref="PurchaseResult.Status"/>).</summary>
     public enum PurchaseStatus
     {
         /// <summary>Verified by the server and the reward was delivered to the game.</summary>
@@ -10,6 +11,7 @@ namespace Purser
         PendingVerification,
         /// <summary>Payment not finished (slow card, cash, Ask to Buy). Delivered later by the store.</summary>
         PendingPayment,
+        /// <summary>The player closed the store's purchase dialog or declined the payment.</summary>
         Cancelled,
         /// <summary>The server refused the purchase (invalid, belongs to another player, refunded, expired).</summary>
         Rejected,
@@ -17,20 +19,27 @@ namespace Purser
         Failed,
         /// <summary>A purchase of the same product is already running.</summary>
         AlreadyInProgress,
+        /// <summary><see cref="IBillingService.InitializeAsync"/> has not completed, or the service was disposed.</summary>
         NotInitialized,
     }
 
+    /// <summary>Result of a purchase: what <see cref="IBillingService.PurchaseAsync(string, System.Threading.CancellationToken)"/>
+    /// returns and the purchase events carry.</summary>
     public sealed class PurchaseResult
     {
+        /// <summary>What happened.</summary>
         public PurchaseStatus Status { get; }
 
         /// <summary>Product id from <see cref="BillingConfig"/> (falls back to the store id).</summary>
         public string ProductId { get; }
 
+        /// <summary>Product id in the store the purchase went through.</summary>
         public string StoreProductId { get; }
 
+        /// <summary>The store's transaction / order id (the server's when it answered).</summary>
         public string TransactionId { get; }
 
+        /// <summary>Why it failed or is pending (for logs, not for players).</summary>
         public string Message { get; }
 
         /// <summary>Raw server answer when there was one.</summary>
@@ -47,6 +56,7 @@ namespace Purser
         /// </summary>
         public bool GrantOnClient => Server?.Delivery == VerifyDelivery.Client;
 
+        /// <summary>Creates a result (custom adapters, tests).</summary>
         public PurchaseResult(PurchaseStatus status, string productId, string storeProductId = null,
             string transactionId = null, string message = null, VerifyResponse server = null)
         {
@@ -58,6 +68,7 @@ namespace Purser
             Server = server;
         }
 
+        /// <inheritdoc/>
         public override string ToString() => $"{Status} {ProductId} {TransactionId} {Message}".Trim();
     }
 }

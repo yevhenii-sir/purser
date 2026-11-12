@@ -35,13 +35,16 @@ namespace Purser
         /// <summary>The first active bootstrap (convenience for projects without DI).</summary>
         public static BillingBootstrap Current { get; private set; }
 
+        /// <summary>The billing service; null when the bootstrap has no config or is a duplicate.</summary>
         public IBillingService Service { get; private set; }
 
         /// <summary>Completes when the store is connected and products are loaded.</summary>
         public Task InitializationTask { get; private set; } = Task.CompletedTask;
 
+        /// <summary>The assigned config.</summary>
         public BillingConfig Config => config;
 
+        /// <summary>Sets the player on <see cref="Service"/>.</summary>
         public void SetUserId(string userId) => Service?.SetUserId(userId);
 
         private void Awake()
@@ -72,16 +75,9 @@ namespace Purser
                 InitializationTask = InitializeAsync();
         }
 
-        public Task InitializeAsync()
-        {
-            var task = Service.InitializeAsync();
-            task.ContinueWith(t =>
-            {
-                if (t.Exception != null)
-                    Debug.LogError("[Purser] Initialization failed: " + t.Exception.GetBaseException().Message);
-            }, TaskScheduler.FromCurrentSynchronizationContext());
-            return task;
-        }
+        /// <summary>Initializes <see cref="Service"/> (done in <c>Awake</c> unless "Initialize On Awake" is off); a
+        /// failure is logged.</summary>
+        public Task InitializeAsync() => Billing.InitializeInBackground(Service);
 
         private void OnDestroy()
         {

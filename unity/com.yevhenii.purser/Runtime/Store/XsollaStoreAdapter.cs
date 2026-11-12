@@ -34,7 +34,7 @@ namespace Purser
         /// <summary>Orders older than this are forgotten (never paid).</summary>
         public TimeSpan ForgetAfter = TimeSpan.FromDays(2);
 
-        /// <summary>Opens the Pay Station page. Default: <c>Application.OpenURL</c> (system browser on desktop, a new
+        /// <summary>Opens the Pay Station page (only https pages are opened). Default: <c>Application.OpenURL</c> (system browser on desktop, a new
         /// tab on WebGL). On WebGL a page opened after an await may be blocked as a popup: open it from a jslib
         /// (same tab, or a window opened in the click handler) instead.</summary>
         public Action<string> OpenUrl;
@@ -89,7 +89,9 @@ namespace Purser
         private readonly XsollaOptions m_Options;
         private readonly JsonHttp m_Http;
 
+        /// <inheritdoc/>
         public override BillingPlatform Platform => BillingPlatform.Web;
+        /// <inheritdoc/>
         public override string Store => BillingStores.Xsolla;
 
         /// <param name="config">Server URL, request timeout and the app id of its <c>xsolla</c> build.</param>
@@ -97,13 +99,14 @@ namespace Purser
         public XsollaStoreAdapter(BillingConfig config, XsollaOptions options = null, IHttpTransport transport = null,
             IBillingStorage storage = null, BillingLog log = null)
             : this(config ? config.serverBaseUrl : null, config ? config.AppIdFor(BillingStores.Xsolla) : null,
-                config ? config.requestTimeoutSeconds : 10, options, transport, storage, log)
+                config ? config.requestTimeoutSeconds : BillingConfig.DefaultRequestTimeoutSeconds, options, transport, storage, log)
         {
         }
 
         /// <param name="serverBaseUrl">Billing server, <c>https://&lt;host&gt;/v1/database/&lt;db&gt;/route</c>.</param>
         /// <param name="appId">App id of the Xsolla build on the server.</param>
-        public XsollaStoreAdapter(string serverBaseUrl, string appId, int timeoutSeconds = 10, XsollaOptions options = null,
+        public XsollaStoreAdapter(string serverBaseUrl, string appId, int timeoutSeconds = BillingConfig.DefaultRequestTimeoutSeconds,
+            XsollaOptions options = null,
             IHttpTransport transport = null, IBillingStorage storage = null, BillingLog log = null)
             : base(storage, log, PendingKey, (options ?? new XsollaOptions()).ForgetAfter)
         {
@@ -129,13 +132,15 @@ namespace Purser
                 Language = NullIfEmpty(m_Options.Language),
                 Attribution = Checkout?.Attribution?.Count > 0 ? Checkout.Attribution : null,
             };
-            var res = await m_Http.PostAsync<XsollaCheckoutResponse>("/checkout/xsolla", request, CancellationToken.None);
+            var res = await m_Http.PostAsync<XsollaCheckoutResponse>("/checkout/xsolla", request, Lifetime);
             var checkout = res.Value;
             if (!res.IsHttpSuccess || string.IsNullOrEmpty(checkout?.Url) || string.IsNullOrEmpty(checkout.OrderId))
             {
                 Fail(sku, "checkout: " + (checkout?.Message ?? res.Error ?? "no answer"));
                 return;
             }
+            if (!IsSafePage(sku, checkout.Url))
+                return;
             var order = Remember(checkout.OrderId, sku, userId);
             (m_Options.OpenUrl ?? Application.OpenURL)(checkout.Url);
             RaisePending(ToOrder(order, checkout));

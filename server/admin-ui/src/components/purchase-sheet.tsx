@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { DataTable, Loading, Mono, StatusBadge } from "@/components/common"
-import { call, sql, sqlStr } from "@/lib/api"
+import { call, select } from "@/lib/api"
 import { fmtMs, fmtTime, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import type { Purchase } from "@/lib/types"
@@ -27,8 +27,8 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
   }
   const { data, loading } = useAsync(async () => {
     if (!id) return null
-    const [p] = await sql<Purchase>(`SELECT * FROM purchase WHERE id = ${sqlStr(id)}`)
-    const log = (await sql<LogRow>(`SELECT * FROM purchase_log WHERE purchase_id = ${sqlStr(id)}`)).sort((a, b) => Number(a.id) - Number(b.id))
+    const [p] = await select<Purchase>({ table: "purchase", where: { column: "id", equals: id } })
+    const log = (await select<LogRow>({ table: "purchase_log", where: { column: "purchase_id", equals: id } })).sort((a, b) => Number(a.id) - Number(b.id))
     return { p, log }
   }, [id])
   const p = data?.p

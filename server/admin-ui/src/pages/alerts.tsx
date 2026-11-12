@@ -7,10 +7,11 @@ import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
 import { RichTable } from "@/components/rich-table"
-import { call, getSetting, proc, sql } from "@/lib/api"
-import { fmtTime } from "@/lib/format"
+import { SecretField } from "@/components/secret-field"
+import { call, getSetting, proc, select } from "@/lib/api"
+import { errorText, fmtTime } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
-import type { PageProps } from "@/routes"
+import { parseJsonOr } from "@/lib/utils"
 
 type ChannelKind = "telegram" | "slack" | "discord" | "webhook"
 
@@ -106,7 +107,16 @@ const CHANNELS: { kind: ChannelKind; title: string; secret: string; secretLabel:
   },
 ]
 
-const RULES: { key: keyof Rules; title: string; description: string; threshold?: { key: keyof Rules; label: string; min: number; max: number } }[] = [
+interface Threshold {
+  key: keyof Rules
+  label: string
+  min: number
+  max: number
+}
+
+const WINDOW: Threshold = { key: "window_hours", label: "Hours", min: 1, max: 168 }
+
+const RULES: { key: keyof Rules; title: string; description: string; threshold?: Threshold }[] = [
   {
     key: "delivery_failing",
     title: "Purchase delivery keeps failing",
@@ -130,21 +140,17 @@ const RULES: { key: keyof Rules; title: string; description: string; threshold?:
   },
 ]
 
-export function AlertsPage(_: PageProps) {
+export function AlertsPage() {
   const { data, error, loading, reload } = useAsync(async () => {
     const [channels, creds, rules, states, log] = await Promise.all([
-      sql<ChannelRow>("SELECT * FROM alert_channel"),
-      sql<{ key: string }>("SELECT key FROM credential"),
+      select<ChannelRow>({ table: "alert_channel" }),
+      select<{ key: string }>({ table: "credential", columns: ["key"] }),
       getSetting("alert_rules"),
-      sql<AlertState>("SELECT * FROM alert_state"),
-      sql<AlertLog>("SELECT * FROM alert_log"),
+      select<AlertState>({ table: "alert_state" }),
+      select<AlertLog>({ table: "alert_log" }),
     ])
-    let parsed: Partial<Rules> = {}
-    try {
-      parsed = rules ? JSON.parse(rules) : {}
-    } catch {
-      // Broken document: the server falls back to the defaults as well.
-    }
+    // A broken document: the server falls back to the defaults as well.
+    const parsed = parseJsonOr<Partial<Rules>>(rules, {})
     return {
       channels: Object.fromEntries(channels.map((c) => [c.kind, c])) as Record<string, ChannelRow>,
       secrets: new Set(creds.map((c) => c.key)),
@@ -181,7 +187,7 @@ export function AlertsPage(_: PageProps) {
                   title: "",
                   className: "text-right",
                   cell: (s) => (
-                    <Button variant="ghost" size="xs" onClick={async () => { await tryAct(() => call("admin_dismiss_alert", s.key), "Dismissed"); reload() }}>
+                    <Button variant="ghost" size="xs" onClick={async () => { if (await tryAct(() => call("admin_dismiss_alert", s.key), "Dismissed") !== undefined) reload() }}>
                       Dismiss
                     </Button>
                   ),
@@ -221,12 +227,7 @@ export function AlertsPage(_: PageProps) {
 }
 
 function Results({ json }: { json: string }) {
-  let results: Record<string, string> = {}
-  try {
-    results = JSON.parse(json || "{}")
-  } catch {
-    return null
-  }
+  const results = parseJsonOr<Record<string, string>>(json, {})
   return (
     <div className="flex flex-col gap-1">
       {Object.entries(results).map(([channel, r]) => (
@@ -242,12 +243,7 @@ function Results({ json }: { json: string }) {
 }
 
 function ChannelCard({ def, row, hasSecret, reload }: { def: (typeof CHANNELS)[number]; row?: ChannelRow; hasSecret: boolean; reload: () => void }) {
-  let saved: Record<string, string> = {}
-  try {
-    saved = row ? JSON.parse(row.settings_json || "{}") : {}
-  } catch {
-    // ignore
-  }
+  const saved = parseJsonOr<Record<string, string>>(row?.settings_json, {})
   const [enabled, setEnabled] = useState(row ? !!row.enabled : true)
   const [setting, setSetting] = useState(def.setting ? saved[def.setting.key] || "" : "")
   const [secret, setSecret] = useState("")
@@ -265,14 +261,14 @@ function ChannelCard({ def, row, hasSecret, reload }: { def: (typeof CHANNELS)[n
       await proc("admin_test_alert", def.kind)
       toast.success(`Test message sent to ${def.title}`)
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e))
+      toast.error(errorText(e))
     }
+    // Recent alerts lists the test and what the channel answered, failed or not.
     reload()
   }
   const remove = async () => {
     if (!confirm(`Remove the ${def.title} channel and its secret?`)) return
-    await tryAct(() => call("admin_delete_alert_channel", def.kind), "Removed")
-    reload()
+    if (await tryAct(() => call("admin_delete_alert_channel", def.kind), "Removed") !== undefined) reload()
   }
 
   return (
@@ -293,15 +289,7 @@ function ChannelCard({ def, row, hasSecret, reload }: { def: (typeof CHANNELS)[n
           </Field>
         )}
         <Field label={<>{def.secretLabel} {hasSecret ? <Tone tone="ok">set</Tone> : <Tone tone="muted">not set</Tone>}</>} hint={def.secretHint}>
-          <Input
-            type="password"
-            className="font-mono text-xs"
-            placeholder={hasSecret ? "Stored. Type to replace it." : ""}
-            value={secret}
-            onChange={(e) => setSecret(e.target.value)}
-            autoComplete="off"
-            spellCheck={false}
-          />
+          <SecretField value={secret} onChange={setSecret} placeholder={hasSecret ? "Stored. Type to replace it." : ""} />
         </Field>
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -318,9 +306,19 @@ function ChannelCard({ def, row, hasSecret, reload }: { def: (typeof CHANNELS)[n
 function RulesSection({ initial, reload }: { initial: Rules; reload: () => void }) {
   const [rules, setRules] = useState<Rules>(initial)
   const set = <K extends keyof Rules>(k: K, v: Rules[K]) => setRules((r) => ({ ...r, [k]: v }))
-  const num = (k: keyof Rules, v: string) => set(k, Math.max(0, Math.floor(Number(v) || 0)) as never)
+  const num = (t: Threshold, v: string) => set(t.key, Math.max(0, Math.floor(Number(v) || 0)) as never)
+  // Clamped when saved, not while typing: clearing the field to type a new number must stay possible.
+  const clamped = () => {
+    const out = { ...rules }
+    for (const t of [WINDOW, ...RULES.flatMap((r) => (r.threshold ? [r.threshold] : []))]) {
+      out[t.key] = Math.min(t.max, Math.max(t.min, Number(out[t.key]))) as never
+    }
+    return out
+  }
   const save = async () => {
-    const ok = await tryAct(() => call("admin_set_alert_rules", JSON.stringify(rules)), "Rules saved")
+    const next = clamped()
+    setRules(next)
+    const ok = await tryAct(() => call("admin_set_alert_rules", JSON.stringify(next)), "Rules saved")
     if (ok !== undefined) reload()
   }
   return (
@@ -348,7 +346,7 @@ function RulesSection({ initial, reload }: { initial: Rules; reload: () => void 
                   min={r.threshold.min}
                   max={r.threshold.max}
                   value={String(rules[r.threshold.key])}
-                  onChange={(e) => num(r.threshold!.key, e.target.value)}
+                  onChange={(e) => num(r.threshold!, e.target.value)}
                 />
               </div>
             )}
@@ -357,7 +355,7 @@ function RulesSection({ initial, reload }: { initial: Rules; reload: () => void 
         <div className="flex flex-wrap items-center gap-6 pt-2">
           <div className="flex items-center gap-2">
             <Label className="text-xs text-muted-foreground">One message per problem and app every</Label>
-            <Input type="number" className="w-20" min={1} max={168} value={String(rules.window_hours)} onChange={(e) => num("window_hours", e.target.value)} />
+            <Input type="number" className="w-20" min={WINDOW.min} max={WINDOW.max} value={String(rules.window_hours)} onChange={(e) => num(WINDOW, e.target.value)} />
             <span className="text-xs text-muted-foreground">hours</span>
           </div>
           <div className="flex items-center gap-2">

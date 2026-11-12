@@ -5,7 +5,9 @@ Two flavours of every HTTP helper:
     as mcp_server.py, which must keep going after a failed call);
   * `post`, `select`, `call` exit the script with the error (seed.py, migrate.py).
 
-The token is `PURSER_TOKEN` when set, otherwise the one of `spacetime login`.
+The token is `PURSER_TOKEN` when set, otherwise the one of `spacetime login`. It is sent only over
+https, or over http to this machine (localhost, an SSH tunnel), and never follows a redirect to
+another origin.
 """
 import json
 import os
@@ -16,6 +18,9 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 class StdbError(Exception):
@@ -81,15 +86,43 @@ def token():
         sys.exit(str(e))
 
 
+def origin(url):
+    u = urllib.parse.urlsplit(url)
+    return u.scheme.lower(), (u.hostname or "").lower(), u.port
+
+
+def check_transport(url):
+    """Refuses to send a token in clear text to anything but this machine."""
+    scheme, host, _ = origin(url)
+    if scheme == "https" or (scheme == "http" and host in LOOPBACK_HOSTS):
+        return
+    raise StdbError(f"refusing to send the token to {scheme}://{host}: use https, or an SSH tunnel to "
+                    "localhost for a self-hosted server (see docs/self-hosting.md)")
+
+
+class SameOriginAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """Follows redirects, but drops the token when one leaves the original origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and origin(new.full_url) != origin(req.full_url):
+            new.remove_header("Authorization")
+        return new
+
+
+OPENER = urllib.request.build_opener(SameOriginAuthRedirect)
+
+
 def request(method, url, tok, body=None, content_type="text/plain", timeout=60):
     """One HTTP call; returns the response text or raises `StdbError`."""
+    check_transport(url)
     data = body.encode("utf-8") if body is not None else None
     headers = {"Authorization": f"Bearer {tok}"}
     if data is not None:
         headers["Content-Type"] = content_type
     req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as res:
+        with OPENER.open(req, timeout=timeout) as res:
             return res.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")

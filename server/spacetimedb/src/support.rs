@@ -10,7 +10,7 @@
 //! A store purchase the store still reports as active comes back when the client verifies or
 //! restores it again: the store stays the source of truth for paid products.
 
-use crate::ctx::{tx_now_micros, Ctx};
+use crate::ctx::{tx_now_micros, Budget, Ctx};
 use crate::integrations::{attribution_key, user_attribution};
 use crate::{game_app, integrations, ledger, purchase, purchase_log, GameApp, Purchase};
 use purser_core::fx::FxTable;
@@ -118,7 +118,7 @@ pub fn admin_revoke_purchase(ctx: &mut ProcedureContext, purchase_id: String, re
     match ctx.tx(|tx| revoke(tx, &purchase_id, &reason)) {
         Ok(changed) => {
             if let Some(id) = changed {
-                ledger::advance(ctx, &id);
+                ledger::advance(ctx, &id, Budget::new(ctx, crate::ctx::REQUEST_BUDGET_SECS));
             }
             let status = ctx.tx(|tx| tx.db.purchase().id().find(&purchase_id).map(|p| p.status));
             json!({ "ok": true, "status": status }).to_string()

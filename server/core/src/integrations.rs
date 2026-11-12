@@ -498,7 +498,7 @@ pub mod appsflyer {
         let millis = ms.rem_euclid(1000);
         let days = secs.div_euclid(86_400);
         let sod = secs.rem_euclid(86_400);
-        let (y, m, d) = civil_from_days(days);
+        let (y, m, d) = crate::time::civil_from_days(days);
         format!(
             "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}.{millis:03}",
             sod / 3600,
@@ -506,44 +506,13 @@ pub mod appsflyer {
             sod % 60
         )
     }
-
-    /// Howard Hinnant's algorithm: days since 1970-01-01 → (year, month, day).
-    fn civil_from_days(z: i64) -> (i64, i64, i64) {
-        let z = z + 719_468;
-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let doe = z - era * 146_097;
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        (if m <= 2 { y + 1 } else { y }, m, d)
-    }
 }
 
 // ---------------------------------------------------------------------
 // Tenjin S2S Purchase API
 // ---------------------------------------------------------------------
 
-/// `application/x-www-form-urlencoded` body from pairs.
-pub fn form_urlencode(pairs: &[(&str, String)]) -> String {
-    fn enc(s: &str) -> String {
-        s.bytes()
-            .map(|b| match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-                b' ' => "+".to_string(),
-                _ => format!("%{b:02X}"),
-            })
-            .collect()
-    }
-    pairs.iter().map(|(k, v)| format!("{}={}", enc(k), enc(v))).collect::<Vec<_>>().join("&")
-}
-
-fn basic_auth(user: &str, password: &str) -> String {
-    use base64::Engine;
-    format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}")))
-}
+pub use crate::encoding::{basic_auth, form_urlencode, percent_encode as url_encode, query_string as query};
 
 pub mod tenjin {
     use super::*;
@@ -666,9 +635,7 @@ pub mod webhook {
     impl Settings {
         pub fn parse(json: &str) -> Result<Self, String> {
             let s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid webhook settings: {e}"))?;
-            if !s.url.starts_with("https://") || s.url.contains(char::is_whitespace) {
-                return Err("webhook settings: url must be an https:// URL".into());
-            }
+            crate::encoding::check_public_https_url("webhook settings: url", &s.url)?;
             Ok(s)
         }
     }
@@ -700,33 +667,6 @@ pub mod webhook {
     }
 }
 
-/// Percent-encodes a URL component (RFC 3986 unreserved characters stay as they are).
-pub fn url_encode(s: &str) -> String {
-    s.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
-}
-
-/// Query string from pairs (`%20` for spaces, unlike [`form_urlencode`]).
-fn query(pairs: &[(&str, String)]) -> String {
-    pairs.iter().map(|(k, v)| format!("{}={}", url_encode(k), url_encode(v))).collect::<Vec<_>>().join("&")
-}
-
-/// Micros as a plain decimal in currency units without trailing zeros: 4_990_000 → "4.99".
-pub fn amount(micros: i64) -> String {
-    let sign = if micros < 0 { "-" } else { "" };
-    let m = micros.unsigned_abs();
-    let frac = format!("{:06}", m % 1_000_000);
-    let frac = frac.trim_end_matches('0');
-    if frac.is_empty() {
-        format!("{sign}{}", m / 1_000_000)
-    } else {
-        format!("{sign}{}.{frac}", m / 1_000_000)
-    }
-}
 
 /// Token-like setting values (Adjust tokens, AppMetrica ids): ASCII letters and digits only.
 fn is_token(s: &str) -> bool {
@@ -810,7 +750,7 @@ pub mod adjust {
         params.push(("environment", if ev.is_sandbox() { "sandbox" } else { "production" }.into()));
         let revenue = ev.revenue();
         if revenue > 0.0 {
-            params.push(("revenue", amount(ev.price_micros)));
+            params.push(("revenue", crate::money::to_decimal(ev.price_micros)));
             params.push(("currency", ev.currency_or_usd().to_string()));
         }
         let mut callback = json!({
@@ -822,7 +762,7 @@ pub mod adjust {
             "billing_event": ev.kind,
         });
         if revenue < 0.0 {
-            callback["refund_amount"] = json!(amount(ev.price_micros));
+            callback["refund_amount"] = json!(crate::money::to_decimal(ev.price_micros));
             callback["refund_currency"] = json!(ev.currency_or_usd());
         }
         params.push(("callback_params", callback.to_string()));
@@ -932,7 +872,7 @@ pub mod appmetrica {
             params.push(("revenue_event_type", kind.into()));
             // Refunds carry the refunded amount; expirations no money.
             let price = if ev.kind == event_kind::EXPIRE { 0 } else { ev.price_micros.abs() };
-            params.push(("price", amount(price)));
+            params.push(("price", crate::money::to_decimal(price)));
             params.push(("currency", ev.currency_or_usd().to_string()));
             params.push(("product_id", ev.product_id.clone()));
             params.push(("quantity", "1".into()));
@@ -1342,10 +1282,6 @@ mod tests {
 
     #[test]
     fn amounts() {
-        assert_eq!(amount(4_990_000), "4.99");
-        assert_eq!(amount(5_000_000), "5");
-        assert_eq!(amount(-1_500), "-0.0015");
-        assert_eq!(amount(0), "0");
     }
 
     fn adjust_settings() -> adjust::Settings {

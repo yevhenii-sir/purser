@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using UnityEngine;
 
 namespace Purser
 {
@@ -10,27 +11,42 @@ namespace Purser
     {
         private readonly string m_BaseUrl;
         private readonly int m_TimeoutSeconds;
+        /// <summary>Set for an insecure URL outside the Editor: every request throws it.</summary>
+        private readonly string m_Refusal;
 
         public IHttpTransport Transport { get; }
 
-        public JsonHttp(string baseUrl, int timeoutSeconds, IHttpTransport transport)
+        /// <param name="isEditor">Test hook; default <c>Application.isEditor</c>.</param>
+        public JsonHttp(string baseUrl, int timeoutSeconds, IHttpTransport transport, bool? isEditor = null)
         {
             if (string.IsNullOrWhiteSpace(baseUrl))
                 throw new ArgumentException("Billing server URL is empty", nameof(baseUrl));
             m_BaseUrl = baseUrl.TrimEnd('/');
             m_TimeoutSeconds = Math.Max(1, timeoutSeconds);
             Transport = transport ?? new UnityWebRequestTransport();
+            m_Refusal = UrlPolicy.ServerUrlProblem(baseUrl, isEditor ?? Application.isEditor);
         }
 
         /// <summary>Sends <paramref name="body"/> as JSON; a 4xx/5xx answer keeps its parsed body.</summary>
+        /// <exception cref="BillingException">The server URL is not https outside the Editor.</exception>
         public async Task<ApiResult<T>> PostAsync<T>(string path, object body, CancellationToken ct) where T : class
         {
+            ThrowIfRefused();
             var res = await Transport.SendAsync("POST", m_BaseUrl + path, JsonConvert.SerializeObject(body), m_TimeoutSeconds, ct);
             return Parse<T>(res);
         }
 
-        public async Task<HttpResponse> GetAsync(string path, CancellationToken ct) =>
-            await Transport.SendAsync("GET", m_BaseUrl + path, null, m_TimeoutSeconds, ct);
+        public async Task<HttpResponse> GetAsync(string path, CancellationToken ct)
+        {
+            ThrowIfRefused();
+            return await Transport.SendAsync("GET", m_BaseUrl + path, null, m_TimeoutSeconds, ct);
+        }
+
+        private void ThrowIfRefused()
+        {
+            if (m_Refusal != null)
+                throw new BillingException(m_Refusal);
+        }
 
         private static ApiResult<T> Parse<T>(HttpResponse res) where T : class
         {

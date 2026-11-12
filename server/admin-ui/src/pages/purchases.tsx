@@ -7,9 +7,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ErrorBox, Field, Loading, Mono, PageHeader, Section, StatusBadge } from "@/components/common"
 import { RichTable } from "@/components/rich-table"
 import { PurchaseSheet } from "@/components/purchase-sheet"
-import { call, proc, route, sql, sqlStr } from "@/lib/api"
+import { call, proc, route, select } from "@/lib/api"
 import { useApps } from "@/lib/apps"
-import { fmtMs, fmtTime, money } from "@/lib/format"
+import { errorText, fmtMs, fmtTime, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { openPlayer } from "@/lib/player"
 import { STATUSES, type GameApp, type Purchase } from "@/lib/types"
@@ -26,19 +26,19 @@ export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: s
   const [open, setOpen] = useState<string | null>(null)
   const [dialog, setDialog] = useState<"grant" | "entitlements" | null>(null)
   const all = useApps().apps
-  const appKey = appIds?.join(",") || ""
-  const apps = useMemo(
-    () => (all || []).filter((a) => !appIds || appIds.includes(a.app_id)).sort((a, b) => a.app_id.localeCompare(b.app_id)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [all, appKey],
-  )
+  // The parent passes a new array on every render: memos and loads key on its contents.
+  const appKey = appIds?.join(",")
+  const apps = useMemo(() => {
+    const ids = appKey?.split(",")
+    return (all || []).filter((a) => !ids || ids.includes(a.app_id)).sort((a, b) => a.app_id.localeCompare(b.app_id))
+  }, [all, appKey])
   const { data, error, loading, reload } = useAsync(async (): Promise<{ rows: Purchase[]; more: boolean }> => {
     const q = filter.q.trim()
     const status = filter.status === ANY ? "" : filter.status
     if (q) {
       // Exact matches on the indexed id columns.
       const lists = await Promise.all(
-        ["id", "user_id", "transaction_id", "original_transaction_id", "purchase_token"].map((col) => sql<Purchase>(`SELECT * FROM purchase WHERE ${col} = ${sqlStr(q)}`)),
+        ["id", "user_id", "transaction_id", "original_transaction_id", "purchase_token"].map((column) => select<Purchase>({ table: "purchase", where: { column, equals: q } })),
       )
       let rows = [...new Map(lists.flat().map((r) => [r.id, r])).values()]
       if (appIds) rows = rows.filter((r) => appIds.includes(r.app_id))
@@ -173,7 +173,17 @@ function EntitlementsDialog({ open, apps, onClose }: { open: boolean; apps: Game
   const [app, setApp] = useState("")
   const [user, setUser] = useState("")
   const [result, setResult] = useState<unknown>(null)
+  const [error, setError] = useState("")
   const target = app || apps[0]?.app_id || ""
+  const check = async () => {
+    setError("")
+    try {
+      setResult((await route("/entitlements", { app_id: target, user_id: user })).json)
+    } catch (e) {
+      setResult(null)
+      setError(errorText(e))
+    }
+  }
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-xl">
@@ -185,9 +195,10 @@ function EntitlementsDialog({ open, apps, onClose }: { open: boolean; apps: Game
           <Field label="App"><AppPicker apps={apps} value={target} onChange={setApp} /></Field>
           <Field label="user_id"><Input value={user} onChange={(e) => setUser(e.target.value)} /></Field>
         </div>
+        {error && <ErrorBox error={error} />}
         {result !== null && <pre className="max-h-72 overflow-auto rounded-md bg-muted p-3 font-mono text-xs">{JSON.stringify(result, null, 2)}</pre>}
         <DialogFooter>
-          <Button onClick={async () => setResult((await route("/entitlements", { app_id: target, user_id: user })).json)} disabled={!user}>Check</Button>
+          <Button onClick={check} disabled={!user}>Check</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

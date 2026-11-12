@@ -33,6 +33,7 @@ export function useAsync<T>(load: (opts: LoadOptions) => Promise<T>, deps: unkno
     return () => {
       alive = false
     }
+    // `deps` stand for `load`, a new closure on every render. oxlint reports this rule (react-hooks).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick])
 
@@ -73,6 +74,23 @@ export async function act<T>(fn: () => Promise<T>, ok?: string): Promise<T> {
     toast.error(errorText(e))
     throw e
   }
+}
+
+/** `copy(text, message?)` puts text on the clipboard and toasts `message` (a failure is toasted too);
+ * `copied` is true for a moment after. */
+export function useCopy(success?: string) {
+  const [copied, setCopied] = useState(false)
+  const copy = useCallback(async (text: string, message = success) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      if (message) toast.success(message)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      toast.error("Copy failed: select the text and copy it")
+    }
+  }, [success])
+  return { copied, copy }
 }
 
 /** Like `act`, but swallows the error after showing it (for click handlers). */

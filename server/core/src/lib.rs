@@ -7,12 +7,14 @@ pub mod catalog;
 pub mod consumption;
 pub mod country;
 pub mod doctor;
+pub mod encoding;
 pub mod event;
 pub mod fx;
 pub mod google;
 pub mod integrations;
 pub mod jwt;
 pub mod model;
+pub mod money;
 pub mod offers;
 pub mod paywall;
 pub mod player;
@@ -26,6 +28,7 @@ pub mod store_create;
 pub mod support;
 pub mod tax;
 pub mod time;
+pub mod x509;
 pub mod xsolla;
 
 /// Retry delays for pending ledger work (deliver reward, consume, revoke).
@@ -63,10 +66,16 @@ pub fn google_account_id(user_id: &str) -> String {
 pub fn apple_account_token(user_id: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(user_id.as_bytes());
+    uuid_v8(&digest)
+}
+
+/// A UUID (RFC 9562 version 8, RFC 4122 variant) from the first 16 bytes of a digest, formatted
+/// lowercase 8-4-4-4-12.
+pub fn uuid_v8(digest: &[u8]) -> String {
     let mut b = [0u8; 16];
     b.copy_from_slice(&digest[..16]);
-    b[6] = (b[6] & 0x0f) | 0x80; // version 8 (custom)
-    b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+    b[6] = (b[6] & 0x0f) | 0x80;
+    b[8] = (b[8] & 0x3f) | 0x80;
     let h = hex::encode(b);
     format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
 }
@@ -80,13 +89,14 @@ pub fn account_binding_allows(store_name: &str, product_kind: &str, bound_accoun
     if bound_account.is_empty() || product_kind != model::kind::CONSUMABLE {
         return true;
     }
-    let expected = match registry::store(store_name).map(|s| s.binding) {
-        Some(registry::Binding::GoogleAccountId) => google_account_id(user_id),
-        Some(registry::Binding::AppleAccountToken) => apple_account_token(user_id),
+    match registry::store(store_name).map(|s| s.binding) {
+        // The user id itself (or its hash): exact, so ids that differ in case stay apart.
+        Some(registry::Binding::GoogleAccountId) => bound_account == google_account_id(user_id),
+        // A UUID: StoreKit may report it in upper case.
+        Some(registry::Binding::AppleAccountToken) => bound_account.eq_ignore_ascii_case(&apple_account_token(user_id)),
         // The store has no account field: nothing to compare.
-        _ => return true,
-    };
-    bound_account.eq_ignore_ascii_case(&expected)
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +114,7 @@ mod account_binding_tests {
     fn consumable_stays_with_the_buyer() {
         assert!(account_binding_allows(store::GOOGLE, kind::CONSUMABLE, "player-1", "player-1"));
         assert!(!account_binding_allows(store::GOOGLE, kind::CONSUMABLE, "player-1", "player-2"));
+        assert!(!account_binding_allows(store::GOOGLE, kind::CONSUMABLE, "Player-1", "player-1"), "user ids are case-sensitive");
         let token = apple_account_token("player-1");
         assert!(account_binding_allows(store::APPLE, kind::CONSUMABLE, &token.to_uppercase(), "player-1"));
         assert!(!account_binding_allows(store::APPLE, kind::CONSUMABLE, &token, "player-2"));
@@ -211,10 +222,10 @@ mod spacetime_url_tests {
     fn app_names_are_trimmed_and_limited() {
         assert_eq!(normalize_app_name("  Bluff   Card\tGame ").as_deref(), Ok("Bluff Card Game"));
         assert_eq!(normalize_app_name("").as_deref(), Ok(""));
-        assert_eq!(normalize_app_name("Карты: блеф 🃏").as_deref(), Ok("Карты: блеф 🃏"));
+        assert_eq!(normalize_app_name("Café: カード 🃏").as_deref(), Ok("Café: カード 🃏"));
         assert!(normalize_app_name("bad\u{0}name").is_err());
         assert!(normalize_app_name(&"x".repeat(APP_NAME_MAX_CHARS + 1)).is_err());
-        assert!(normalize_app_name(&"я".repeat(APP_NAME_MAX_CHARS)).is_ok(), "characters, not bytes");
+        assert!(normalize_app_name(&"é".repeat(APP_NAME_MAX_CHARS)).is_ok(), "characters, not bytes");
     }
 
     #[test]

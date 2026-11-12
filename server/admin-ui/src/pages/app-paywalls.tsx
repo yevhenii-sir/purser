@@ -11,11 +11,12 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
 import { RichTable } from "@/components/rich-table"
-import { call, proc, sql, sqlStr, sqlWhereIn } from "@/lib/api"
-import { PLATFORM_LABEL } from "@/lib/apps"
-import { errorText, fmtTime, usd } from "@/lib/format"
+import { call, proc, select } from "@/lib/api"
+import { errorText, fmtTime, pct, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
+import { buildLabel } from "@/lib/stores"
 import { catalogIdOf, type Product } from "@/lib/types"
+import { parseJsonOr } from "@/lib/utils"
 import type { TabProps } from "@/pages/app"
 
 interface PaywallRow {
@@ -79,15 +80,10 @@ interface Results {
 
 const ID_RE = /^[A-Za-z0-9_.-]{1,64}$/
 const parseList = <T,>(json: string): T[] => {
-  try {
-    const v = JSON.parse(json)
-    return Array.isArray(v) ? v : []
-  } catch {
-    return []
-  }
+  const v = parseJsonOr<unknown>(json, [])
+  return Array.isArray(v) ? v : []
 }
 const running = (p: PlacementRow) => !!p.test_id && !Number(p.test_stopped_at_micros)
-const pct = (x: number | null | undefined, digits = 1) => (x === null || x === undefined ? "—" : `${(x * 100).toFixed(digits)}%`)
 const shares = (vs: Variant[]) => {
   const total = vs.reduce((s, v) => s + Number(v.weight || 0), 0)
   return vs.map((v) => (total ? Number(v.weight || 0) / total : 0))
@@ -98,12 +94,12 @@ export function AppPaywallsTab({ data }: TabProps) {
   const ids = g.apps.map((a) => a.app_id)
   const loaded = useAsync(async () => {
     const [paywalls, placements, products] = await Promise.all([
-      sql<PaywallRow>(`SELECT * FROM paywall WHERE game_key = ${sqlStr(g.key)}`),
-      sql<PlacementRow>(`SELECT * FROM placement WHERE game_key = ${sqlStr(g.key)}`),
-      sqlWhereIn<Product>("product", "app_id", ids),
+      select<PaywallRow>({ table: "paywall", where: { column: "game_key", equals: g.key } }),
+      select<PlacementRow>({ table: "placement", where: { column: "game_key", equals: g.key } }),
+      select<Product>({ table: "product", where: { column: "app_id", equals: ids } }),
     ])
     // Tests by the indexed placement key (history of deleted placements is not listed).
-    const tests = await sqlWhereIn<TestRow>("paywall_test", "placement_key", placements.map((p) => p.key))
+    const tests = await select<TestRow>({ table: "paywall_test", where: { column: "placement_key", equals: placements.map((p) => p.key) } })
     return {
       paywalls: paywalls.sort((a, b) => a.paywall_id.localeCompare(b.paywall_id)),
       placements: placements.sort((a, b) => a.placement_id.localeCompare(b.placement_id)),
@@ -227,7 +223,7 @@ export function AppPaywallsTab({ data }: TabProps) {
         <DialogContent className="sm:max-w-2xl">
           {paywall && (
             <PaywallForm key={paywall === "new" ? "new" : paywall.key} gameKey={g.key} row={paywall === "new" ? null : paywall}
-              catalog={catalog} products={d.products} apps={g.apps.map((a) => ({ id: a.app_id, label: PLATFORM_LABEL[a.platform] }))}
+              catalog={catalog} products={d.products} apps={g.apps.map((a) => ({ id: a.app_id, label: buildLabel(a) }))}
               onClose={() => setPaywall(null)} onSaved={loaded.reload} />
           )}
         </DialogContent>
@@ -247,7 +243,7 @@ export function AppPaywallsTab({ data }: TabProps) {
       </Dialog>
       <Dialog open={!!preview} onOpenChange={(o) => !o && setPreview(null)}>
         <DialogContent className="sm:max-w-2xl">
-          {preview && <PreviewForm placement={preview} apps={g.apps.map((a) => ({ id: a.app_id, label: PLATFORM_LABEL[a.platform] }))} />}
+          {preview && <PreviewForm placement={preview} apps={g.apps.map((a) => ({ id: a.app_id, label: buildLabel(a) }))} />}
         </DialogContent>
       </Dialog>
     </>
@@ -417,6 +413,7 @@ function TestForm({ gameKey, p, mode, onClose, onSaved }: { gameKey: string; p: 
   const variants = parseList<Variant>(p.variants_json)
   const sh = shares(variants)
   const [testId, setTestId] = useState("")
+  const [today] = useState(() => new Date().toISOString().slice(0, 10).replace(/-/g, ""))
   const [winner, setWinner] = useState("__keep")
   const submit = async () => {
     const ok = mode === "start"
@@ -436,7 +433,7 @@ function TestForm({ gameKey, p, mode, onClose, onSaved }: { gameKey: string; p: 
       </DialogHeader>
       {mode === "start" ? (
         <Field label="Test id" hint="Empty: generated from the placement and today's date. Ids are never reused.">
-          <Input className="font-mono text-xs" value={testId} onChange={(e) => setTestId(e.target.value)} placeholder={`${p.placement_id}-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`} />
+          <Input className="font-mono text-xs" value={testId} onChange={(e) => setTestId(e.target.value)} placeholder={`${p.placement_id}-${today}`} />
         </Field>
       ) : (
         <Field label="Serve after the test">

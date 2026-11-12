@@ -26,6 +26,7 @@ namespace Purser
     /// </summary>
     public interface ICheckoutStoreAdapter : IStoreAdapter
     {
+        /// <summary>The player of the next <see cref="IStoreAdapter.Purchase"/>.</summary>
         void PrepareCheckout(CheckoutContext context);
     }
 
@@ -66,6 +67,8 @@ namespace Purser
         private readonly IBillingStorage m_Storage;
         private readonly string m_PendingKey;
         private readonly TimeSpan m_ForgetAfter;
+        /// <summary>Cancelled, never disposed: callbacks arriving after <see cref="Dispose"/> may still read the token.</summary>
+        private readonly CancellationTokenSource m_Lifetime = new CancellationTokenSource();
         private List<CheckoutOrder> m_Pending;
 
         /// <summary>Test hook: waits between polls.</summary>
@@ -74,20 +77,33 @@ namespace Purser
         /// <summary>Test hook: the clock.</summary>
         internal Func<DateTime> UtcNow = () => DateTime.UtcNow;
 
+        /// <summary>The adapter's log.</summary>
         protected BillingLog Log { get; }
+
+        /// <summary>Cancelled by <see cref="Dispose"/>: pass it to server calls and waits of the adapter.</summary>
+        protected CancellationToken Lifetime => m_Lifetime.Token;
+
+        /// <summary><see cref="Dispose"/> was called.</summary>
+        protected bool IsDisposed { get; private set; }
 
         /// <summary>The player of the purchase being started (<see cref="PrepareCheckout"/>).</summary>
         protected CheckoutContext Checkout { get; private set; }
 
+        /// <summary>Billing user id of the purchase being started; null before the first <see cref="PrepareCheckout"/>.</summary>
         protected string CurrentUser => string.IsNullOrEmpty(Checkout?.UserId) ? null : Checkout.UserId;
 
+        /// <inheritdoc/>
         public abstract BillingPlatform Platform { get; }
+        /// <inheritdoc/>
         public abstract string Store { get; }
 
+        /// <inheritdoc/>
         public event Action<StoreOrder> OrderPending;
         /// <summary>Not used: an unpaid order is reported by the order check.</summary>
         public event Action<StoreOrder> OrderDeferred { add { } remove { } }
+        /// <inheritdoc/>
         public event Action<StorePurchaseFailure> PurchaseFailed;
+        /// <inheritdoc/>
         public event Action<StoreOrder, bool, string> OrderFinished;
 
         /// <param name="pendingKey">Storage key of the started orders.</param>
@@ -133,8 +149,10 @@ namespace Purser
         /// <summary>No account binding field: the server puts the billing user id into the order.</summary>
         public void SetAccountBinding(string userId) { }
 
+        /// <inheritdoc/>
         public void PrepareCheckout(CheckoutContext context) => Checkout = context;
 
+        /// <summary>Starts the checkout (<see cref="StartCheckoutAsync"/>); the result arrives through the events.</summary>
         public void Purchase(string storeProductId) => _ = PurchaseCoreAsync(storeProductId);
 
         private async Task PurchaseCoreAsync(string sku)
@@ -149,9 +167,8 @@ namespace Purser
                 }
                 await StartCheckoutAsync(sku, user);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (IsDisposed)
             {
-                // Disposed.
             }
             catch (Exception e)
             {
@@ -178,14 +195,22 @@ namespace Purser
         public Task<IReadOnlyList<StoreOrder>> FetchPurchasesAsync(CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<StoreOrder>>(new List<StoreOrder>());
 
+        /// <summary>Nothing to restore from the store.</summary>
         public Task<bool> RestoreTransactionsAsync(CancellationToken ct) => Task.FromResult(true);
 
-        public virtual void Dispose() { }
+        /// <summary>Cancels running checkouts and polls (<see cref="Lifetime"/>). Overrides call the base.</summary>
+        public virtual void Dispose()
+        {
+            if (IsDisposed)
+                return;
+            IsDisposed = true;
+            m_Lifetime.Cancel();
+        }
 
         // ---- for derived adapters ----
 
         /// <summary>Started orders not yet answered by the server.</summary>
-        protected List<CheckoutOrder> Pending => m_Pending ?? (m_Pending = LoadPending());
+        protected List<CheckoutOrder> Pending => m_Pending ?? (m_Pending = LoadOrders(m_PendingKey));
 
         /// <summary>Order ids waiting for an answer (tests, diagnostics).</summary>
         internal IReadOnlyList<string> PendingOrderIds => Pending.Select(o => o.OrderId).ToList();
@@ -202,8 +227,21 @@ namespace Purser
             return order;
         }
 
+        /// <summary>Raises <see cref="OrderPending"/>: the billing service checks the order with the server.</summary>
         protected void RaisePending(StoreOrder order) => OrderPending?.Invoke(order);
 
+        /// <summary>Whether the payment page the server returned may be opened: only an absolute https URL. Otherwise
+        /// the purchase of <paramref name="sku"/> fails.</summary>
+        protected bool IsSafePage(string sku, string url)
+        {
+            if (UrlPolicy.IsHttps(url))
+                return true;
+            Log.Warning($"{Store} checkout: the server returned a payment page that is not an https URL; it is not opened.");
+            Fail(sku, "checkout: the payment page is not an https URL");
+            return false;
+        }
+
+        /// <summary>Raises <see cref="PurchaseFailed"/> for the purchase of <paramref name="sku"/>.</summary>
         protected void Fail(string sku, string reason, bool cancelled = false) =>
             PurchaseFailed?.Invoke(new StorePurchaseFailure(sku, $"{Store}: {reason}", cancelled));
 
@@ -240,17 +278,20 @@ namespace Purser
             }
         }
 
+        /// <summary>A server-like answer made up by the adapter (e.g. the player gave up).</summary>
         protected static ApiResult<VerifyResponse> Answer(string status, string message) =>
             new ApiResult<VerifyResponse>(200, new VerifyResponse { Status = status, Message = message }, null);
 
+        /// <summary>Null for an empty string (optional JSON fields are left out).</summary>
         protected static string NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
 
-        private List<CheckoutOrder> LoadPending()
+        /// <summary>Orders saved under <paramref name="key"/>; an unreadable value is kept under <c>{key}.corrupt</c>.</summary>
+        private protected List<CheckoutOrder> LoadOrders(string key)
         {
             string json = null;
             try
             {
-                json = m_Storage.Load(m_PendingKey);
+                json = m_Storage.Load(key);
                 var list = string.IsNullOrEmpty(json)
                     ? new List<CheckoutOrder>()
                     : JsonConvert.DeserializeObject<List<CheckoutOrder>>(json) ?? new List<CheckoutOrder>();
@@ -260,24 +301,27 @@ namespace Purser
             catch (Exception e)
             {
                 // Keep the unreadable value: the next save would overwrite orders that may be paid.
-                Log.Error($"Could not read the started {Store} orders ({e.Message}); kept under {m_PendingKey}.corrupt.");
+                Log.Error($"Could not read the started {Store} orders ({e.Message}); kept under {key}.corrupt.");
                 try
                 {
-                    m_Storage.Save(m_PendingKey + ".corrupt", json);
+                    m_Storage.Save(key + ".corrupt", json);
                 }
-                catch (Exception)
+                catch (Exception copy)
                 {
-                    // Best effort.
+                    Log.Warning($"Could not keep the unreadable {Store} orders: {copy.Message}");
                 }
                 return new List<CheckoutOrder>();
             }
         }
 
-        private void SavePending()
+        private void SavePending() => SaveOrders(m_PendingKey, Pending);
+
+        /// <summary>Saves <paramref name="orders"/> under <paramref name="key"/>; a failure is logged.</summary>
+        private protected void SaveOrders(string key, List<CheckoutOrder> orders)
         {
             try
             {
-                m_Storage.Save(m_PendingKey, JsonConvert.SerializeObject(Pending));
+                m_Storage.Save(key, JsonConvert.SerializeObject(orders));
             }
             catch (Exception e)
             {

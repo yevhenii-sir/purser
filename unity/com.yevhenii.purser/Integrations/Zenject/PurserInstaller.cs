@@ -20,6 +20,8 @@ namespace Purser.Zenject
             Install(Container, config, initializeOnStart);
         }
 
+        /// <summary>Binds <see cref="IBillingService"/> for <paramref name="config"/>; with
+        /// <paramref name="initializeOnStart"/> it is initialized when the container starts (failures are logged).</summary>
         public static void Install(DiContainer container, BillingConfig config, bool initializeOnStart = true)
         {
             if (config == null)
@@ -48,17 +50,7 @@ namespace Purser.Zenject
             m_Billing = billing;
         }
 
-        public async void Initialize()
-        {
-            try
-            {
-                await m_Billing.InitializeAsync();
-            }
-            catch (Exception e)
-            {
-                Debug.LogError("[Purser] Initialization failed: " + e.Message);
-            }
-        }
+        public void Initialize() => Billing.InitializeInBackground(m_Billing);
 
         public void Dispose() => m_Billing.Dispose();
     }

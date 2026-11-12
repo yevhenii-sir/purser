@@ -52,7 +52,34 @@ pub fn parse(body: &str) -> Result<SnsMessage, String> {
     Ok(m)
 }
 
+/// `arn:aws:sns:<region>:<account id>:<topic name>`.
+pub fn is_valid_topic_arn(arn: &str) -> bool {
+    let parts: Vec<&str> = arn.split(':').collect();
+    parts.len() == 6
+        && parts[..3] == ["arn", "aws", "sns"]
+        && !parts[3].is_empty()
+        && parts[4].len() == 12
+        && parts[4].bytes().all(|b| b.is_ascii_digit())
+        && !parts[5].is_empty()
+        && parts[5].len() <= 256
+        && parts[5].bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// How far a message's `Timestamp` may be from now. SNS retries a failed delivery for a while; an
+/// older signed message is a replay.
+pub const MAX_AGE_MS: i64 = 6 * 3600 * 1000;
+
 impl SnsMessage {
+    /// The signed `Timestamp` is within [`MAX_AGE_MS`] of `now_ms`.
+    pub fn is_fresh(&self, now_ms: i64) -> bool {
+        crate::time::parse_rfc3339_ms(&self.timestamp).is_some_and(|t| (now_ms - t).abs() <= MAX_AGE_MS)
+    }
+
+    /// The topic matches the one pinned for the build (`pinned` empty: any topic).
+    pub fn is_from(&self, pinned: &str) -> bool {
+        pinned.is_empty() || self.topic_arn == pinned
+    }
+
     /// The canonical string the signature is computed over.
     pub fn string_to_sign(&self) -> String {
         let mut fields: Vec<(&str, &str)> = vec![("Message", &self.message), ("MessageId", &self.message_id)];
@@ -89,26 +116,32 @@ pub fn is_valid_cert_url(url: &str) -> bool {
 /// Verifies the signature with the PEM certificate downloaded from `signing_cert_url`.
 pub fn verify(m: &SnsMessage, cert_pem: &str) -> Result<(), String> {
     use rsa::pkcs8::DecodePublicKey;
-    use rsa::{Pkcs1v15Sign, RsaPublicKey};
-    use sha2::{Digest, Sha256};
+    use rsa::RsaPublicKey;
 
     let der = pem_to_der(cert_pem)?;
     let spki = certificate_spki(&der)?;
     let key = RsaPublicKey::from_public_key_der(spki).map_err(|e| format!("SNS certificate key: {e}"))?;
     let signature = STANDARD.decode(m.signature.trim()).map_err(|_| "SNS signature is not base64".to_string())?;
-    let data = m.string_to_sign();
-    let (scheme, hash) = match m.signature_version.as_str() {
-        "1" => (Pkcs1v15Sign { hash_len: Some(20), prefix: SHA1_PREFIX.into() }, sha1(data.as_bytes()).to_vec()),
-        "2" => (Pkcs1v15Sign { hash_len: Some(32), prefix: SHA256_PREFIX.into() }, Sha256::digest(data.as_bytes()).to_vec()),
-        v => return Err(format!("unsupported SNS SignatureVersion '{v}'")),
-    };
+    let (scheme, hash) = signing_input(m)?;
     key.verify(scheme, &hash, &signature).map_err(|_| "SNS signature does not match".to_string())
 }
 
-/// DigestInfo prefixes (RFC 8017 9.2 note 1).
-const SHA1_PREFIX: &[u8] = &[0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14];
-const SHA256_PREFIX: &[u8] =
-    &[0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
+/// The padding scheme and the digest of the canonical string, by `SignatureVersion`.
+fn signing_input(m: &SnsMessage) -> Result<(rsa::Pkcs1v15Sign, Vec<u8>), String> {
+    use rsa::Pkcs1v15Sign;
+    use sha1::Sha1;
+    use sha2::{Digest, Sha256};
+    let data = m.string_to_sign();
+    match m.signature_version.as_str() {
+        "1" => Ok((Pkcs1v15Sign { hash_len: Some(20), prefix: SHA1_DIGEST_INFO.into() }, Sha1::digest(data.as_bytes()).to_vec())),
+        "2" => Ok((Pkcs1v15Sign::new::<Sha256>(), Sha256::digest(data.as_bytes()).to_vec())),
+        v => Err(format!("unsupported SNS SignatureVersion '{v}'")),
+    }
+}
+
+/// SHA-1 DigestInfo prefix (RFC 8017 9.2 note 1); `rsa` only builds it for SHA-1 with its `sha1`
+/// feature, which would pull a second SHA-1 implementation.
+const SHA1_DIGEST_INFO: &[u8] = &[0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14];
 
 fn pem_to_der(pem: &str) -> Result<Vec<u8>, String> {
     let b64: String = pem
@@ -124,39 +157,18 @@ fn pem_to_der(pem: &str) -> Result<Vec<u8>, String> {
     STANDARD.decode(b64).map_err(|_| "SNS certificate is not valid base64".into())
 }
 
-/// One DER element: (tag, whole element, content, rest).
-fn der_element(input: &[u8]) -> Result<(u8, &[u8], &[u8], &[u8]), String> {
-    let err = || "malformed DER".to_string();
-    let (&tag, rest) = input.split_first().ok_or_else(err)?;
-    let (&first, rest) = rest.split_first().ok_or_else(err)?;
-    let (len, rest) = if first < 0x80 {
-        (first as usize, rest)
-    } else {
-        let n = (first & 0x7f) as usize;
-        if n == 0 || n > 4 || rest.len() < n {
-            return Err(err());
-        }
-        (rest[..n].iter().fold(0usize, |acc, b| (acc << 8) | *b as usize), &rest[n..])
-    };
-    if rest.len() < len {
-        return Err(err());
-    }
-    let header = input.len() - rest.len();
-    Ok((tag, &input[..header + len], &rest[..len], &rest[len..]))
-}
-
 /// `SubjectPublicKeyInfo` of an X.509 certificate (RFC 5280 4.1), as DER.
 pub fn certificate_spki(der: &[u8]) -> Result<&[u8], String> {
     const SEQUENCE: u8 = 0x30;
-    let (tag, _, cert, _) = der_element(der)?;
-    let (tbs_tag, _, mut tbs, _) = der_element(cert)?;
+    let (tag, _, cert, _) = crate::x509::element(der)?;
+    let (tbs_tag, _, mut tbs, _) = crate::x509::element(cert)?;
     if tag != SEQUENCE || tbs_tag != SEQUENCE {
         return Err("not an X.509 certificate".into());
     }
     // [0] version (optional), serialNumber, signature, issuer, validity, subject, subjectPublicKeyInfo
     let mut index = 0;
     loop {
-        let (t, whole, _, rest) = der_element(tbs)?;
+        let (t, whole, _, rest) = crate::x509::element(tbs)?;
         if index == 0 && t == 0xa0 {
             tbs = rest;
             continue;
@@ -169,51 +181,6 @@ pub fn certificate_spki(der: &[u8]) -> Result<&[u8], String> {
     }
 }
 
-/// SHA-1 (FIPS 180-4). Only for verifying `SignatureVersion` 1 SNS messages, which AWS still signs
-/// with SHA1 unless the topic owner chose version 2.
-pub fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
-    let mut msg = data.to_vec();
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
-    for chunk in msg.chunks(64) {
-        let mut w = [0u32; 80];
-        for (i, word) in chunk.chunks(4).enumerate() {
-            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
-        }
-        for i in 16..80 {
-            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e] = h;
-        for (i, wi) in w.iter().enumerate() {
-            let (f, k) = match i {
-                0..=19 => ((b & c) | (!b & d), 0x5A827999),
-                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
-                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
-                _ => (b ^ c ^ d, 0xCA62C1D6),
-            };
-            let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(*wi);
-            e = d;
-            d = c;
-            c = b.rotate_left(30);
-            b = a;
-            a = t;
-        }
-        for (x, y) in h.iter_mut().zip([a, b, c, d, e]) {
-            *x = x.wrapping_add(y);
-        }
-    }
-    let mut out = [0u8; 20];
-    for (i, x) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&x.to_be_bytes());
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,12 +188,16 @@ mod tests {
     use rsa::RsaPrivateKey;
 
     #[test]
-    fn sha1_vectors() {
-        assert_eq!(hex::encode(sha1(b"")), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
-        assert_eq!(hex::encode(sha1(b"abc")), "a9993e364706816aba3e25717850c26c9cd0d89d");
-        let long = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
-        assert_eq!(hex::encode(sha1(long)), "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
-        assert_eq!(hex::encode(sha1(&vec![b'a'; 1000])), "291e9a6c66994949b57ba5e650361e98fc36b1ba");
+    fn stale_messages_and_other_topics_are_told_apart() {
+        let m = SnsMessage { timestamp: "2026-11-10T10:00:00.000Z".into(), topic_arn: "arn:aws:sns:us-east-1:1:rtn".into(), ..Default::default() };
+        let at = crate::time::parse_rfc3339_ms("2026-11-10T10:00:00Z").unwrap();
+        assert!(m.is_fresh(at + 3600 * 1000) && m.is_fresh(at - 60 * 1000));
+        assert!(!m.is_fresh(at + MAX_AGE_MS + 1));
+        assert!(!SnsMessage { timestamp: "t".into(), ..m.clone() }.is_fresh(at));
+        assert!(m.is_from("") && m.is_from("arn:aws:sns:us-east-1:1:rtn"));
+        assert!(!m.is_from("arn:aws:sns:us-east-1:2:rtn"));
+        assert!(is_valid_topic_arn("arn:aws:sns:us-east-1:123456789012:rtn-topic"));
+        assert!(!is_valid_topic_arn("arn:aws:sns:us-east-1:1:rtn") && !is_valid_topic_arn("arn:aws:sqs:us-east-1:123456789012:q"));
     }
 
     #[test]
@@ -271,13 +242,7 @@ mod tests {
     }
 
     fn sign(key: &RsaPrivateKey, m: &mut SnsMessage) {
-        use sha2::{Digest, Sha256};
-        let data = m.string_to_sign();
-        let (scheme, hash) = if m.signature_version == "1" {
-            (rsa::Pkcs1v15Sign { hash_len: Some(20), prefix: SHA1_PREFIX.into() }, sha1(data.as_bytes()).to_vec())
-        } else {
-            (rsa::Pkcs1v15Sign { hash_len: Some(32), prefix: SHA256_PREFIX.into() }, Sha256::digest(data.as_bytes()).to_vec())
-        };
+        let (scheme, hash) = signing_input(m).unwrap();
         m.signature = STANDARD.encode(key.sign(scheme, &hash).unwrap());
     }
 

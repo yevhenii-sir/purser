@@ -4,7 +4,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { DataTable, ErrorBox, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
 import { SecretDialog, type SecretTarget } from "@/components/secret-dialog"
-import { sql } from "@/lib/api"
+import { select } from "@/lib/api"
 import { groupApps, useApps } from "@/lib/apps"
 import { useAsync } from "@/lib/hooks"
 import { storeOf, storeOfSecret, STORE_SECRETS } from "@/lib/stores"
@@ -29,7 +29,7 @@ const STORE_KEYS = STORE_SECRETS.filter((s) => s.account_wide).map((s) => s.name
 export function AccountsPage({ go }: PageProps) {
   const [target, setTarget] = useState<SecretTarget | null>(null)
   const { apps, error: appsError } = useApps()
-  const creds = useAsync(async () => new Set((await sql<{ key: string }>("SELECT key FROM credential")).map((c) => c.key)))
+  const creds = useAsync(async () => new Set((await select<{ key: string }>({ table: "credential", columns: ["key"] })).map((c) => c.key)))
   const accounts = [...new Set([...(apps || []).map((a) => a.account || "default"), "default"])].sort((a, b) => (a === "default" ? 1 : b === "default" ? -1 : a.localeCompare(b)))
   const data = apps && creds.data ? { apps, accounts, creds: creds.data } : undefined
   const error = appsError || creds.error

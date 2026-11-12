@@ -290,9 +290,9 @@ paths:
       operationId: notifyApple
       summary: App Store Server Notification V2
       description: |
-        Production and Sandbox URL of App Store Server Notifications **Version 2**. Only the bundle id and
-        `transactionId` are read from `signedPayload`; the transaction is re-queried from the App Store
-        Server API.
+        Production and Sandbox URL of App Store Server Notifications **Version 2**. `signedPayload` must be
+        signed by Apple (ES256, `x5c` chain up to Apple Root CA - G3), otherwise `401`. Only the bundle id
+        and `transactionId` are read from it; the transaction is re-queried from the App Store Server API.
 
         Non-2xx answers make Apple retry the delivery. `200` with `status: ignored` is final.
       parameters:

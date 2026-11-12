@@ -11,8 +11,8 @@ import { PurchaseSheet } from "@/components/purchase-sheet"
 import { call, proc } from "@/lib/api"
 import { useAppName, useApps } from "@/lib/apps"
 import { ago, fmtMs, fmtTime, money, usd } from "@/lib/format"
-import { act, tryAct, useAsync } from "@/lib/hooks"
-import type { Purchase } from "@/lib/types"
+import { act, tryAct, useAsync, useCopy } from "@/lib/hooks"
+import type { Purchase, PurchaseStatus } from "@/lib/types"
 import { appRoute, type PageProps } from "@/routes"
 import { useCan } from "@/lib/roles"
 import { GrantDialog } from "@/pages/purchases"
@@ -102,11 +102,11 @@ interface EntitlementRow {
   purchases: ProfilePurchase[]
 }
 
-const OWNED = ["verified", "granted", "completed", "transfer_pending"]
+const OWNED: readonly PurchaseStatus[] = ["verified", "granted", "completed", "transfer_pending"]
 const isOwned = (p: Purchase) => OWNED.includes(p.status)
 
 function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
-  const [copied, setCopied] = useState(false)
+  const { copied, copy } = useCopy()
   if (!value) return null
   return (
     <Button
@@ -115,15 +115,9 @@ function CopyButton({ value, label = "Copy" }: { value: string; label?: string }
       className="size-6 shrink-0"
       aria-label={label}
       title={label}
-      onClick={async (e) => {
+      onClick={(e) => {
         e.stopPropagation()
-        try {
-          await navigator.clipboard.writeText(value)
-          setCopied(true)
-          setTimeout(() => setCopied(false), 1500)
-        } catch {
-          toast.error("Copy failed: select the text and copy it")
-        }
+        void copy(value)
       }}
     >
       {copied ? <CheckIcon className="size-3.5" /> : <CopyIcon className="size-3.5" />}
