@@ -12,7 +12,7 @@ import { useApps } from "@/lib/apps"
 import { errorText, fmtMs, fmtTime, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { openPlayer } from "@/lib/player"
-import { STATUSES, type GameApp, type Purchase } from "@/lib/types"
+import { catalogIdOf, STATUSES, type GameApp, type Product, type Purchase } from "@/lib/types"
 import { playerRoute, type PageProps } from "@/routes"
 
 const ANY = "__any__"
@@ -140,6 +140,12 @@ function AppPicker({ apps, value, onChange }: { apps: GameApp[]; value: string; 
 export function GrantDialog({ open, apps, onClose, onDone, userId }: { open: boolean; apps: GameApp[]; onClose: () => void; onDone: () => void; userId?: string }) {
   const [v, setV] = useState({ app_id: "", user_id: userId || "", product_id: "", transaction_id: "", expires: "", note: "" })
   const app = v.app_id || apps[0]?.app_id || ""
+  const products = useAsync(
+    async () => (app ? await select<Product>({ table: "product", where: { column: "app_id", equals: app } }) : []).sort((a, b) => a.product_id.localeCompare(b.product_id)),
+    [app],
+  )
+  const product = products.data?.find((p) => p.product_id === v.product_id)
+  const subscription = product?.kind === "subscription"
   const grant = async () => {
     const payload = { ...v, app_id: app, expires_at_ms: v.expires ? new Date(v.expires).getTime() : 0 }
     const ok = await tryAct(() => call("admin_grant_manual", JSON.stringify(payload)), "Granted: delivered within a minute")
@@ -156,14 +162,28 @@ export function GrantDialog({ open, apps, onClose, onDone, userId }: { open: boo
           <DialogDescription>Compensation or promo without a purchase: recorded in the ledger and delivered the usual way; not revenue and not sent to analytics.</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="App"><AppPicker apps={apps} value={app} onChange={(a) => setV({ ...v, app_id: a })} /></Field>
+          <Field label="App"><AppPicker apps={apps} value={app} onChange={(a) => setV({ ...v, app_id: a, product_id: "", expires: "" })} /></Field>
           {input("user_id", "user_id", { readOnly: !!userId })}
-          {input("product_id", "product_id")}
+          <Field label="Product" hint={products.data?.length === 0 ? "The build has no products: add them on the app's Products tab." : undefined}>
+            <Select value={v.product_id} onValueChange={(id) => setV({ ...v, product_id: id })} disabled={!products.data?.length}>
+              <SelectTrigger className="w-full"><SelectValue placeholder={products.loading ? "Loading…" : "Pick a product"} /></SelectTrigger>
+              <SelectContent>
+                {products.data?.map((p) => (
+                  <SelectItem key={p.product_id} value={p.product_id}>
+                    <span className="flex min-w-0 items-baseline gap-2">
+                      <Mono className="truncate">{p.product_id}</Mono>
+                      <span className="shrink-0 text-xs text-muted-foreground">{p.kind.replace("_", "-")}{catalogIdOf(p) !== p.product_id ? ` · ${catalogIdOf(p)}` : ""}</span>
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
           {input("transaction_id", "transaction_id (optional)", { placeholder: "manual-…" })}
-          {input("expires", "Expires (subscriptions)", { type: "datetime-local" })}
+          {input("expires", "Expires", { type: "datetime-local", disabled: !subscription, title: subscription ? "" : "Only subscriptions expire" })}
           {input("note", "Note")}
         </div>
-        <DialogFooter><Button onClick={grant}>Grant</Button></DialogFooter>
+        <DialogFooter><Button onClick={grant} disabled={!v.product_id || !v.user_id.trim()}>Grant</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   )
