@@ -38,6 +38,7 @@ mod settings;
 mod steam;
 mod store_create;
 mod store_health;
+mod store_setup;
 mod stores;
 mod stripe;
 mod support;
@@ -693,13 +694,18 @@ pub fn admin_delete_product(ctx: &ReducerContext, app_id: String, product_id: St
 pub fn admin_set_credential(ctx: &ReducerContext, scope: String, name: String, value: String) -> Result<(), String> {
     let who = crate::access::require(ctx, purser_core::roles::Cap::Secrets)?;
     crate::access::audit(ctx, &who, "admin_set_credential", &format!("{scope}/{name}"), "updated");
-    if !config::secret_name::is_known(&name) {
+    put_credential(ctx, &scope, &name, value)
+}
+
+/// Writes a secret (the caller has checked `Cap::Secrets`).
+pub(crate) fn put_credential(ctx: &ReducerContext, scope: &str, name: &str, value: String) -> Result<(), String> {
+    if !config::secret_name::is_known(name) {
         return Err(format!("[ERR_BAD_CREDENTIAL] unknown credential name '{name}'"));
     }
     if scope.is_empty() || scope.contains('/') {
         return Err("[ERR_BAD_CREDENTIAL] scope must be non-empty and must not contain '/'".into());
     }
-    let key = config::credential_key(&scope, &name);
+    let key = config::credential_key(scope, name);
     if ctx.db.credential().key().find(&key).is_some() {
         ctx.db.credential().key().update(Credential { key: key.clone(), value });
     } else {

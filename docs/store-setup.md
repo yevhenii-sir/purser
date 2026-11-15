@@ -6,6 +6,23 @@ Every build has its developer account (the app's Delivery tab, or the wizard's f
 
 ## Google Play
 
+### Quick setup with Google Cloud
+
+The Google Cloud side can be set up for you with your own Google login, using a short-lived access token from the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) (`gcloud auth login` with an account that may change the project). The builds must exist already (wizard or `seed.py`), and the server must be reachable over https under a public host name (the `public_base_url` setting, else the address the admin page is opened at). The token's account needs the **Owner** role on the project (or Service Usage Admin, Service Account Admin, Service Account Key Admin and Pub/Sub Admin).
+
+- **Admin page**: the app's **Setup** tab → **Set up with Google Cloud** → the project id and the output of `gcloud auth print-access-token`. The token is used for this one run and is not stored.
+- **Terminal**: `server/setup_google.py` gets the token from `gcloud` itself and does the same:
+
+```bash
+cd server
+python setup_google.py --project <your-cloud-project> --dry-run   # what would change
+python setup_google.py --project <your-cloud-project>             # every Google Play build, or --app-id com.example.mygame
+```
+
+It enables the IAM, Pub/Sub and Google Play Developer APIs, creates the service account `purser-billing@<project>.iam.gserviceaccount.com` and its JSON key (stored as `google_service_account_json`, never written to a file; `--new-key` replaces it), the topic with `google-play-developer-notifications@system.gserviceaccount.com` as **Pub/Sub Publisher** (existing bindings are kept), and per build a `google_rtdn_secret` and the RTDN push subscription (`--rotate-rtdn-secret` for new secrets). Steps already done are skipped, so it is safe to run again. It ends with what only Play Console can do: invite the service account (step 3 of [Service account](#service-account)) and set the RTDN topic, then **Send test notification** (step 3 of [RTDN](#real-time-developer-notifications-rtdn)).
+
+Organizations created after May 3, 2024 forbid service account keys by default (`iam.managed.disableServiceAccountKeyCreation`): an organization policy administrator has to turn the policy off for this project, then run the setup again.
+
 ### Service account
 
 1. Google Cloud console → the project linked to Play Console → **IAM & Admin → Service accounts → Create**. No roles are needed in Google Cloud.
@@ -46,11 +63,13 @@ One key works for every app of the account; store the secrets on the account sco
 - **Key ID** → `apple_connect_key_id`;
 - the `.p8` file → `apple_connect_private_key_p8`.
 
-The Issuer ID is the same as for the In-App Purchase key (`apple_issuer_id`). The import knows consumables, non-consumables and auto-renewable subscriptions (with their period); a non-renewing subscription comes in as a consumable. Prices are not imported (the App Store reports the price of every purchase); existing products keep their configured price. The key is only used for this read-only listing.
+The Issuer ID is the same as for the In-App Purchase key (`apple_issuer_id`). The import knows consumables, non-consumables and auto-renewable subscriptions (with their period); a non-renewing subscription comes in as a consumable. Prices are not imported (the App Store reports the price of every purchase); existing products keep their configured price. The same key lets the server set the notification URLs (next section) and create products (below).
 
 ### App Store Server Notifications
 
-App Store Connect → the app → **App Information → App Store Server Notifications**: **Version 2**, the same URL for Production and Sandbox: `https://<host>/v1/database/<db>/route/notify/apple` (add `?secret=…` if you set `apple_notification_secret`). The server accepts only notifications signed by Apple, so the secret is optional.
+With the Team key above, press **Set in App Store Connect** next to the build on the app's **Setup** tab (`admin_setup_apple_notifications`): the server sets both URLs, version 2, with `apple_notification_secret` if you set one. The setup check then compares the URLs App Store Connect has with this server's.
+
+By hand: App Store Connect → the app → **App Information → App Store Server Notifications**: **Version 2**, the same URL for Production and Sandbox: `https://<host>/v1/database/<db>/route/notify/apple` (add `?secret=…` if you set `apple_notification_secret`). The server accepts only notifications signed by Apple, so the secret is optional.
 
 Each setup check asks Apple to send a test notification; the next check shows whether Apple delivered it.
 
@@ -239,6 +258,10 @@ The setup check fetches every product's Price (up to 8 per run) and reports miss
 - A test-mode key makes sandbox purchases: enable **Sandbox purchases** on the build, or every purchase is ignored (the setup check fails then).
 
 ### Webhook endpoint
+
+Once the key is stored, press **Create webhook in Stripe** next to the build on the app's **Setup** tab (`admin_setup_stripe_webhook`, needs the Secrets role): the server creates the endpoint with the events below and stores its signing secret. An endpoint that exists already gets the missing events; if its secret is not stored here, the page offers to replace it (Stripe shows a secret only when it creates an endpoint). A restricted key needs **Webhook Endpoints: Write** for this. The setup check shows whether the endpoint exists and receives every event.
+
+By hand:
 
 1. Developers → **Webhooks** → **Add destination** → events from **your account**, payload style **Snapshot**, any API version → endpoint URL from the app's Setup tab: `https://<host>/v1/database/<db>/route/notify/stripe?app=<app id>` (one endpoint per build).
 2. Events:

@@ -177,6 +177,12 @@ impl StoreInfo {
     }
 }
 
+/// Whether a URL a store holds is this server's notification URL `expected`: the full URL, or
+/// only its end when the server's public URL is not known (`/notify/stripe?app=...`).
+pub fn is_notify_url(url: &str, expected: &str) -> bool {
+    url == expected || (!expected.contains("://") && url.starts_with("https://") && url.ends_with(expected))
+}
+
 /// A store that is declared (id, platforms) but not implemented yet. The agent / contributor who
 /// adds it defines its own `pub const STORE: StoreInfo` in `<store>.rs` and replaces the `planned`
 /// line in [`STORES`].

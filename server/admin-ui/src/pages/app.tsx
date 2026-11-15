@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react"
 import {
-  BellRingIcon, ChartLineIcon, PencilIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PlugIcon, ReceiptIcon,
+  BellRingIcon, ChartLineIcon, CloudIcon, PencilIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PlugIcon, ReceiptIcon,
   RefreshCwIcon, SendIcon, SmartphoneIcon, SparklesIcon, Trash2Icon, WebhookIcon, type LucideIcon,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -17,6 +17,7 @@ import { DeliveryFields } from "@/components/delivery-fields"
 import { KINDS } from "@/components/integration-kinds"
 import { ReportView } from "@/components/report"
 import { SecretDialog, type SecretTarget } from "@/components/secret-dialog"
+import { GoogleSetupDialog, StoreSetupButton } from "@/components/store-setup"
 import { call, proc, publicRoute, select } from "@/lib/api"
 import { accountsOf, appsChanged, useApps, type AppGroup } from "@/lib/apps"
 import { checkBuilds, replaceRtdnSecret, reportUrls } from "@/lib/checks"
@@ -217,8 +218,16 @@ function SetupTab({ data, reload }: TabProps) {
   const [checking, setChecking] = useState<"" | "all" | "apple">("")
   const [wizard, setWizard] = useState(false)
   const [secrets, setSecrets] = useState<Record<string, string>>({})
+  const [googleSetup, setGoogleSetup] = useState(false)
   const base = useAsync(() => publicRoute())
+  const can = useCan()
   const appleBuilds = g.apps.filter((a) => storeOf(a).id === "apple")
+  const googleBuilds = g.apps.filter((a) => storeOf(a).id === "google")
+  const canSetUp = (a: GameApp) => can(storeOf(a).id === "apple" ? "configure" : "secrets")
+  const recheck = async (appId: string) => {
+    await checkBuilds([appId])
+    reload()
+  }
   /** Checks the builds at once; `appleTest` re-checks the App Store builds with a test notification. */
   const check = async (appleTest: boolean) => {
     setChecking(appleTest ? "apple" : "all")
@@ -245,6 +254,12 @@ function SetupTab({ data, reload }: TabProps) {
             <BellRingIcon className={checking === "apple" ? "animate-pulse" : ""} /> {checking === "apple" ? "Asking Apple…" : "Apple test notification"}
           </Button>
         )}
+        {googleBuilds.length > 0 && can("secrets") && (
+          <Button variant="outline" onClick={() => setGoogleSetup(true)} disabled={!base.data}
+            title="Creates the service account, its key, the Pub/Sub topic and push subscriptions with a one-time access token">
+            <CloudIcon /> Set up with Google Cloud
+          </Button>
+        )}
         <Button variant="outline" onClick={() => setWizard(true)}><SparklesIcon /> Add a build or run the setup wizard</Button>
       </div>
       {g.apps.map((a) => {
@@ -252,7 +267,12 @@ function SetupTab({ data, reload }: TabProps) {
         const urls = rep && base.data ? reportUrls(rep, base.data, secrets) : null
         return (
           <Section key={a.app_id} title={<span className="flex items-center gap-2">{buildLabel(a)} <Mono className="font-normal">{a.app_id}</Mono></span>}
-            actions={rep ? <LevelBadge level={rep.summary} /> : <Tone tone="muted">not checked</Tone>}>
+            actions={
+              <div className="flex items-center gap-2">
+                {canSetUp(a) && <StoreSetupButton app={a} base={base.data ?? ""} onDone={() => recheck(a.app_id)} />}
+                {rep ? <LevelBadge level={rep.summary} /> : <Tone tone="muted">not checked</Tone>}
+              </div>
+            }>
             {!rep ? (
               <p className="text-sm text-muted-foreground">Not checked yet: press Check now.</p>
             ) : (
@@ -276,6 +296,8 @@ function SetupTab({ data, reload }: TabProps) {
         )
       })}
       <AddGameWizard open={wizard} existing={g} onClose={(_, changed) => { setWizard(false); if (changed) { appsChanged(); reload() } }} />
+      <GoogleSetupDialog apps={googleBuilds} base={base.data ?? ""} open={googleSetup}
+        onClose={(changed) => { setGoogleSetup(false); if (changed) check(false) }} />
     </>
   )
 }

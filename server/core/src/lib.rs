@@ -11,6 +11,7 @@ pub mod encoding;
 pub mod event;
 pub mod fx;
 pub mod google;
+pub mod google_setup;
 pub mod integrations;
 pub mod jwt;
 pub mod model;

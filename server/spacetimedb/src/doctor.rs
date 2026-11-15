@@ -225,8 +225,14 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
         ),
         store::STRIPE => {
             let (key, hook) = (s.value(purser_core::stripe::SECRET_KEY), s.value(purser_core::stripe::WEBHOOK_SECRET));
+            let mut key_works = false;
             for (id, title, verdict) in crate::stripe::check(ctx, &s.app, key, hook, opts.online) {
+                key_works |= id == "stripe_api" && verdict.0 == Level::Ok;
                 r.add(id, title, verdict);
+            }
+            if let (true, Some(key)) = (key_works, key) {
+                let verdict = crate::store_setup::check_stripe_webhook(ctx, &s.app, key, &s.public_base_url);
+                r.add("stripe_webhook_endpoint", "Stripe webhook endpoint", verdict);
             }
         }
         store::STEAM => crate::steam::doctor_check(ctx, app, s.value(secret_name::STEAM_PUBLISHER_KEY), opts.online, &mut r),
@@ -403,6 +409,12 @@ fn check_apple(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report)
         _ => "not answered (turn on in the build settings)",
     };
     r.add("apple_refunds", "Refund requests", v(Level::Info, refunds, ""));
+    let connect_key = s.value(secret_name::APPLE_CONNECT_KEY_ID).is_some() && s.value(secret_name::APPLE_CONNECT_PRIVATE_KEY_P8).is_some();
+    if opts.online && connect_key {
+        let secret = s.value(secret_name::APPLE_NOTIFICATION_SECRET);
+        let verdict = crate::store_setup::check_apple_notifications(ctx, &s.app, &s.public_base_url, secret);
+        r.add("apple_notification_url", "Notification URL in App Store Connect", verdict);
+    }
     let (Some(issuer), Some(key_id), Some(p8)) = (
         s.value(secret_name::APPLE_ISSUER_ID),
         s.value(secret_name::APPLE_KEY_ID),

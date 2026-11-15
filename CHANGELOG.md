@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- One-click store setup on the app's Setup tab, once the store's key is stored (store keys themselves can only be created in the stores' consoles):
+  - **Set in App Store Connect** (`admin_setup_apple_notifications`): the App Store Server Notifications URLs, production and sandbox, version 2, through the App Store Connect API (Team key). The setup check compares them with this server's (`apple_notification_url`).
+  - **Create webhook in Stripe** (`admin_setup_stripe_webhook`): the build's webhook endpoint with every event Purser handles, its signing secret stored as `stripe_webhook_secret`; an existing endpoint gets the missing events. The setup check reports the endpoint (`stripe_webhook_endpoint`).
+  - **Set up with Google Cloud** (`admin_setup_google`): with a one-time access token (`gcloud auth print-access-token`) the server enables the APIs, creates the service account and its key (stored, never shown), the RTDN topic with Google Play's publisher grant, a `google_rtdn_secret` and a push subscription per build. The token is not stored; steps already done are skipped. Inviting the service account in Play Console and naming the topic there stay manual (no API).
+- `server/setup_google.py`: the Google Cloud setup (`admin_setup_google`) from the terminal, with the access token of your own `gcloud` login (`--dry-run`, `--new-key`, `--rotate-rtdn-secret`).
+
 ## 0.6.0 - 2026-11-12
 
 ### Security

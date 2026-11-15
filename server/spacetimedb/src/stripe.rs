@@ -375,23 +375,23 @@ pub fn handle_notification(ctx: &mut impl Ctx, app_param: &str, signature: &str,
     ctx.tx(|tx| store_health::touch(tx, &app_id, |h, now| h.last_at_micros = now));
     let source = format!("stripe {} {}", event.kind, event.id);
     match event.kind.as_str() {
-        "checkout.session.completed" | "checkout.session.async_payment_succeeded" => on_session(ctx, &app, &mut key, &event.object, &source),
-        "invoice.paid" | "invoice.payment_succeeded" => match st::invoice_grant(&event.object) {
+        st::event::CHECKOUT_COMPLETED | st::event::CHECKOUT_ASYNC_SUCCEEDED => on_session(ctx, &app, &mut key, &event.object, &source),
+        st::event::INVOICE_PAID | st::event::INVOICE_PAYMENT_SUCCEEDED => match st::invoice_grant(&event.object) {
             Ok(Some(g)) => record(ctx, &app, &g, &source),
             Ok(None) => answer(200, "ignored", "not a new subscription period"),
             Err(e) => answer(200, "ignored", e),
         },
-        "customer.subscription.updated" | "customer.subscription.deleted" => {
+        st::event::SUBSCRIPTION_UPDATED | st::event::SUBSCRIPTION_DELETED => {
             match st::subscription_end(&event.kind, &event.object, ctx.now_ms()) {
                 Some(end) => expire(ctx, &app, &end, &source),
                 None => answer(200, "ok", "subscription still active"),
             }
         }
-        "charge.refunded" => match st::charge_refund(&event.object) {
+        st::event::CHARGE_REFUNDED => match st::charge_refund(&event.object) {
             Some(r) => revoke(ctx, &app, &mut key, &r, &source),
             None => answer(200, "ignored", "partial refund"),
         },
-        "charge.dispute.created" => match st::dispute(&event.object) {
+        st::event::DISPUTE_CREATED => match st::dispute(&event.object) {
             Some(r) => revoke(ctx, &app, &mut key, &r, &source),
             None => answer(200, "ignored", "dispute without a payment"),
         },

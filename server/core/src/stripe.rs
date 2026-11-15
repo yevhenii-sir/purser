@@ -570,7 +570,7 @@ pub struct Ended {
 
 pub fn subscription_end(event_kind: &str, sub: &Value, now_ms: i64) -> Option<Ended> {
     let status = s(&sub["status"]);
-    let ended = event_kind == "customer.subscription.deleted" || subscription_ended(&status);
+    let ended = event_kind == event::SUBSCRIPTION_DELETED || subscription_ended(&status);
     if !ended {
         return None;
     }
@@ -611,6 +611,123 @@ pub fn dispute(d: &Value) -> Option<Reversal> {
         charge,
         reason: format!("dispute {}", s(&d["reason"])).trim().to_string(),
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Webhook endpoint
+// ---------------------------------------------------------------------------------------------
+
+/// Event types `/notify/stripe` handles; the endpoint Purser creates subscribes to these.
+pub mod event {
+    pub const CHECKOUT_COMPLETED: &str = "checkout.session.completed";
+    pub const CHECKOUT_ASYNC_SUCCEEDED: &str = "checkout.session.async_payment_succeeded";
+    pub const INVOICE_PAID: &str = "invoice.paid";
+    pub const INVOICE_PAYMENT_SUCCEEDED: &str = "invoice.payment_succeeded";
+    pub const SUBSCRIPTION_UPDATED: &str = "customer.subscription.updated";
+    pub const SUBSCRIPTION_DELETED: &str = "customer.subscription.deleted";
+    pub const CHARGE_REFUNDED: &str = "charge.refunded";
+    pub const DISPUTE_CREATED: &str = "charge.dispute.created";
+    pub const ALL: &[&str] = &[
+        CHECKOUT_COMPLETED,
+        CHECKOUT_ASYNC_SUCCEEDED,
+        INVOICE_PAID,
+        INVOICE_PAYMENT_SUCCEEDED,
+        SUBSCRIPTION_UPDATED,
+        SUBSCRIPTION_DELETED,
+        CHARGE_REFUNDED,
+        DISPUTE_CREATED,
+    ];
+}
+
+/// `POST` creates an endpoint; with `?limit=100`, `GET` lists them.
+pub fn webhook_endpoints_url() -> String {
+    format!("{API}/v1/webhook_endpoints")
+}
+
+/// `POST` updates, `DELETE` deletes an endpoint.
+pub fn webhook_endpoint_url(id: &str) -> Result<String, String> {
+    Ok(format!("{API}/v1/webhook_endpoints/{}", path_id("webhook endpoint", id)?))
+}
+
+fn events_form(url: &str) -> Vec<(&'static str, String)> {
+    let mut form = vec![("url", url.to_string())];
+    form.extend(event::ALL.iter().map(|e| ("enabled_events[]", e.to_string())));
+    form
+}
+
+/// Form of a new endpoint for the build's notification URL.
+pub fn create_webhook_form(url: &str, app_id: &str) -> String {
+    let mut form = events_form(url);
+    form.push(("description", format!("Purser {app_id}")));
+    form.push(("metadata[purser_app_id]", app_id.to_string()));
+    crate::encoding::form_urlencode(&form)
+}
+
+/// Form that enables an existing endpoint with the events Purser needs.
+pub fn update_webhook_form(url: &str) -> String {
+    let mut form = events_form(url);
+    form.push(("disabled", "false".into()));
+    crate::encoding::form_urlencode(&form)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebhookEndpoint {
+    pub id: String,
+    pub url: String,
+    pub events: Vec<String>,
+    pub enabled: bool,
+}
+
+impl WebhookEndpoint {
+    /// Events Purser handles that the endpoint does not receive.
+    pub fn missing_events(&self) -> Vec<&'static str> {
+        if self.events.iter().any(|e| e == "*") {
+            return Vec::new();
+        }
+        event::ALL.iter().copied().filter(|e| !self.events.iter().any(|x| x == e)).collect()
+    }
+}
+
+/// Endpoints of a list answer (first page; an account has at most 16 endpoints).
+pub fn parse_webhook_endpoints(body: &str) -> Result<Vec<WebhookEndpoint>, String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad Stripe response: {e}"))?;
+    let data = v["data"].as_array().ok_or("Stripe answered without a list of webhook endpoints")?;
+    Ok(data
+        .iter()
+        .map(|e| WebhookEndpoint {
+            id: s(&e["id"]),
+            url: s(&e["url"]),
+            events: e["enabled_events"].as_array().into_iter().flatten().map(s).collect(),
+            enabled: s(&e["status"]) != "disabled",
+        })
+        .collect())
+}
+
+/// `(endpoint id, signing secret)` of a created endpoint; the secret is only in this answer.
+pub fn parse_created_webhook(body: &str) -> Result<(String, String), String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad Stripe response: {e}"))?;
+    let (id, secret) = (s(&v["id"]), s(&v["secret"]));
+    if id.is_empty() || !secret.starts_with("whsec_") {
+        return Err("Stripe answered without the endpoint's signing secret".into());
+    }
+    Ok((id, secret))
+}
+
+/// Setup check of the account's endpoints against the build's notification URL `expected`
+/// (see `registry::is_notify_url`).
+pub fn classify_webhook(endpoints: &[WebhookEndpoint], expected: &str) -> Verdict {
+    let fix = "Press \"Create webhook in Stripe\" on the Setup tab (or add the endpoint in Stripe Dashboard > Developers > Webhooks)";
+    let Some(ep) = endpoints.iter().find(|e| crate::registry::is_notify_url(&e.url, expected)) else {
+        return (Level::Fail, "no webhook endpoint for this build: purchases are never confirmed".into(), fix.into());
+    };
+    let missing = ep.missing_events();
+    if !ep.enabled {
+        (Level::Fail, format!("endpoint {} is disabled", ep.id), fix.into())
+    } else if !missing.is_empty() {
+        (Level::Fail, format!("endpoint {} does not receive {}", ep.id, missing.join(", ")), fix.into())
+    } else {
+        (Level::Ok, format!("endpoint {} receives every event", ep.id), String::new())
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -925,12 +1042,37 @@ mod tests {
     }
 
     #[test]
+    fn webhook_endpoint_requests() {
+        let form = create_webhook_form("https://h.example.com/route/notify/stripe?app=web.game", "web.game");
+        assert!(form.starts_with("url=https%3A%2F%2Fh.example.com%2Froute%2Fnotify%2Fstripe%3Fapp%3Dweb.game&"));
+        assert_eq!(form.matches("enabled_events%5B%5D=").count(), event::ALL.len());
+        assert!(form.contains("description=Purser+web.game") && form.contains("metadata%5Bpurser_app_id%5D=web.game"));
+        assert!(update_webhook_form("https://h.example.com/x").ends_with("&disabled=false"));
+        assert!(webhook_endpoint_url("we_1A").unwrap().ends_with("/v1/webhook_endpoints/we_1A"));
+        assert!(webhook_endpoint_url("../x").is_err());
+        assert_eq!(parse_created_webhook(r#"{"id":"we_1","secret":"whsec_abc"}"#).unwrap(), ("we_1".into(), "whsec_abc".into()));
+        assert!(parse_created_webhook(r#"{"id":"we_1"}"#).is_err());
+    }
+
+    #[test]
     fn setup_check_classifiers() {
         assert_eq!(classify_key("sk_live_abc", false).0, Level::Ok);
         assert_eq!(classify_key("rk_test_abc", false).0, Level::Fail);
         assert_eq!(classify_key("sk_test_abc", true).0, Level::Warn);
         assert_eq!(classify_key("pk_live_abc", true).0, Level::Fail);
         assert_eq!(classify_webhook_secret("whsec_x").0, Level::Ok);
+        let ep = |url: &str, events: &[&str], status: &str| {
+            serde_json::json!({"id": "we_1", "url": url, "enabled_events": events, "status": status})
+        };
+        let url = "https://stdb.example.com/v1/database/billing/route/notify/stripe?app=web.game";
+        let list = |e: serde_json::Value| parse_webhook_endpoints(&json!({"object": "list", "data": [e]}).to_string()).unwrap();
+        assert_eq!(classify_webhook(&list(ep(url, event::ALL, "enabled")), url).0, Level::Ok);
+        assert_eq!(classify_webhook(&list(ep(url, &["*"], "enabled")), "/notify/stripe?app=web.game").0, Level::Ok);
+        assert_eq!(classify_webhook(&list(ep(url, &["*"], "enabled")), "/notify/stripe?app=other").0, Level::Fail);
+        assert_eq!(classify_webhook(&list(ep(url, event::ALL, "disabled")), url).0, Level::Fail);
+        let partial = classify_webhook(&list(ep(url, &[event::CHECKOUT_COMPLETED], "enabled")), url);
+        assert!(partial.0 == Level::Fail && partial.1.contains(event::CHARGE_REFUNDED));
+        assert!(parse_webhook_endpoints(r#"{"error":{}}"#).is_err());
         assert_eq!(classify_webhook_secret("sk_live_x").0, Level::Fail);
         let one_time = r#"{"id":"price_1","type":"one_time","active":true}"#;
         let recurring = r#"{"id":"price_2","type":"recurring","active":true}"#;

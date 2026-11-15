@@ -185,6 +185,7 @@ pub fn parse_subscriptions(body: &str) -> Result<(Vec<RemoteProduct>, Option<Str
 /// App Store products keep the configured price.
 pub mod apple {
     use super::RemoteProduct;
+    use crate::doctor::{Level, Verdict};
     use crate::model::kind;
     use serde_json::Value;
 
@@ -314,6 +315,98 @@ pub mod apple {
             })
             .collect();
         Ok((products, next_link(&v)))
+    }
+
+    /// App Store Server Notifications URLs of an app (attributes of the `apps` resource).
+    #[derive(Debug, Clone, Default, PartialEq)]
+    pub struct NotificationUrls {
+        pub production: String,
+        pub production_version: String,
+        pub sandbox: String,
+        pub sandbox_version: String,
+    }
+
+    /// `PATCH`: the app resource.
+    pub fn app_url(apple_id: &str) -> Result<String, String> {
+        check_app_id(apple_id)?;
+        Ok(format!("{API}/v1/apps/{apple_id}"))
+    }
+
+    /// `GET`: the app's notification URLs.
+    pub fn notification_urls_url(apple_id: &str) -> Result<String, String> {
+        Ok(format!(
+            "{}?fields%5Bapps%5D=subscriptionStatusUrl,subscriptionStatusUrlVersion,subscriptionStatusUrlForSandbox,subscriptionStatusUrlVersionForSandbox",
+            app_url(apple_id)?
+        ))
+    }
+
+    /// `PATCH` body: `url` with version 2 for production and sandbox.
+    pub fn set_notification_urls_body(apple_id: &str, url: &str) -> String {
+        serde_json::json!({ "data": { "type": "apps", "id": apple_id, "attributes": {
+            "subscriptionStatusUrl": url,
+            "subscriptionStatusUrlVersion": "V2",
+            "subscriptionStatusUrlForSandbox": url,
+            "subscriptionStatusUrlVersionForSandbox": "V2",
+        } } })
+        .to_string()
+    }
+
+    /// The URLs from a [`notification_urls_url`] or `PATCH` answer.
+    pub fn parse_notification_urls(body: &str) -> Result<NotificationUrls, String> {
+        let v = parse(body, "app")?;
+        let a = &v["data"]["attributes"];
+        if !a.is_object() {
+            return Err("App Store Connect answered without the app's attributes".into());
+        }
+        let s = |k: &str| a[k].as_str().unwrap_or("").to_string();
+        Ok(NotificationUrls {
+            production: s("subscriptionStatusUrl"),
+            production_version: s("subscriptionStatusUrlVersion"),
+            sandbox: s("subscriptionStatusUrlForSandbox"),
+            sandbox_version: s("subscriptionStatusUrlVersionForSandbox"),
+        })
+    }
+
+    /// `url` with the value of its `secret` parameter hidden.
+    pub fn hide_secret(url: &str) -> String {
+        let Some((path, query)) = url.split_once('?') else { return url.to_string() };
+        let query: Vec<&str> = query.split('&').map(|kv| if kv.starts_with("secret=") { "secret=…" } else { kv }).collect();
+        format!("{path}?{}", query.join("&"))
+    }
+
+    /// What is wrong with one environment's URL, and whether it loses notifications for sure.
+    fn url_problem(url: &str, version: &str, expected: &str, secret: Option<&str>) -> Option<(bool, String)> {
+        if url.is_empty() {
+            return Some((false, "not set".into()));
+        }
+        let (path, query) = url.split_once('?').unwrap_or((url, ""));
+        if !crate::registry::is_notify_url(path, expected) {
+            return Some((false, format!("goes to {}", hide_secret(url))));
+        }
+        if version != "V2" {
+            return Some((true, format!("version {version}, the server reads version 2")));
+        }
+        if let Some(secret) = secret {
+            if crate::encoding::query_param(query, "secret").as_deref() != Some(secret) {
+                return Some((true, "without the current apple_notification_secret: the server refuses its notifications".into()));
+            }
+        }
+        None
+    }
+
+    /// Setup check of the URLs App Store Connect has for the app. `expected`: this server's
+    /// notification URL without the query (only the route when its public URL is unknown);
+    /// `secret`: the `apple_notification_secret` the URL must carry, if set.
+    pub fn classify_notification_urls(urls: &NotificationUrls, expected: &str, secret: Option<&str>) -> Verdict {
+        let fix = "Press \"Set in App Store Connect\" on the Setup tab (or App Store Connect > App Information > \
+                   App Store Server Notifications: Version 2, the URL below)";
+        let production = url_problem(&urls.production, &urls.production_version, expected, secret);
+        let sandbox = url_problem(&urls.sandbox, &urls.sandbox_version, expected, secret);
+        match (production, sandbox) {
+            (None, None) => (Level::Ok, "production and sandbox notifications come to this server".into(), String::new()),
+            (None, Some((_, s))) => (Level::Warn, format!("sandbox URL {s}: test purchases are not notified"), fix.into()),
+            (Some((lost, p)), _) => (if lost { Level::Fail } else { Level::Warn }, format!("production URL {p}"), fix.into()),
+        }
     }
 }
 
@@ -488,6 +581,38 @@ mod tests {
         let (s, next) = apple::parse_subscription_groups(groups).unwrap();
         assert_eq!(next, None);
         assert_eq!((s[1].product_id.as_str(), s[1].kind.as_str(), s[1].billing_period_days), ("vip_year", "subscription", 365));
+    }
+
+    #[test]
+    fn apple_notification_urls() {
+        use crate::doctor::Level;
+        let base = "https://stdb.example.com/v1/database/billing/route/notify/apple";
+        assert!(apple::app_url("12a").is_err());
+        assert!(apple::notification_urls_url("123").unwrap().starts_with("https://api.appstoreconnect.apple.com/v1/apps/123?fields%5Bapps%5D="));
+        let body: serde_json::Value = serde_json::from_str(&apple::set_notification_urls_body("123", base)).unwrap();
+        assert_eq!(body["data"]["id"], "123");
+        assert_eq!(body["data"]["attributes"]["subscriptionStatusUrlForSandbox"], base);
+        assert_eq!(body["data"]["attributes"]["subscriptionStatusUrlVersionForSandbox"], "V2");
+
+        let answer = |prod: &str, version: &str, sandbox: &str| {
+            format!(r#"{{"data":{{"type":"apps","id":"123","attributes":{{"subscriptionStatusUrl":"{prod}","subscriptionStatusUrlVersion":"{version}","subscriptionStatusUrlForSandbox":"{sandbox}","subscriptionStatusUrlVersionForSandbox":"V2"}}}}}}"#)
+        };
+        let check = |body: &str, expected: &str, secret: Option<&str>| {
+            apple::classify_notification_urls(&apple::parse_notification_urls(body).unwrap(), expected, secret)
+        };
+        let with_secret = format!("{base}?secret=s1");
+        assert_eq!(check(&answer(base, "V2", base), base, None).0, Level::Ok);
+        assert_eq!(check(&answer(&with_secret, "V2", &with_secret), "/notify/apple", Some("s1")).0, Level::Ok);
+        let wrong = check(&answer(&with_secret, "V2", &with_secret), base, Some("s2"));
+        assert_eq!(wrong.0, Level::Fail);
+        assert!(!wrong.1.contains("s1"));
+        assert_eq!(check(&answer(base, "V1", base), base, None).0, Level::Fail);
+        assert_eq!(check(&answer(base, "V2", ""), base, None).0, Level::Warn);
+        let elsewhere = check(&answer("https://api.example.com/apple?secret=other", "V2", base), base, None);
+        assert_eq!(elsewhere.0, Level::Warn);
+        assert!(elsewhere.1.contains("secret=…") && !elsewhere.1.contains("other"));
+        assert_eq!(check(&answer("", "", ""), "/notify/apple", None).0, Level::Warn);
+        assert!(apple::parse_notification_urls(r#"{"errors":[]}"#).is_err());
     }
 
     #[test]
