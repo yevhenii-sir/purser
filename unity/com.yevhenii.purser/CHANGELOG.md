@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-16
+
 ### Breaking
 
 This version needs the Purser server of the same version (new `/entitlements` answer, `offer_id`, player tokens,

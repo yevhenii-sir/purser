@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-11-16
+
 ### Breaking
+
+Publish this version with `--delete-data` and update the Unity package together with the server. `server/backup.py` is new in this version: from here on it keeps a database's data across releases that need `--delete-data` (docs/self-hosting.md, Upgrading).
 
 - Publish with `--delete-data`: the `purchase` table gains `grace_until_ms`, `billing_issue`, `auto_renew_off`, `renew_product_id`, `replaced_by` and `refunded_micros`.
 - Game events have two new reasons: `revoke` with `replaced` (another subscription replaced this one) and `grant` with `reinstated` (a won dispute). A subscription's `expires_at_ms` includes the store's grace period. Consumables are deduplicated by `(transaction_id, event, reason)`.

@@ -2944,7 +2944,7 @@ dependencies = [
 
 [[package]]
 name = "purser"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ed25519-dalek",
  "http",
@@ -2959,7 +2959,7 @@ dependencies = [
 
 [[package]]
 name = "purser-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
  "ecdsa",
