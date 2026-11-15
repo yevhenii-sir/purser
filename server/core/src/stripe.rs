@@ -60,7 +60,7 @@ pub const STORE: StoreInfo = StoreInfo {
         },
     ],
     finish: Finish::None,
-    refunds: "Webhooks (charge.refunded, charge.dispute.created, customer.subscription.deleted)",
+    refunds: "Webhooks (charge.refunded, charge.dispute.created / closed, customer.subscription.deleted)",
     reports_price: true,
     binding: Binding::None,
     app_id_label: "App id (any unique id of the web build)",
@@ -389,6 +389,10 @@ fn store_tx(m: &Meta, transaction_id: &str, original: &str, token: &str, livemod
         linked_purchase_token: String::new(),
         country: String::new(),
         trial: false,
+        grace_until_ms: 0,
+        billing_issue: false,
+        auto_renew_off: false,
+        renew_product_id: String::new(),
     }
 }
 
@@ -516,13 +520,14 @@ pub fn session_grant(sess: &Session, subscription: Option<&Value>) -> Result<Gra
 }
 
 /// A paid subscription Invoice (`invoice.paid` / `invoice.payment_succeeded`): the first period
-/// (`subscription_create`) or a renewal (`subscription_cycle`). Other invoices (plan changes,
-/// one-off invoices) are `Ok(None)`.
+/// (`subscription_create`), a renewal (`subscription_cycle`) or a plan change charged at once
+/// (`subscription_update`). The product is the Price the invoice charges (a plan change keeps
+/// the metadata of the checkout), else the metadata one. Other invoices (one-off) are `Ok(None)`.
 pub fn invoice_grant(inv: &Value) -> Result<Option<Grant>, String> {
     let reason = s(&inv["billing_reason"]);
     let first = match reason.as_str() {
         "subscription_create" => true,
-        "subscription_cycle" => false,
+        "subscription_cycle" | "subscription_update" => false,
         _ => return Ok(None),
     };
     if s(&inv["status"]) != "paid" {
@@ -546,7 +551,19 @@ pub fn invoice_grant(inv: &Value) -> Result<Option<Grant>, String> {
     let mut tx = store_tx(&m, if first { &sub_id } else { &invoice_id }, &sub_id, &invoice_id, livemode);
     let mut end = 0;
     for line in inv["lines"]["data"].as_array().into_iter().flatten() {
-        end = end.max(line["period"]["end"].as_i64().unwrap_or(0));
+        let line_end = line["period"]["end"].as_i64().unwrap_or(0);
+        // The Price of the period that lasts longest (a plan change also lists prorations).
+        let price = [&line["pricing"]["price_details"]["price"], &line["price"]["id"], &line["price"]]
+            .iter()
+            .map(|v| id_of(v))
+            .find(|p| p.starts_with("price_"))
+            .unwrap_or_default();
+        let proration = line["proration"].as_bool() == Some(true)
+            || line["parent"]["subscription_item_details"]["proration"].as_bool() == Some(true);
+        if line_end >= end && !price.is_empty() && !proration {
+            tx.product_id = price;
+        }
+        end = end.max(line_end);
     }
     if end == 0 {
         end = inv["period_end"].as_i64().unwrap_or(0);
@@ -588,16 +605,56 @@ pub struct Reversal {
     pub reason: String,
 }
 
-/// `charge.refunded`: only a full refund revokes; partial refunds are ignored.
-pub fn charge_refund(charge: &Value) -> Option<Reversal> {
+/// `charge.refunded`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Refund {
+    /// The whole payment: the purchase is revoked.
+    Full(Reversal),
+    /// Part of it: the purchase stays; revenue loses `refunded_micros` (the total refunded so far,
+    /// in the currency of the charge).
+    Partial { reversal: Reversal, refunded_micros: i64, currency: String },
+}
+
+pub fn charge_refund(charge: &Value) -> Option<Refund> {
     let amount = charge["amount"].as_i64().unwrap_or(0);
     let refunded = charge["amount_refunded"].as_i64().unwrap_or(0);
-    let full = charge["refunded"].as_bool() == Some(true) || (amount > 0 && refunded >= amount);
-    full.then(|| Reversal {
+    let reversal = Reversal {
         payment_intent: id_of(&charge["payment_intent"]),
         invoice: id_of(&charge["invoice"]),
         charge: s(&charge["id"]),
         reason: "refund".into(),
+    };
+    let currency = s(&charge["currency"]);
+    if charge["refunded"].as_bool() == Some(true) || (amount > 0 && refunded >= amount) {
+        Some(Refund::Full(reversal))
+    } else if refunded > 0 && !currency.is_empty() {
+        Some(Refund::Partial { reversal, refunded_micros: minor_to_micros(refunded, &currency), currency: currency.to_ascii_uppercase() })
+    } else {
+        None
+    }
+}
+
+/// `charge.dispute.closed` the merchant won: the money came back, the purchase is granted again.
+pub fn dispute_won(d: &Value) -> Option<Reversal> {
+    if s(&d["status"]) != "won" {
+        return None;
+    }
+    dispute(d).map(|r| Reversal { reason: "dispute won".into(), ..r })
+}
+
+/// `customer.subscription.updated` of a subscription that goes on: whether it renews.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Renewal {
+    pub subscription_id: String,
+    /// `cancel_at_period_end` (or a `cancel_at` date): it ends with the period.
+    pub auto_renew_off: bool,
+}
+
+pub fn subscription_renewal(sub: &Value) -> Option<Renewal> {
+    let id = s(&sub["id"]);
+    (!id.is_empty()).then(|| Renewal {
+        subscription_id: id,
+        auto_renew_off: sub["cancel_at_period_end"].as_bool() == Some(true) || sub["cancel_at"].as_i64().is_some_and(|t| t > 0),
     })
 }
 
@@ -627,6 +684,7 @@ pub mod event {
     pub const SUBSCRIPTION_DELETED: &str = "customer.subscription.deleted";
     pub const CHARGE_REFUNDED: &str = "charge.refunded";
     pub const DISPUTE_CREATED: &str = "charge.dispute.created";
+    pub const DISPUTE_CLOSED: &str = "charge.dispute.closed";
     pub const ALL: &[&str] = &[
         CHECKOUT_COMPLETED,
         CHECKOUT_ASYNC_SUCCEEDED,
@@ -636,6 +694,7 @@ pub mod event {
         SUBSCRIPTION_DELETED,
         CHARGE_REFUNDED,
         DISPUTE_CREATED,
+        DISPUTE_CLOSED,
     ];
 }
 
@@ -991,8 +1050,15 @@ mod tests {
         let mut trial = invoice("subscription_create");
         trial["amount_paid"] = json!(0);
         assert!(invoice_grant(&trial).unwrap().unwrap().tx.trial);
-        assert_eq!(invoice_grant(&invoice("subscription_update")).unwrap(), None);
         assert_eq!(invoice_grant(&invoice("manual")).unwrap(), None);
+        // A plan change: the charged Price is the product, not the metadata of the checkout.
+        let mut change = invoice("subscription_update");
+        change["lines"]["data"] = json!([
+            { "period": { "end": 1_790_100_000 }, "proration": true, "price": { "id": "price_vip" } },
+            { "period": { "end": 1_792_592_000 }, "pricing": { "price_details": { "price": "price_vip_plus" } } },
+        ]);
+        let tx = invoice_grant(&change).unwrap().unwrap().tx;
+        assert_eq!((tx.transaction_id.as_str(), tx.product_id.as_str(), tx.expires_at_ms), ("in_2", "price_vip_plus", 1_792_592_000_000));
         // Pre-2025 shape: top-level subscription and subscription_details.
         let old = json!({
             "id": "in_3", "billing_reason": "subscription_cycle", "status": "paid", "amount_paid": 1000, "currency": "usd",
@@ -1020,15 +1086,23 @@ mod tests {
 
     #[test]
     fn refunds_and_disputes() {
-        let full = json!({ "id": "ch_1", "amount": 500, "amount_refunded": 500, "refunded": true, "payment_intent": "pi_1" });
-        assert_eq!(
-            charge_refund(&full),
-            Some(Reversal { payment_intent: "pi_1".into(), invoice: String::new(), charge: "ch_1".into(), reason: "refund".into() })
-        );
-        let partial = json!({ "id": "ch_1", "amount": 500, "amount_refunded": 100, "refunded": false, "payment_intent": "pi_1" });
-        assert_eq!(charge_refund(&partial), None);
+        let r1 = Reversal { payment_intent: "pi_1".into(), invoice: String::new(), charge: "ch_1".into(), reason: "refund".into() };
+        let full = json!({ "id": "ch_1", "amount": 500, "amount_refunded": 500, "refunded": true, "payment_intent": "pi_1", "currency": "usd" });
+        assert_eq!(charge_refund(&full), Some(Refund::Full(r1.clone())));
+        let partial = json!({ "id": "ch_1", "amount": 500, "amount_refunded": 100, "refunded": false, "payment_intent": "pi_1", "currency": "usd" });
+        assert_eq!(charge_refund(&partial), Some(Refund::Partial { reversal: r1, refunded_micros: 1_000_000, currency: "USD".into() }));
+        let none = json!({ "id": "ch_1", "amount": 500, "amount_refunded": 0, "refunded": false, "currency": "usd" });
+        assert_eq!(charge_refund(&none), None);
         let old = json!({ "id": "ch_2", "amount": 500, "amount_refunded": 500, "refunded": true, "payment_intent": "pi_2", "invoice": "in_2" });
-        assert_eq!(charge_refund(&old).unwrap().invoice, "in_2");
+        let Some(Refund::Full(r)) = charge_refund(&old) else { panic!() };
+        assert_eq!(r.invoice, "in_2");
+        let won = json!({ "id": "dp_1", "charge": "ch_1", "payment_intent": "pi_1", "status": "won" });
+        assert_eq!(dispute_won(&won).unwrap().reason, "dispute won");
+        assert_eq!(dispute_won(&json!({ "id": "dp_1", "charge": "ch_1", "status": "lost" })), None);
+        assert_eq!(
+            subscription_renewal(&json!({ "id": "sub_1", "status": "active", "cancel_at_period_end": true })),
+            Some(Renewal { subscription_id: "sub_1".into(), auto_renew_off: true })
+        );
         let d = dispute(&json!({ "id": "dp_1", "charge": "ch_1", "payment_intent": "pi_1", "reason": "fraudulent" })).unwrap();
         assert_eq!((d.payment_intent.as_str(), d.reason.as_str()), ("pi_1", "dispute fraudulent"));
     }

@@ -280,7 +280,7 @@ const USER_AUTH_API: &str = "https://partner.steam-api.com/ISteamUserAuth";
 /// `AuthenticateUserTicket`: whose session ticket the client sent (hex, as the SDK hands it out).
 pub fn authenticate_ticket_call(app_id: u32, ticket: &str) -> Result<Call, String> {
     let ticket = ticket.trim();
-    if ticket.is_empty() || ticket.len() > 4096 || ticket.len() % 2 != 0 || !ticket.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if ticket.is_empty() || ticket.len() > 4096 || !ticket.len().is_multiple_of(2) || !ticket.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("ticket must be the hex Web API auth ticket".into());
     }
     Ok(get(
@@ -830,6 +830,10 @@ pub fn store_tx(p: &Purchase) -> StoreTx {
         linked_purchase_token: String::new(),
         country: crate::country::normalize(p.country),
         trial: false,
+        grace_until_ms: 0,
+        billing_issue: false,
+        auto_renew_off: false,
+        renew_product_id: String::new(),
     }
 }
 

@@ -294,7 +294,9 @@ pub(crate) fn apple_token(ctx: &mut impl Ctx, app: &GameApp) -> Result<String, S
 }
 
 /// Fetches a transaction from the App Store Server API: the likely environment first (`""`:
-/// production), the other one on 404.
+/// production), the other one on 404. An auto-renewable subscription is answered with its latest
+/// transaction and renewal info (Get All Subscription Statuses): a renewal, an upgrade within the
+/// group, a grace period or billing retry the transaction alone does not show.
 pub fn apple_fetch(
     ctx: &mut impl Ctx,
     app: &GameApp,
@@ -310,8 +312,8 @@ pub fn apple_fetch(
             .map_err(StoreError::Transient)?;
         match res.status {
             200 => {
-                return apple::parse_transaction_info_response(&res.body, ctx.now_ms())
-                    .map_err(StoreError::Transient)
+                let st = apple::parse_transaction_info_response(&res.body, ctx.now_ms()).map_err(StoreError::Transient)?;
+                return apple_subscription_status(ctx, base, &token, st);
             }
             404 => last = res.describe(),
             400 => return Err(StoreError::Invalid(format!("App Store lookup: {}", res.describe()))),
@@ -324,6 +326,24 @@ pub fn apple_fetch(
         }
     }
     Err(StoreError::Invalid(format!("transaction not found in production or sandbox: {last}")))
+}
+
+/// The current state of the subscription `st` belongs to (see [`apple_fetch`]); `st` itself for
+/// other purchases and when Apple does not list the subscription.
+fn apple_subscription_status(ctx: &mut impl Ctx, base: &str, token: &str, st: StoreTx) -> Result<StoreTx, StoreError> {
+    // Only auto-renewable subscriptions have an expiry; a revocation is final.
+    if st.expires_at_ms == 0 || st.state == purser_core::model::TxState::Revoked {
+        return Ok(st);
+    }
+    let url = apple::subscription_statuses_url(base, &st.transaction_id).map_err(StoreError::Invalid)?;
+    let res = net::send(ctx.http(), "GET", &url, &[("Authorization", &bearer(token))], ()).map_err(StoreError::Transient)?;
+    match res.status {
+        200 => Ok(apple::parse_subscription_statuses(&res.body, &st.original_transaction_id, ctx.now_ms())
+            .map_err(StoreError::Transient)?
+            .unwrap_or(st)),
+        404 => Ok(st),
+        _ => Err(StoreError::Transient(format!("App Store subscription status: {}", res.describe()))),
+    }
 }
 
 // ---------------------------------------------------------------------

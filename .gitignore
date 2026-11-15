@@ -4,6 +4,9 @@ server/target/
 
 # ---- Secrets (uploaded with server/seed.py, never commit) ----
 server/secrets/
+# Database backups (server/backup.py): they hold the secrets too
+server/backups/
+backups/
 *.p8
 *service-account*.json
 *-credentials.json

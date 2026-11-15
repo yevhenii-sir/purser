@@ -75,6 +75,29 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void Purchase_FromAPaywall_CountsForTheVariantAndRecordsTheOffer()
+        {
+            CreateService();
+            m_Store.OnPurchase = id => FakeStore.AppleOrder(id);
+            var paywall = new Paywall("main_paywall", "pw_1", "Main", "variant_b", "test_7", null, null, "{}", false,
+                new System.DateTime(2027, 1, 1, 0, 0, 0, System.DateTimeKind.Utc));
+
+            var result = Sync.Run(m_Service.PurchaseWithPromotionalOfferAsync("premium", "winback_50", paywall));
+
+            Assert.AreEqual(PurchaseStatus.Success, result.Status);
+            var verify = m_Api.VerifyRequests.Single();
+            Assert.AreEqual(("main_paywall", "variant_b", "test_7", "pw_1"), (verify.Placement, verify.VariantId, verify.TestId, verify.PaywallId));
+            Assert.AreEqual("winback_50", verify.OfferId);
+            Assert.AreEqual("winback_50", (string)JObject.Parse(Newtonsoft.Json.JsonConvert.SerializeObject(verify))["offer_id"]);
+
+            // The next purchase of the product without an offer does not inherit it.
+            m_Store.OnPurchase = id => FakeStore.AppleOrder(id, "2000000002");
+            Sync.Run(m_Service.PurchaseAsync("premium"));
+            Assert.IsNull(m_Api.VerifyRequests.Last().OfferId);
+            Assert.IsNull(m_Api.VerifyRequests.Last().Placement);
+        }
+
+        [Test]
         public void Purchase_OnGooglePlay_Throws()
         {
             m_Store.Platform = BillingPlatform.Google;

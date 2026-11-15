@@ -2,7 +2,7 @@
   "name": "com.yevhenii.purser",
   "version": "0.7.0",
   "displayName": "Purser",
-  "description": "Drop-in in-app purchases for Unity, verified by your self-hosted Purser server on SpacetimeDB: Google Play and App Store through Unity IAP 5, Amazon Appstore, Steam, Stripe and Xsolla. Server-side validation, consume/acknowledge, restore, entitlements, paywalls.",
+  "description": "Drop-in in-app purchases for Unity, verified by your self-hosted Purser server on SpacetimeDB: Google Play and App Store through Unity IAP 5, Amazon Appstore, Steam, Stripe and Xsolla. Server-side validation, consume/acknowledge, restore, customer info with access levels, paywalls.",
   "unity": "2022.3",
   "license": "MIT",
   "author": {
@@ -18,7 +18,7 @@
   "samples": [
     {
       "displayName": "Basic Shop",
-      "description": "Minimal shop: buy, restore and show entitlements (IMGUI, no extra dependencies).",
+      "description": "Minimal shop: buy, restore and show access levels (IMGUI, no extra dependencies).",
       "path": "Samples~/BasicShop"
     },
     {

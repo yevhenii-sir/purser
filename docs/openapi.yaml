@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Purser HTTP API
-  version: 0.1.0
+  version: 0.7.0
   summary: Purchase verification, restore, entitlements and store notifications.
   description: |
     The public HTTP API of the billing module (`server/spacetimedb/src/handlers.rs`). It is served
@@ -12,9 +12,16 @@ info:
     for example `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route` or, self-hosted,
     `https://stdb.example.com/v1/database/<your-billing-db>/route`.
 
-    - Requests carry no authentication: SpacetimeDB gives HTTP handlers no caller identity. Purchases
-      are trusted only after the module re-queries Google Play / the App Store. Store notification
-      endpoints are protected by a shared secret in the URL.
+    - Purchases are trusted only after the module re-queries the store. Store notification endpoints
+      check the store's signature or a shared secret in the URL.
+    - Client routes (everything under Purchases, Offers and paywalls, Players and Checkout) may need
+      a player token: a build with `client_auth = signed` refuses requests without
+      `Authorization: Bearer <HS256 JWT>` signed by the game's backend (`401`, code `ERR_CLIENT_AUTH`).
+      Open builds (the default) take any `user_id`.
+    - Client routes are rate limited per player and per build: `429` with `Retry-After` (seconds) and
+      code `ERR_RATE_LIMITED`. Wait and retry; do not finish a purchase because of it.
+    - With a response signing key, `/entitlements` and `/restore` answers carry `X-Purser-Signature`: the
+      base64 Ed25519 signature of the exact body, checked with the build's public key.
     - Request bodies are JSON (the `Content-Type` header is not checked). Unknown fields are ignored.
     - Every response is JSON with a `status` string; errors also carry a `message`. Some messages start
       with an error code in brackets, such as `[ERR_CONSUMED_ELSEWHERE]`.
@@ -48,12 +55,18 @@ tags:
     description: Called by the game client before showing a paywall or buying with an offer.
   - name: Players
     description: Called by the game client to describe the player on the admin page.
+  - name: Checkout
+    description: Web and Steam purchases the server starts (Stripe Checkout, Xsolla Pay Station, Steam MicroTxn).
   - name: Monitoring
+security:
+  - {}
+  - playerToken: []
 paths:
   /healthz:
     get:
       tags: [Monitoring]
       operationId: healthz
+      security: []
       summary: Health check
       description: Answers as long as the database and its module are running.
       responses:
@@ -105,7 +118,9 @@ paths:
         "200": { $ref: "#/components/responses/VerifyOk" }
         "202": { $ref: "#/components/responses/VerifyPending" }
         "400": { $ref: "#/components/responses/VerifyBadRequest" }
+        "401": { $ref: "#/components/responses/ClientAuth" }
         "403": { $ref: "#/components/responses/VerifyForbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/ServerError" }
         "502": { $ref: "#/components/responses/StoreUnavailable" }
 
@@ -135,9 +150,153 @@ paths:
         "200": { $ref: "#/components/responses/VerifyOk" }
         "202": { $ref: "#/components/responses/VerifyPending" }
         "400": { $ref: "#/components/responses/VerifyBadRequest" }
+        "401": { $ref: "#/components/responses/ClientAuth" }
         "403": { $ref: "#/components/responses/VerifyForbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/ServerError" }
         "502": { $ref: "#/components/responses/StoreUnavailable" }
+
+  /verify/amazon:
+    post:
+      tags: [Purchases]
+      operationId: verifyAmazon
+      summary: Verify an Amazon Appstore purchase
+      description: Looks the receipt up with the Amazon Receipt Verification Service. `order_id` (the `receiptId`) and `store_user_id` (the Amazon `userId`) are required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyRequest" }
+      responses: &verifyResponses
+        "200": { $ref: "#/components/responses/VerifyOk" }
+        "202": { $ref: "#/components/responses/VerifyPending" }
+        "400": { $ref: "#/components/responses/VerifyBadRequest" }
+        "401": { $ref: "#/components/responses/ClientAuth" }
+        "403": { $ref: "#/components/responses/VerifyForbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+        "502": { $ref: "#/components/responses/StoreUnavailable" }
+
+  /verify/steam:
+    post:
+      tags: [Purchases]
+      operationId: verifySteam
+      summary: Verify a Steam purchase
+      description: Finalizes and records an order started with `/checkout/steam` (`order_id` of its answer; `product_id` may be left out).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyRequest" }
+      responses: *verifyResponses
+
+  /verify/stripe:
+    post:
+      tags: [Purchases]
+      operationId: verifyStripe
+      summary: Confirm a Stripe Checkout Session after the redirect
+      description: "`{app_id, user_id, session_id}`. Optional: the webhook records the purchase anyway."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, user_id, session_id]
+              properties:
+                app_id: { type: string }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                session_id: { type: string }
+      responses: *verifyResponses
+
+  /checkout/steam:
+    post:
+      tags: [Checkout]
+      operationId: checkoutSteam
+      summary: Start a Steam MicroTxn purchase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, product_id, user_id, steam_id]
+              properties:
+                app_id: { type: string }
+                product_id: { type: string }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                steam_id: { description: SteamID64, oneOf: [{ type: string }, { type: integer }] }
+                language: { type: string }
+      responses: &checkoutResponses
+        "200": { $ref: "#/components/responses/Checkout" }
+        "400": { description: Invalid request or product, content: { application/json: { schema: { $ref: "#/components/schemas/StatusMessage" } } } }
+        "401": { $ref: "#/components/responses/ClientAuth" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+        "502": { $ref: "#/components/responses/StoreUnavailable" }
+
+  /checkout/xsolla:
+    post:
+      tags: [Checkout]
+      operationId: checkoutXsolla
+      summary: Create an Xsolla Pay Station payment token for one item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, product_id, user_id]
+              properties:
+                app_id: { type: string }
+                product_id: { type: string }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                sandbox: { type: boolean }
+                return_url: { type: string }
+                country: { type: string }
+                currency: { type: string }
+                language: { type: string }
+                attribution: { $ref: "#/components/schemas/Attribution" }
+      responses: *checkoutResponses
+
+  /checkout/xsolla/status:
+    post:
+      tags: [Checkout]
+      operationId: checkoutXsollaStatus
+      summary: Whether an Xsolla order has been paid (from the ledger)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, user_id, order_id]
+              properties:
+                app_id: { type: string }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                order_id: { type: string }
+      responses: *verifyResponses
+
+  /checkout/stripe:
+    post:
+      tags: [Checkout]
+      operationId: checkoutStripe
+      summary: Create a Stripe Checkout Session for one Price
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, product_id, user_id]
+              properties:
+                app_id: { type: string }
+                product_id: { type: string, description: The Stripe Price id. }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                success_url: { type: string }
+                cancel_url: { type: string }
+                attribution: { $ref: "#/components/schemas/Attribution" }
+      responses: *checkoutResponses
 
   /restore:
     post:
@@ -221,6 +380,7 @@ paths:
     post:
       tags: [Store notifications]
       operationId: notifyGoogle
+      security: []
       summary: Google Play real-time developer notification (Pub/Sub push)
       description: |
         Endpoint of the Pub/Sub **push** subscription of the RTDN topic. The notification is used only to
@@ -288,6 +448,7 @@ paths:
     post:
       tags: [Store notifications]
       operationId: notifyApple
+      security: []
       summary: App Store Server Notification V2
       description: |
         Production and Sandbox URL of App Store Server Notifications **Version 2**. `signedPayload` must be
@@ -349,6 +510,61 @@ paths:
               example:
                 status: error
                 message: retry later
+
+  /notify/amazon:
+    post:
+      tags: [Store notifications]
+      operationId: notifyAmazon
+      summary: Amazon Real-Time Notifications (through Amazon SNS)
+      description: "`?app=<app_id>` names the build. The SNS signature is checked; the receipt is looked up again with RVS."
+      security: []
+      parameters:
+        - { name: app, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: { type: string }
+      responses: &notifyResponses
+        "200":
+          description: Processed or ignored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationResult" }
+        "401": { description: Not signed by the store or a wrong secret. }
+        "503": { description: The store lookup failed; the store retries the delivery. }
+
+  /notify/xsolla:
+    post:
+      tags: [Store notifications]
+      operationId: notifyXsolla
+      summary: Xsolla webhooks
+      description: "`?app=<app_id>` names the build. Signed with the project's webhook secret (`Authorization: Signature ...`)."
+      security: []
+      parameters:
+        - { name: app, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses: *notifyResponses
+
+  /notify/stripe:
+    post:
+      tags: [Store notifications]
+      operationId: notifyStripe
+      summary: Stripe webhooks
+      description: "`?app=<app_id>` names the build. `Stripe-Signature` is checked with the endpoint's signing secret."
+      security: []
+      parameters:
+        - { name: app, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses: *notifyResponses
 
   /offers/apple/sign:
     post:
@@ -633,13 +849,16 @@ components:
         variant_id: { type: string }
         test_id: { type: string }
         paywall_id: { type: string }
+        offer_id:
+          type: string
+          description: The store offer the player bought (Google offer or base plan id, Apple promotional offer id).
         client:
           $ref: "#/components/schemas/ClientInfo"
 
     VerifyResult:
       type: object
       description: Result of a verification that reached the store.
-      required: [status, message, transaction_id, product_id, is_sub, expires_date_ms, environment, token, delivery]
+      required: [status, message, transaction_id, product_id, is_sub, expires_date_ms, environment, delivery]
       properties:
         status:
           type: string
@@ -669,9 +888,6 @@ components:
         environment:
           type: string
           enum: [production, sandbox]
-        token:
-          type: string
-          description: Google `purchase_token`, or the Apple `transactionId`.
         delivery:
           type: string
           enum: [server, client]
@@ -711,23 +927,53 @@ components:
         client:
           $ref: "#/components/schemas/ClientInfo"
 
+    EntitlementState:
+      type: object
+      description: A purchase that gives access now.
+      required: [product_id, store, expires_at_ms, purchased_at_ms, will_renew, in_grace, billing_issue, trial]
+      properties:
+        product_id:
+          type: string
+          description: Catalog product id (the same in every store of the app).
+        store: { type: string, examples: [google, apple, stripe] }
+        expires_at_ms:
+          type: integer
+          format: int64
+          description: When access ends (Unix ms), the store's grace period included; 0 = never.
+        purchased_at_ms: { type: integer, format: int64 }
+        will_renew:
+          type: boolean
+          description: A subscription that renews (false when auto-renew is off, and for non-consumables).
+        in_grace:
+          type: boolean
+          description: The renewal payment failed and the store keeps access for a while (grace period).
+        billing_issue:
+          type: boolean
+          description: The store could not charge the renewal.
+        trial: { type: boolean }
+        renews_to:
+          type: string
+          description: Catalog id of the product the next renewal switches to (a pending downgrade).
+
     Entitlements:
       type: object
-      required: [user_id, game_key, subscriptions, non_consumables, server_time_ms]
+      required: [user_id, game_key, access, subscriptions, non_consumables, server_time_ms]
       properties:
         user_id:
           type: string
         game_key:
           type: string
           description: Shared key of the game's builds.
+        access:
+          type: object
+          description: Access levels the player has (what the products unlock, e.g. `premium`), with the purchase that lasts longest.
+          additionalProperties:
+            $ref: "#/components/schemas/EntitlementState"
         subscriptions:
           type: object
-          description: Active subscriptions, product id → expiration (Unix ms; 0 = no expiration known).
+          description: Subscriptions that give access now, by catalog product id.
           additionalProperties:
-            type: integer
-            format: int64
-          examples:
-            - { month_sub: 1793876523123 }
+            $ref: "#/components/schemas/EntitlementState"
         non_consumables:
           type: array
           description: Owned non-consumable product ids.
@@ -814,7 +1060,41 @@ components:
         subscription:
           type: string
 
+  securitySchemes:
+    playerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Builds with `client_auth = signed`: an HS256 JWT `{"sub": <user_id>, "exp": <unix seconds>, "aud": <game_key>}`
+        (`aud` optional) signed with the build's `client_auth_secret` by the game's backend.
+
   responses:
+    ClientAuth:
+      description: "`code: ERR_CLIENT_AUTH`: the build needs a player token and the request has none, an expired one or one for another player."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatusMessage"
+          example: { status: error, code: ERR_CLIENT_AUTH, message: the player token expired }
+    RateLimited:
+      description: "`code: ERR_RATE_LIMITED`: too many requests for this player or build. Retry after `Retry-After` seconds."
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Seconds to wait.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatusMessage"
+          example: { status: error, code: ERR_RATE_LIMITED, message: "too many requests, retry in 10 s" }
+    Checkout:
+      description: The checkout answer of the store (see server/README.md for its fields).
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: true
     VerifyOk:
       description: |
         The store answered. `status` tells the client what to do: `success`, `pending_or_canceled`,
@@ -831,7 +1111,6 @@ components:
             is_sub: false
             expires_date_ms: 0
             environment: production
-            token: "<Google purchaseToken>"
             delivery: server
     VerifyPending:
       description: Verified and recorded; the reward will be delivered by the worker. Finish the transaction.
@@ -847,7 +1126,6 @@ components:
             is_sub: false
             expires_date_ms: 0
             environment: production
-            token: "<Google purchaseToken>"
             delivery: server
     VerifyBadRequest:
       description: |

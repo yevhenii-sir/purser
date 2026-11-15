@@ -137,12 +137,33 @@ namespace Purser.Tests
         }
 
         [Test]
-        public void EntitlementsDtoParsesMaps()
+        public void CustomerInfoDtoParsesTheServerAnswer()
         {
-            var dto = JsonConvert.DeserializeObject<EntitlementsDto>(
-                "{\"game_key\":\"g\",\"non_consumables\":[\"vip\"],\"server_time_ms\":10,\"subscriptions\":{\"month_sub\":1793876523123},\"user_id\":\"u\"}");
-            Assert.AreEqual(1793876523123, dto.Subscriptions["month_sub"]);
-            CollectionAssert.AreEqual(new[] { "vip" }, dto.NonConsumables);
+            const string json = "{\"user_id\":\"player-1\",\"game_key\":\"game\",\"server_time_ms\":1790000000000," +
+                                "\"access\":{\"premium\":{\"product_id\":\"month_sub\",\"store\":\"apple\",\"expires_at_ms\":1793876523123," +
+                                "\"purchased_at_ms\":1790000000000,\"will_renew\":false,\"in_grace\":true,\"billing_issue\":true,\"trial\":false}," +
+                                "\"no_ads\":{\"product_id\":\"no_ads\",\"store\":\"google\",\"expires_at_ms\":0,\"purchased_at_ms\":0," +
+                                "\"will_renew\":false,\"in_grace\":false,\"billing_issue\":false,\"trial\":false}}," +
+                                "\"subscriptions\":{\"month_sub\":{\"product_id\":\"month_sub\",\"store\":\"apple\",\"expires_at_ms\":1793876523123," +
+                                "\"purchased_at_ms\":1790000000000,\"will_renew\":true,\"in_grace\":false,\"billing_issue\":false,\"trial\":true," +
+                                "\"renews_to\":\"week_sub\"}},\"non_consumables\":[\"no_ads\"]}";
+            var dto = JsonConvert.DeserializeObject<CustomerInfoDto>(json);
+            var fetched = new DateTime(2026, 9, 21, 0, 0, 0, DateTimeKind.Utc);
+            var info = CustomerInfo.FromDto("player-1", dto, fetched, false);
+
+            var sub = info.Subscriptions["month_sub"];
+            Assert.AreEqual(("month_sub", "apple", true, true, "week_sub"), (sub.ProductId, sub.Store, sub.WillRenew, sub.IsTrial, sub.RenewsTo));
+            Assert.AreEqual(DateTimeOffset.FromUnixTimeMilliseconds(1793876523123).UtcDateTime, sub.ExpiresAt);
+            Assert.AreEqual(DateTimeOffset.FromUnixTimeMilliseconds(1790000000000).UtcDateTime, sub.PurchasedAt);
+            var premium = info.Access["premium"];
+            Assert.IsTrue(premium.IsInGracePeriod && premium.HasBillingIssue && !premium.WillRenew);
+            Assert.IsNull(premium.RenewsTo);
+            Assert.IsNull(info.Access["no_ads"].ExpiresAt, "0 = never");
+            Assert.IsNull(info.Access["no_ads"].PurchasedAt);
+            CollectionAssert.AreEqual(new[] { "no_ads" }, info.NonConsumables);
+            Assert.IsTrue(info.HasAccess("premium", fetched));
+            Assert.IsTrue(info.HasAccess("no_ads", fetched.AddYears(10)));
+            Assert.IsFalse(info.HasAccess("vip", fetched));
         }
     }
 
@@ -339,10 +360,10 @@ namespace Purser.Tests
         {
             var fetched = new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             var serverNow = new DateTimeOffset(fetched).ToUnixTimeMilliseconds();
-            var e = new Entitlements("u", new Dictionary<string, long>
+            var e = new CustomerInfo("u", null, new Dictionary<string, SubscriptionInfo>
             {
-                ["month"] = serverNow + 60_000,
-                ["forever"] = 0,
+                ["month"] = new SubscriptionInfo("month", "google", serverNow + 60_000),
+                ["forever"] = new SubscriptionInfo("forever", "manual", 0),
             }, new[] { "vip" }, serverNow, fetched, false);
 
             Assert.IsTrue(e.IsActive("month", fetched.AddSeconds(30)));

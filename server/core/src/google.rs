@@ -117,7 +117,20 @@ pub fn parse_product_purchase(
         linked_purchase_token: String::new(),
         country: crate::country::normalize(v["regionCode"].as_str().unwrap_or("")),
         trial: false,
+        grace_until_ms: 0,
+        billing_issue: false,
+        auto_renew_off: false,
+        renew_product_id: String::new(),
     })
+}
+
+/// How long a Google subscription in its grace period keeps access at least (re-checked daily).
+pub const GRACE_RECHECK_MS: i64 = 24 * 3600 * 1000;
+
+/// `subscriptionNotification.notificationType` values the server treats specially.
+pub mod subscription_notification {
+    /// The subscription was revoked (refunded and ended at once) before its expiry.
+    pub const REVOKED: i64 = 12;
 }
 
 /// Parses `purchases.subscriptionsv2.get` (SubscriptionPurchaseV2).
@@ -132,6 +145,8 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
     // Auto-renewing plans report the price of the next renewal (the buyer's currency).
     let mut price = (0i64, String::new());
     let mut trial = false;
+    let mut auto_renew_off = false;
+    let mut renew_product_id = String::new();
     for item in &line_items {
         let exp = item["expiryTime"].as_str().and_then(parse_rfc3339_ms).unwrap_or(0);
         if exp >= expires_at_ms {
@@ -140,10 +155,19 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
             price = crate::catalog::money_micros(&item["autoRenewingPlan"]["recurringPrice"]).unwrap_or_default();
             // The current offer phase: `freeTrial` | `introductoryPrice` | `basePrice` | `prorationPeriod`.
             trial = item["offerPhase"].get("freeTrial").is_some_and(|t| !t.is_null());
+            auto_renew_off = item["autoRenewingPlan"]["autoRenewEnabled"].as_bool() == Some(false);
+            // A downgrade waiting for the end of the period.
+            renew_product_id = item["deferredItemReplacement"]["productId"].as_str().unwrap_or("").to_string();
         }
     }
 
     let sub_state = v["subscriptionState"].as_str().unwrap_or("");
+    // Grace period: the renewal payment failed, the player keeps access. Google may report the
+    // paid period's end only, so access lasts at least a day more; the worker checks again daily.
+    let in_grace = sub_state == "SUBSCRIPTION_STATE_IN_GRACE_PERIOD";
+    let grace_until_ms = if in_grace { expires_at_ms.max(now_ms + GRACE_RECHECK_MS) } else { 0 };
+    let billing_issue = in_grace || sub_state == "SUBSCRIPTION_STATE_ON_HOLD";
+    let auto_renew_off = auto_renew_off || sub_state == "SUBSCRIPTION_STATE_CANCELED" || v.get("canceledStateContext").is_some_and(|c| !c.is_null());
     let state = match sub_state {
         "SUBSCRIPTION_STATE_ACTIVE" | "SUBSCRIPTION_STATE_IN_GRACE_PERIOD" => TxState::Active,
         // Auto-renew turned off: still paid until expiryTime.
@@ -162,7 +186,7 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
             line_items
                 .iter()
                 .filter_map(|i| i["latestSuccessfulOrderId"].as_str())
-                .last()
+                .next_back()
                 .map(str::to_string)
         })
         .unwrap_or_else(|| token_tx_id(token));
@@ -192,6 +216,10 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
         linked_purchase_token: v["linkedPurchaseToken"].as_str().unwrap_or("").to_string(),
         country: crate::country::normalize(v["regionCode"].as_str().unwrap_or("")),
         trial,
+        grace_until_ms,
+        billing_issue,
+        auto_renew_off,
+        renew_product_id,
     })
 }
 
@@ -337,6 +365,47 @@ mod tests {
         assert_eq!(tx.account_id, "user1");
         assert_eq!(tx.linked_purchase_token, "old");
         assert_eq!(tx.required_store_action(kind::SUBSCRIPTION), store_action::ACKNOWLEDGE);
+    }
+
+    #[test]
+    fn subscription_v2_grace_hold_and_auto_renew() {
+        let body = |state: &str, extra: &str| {
+            format!(
+                r#"{{"subscriptionState":"{state}","latestOrderId":"GPA.5",{extra}
+                "lineItems":[{{"productId":"month_sub","expiryTime":"2026-11-05T11:02:03Z",
+                    "autoRenewingPlan":{{"autoRenewEnabled":true}}}}]}}"#
+            )
+        };
+        let expiry = 1_793_876_523_000;
+        // In grace after the paid period: access for a day more, re-checked daily.
+        let now = expiry + 1000;
+        let grace = parse_subscription_v2("p", "t", &body("SUBSCRIPTION_STATE_IN_GRACE_PERIOD", ""), now).unwrap();
+        assert_eq!((grace.state, grace.billing_issue, grace.auto_renew_off), (TxState::Active, true, false));
+        assert_eq!(grace.grace_until_ms, now + GRACE_RECHECK_MS);
+        assert_eq!(grace.access_until_ms(), now + GRACE_RECHECK_MS);
+        // A grace end Google reports later than that is kept.
+        let early = parse_subscription_v2("p", "t", &body("SUBSCRIPTION_STATE_IN_GRACE_PERIOD", ""), 0).unwrap();
+        assert_eq!(early.grace_until_ms, expiry);
+
+        let hold = parse_subscription_v2("p", "t", &body("SUBSCRIPTION_STATE_ON_HOLD", ""), now).unwrap();
+        assert_eq!((hold.state, hold.billing_issue, hold.grace_until_ms), (TxState::Expired, true, 0));
+
+        let active = parse_subscription_v2("p", "t", &body("SUBSCRIPTION_STATE_ACTIVE", ""), 0).unwrap();
+        assert_eq!((active.billing_issue, active.auto_renew_off, active.grace_until_ms), (false, false, 0));
+        let canceled = parse_subscription_v2(
+            "p",
+            "t",
+            &body("SUBSCRIPTION_STATE_CANCELED", r#""canceledStateContext":{"userInitiatedCancellation":{}},"#),
+            0,
+        )
+        .unwrap();
+        assert_eq!((canceled.state, canceled.auto_renew_off), (TxState::Active, true));
+
+        let downgrade = r#"{"subscriptionState":"SUBSCRIPTION_STATE_ACTIVE","latestOrderId":"GPA.6",
+            "lineItems":[{"productId":"year_sub","expiryTime":"2026-11-05T11:02:03Z",
+                "autoRenewingPlan":{"autoRenewEnabled":false},"deferredItemReplacement":{"productId":"month_sub"}}]}"#;
+        let tx = parse_subscription_v2("p", "t", downgrade, 0).unwrap();
+        assert_eq!((tx.auto_renew_off, tx.renew_product_id.as_str()), (true, "month_sub"));
     }
 
     #[test]

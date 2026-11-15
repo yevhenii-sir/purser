@@ -2,6 +2,66 @@
 
 ## [Unreleased]
 
+### Breaking
+
+This version needs the Purser server of the same version (new `/entitlements` answer, `offer_id`, player tokens,
+signed responses).
+
+- **Customer info replaces entitlements.** `Entitlements` is removed; `IBillingService.CustomerInfo` (`CustomerInfo`:
+  `Access` level name → `AccessInfo`, `Subscriptions` catalog id → `SubscriptionInfo`, `NonConsumables`, server time,
+  fetch time, `IsFromCache`, `IsFresh`) takes its place. `AccessInfo` / `SubscriptionInfo` have `ProductId`, `Store`,
+  `ExpiresAt` (UTC, grace period included, null = never), `PurchasedAt`, `WillRenew`, `IsInGracePeriod`,
+  `HasBillingIssue`, `IsTrial`, `RenewsTo`. `EntitlementsChanged` → `CustomerInfoChanged`, raised only when the items
+  changed; `RefreshEntitlementsAsync` → `RefreshCustomerInfoAsync`; `RestoreAsync` returns `CustomerInfo`. DTOs:
+  `EntitlementsDto` → `CustomerInfoDto` + `EntitlementStateDto`, `RestoreResponse.Entitlements` → `CustomerInfo`
+  (JSON `entitlements`), `IBillingApi.EntitlementsAsync` returns `ApiResult<CustomerInfoDto>`.
+- The customer info cache is stored under a new key (`purser.customer_info.<app>.<user>`); the old entitlements cache
+  is not read.
+- `IHttpTransport.SendAsync` takes request headers; `HttpResponse` carries the response headers and raw body bytes.
+- `IStoreAdapter` implementations: subscription offers are new optional `StoreProduct` constructor arguments.
+
+### Added
+
+- Access levels: `IBillingService.HasAccess(level)`. `BillingProductConfig.access` (JSON `access`, merged from and
+  written to the admin panel's config) lets the Editor without the server (`SkipServer`) grant them; local grants are
+  cached for the next Editor session.
+- Subscription offers: `StoreProduct.Offers` (`StoreOffer`: `Id`, `Token`, `PricingPhases` with `Price`,
+  `LocalizedPrice`, `Currency`, `Period`, `Cycles`, `IsFreeTrial`) and `StoreProduct.IntroEligible`. Google Play: the
+  offer Unity IAP 5 buys (its id and token are not exposed by Unity IAP). App Store: the introductory offer,
+  `isEligibleForIntroOffer`, and the subscription period (no longer only the config's fallback on iOS).
+- `PurchaseAsync(productId, PurchaseOptions)`: `Paywall`, `OfferId` (sent to `/verify` as `offer_id`),
+  `ReplacesProductId` + `ReplacementMode` (Google Play subscription upgrade / downgrade through
+  `UpgradeDowngradeSubscription`; `Deferred` reports `PendingPayment` until the renewal). New optional adapter
+  interface `ISubscriptionChangeStore`.
+- `PurchaseWithPromotionalOfferAsync(productId, offerId, paywall)`: promotional offer purchases count in A/B test
+  results; the offer id is sent as `offer_id`.
+- Player tokens for builds that require signed client requests: `IPlayerTokenProvider` (`FuncPlayerTokenProvider`)
+  in `BillingDependencies.PlayerTokenProvider`, `Billing.Create(..., playerTokenProvider)`, the bootstrap's
+  "Player Token Provider" field and the VContainer / Zenject registrations. Every client request carries
+  `Authorization: Bearer <token>`; on `401 ERR_CLIENT_AUTH` the provider is asked once more and the request is retried
+  once. `IPlayerTokenConsumer` is implemented by `BillingApiClient` and the Stripe, Xsolla and Steam adapters.
+- Rate limits: a `429` is retried after its `Retry-After` (at most 60 s) and never finishes a purchase;
+  `ApiResult.Code`, `ApiResult.RetryAfter`, `ApiResult.IsRateLimited`, `ErrorCodes`. Paywalls use their cache on `429`.
+- Signed responses: `BillingConfig.responseSigningPublicKey` (base64 Ed25519). When set, `/entitlements` and
+  `/restore` answers without a valid `X-Purser-Signature` are errors and the cached customer info is kept. Ed25519
+  verification is implemented in C# (RFC 8032, tested with its vectors).
+- Store connection: `IBillingService.StoreDisconnected` / `StoreReconnected`. When Unity IAP reports a disconnect after
+  initialization, `IsInitialized` turns false and the service reconnects with backoff (5 s doubling to 5 minutes),
+  then refreshes the customer info. New optional adapter interface `IStoreConnectionEvents`.
+- The customer info is refreshed when the app returns to the foreground (at most every 5 minutes).
+
+### Fixed
+
+- `GetExpiration` applies the same `entitlementsMaxAgeDays` limit as `IsActive`.
+- `IsActive` / `GetExpiration` by a store product id (`premium_android`) find a subscription keyed by the catalog id.
+- A changed id of the user id provider (e.g. `FuncUserIdProvider`) is noticed: it is read again before server
+  requests, on resume and once a second, and a change works like `SetUserId` (waiting orders are verified, the new
+  player's cache is loaded).
+- Cancelling the token of `PurchaseAsync` no longer drops the paywall of the store purchase, which still counts for
+  the A/B test when it completes.
+- Apple restore: an order re-delivered by `RestoreTransactions` while it is verified is not verified again (in-flight
+  orders are tracked by key and transaction id) and is not posted to `/restore` too.
+
 ## [0.7.0] - 2026-11-15
 
 ### Breaking

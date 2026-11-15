@@ -9,12 +9,13 @@ import type { Kind, Platform } from "./types"
  * {"serverBaseUrl": "https://.../route",
  *  "builds": [{"store": "google", "appId": "com.example.mygame"}],
  *  "products": [{"id": "gems_100", "type": "Consumable", "storeIds": {"apple": "com.example.gems100"},
- *                "price": 0.99, "currency": "USD", "period": "P1M"}]}
+ *                "price": 0.99, "currency": "USD", "period": "P1M", "access": ["premium"]}]}
  * ```
  *
  * `store` is a registry store id; `storeIds` lists only the stores whose product id differs from `id`.
  * `price` / `currency` (optional) are the Unity fallback price and the server's default price; `period` (optional,
- * subscriptions) is the Unity fallback period and the product's period here.
+ * subscriptions) is the Unity fallback period and the product's period here. `access` (optional) lists the access
+ * levels the product unlocks (the Unity package uses them for Editor grants and offline starts).
  */
 
 export interface UnityBuild {
@@ -33,6 +34,8 @@ export interface UnityProduct {
   currency: string
   /** Subscriptions: fallback period (`P1M`), "" if none. */
   period: string
+  /** Access levels the product unlocks. */
+  access: string[]
 }
 
 export interface ParsedUnityConfig {
@@ -110,8 +113,11 @@ export function parseUnityConfig(text: string): ParsedUnityConfig {
     }
     const period = kind === "subscription" ? str(p.period).toUpperCase() : ""
     if (period && !PERIODS.some(([v]) => v === period)) throw new Error(`Product ${id}: "period" must be one of ${PERIODS.map(([v]) => v).join(", ")}`)
+    if (p.access !== undefined && p.access !== null && !(Array.isArray(p.access) && p.access.every((l) => typeof l === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(l))))
+      throw new Error(`Product ${id}: "access" must be a list of access level names (letters, digits, _ - .)`)
+    const access = kind === "consumable" ? [] : [...new Set(((p.access as string[] | undefined) || []).map((l) => l.trim()))]
     const j = products.findIndex((x) => x.product_id === id)
-    const item = { product_id: id, kind, store_ids, price_micros, currency, period }
+    const item = { product_id: id, kind, store_ids, price_micros, currency, period, access }
     if (j >= 0) products[j] = item
     else products.push(item)
   }
@@ -129,7 +135,7 @@ export function productIdIn(p: { product_id: string; store_ids?: Record<string, 
 export function toUnityConfig(
   base: string,
   builds: { store: string; app_id: string }[],
-  products: { product_id: string; kind: Kind; store_ids?: Record<string, string>; price_micros?: number; currency?: string; period?: string }[],
+  products: { product_id: string; kind: Kind; store_ids?: Record<string, string>; price_micros?: number; currency?: string; period?: string; access?: string[] }[],
 ): string {
   const stores = [...new Set(builds.map((b) => b.store))]
   return JSON.stringify(
@@ -143,7 +149,8 @@ export function toUnityConfig(
           const storeIds = Object.fromEntries(stores.map((s) => [s, productIdIn(p, s).trim()]).filter(([, v]) => v && v !== id))
           const price = Number(p.price_micros || 0) > 0 && p.currency ? { price: Number(p.price_micros) / 1e6, currency: p.currency } : {}
           const period = p.kind === "subscription" && p.period ? { period: p.period } : {}
-          return { id, type: UNITY_TYPE[p.kind], ...(Object.keys(storeIds).length ? { storeIds } : {}), ...price, ...period }
+          const access = p.kind !== "consumable" && p.access?.length ? { access: p.access } : {}
+          return { id, type: UNITY_TYPE[p.kind], ...(Object.keys(storeIds).length ? { storeIds } : {}), ...price, ...period, ...access }
         }),
     },
     null,

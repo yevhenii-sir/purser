@@ -76,7 +76,7 @@ Without Caddy, put any TLS proxy in front of `127.0.0.1:3000` with the same allo
 
 ## Upgrading
 
-- **Module:** run `./publish.sh` again (or with `--release <tag>`). It publishes to the same database and never passes `--delete-data`, so the ledger stays; a release that needs a clean database says so in its notes.
+- **Module:** run `./publish.sh` again (or with `--release <tag>`). It publishes to the same database and never passes `--delete-data`, so the ledger stays; a release that needs a clean database says so in its notes: back up with `server/backup.py` first and restore after the publish ([Upgrading](../../docs/self-hosting.md#upgrading)).
 - **SpacetimeDB:** change `SPACETIMEDB_VERSION` in `.env` (to the version the module release names), then `docker compose pull && docker compose up -d`.
 
 ## Data and backups
@@ -87,7 +87,7 @@ Without Caddy, put any TLS proxy in front of `127.0.0.1:3000` with the same allo
 | `purser_stdb-cli` | the CLI login: the **owner token** of the billing database | no more publishing or owner-only actions; keep a copy of the token (`./publish.sh --token`) in your password manager, restore it with `docker compose run --rm cli login --token <token>` |
 | `purser_caddy-data` | certificates | Caddy requests new ones |
 
-Back up with the server stopped, for example:
+`server/backup.py backup` copies the billing database while it runs (see [Backups and monitoring](../../docs/self-hosting.md#backups-and-monitoring)). To keep the whole SpacetimeDB data directory as well, back up the volume with the server stopped:
 
 ```bash
 docker compose stop spacetimedb

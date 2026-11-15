@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace Purser
 {
-    /// <summary>Key-value persistence of the package: entitlements and paywall caches (offline starts), started
+    /// <summary>Key-value persistence of the package: customer info and paywall caches (offline starts), started
     /// web and Steam orders, fulfilled Amazon receipts, the refund data consent.</summary>
     public interface IBillingStorage
     {
@@ -42,17 +42,18 @@ namespace Purser
         public void Save(string key, string value) => m_Values[key] = value;
     }
 
-    internal static class EntitlementsCache
+    /// <summary>The last customer info per app and player, for offline starts.</summary>
+    internal static class CustomerInfoCache
     {
-        private const string KeyPrefix = "purser.entitlements.";
+        private const string KeyPrefix = "purser.customer_info.";
 
         private sealed class Snapshot
         {
-            [JsonProperty("dto")] public EntitlementsDto Dto;
+            [JsonProperty("dto")] public CustomerInfoDto Dto;
             [JsonProperty("fetched_at_ticks")] public long FetchedAtTicks;
         }
 
-        public static void Save(IBillingStorage storage, string appId, string userId, EntitlementsDto dto, DateTime fetchedAtUtc,
+        public static void Save(IBillingStorage storage, string appId, string userId, CustomerInfoDto dto, DateTime fetchedAtUtc,
             BillingLog log)
         {
             try
@@ -62,11 +63,11 @@ namespace Purser
             }
             catch (Exception e)
             {
-                log?.Warning("Could not cache the entitlements for offline starts: " + e.Message);
+                log?.Warning("Could not cache the customer info for offline starts: " + e.Message);
             }
         }
 
-        public static Entitlements Load(IBillingStorage storage, string appId, string userId, BillingLog log)
+        public static CustomerInfo Load(IBillingStorage storage, string appId, string userId, BillingLog log)
         {
             try
             {
@@ -74,17 +75,14 @@ namespace Purser
                 if (string.IsNullOrEmpty(json))
                     return null;
                 var s = JsonConvert.DeserializeObject<Snapshot>(json);
-                return s?.Dto == null ? null : FromDto(userId, s.Dto, new DateTime(s.FetchedAtTicks, DateTimeKind.Utc), true);
+                return s?.Dto == null ? null : CustomerInfo.FromDto(userId, s.Dto, new DateTime(s.FetchedAtTicks, DateTimeKind.Utc), true);
             }
             catch (Exception e)
             {
-                log?.Warning("Could not read the cached entitlements: " + e.Message);
+                log?.Warning("Could not read the cached customer info: " + e.Message);
                 return null;
             }
         }
-
-        public static Entitlements FromDto(string userId, EntitlementsDto dto, DateTime fetchedAtUtc, bool fromCache) =>
-            new Entitlements(userId, dto.Subscriptions, dto.NonConsumables, dto.ServerTimeMs, fetchedAtUtc, fromCache);
 
         private static string Key(string appId, string userId) => KeyPrefix + appId + "." + userId;
     }

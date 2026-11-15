@@ -162,7 +162,7 @@ namespace Purser.Tests
         {
             CreateService();
             m_Iap.UpdatePages.Add(new List<AmazonReceipt> { FakeAmazonIap.Receipt("vip_monthly", "sub-1") });
-            m_Api.RestoreResult = new ApiResult<RestoreResponse>(200, new RestoreResponse { Entitlements = new EntitlementsDto { Subscriptions = new Dictionary<string, long>(), NonConsumables = new List<string>() } }, null);
+            m_Api.RestoreResult = new ApiResult<RestoreResponse>(200, new RestoreResponse { CustomerInfo = FakeApi.Info(null, null) }, null);
 
             Sync.Run(m_Service.RestoreAsync());
 
@@ -188,7 +188,7 @@ namespace Purser.Tests
             m_Iap.HoldUpdates = true;
             m_Iap.UpdatePages.Add(new List<AmazonReceipt> { FakeAmazonIap.Receipt("gems_100", "r-1") });
             CreateService();
-            m_Api.RestoreResult = new ApiResult<RestoreResponse>(200, new RestoreResponse { Entitlements = new EntitlementsDto { Subscriptions = new Dictionary<string, long>(), NonConsumables = new List<string>() } }, null);
+            m_Api.RestoreResult = new ApiResult<RestoreResponse>(200, new RestoreResponse { CustomerInfo = FakeApi.Info(null, null) }, null);
 
             var restore = m_Service.RestoreAsync();
             Assert.IsFalse(restore.IsCompleted);

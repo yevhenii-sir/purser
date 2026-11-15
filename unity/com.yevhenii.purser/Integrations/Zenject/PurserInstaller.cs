@@ -7,8 +7,9 @@ namespace Purser.Zenject
     /// <summary>
     /// Zenject / Extenject installer. Compiled only with the scripting define <c>PURSER_ZENJECT</c>
     /// (Extenject is usually installed from the Asset Store, so it cannot be detected automatically).
-    /// Optional <see cref="IUserIdProvider"/>, <see cref="IAnalyticsIdProvider"/>, <see cref="IAttributionProvider"/> and
-    /// <see cref="IStoreAdapter"/> (Amazon, Steam, Stripe, Xsolla) bindings are picked up.
+    /// Optional <see cref="IUserIdProvider"/>, <see cref="IAnalyticsIdProvider"/>, <see cref="IAttributionProvider"/>,
+    /// <see cref="IPlayerTokenProvider"/> and <see cref="IStoreAdapter"/> (Amazon, Steam, Stripe, Xsolla) bindings are
+    /// picked up.
     /// </summary>
     public sealed class PurserInstaller : MonoInstaller
     {
@@ -33,6 +34,7 @@ namespace Purser.Zenject
                 UserIdProvider = ctx.Container.TryResolve<IUserIdProvider>(),
                 AnalyticsIdProvider = ctx.Container.TryResolve<IAnalyticsIdProvider>(),
                 AttributionProvider = ctx.Container.TryResolve<IAttributionProvider>(),
+                PlayerTokenProvider = ctx.Container.TryResolve<IPlayerTokenProvider>(),
                 Store = ctx.Container.TryResolve<IStoreAdapter>(),
             })).AsSingle();
 

@@ -132,7 +132,7 @@ namespace Purser
                 Language = NullIfEmpty(m_Options.Language),
                 Attribution = Checkout?.Attribution?.Count > 0 ? Checkout.Attribution : null,
             };
-            var res = await m_Http.PostAsync<XsollaCheckoutResponse>("/checkout/xsolla", request, Lifetime);
+            var res = await m_Http.PostAsync<XsollaCheckoutResponse>("/checkout/xsolla", request, userId, Lifetime);
             var checkout = res.Value;
             if (!res.IsHttpSuccess || string.IsNullOrEmpty(checkout?.Url) || string.IsNullOrEmpty(checkout.OrderId))
             {
@@ -154,8 +154,15 @@ namespace Purser
             if (user == null)
                 return Task.FromResult(Answer(VerifyStatus.PendingOrCanceled, "the order belongs to another user"));
             var status = new StatusRequest { AppId = m_AppId, UserId = user, OrderId = order.TransactionId };
-            return PollAsync(token => m_Http.PostAsync<VerifyResponse>("/checkout/xsolla/status", status, token),
+            return PollAsync(token => m_Http.PostAsync<VerifyResponse>("/checkout/xsolla/status", status, user, token),
                 m_Options.PollInterval, m_Options.PaymentTimeout, null, ct);
+        }
+
+        /// <inheritdoc/>
+        public override void SetPlayerTokenProvider(IPlayerTokenProvider provider)
+        {
+            base.SetPlayerTokenProvider(provider);
+            m_Http.Tokens = provider;
         }
     }
 }

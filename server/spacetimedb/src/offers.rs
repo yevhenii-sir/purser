@@ -21,6 +21,15 @@ use serde_json::{json, Value};
 /// `server_state` key of the counter that makes every nonce unique.
 pub const NONCE_COUNTER_KEY: &str = "promotional_offer_nonce_counter";
 
+impl crate::client_guard::ClientRequest for AppleOfferRequest {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
+
 #[derive(Deserialize, Clone)]
 pub struct AppleOfferRequest {
     pub app_id: String,

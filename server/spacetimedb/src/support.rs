@@ -33,7 +33,7 @@ pub struct AdminRevoke {
 }
 
 pub fn revoked_by_admin(tx: &ReducerContext, purchase_id: &str) -> bool {
-    tx.db.admin_revoke().purchase_id().find(&purchase_id.to_string()).is_some()
+    tx.db.admin_revoke().purchase_id().find(purchase_id.to_string()).is_some()
 }
 
 /// Called by `ledger::mark_inactive` when the store reports a refund / revoke. `None`: no admin
@@ -95,7 +95,7 @@ pub fn revoke(tx: &TxContext, purchase_id: &str, reason: &str) -> Result<Option<
         .db
         .purchase()
         .id()
-        .find(&purchase_id.to_string())
+        .find(purchase_id.to_string())
         .ok_or("[ERR_PURCHASE_NOT_FOUND] Unknown purchase")?;
     who.check_app(tx, &p.app_id)?;
     if !rules::admin_revoke_decision(&p.status).map_err(|e| format!("[ERR_NOT_REVOCABLE] {e}"))? {
@@ -105,7 +105,7 @@ pub fn revoke(tx: &TxContext, purchase_id: &str, reason: &str) -> Result<Option<
     let now = tx_now_micros(tx);
     let details = format!("revoked by admin {}{}", tx.sender(), if note.is_empty() { String::new() } else { format!(": {note}") });
     let id = ledger::mark_revoked_by_admin(tx, p, now / 1000, &details);
-    tx.db.admin_revoke().purchase_id().delete(&purchase_id.to_string());
+    tx.db.admin_revoke().purchase_id().delete(purchase_id.to_string());
     tx.db.admin_revoke().insert(AdminRevoke { purchase_id: purchase_id.to_string(), by: tx.sender(), note, at_micros: now });
     Ok(id)
 }
@@ -140,6 +140,8 @@ fn purchase_json(tx: &TxContext, p: &Purchase) -> Value {
         "price_micros": p.price_micros, "currency": p.currency, "expires_at_ms": p.expires_at_ms,
         "attempts": p.attempts, "next_attempt_at_micros": p.next_attempt_at_micros, "last_error": p.last_error,
         "created_at_micros": p.created_at_micros, "updated_at_micros": p.updated_at_micros,
+        "grace_until_ms": p.grace_until_ms, "billing_issue": p.billing_issue, "auto_renew_off": p.auto_renew_off,
+        "renew_product_id": p.renew_product_id, "replaced_by": p.replaced_by, "refunded_micros": p.refunded_micros, "offer_id": p.offer_id,
         "attention": rules::attention(&p.status, p.attempts, p.next_attempt_at_micros),
         "admin_revoke": revoke,
     })
@@ -155,7 +157,7 @@ fn fx_table(tx: &TxContext, rows: &[Purchase]) -> FxTable {
 /// Everything support needs about one `user_id`, across every app of the database.
 /// `only`: the builds an admin limited to some apps may see (`None` = all).
 pub fn profile(tx: &TxContext, user_id: &str, only: Option<&BTreeSet<String>>) -> Value {
-    let visible = |app_id: &str| only.map_or(true, |o| o.contains(app_id));
+    let visible = |app_id: &str| only.is_none_or(|o| o.contains(app_id));
     let mut rows: Vec<Purchase> = tx.db.purchase().user_id().filter(user_id).filter(|p| visible(&p.app_id)).collect();
     rows.sort_by_key(|p| std::cmp::Reverse((p.created_at_micros, p.id.clone())));
     let apps: Vec<GameApp> = tx.db.game_app().iter().filter(|a| visible(&a.app_id)).collect();
@@ -163,13 +165,13 @@ pub fn profile(tx: &TxContext, user_id: &str, only: Option<&BTreeSet<String>>) -
     let attribution: Vec<Value> = apps
         .iter()
         .filter_map(|a| {
-            let r = tx.db.user_attribution().key().find(&attribution_key(&a.app_id, user_id))?;
+            let r = tx.db.user_attribution().key().find(attribution_key(&a.app_id, user_id))?;
             let ids: BTreeMap<String, String> = serde_json::from_str(&r.attribution_json).unwrap_or_default();
             Some(json!({ "app_id": a.app_id, "ids": ids, "updated_at_micros": r.updated_at_micros }))
         })
         .collect();
 
-    let players: Vec<Value> = crate::players::of_user(tx, user_id).into_iter().filter(|p| p["app_id"].as_str().is_some_and(|a| visible(a))).collect();
+    let players: Vec<Value> = crate::players::of_user(tx, user_id).into_iter().filter(|p| p["app_id"].as_str().is_some_and(&visible)).collect();
     let mut seen: BTreeSet<String> = rows.iter().map(|p| p.app_id.clone()).collect();
     seen.extend(attribution.iter().filter_map(|a| a["app_id"].as_str().map(str::to_string)));
     seen.extend(players.iter().filter_map(|p| p["app_id"].as_str().map(str::to_string)));
@@ -244,7 +246,7 @@ pub fn find_players(tx: &TxContext, query: &str, only: Option<&BTreeSet<String>>
     if q.is_empty() {
         return Vec::new();
     }
-    let visible = |app_id: &str| only.map_or(true, |o| o.contains(app_id));
+    let visible = |app_id: &str| only.is_none_or(|o| o.contains(app_id));
     let mut out: Vec<Value> = Vec::new();
     let mut add = |user_id: &str, via: &str, purchase_id: &str| {
         if !user_id.is_empty() && !out.iter().any(|m| m["user_id"] == user_id) {
@@ -253,7 +255,7 @@ pub fn find_players(tx: &TxContext, query: &str, only: Option<&BTreeSet<String>>
     };
     if tx.db.purchase().user_id().filter(q).any(|p| visible(&p.app_id)) {
         add(q, "user_id", "");
-    } else if tx.db.game_app().iter().filter(|a| visible(&a.app_id)).any(|a| tx.db.user_attribution().key().find(&attribution_key(&a.app_id, q)).is_some()) {
+    } else if tx.db.game_app().iter().filter(|a| visible(&a.app_id)).any(|a| tx.db.user_attribution().key().find(attribution_key(&a.app_id, q)).is_some()) {
         add(q, "attribution", "");
     }
     let (ledger_ids, originals) = rules::search_keys(q);

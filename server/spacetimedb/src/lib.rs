@@ -19,6 +19,7 @@ mod access;
 mod admin_views;
 mod alerts;
 mod catalog;
+mod client_guard;
 mod config;
 mod consumption;
 mod ctx;
@@ -31,6 +32,7 @@ mod ledger;
 mod net;
 mod offers;
 mod paywalls;
+mod player_data;
 mod players;
 mod poll;
 mod revenue;
@@ -110,6 +112,9 @@ pub struct GameApp {
     /// Amazon builds: the SNS topic notifications must come from (empty: any topic with a valid
     /// AWS signature; the setup check shows the topic last seen).
     pub sns_topic_arn: String,
+    /// `open` | `signed` (`purser_core::client_api::mode`): whether client requests need a player
+    /// token signed by the game's backend (`client_auth_secret`).
+    pub client_auth: String,
 }
 
 #[derive(Clone)]
@@ -138,6 +143,9 @@ pub struct Product {
     /// The app's own id of the product, the same in every store (the Unity config's product `id`):
     /// paywalls list it and entitlements are keyed by it. "" = the same as `product_id`.
     pub catalog_id: String,
+    /// Access levels the product unlocks, comma-separated (`premium,no_ads`); the same on every
+    /// build of the catalog product. See `purser_core::customer`.
+    pub access: String,
 }
 
 impl Product {
@@ -155,6 +163,7 @@ impl Product {
             period: String::new(),
             apple_group: String::new(),
             catalog_id: String::new(),
+            access: String::new(),
         }
     }
 
@@ -248,6 +257,22 @@ pub struct Purchase {
     pub country: String,
     /// A free-trial period: nothing was paid (`price_micros` is 0).
     pub trial: bool,
+    /// Subscriptions: the renewal payment failed and the store keeps access until then (grace
+    /// period); 0 = not in one. Access lasts until [`Purchase::access_until_ms`].
+    pub grace_until_ms: i64,
+    /// Subscriptions: the store could not charge the renewal (grace period, billing retry, hold).
+    pub billing_issue: bool,
+    /// Subscriptions: the player turned auto-renew off.
+    pub auto_renew_off: bool,
+    /// Subscriptions: the product the next renewal switches to (a pending downgrade); empty = same.
+    pub renew_product_id: String,
+    /// Ledger id of the subscription that replaced this one (upgrade / crossgrade); empty otherwise.
+    pub replaced_by: String,
+    /// Part of `price_micros` refunded while the purchase stays granted (Stripe partial refunds).
+    pub refunded_micros: i64,
+    /// The store offer the client said the player bought (Google offer / base plan id, Apple
+    /// promotional offer id); empty when none.
+    pub offer_id: String,
     /// Paywall the client bought from (`/verify` `placement`, `variant_id`, `test_id`, `paywall_id`);
     /// empty when unknown. Renewals inherit it from the purchase that started the subscription.
     pub paywall_placement: String,
@@ -290,11 +315,23 @@ impl Purchase {
             previous_user_id: String::new(),
             country: String::new(),
             trial: false,
+            grace_until_ms: 0,
+            billing_issue: false,
+            auto_renew_off: false,
+            renew_product_id: String::new(),
+            replaced_by: String::new(),
+            refunded_micros: 0,
+            offer_id: String::new(),
             paywall_placement: String::new(),
             paywall_variant_id: String::new(),
             paywall_test_id: String::new(),
             paywall_id: String::new(),
         }
+    }
+
+    /// When access ends: the paid period or the grace period after it; 0 = never.
+    pub fn access_until_ms(&self) -> i64 {
+        purser_core::model::access_until_ms(self.expires_at_ms, self.grace_until_ms)
     }
 }
 
@@ -469,6 +506,9 @@ struct GameAppInput {
     /// Amazon builds: the pinned SNS topic; missing keeps the stored one, empty clears it.
     #[serde(default)]
     sns_topic_arn: Option<String>,
+    /// `open` | `signed`; missing keeps the stored mode (new builds: `open`).
+    #[serde(default)]
+    client_auth: Option<String>,
 }
 
 /// Creates or replaces a store application. `json` is a `GameAppInput` object.
@@ -527,6 +567,11 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
     if !sns_topic_arn.is_empty() && !purser_core::sns::is_valid_topic_arn(&sns_topic_arn) {
         return Err("[ERR_BAD_APP] sns_topic_arn must look like arn:aws:sns:<region>:<account>:<topic>".into());
     }
+    let client_auth = match i.client_auth {
+        Some(m) if purser_core::client_api::mode::is_valid(&m) => m,
+        Some(_) => return Err("[ERR_BAD_APP] client_auth must be open or signed".into()),
+        None => existing.as_ref().map(|a| a.client_auth.clone()).unwrap_or_else(|| purser_core::client_api::mode::OPEN.to_string()),
+    };
 
     let app = GameApp {
         game_key: if i.game_key.is_empty() { i.app_id.clone() } else { i.game_key },
@@ -545,6 +590,7 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
         store: store.id.to_string(),
         apple_refund_mode: i.apple_refund_mode,
         sns_topic_arn,
+        client_auth,
     };
     if existing.is_some() {
         ctx.db.game_app().app_id().update(app.clone());
@@ -617,6 +663,9 @@ struct ProductInput {
     /// empty = the store id.
     #[serde(default)]
     catalog_id: Option<String>,
+    /// Access levels, comma-separated; missing keeps the stored ones.
+    #[serde(default)]
+    access: Option<String>,
 }
 
 pub fn product_key(app_id: &str, product_id: &str) -> String {
@@ -668,8 +717,16 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
             Some(c) => purser_core::catalog::normalize_catalog_id(&c, &i.product_id).map_err(|e| format!("[ERR_BAD_PRODUCT] {}: {e}", i.product_id))?,
             None => old.as_ref().map(|o| o.catalog_id.clone()).unwrap_or_default(),
         };
+        let access = match i.access {
+            Some(a) => purser_core::customer::normalize_access(&a).map_err(|e| format!("[ERR_BAD_PRODUCT] {}: {e}", i.product_id))?,
+            None => old.as_ref().map(|o| o.access.clone()).unwrap_or_default(),
+        };
+        if !access.is_empty() && i.kind == kind::CONSUMABLE {
+            return Err(format!("[ERR_BAD_PRODUCT] {}: a consumable unlocks no access level", i.product_id));
+        }
         let p = Product {
             catalog_id,
+            access,
             title: keep(i.title, old.as_ref().map(|o| &o.title)),
             description: keep(i.description, old.as_ref().map(|o| &o.description)),
             period: if subscription { keep(i.period, old.as_ref().map(|o| &o.period)).to_ascii_uppercase() } else { String::new() },
@@ -702,8 +759,29 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
 pub fn admin_delete_product(ctx: &ReducerContext, app_id: String, product_id: String) -> Result<(), String> {
     let who = crate::access::require_app(ctx, purser_core::roles::Cap::Configure, &app_id)?;
     crate::access::audit(ctx, &who, "admin_delete_product", &app_id, &product_id);
-    ctx.db.product().key().delete(&product_key(&app_id, &product_id));
+    ctx.db.product().key().delete(product_key(&app_id, &product_id));
     Ok(())
+}
+
+/// The public key games check signed `/entitlements` and `/restore` answers with (base64), or
+/// `{"public_key": null}` when the build has no response signing key.
+#[spacetimedb::procedure]
+pub fn admin_response_public_key(ctx: &mut spacetimedb::ProcedureContext, app_id: String) -> String {
+    let found = crate::ctx::Ctx::tx(ctx, |tx| {
+        crate::access::require_app(tx, purser_core::roles::Cap::Read, &app_id)?;
+        let app = config::find_app(tx, &app_id).ok_or(format!("[ERR_UNKNOWN_APP] {app_id}"))?;
+        Ok::<_, String>(config::secret(tx, &app, config::secret_name::RESPONSE_SIGNING_KEY).map(|s| s.value))
+    });
+    match found {
+        Ok(seed) => {
+            let public = seed.map(|s| purser_core::client_api::public_key(&s)).transpose();
+            match public {
+                Ok(p) => serde_json::json!({ "public_key": p }).to_string(),
+                Err(e) => serde_json::json!({ "error": e }).to_string(),
+            }
+        }
+        Err(e) => serde_json::json!({ "error": e }).to_string(),
+    }
 }
 
 /// Stores a secret. `scope` = app id (e.g. `com.studio.game`), account name, or `default`.
@@ -740,7 +818,7 @@ pub fn admin_delete_credential(ctx: &ReducerContext, scope: String, name: String
     let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Secrets)?;
     who.check_secret_scope(ctx, &scope)?;
     crate::access::audit(ctx, &who, "admin_delete_credential", &format!("{scope}/{name}"), "deleted");
-    ctx.db.credential().key().delete(&config::credential_key(&scope, &name));
+    ctx.db.credential().key().delete(config::credential_key(&scope, &name));
     drop_cached_tokens(ctx, &scope, &name);
     Ok(())
 }
@@ -882,6 +960,20 @@ struct PurchaseImport {
     #[serde(default)]
     trial: bool,
     #[serde(default)]
+    grace_until_ms: i64,
+    #[serde(default)]
+    billing_issue: bool,
+    #[serde(default)]
+    auto_renew_off: bool,
+    #[serde(default)]
+    renew_product_id: String,
+    #[serde(default)]
+    replaced_by: String,
+    #[serde(default)]
+    refunded_micros: i64,
+    #[serde(default)]
+    offer_id: String,
+    #[serde(default)]
     paywall_placement: String,
     #[serde(default)]
     paywall_variant_id: String,
@@ -975,6 +1067,13 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             previous_user_id: r.previous_user_id,
             country: r.country,
             trial: r.trial,
+            grace_until_ms: r.grace_until_ms,
+            billing_issue: r.billing_issue,
+            auto_renew_off: r.auto_renew_off,
+            renew_product_id: r.renew_product_id,
+            replaced_by: r.replaced_by,
+            refunded_micros: r.refunded_micros,
+            offer_id: r.offer_id,
             paywall_placement: r.paywall_placement,
             paywall_variant_id: r.paywall_variant_id,
             paywall_test_id: r.paywall_test_id,
@@ -1039,7 +1138,7 @@ pub fn admin_upsert_integration(ctx: &ReducerContext, json: String) -> Result<()
 pub fn admin_delete_integration(ctx: &ReducerContext, app_id: String, kind: String) -> Result<(), String> {
     let who = crate::access::require_app(ctx, purser_core::roles::Cap::Configure, &app_id)?;
     crate::access::audit(ctx, &who, "admin_delete_integration", &app_id, &kind);
-    ctx.db.integration().key().delete(&integrations::integration_key(&app_id, &kind));
+    ctx.db.integration().key().delete(integrations::integration_key(&app_id, &kind));
     Ok(())
 }
 
@@ -1091,6 +1190,7 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
         attribution: sanitize_attribution(&i.attribution),
         country: String::new(),
         commission_percent: crate::revenue::commission(ctx).percent_for_period(&app.app_id, false),
+        previous_product_id: String::new(),
     };
     let only = if i.kind.is_empty() { None } else { Some(i.kind.as_str()) };
     let queued = integrations::enqueue_event(ctx, &app, &format!("test:{now}"), &event, only);

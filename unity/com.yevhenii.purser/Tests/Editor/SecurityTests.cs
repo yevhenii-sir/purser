@@ -53,14 +53,14 @@ namespace Purser.Tests
         {
             var transport = new FakeTransport();
             var player = new JsonHttp("http://billing.example.com/route", 30, transport, isEditor: false);
-            Assert.Throws<BillingException>(() => Sync.Run(player.PostAsync<StatusResponse>("/entitlements", new { }, CancellationToken.None)));
+            Assert.Throws<BillingException>(() => Sync.Run(player.PostAsync<StatusResponse>("/entitlements", new { }, null, CancellationToken.None)));
             Assert.Throws<BillingException>(() => Sync.Run(player.GetAsync("/healthz", CancellationToken.None)));
             Assert.IsEmpty(transport.Requests, "nothing is sent");
 
             var editor = new JsonHttp("http://billing.example.com/route", 30, transport, isEditor: true);
-            Sync.Run(editor.PostAsync<StatusResponse>("/entitlements", new { }, CancellationToken.None));
+            Sync.Run(editor.PostAsync<StatusResponse>("/entitlements", new { }, null, CancellationToken.None));
             var local = new JsonHttp("http://127.0.0.1:3013/route", 30, transport, isEditor: false);
-            Sync.Run(local.PostAsync<StatusResponse>("/entitlements", new { }, CancellationToken.None));
+            Sync.Run(local.PostAsync<StatusResponse>("/entitlements", new { }, null, CancellationToken.None));
             Assert.AreEqual(2, transport.Requests.Count);
         }
 
@@ -103,7 +103,7 @@ namespace Purser.Tests
         }
     }
 
-    public sealed class EntitlementsClockTests
+    public sealed class CustomerInfoClockTests
     {
         private static readonly DateTime T0 = new DateTime(2027, 1, 15, 12, 0, 0, DateTimeKind.Utc);
         private static readonly long T0Ms = new DateTimeOffset(T0).ToUnixTimeMilliseconds();
@@ -111,7 +111,9 @@ namespace Purser.Tests
         [Test]
         public void EstimatedServerNow_IgnoresAClockSetBack()
         {
-            var e = new Entitlements("u", new Dictionary<string, long> { ["premium"] = T0Ms + 3_600_000 }, null, T0Ms, T0, false);
+            var e = new CustomerInfo("u", null,
+                new Dictionary<string, SubscriptionInfo> { ["premium"] = new SubscriptionInfo("premium", "google", T0Ms + 3_600_000) },
+                null, T0Ms, T0, false);
             Assert.AreEqual(T0Ms + 60_000, e.EstimatedServerNowMs(T0.AddMinutes(1)));
             Assert.AreEqual(T0Ms, e.EstimatedServerNowMs(T0.AddDays(-30)), "time never runs backwards from the server's clock");
             Assert.IsFalse(e.IsSubscriptionActive("premium", T0.AddHours(2)));
@@ -120,7 +122,7 @@ namespace Purser.Tests
         [Test]
         public void IsFresh_ForMaxAge_AndNotWithAClockSetBack()
         {
-            var e = new Entitlements("u", null, null, T0Ms, T0, true);
+            var e = new CustomerInfo("u", null, null, null, T0Ms, T0, true);
             var week = TimeSpan.FromDays(7);
             Assert.IsTrue(e.IsFresh(T0, week));
             Assert.IsTrue(e.IsFresh(T0.AddDays(6), week));
@@ -158,7 +160,7 @@ namespace Purser.Tests
                 var api = new FakeApi { EntitlementsResult = FakeApi.Entitlements(new Dictionary<string, long> { ["premium"] = T0Ms + 30L * 86_400_000 }, "vip") };
                 api.EntitlementsResult.Value.ServerTimeMs = T0Ms;
                 var online = Create(api);
-                Sync.Run(online.RefreshEntitlementsAsync());
+                Sync.Run(online.RefreshCustomerInfoAsync());
                 Assert.IsTrue(online.IsActive("premium"));
                 now = T0.AddDays(6);
                 Assert.IsTrue(online.IsActive("premium"));
@@ -175,7 +177,7 @@ namespace Purser.Tests
                 // Next launch, server unreachable: the cached copy follows the same rule.
                 config.entitlementsMaxAgeDays = BillingConfig.DefaultEntitlementsMaxAgeDays;
                 var offline = Create(new FakeApi());
-                Assert.IsTrue(offline.Entitlements.IsFromCache);
+                Assert.IsTrue(offline.CustomerInfo.IsFromCache);
                 Assert.IsFalse(offline.IsActive("premium"));
                 Assert.IsTrue(offline.IsActive("vip"));
                 now = T0.AddDays(1);

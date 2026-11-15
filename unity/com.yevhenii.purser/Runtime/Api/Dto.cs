@@ -50,6 +50,9 @@ namespace Purser
         [JsonProperty("variant_id", NullValueHandling = NullValueHandling.Ignore)] public string VariantId;
         [JsonProperty("test_id", NullValueHandling = NullValueHandling.Ignore)] public string TestId;
         [JsonProperty("paywall_id", NullValueHandling = NullValueHandling.Ignore)] public string PaywallId;
+        /// <summary>The store offer the player bought (Google offer id or base plan id, Apple promotional offer id), for
+        /// revenue by offer (<see cref="PurchaseOptions.OfferId"/>).</summary>
+        [JsonProperty("offer_id", NullValueHandling = NullValueHandling.Ignore)] public string OfferId;
         /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
         [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
     }
@@ -124,10 +127,11 @@ namespace Purser
         [JsonProperty("message")] public string Message;
     }
 
+    /// <summary>Answer of <c>POST /restore</c>: the result per purchase and the player's customer info after the restore.</summary>
     public sealed class RestoreResponse
     {
         [JsonProperty("results")] public List<RestoreItemResult> Results;
-        [JsonProperty("entitlements")] public EntitlementsDto Entitlements;
+        [JsonProperty("entitlements")] public CustomerInfoDto CustomerInfo;
     }
 
     /// <summary>Body of <c>POST /entitlements</c>.</summary>
@@ -139,13 +143,37 @@ namespace Purser
         [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
     }
 
-    public sealed class EntitlementsDto
+    /// <summary>Answer of <c>POST /entitlements</c> (and <c>entitlements</c> of <c>/restore</c>): what gives the player
+    /// access now. Read it through <see cref="CustomerInfo"/>.</summary>
+    public sealed class CustomerInfoDto
     {
         [JsonProperty("user_id")] public string UserId;
         [JsonProperty("game_key")] public string GameKey;
-        [JsonProperty("subscriptions")] public Dictionary<string, long> Subscriptions;
-        [JsonProperty("non_consumables")] public List<string> NonConsumables;
         [JsonProperty("server_time_ms")] public long ServerTimeMs;
+        /// <summary>Access level name (e.g. <c>premium</c>) → state.</summary>
+        [JsonProperty("access")] public Dictionary<string, EntitlementStateDto> Access;
+        /// <summary>Catalog product id → state of the active subscription.</summary>
+        [JsonProperty("subscriptions")] public Dictionary<string, EntitlementStateDto> Subscriptions;
+        /// <summary>Owned non-consumable catalog product ids.</summary>
+        [JsonProperty("non_consumables")] public List<string> NonConsumables;
+    }
+
+    /// <summary>State of an access level or subscription in <see cref="CustomerInfoDto"/>.</summary>
+    public sealed class EntitlementStateDto
+    {
+        /// <summary>Catalog product id that gives it.</summary>
+        [JsonProperty("product_id")] public string ProductId;
+        /// <summary><c>google</c> | <c>apple</c> | <c>amazon</c> | <c>steam</c> | <c>stripe</c> | <c>xsolla</c> | <c>manual</c>.</summary>
+        [JsonProperty("store")] public string Store;
+        /// <summary>End of access (grace period included), Unix ms; 0 = never.</summary>
+        [JsonProperty("expires_at_ms")] public long ExpiresAtMs;
+        [JsonProperty("purchased_at_ms")] public long PurchasedAtMs;
+        [JsonProperty("will_renew")] public bool WillRenew;
+        [JsonProperty("in_grace")] public bool InGrace;
+        [JsonProperty("billing_issue")] public bool BillingIssue;
+        [JsonProperty("trial")] public bool Trial;
+        /// <summary>Catalog id the subscription changes to at the next renewal (a pending downgrade).</summary>
+        [JsonProperty("renews_to", NullValueHandling = NullValueHandling.Ignore)] public string RenewsTo;
     }
 
     /// <summary>Body of <c>POST /paywall</c>.</summary>
@@ -196,6 +224,15 @@ namespace Purser
         [JsonProperty("test_id", NullValueHandling = NullValueHandling.Ignore)] public string TestId;
         [JsonProperty("user_id", NullValueHandling = NullValueHandling.Ignore)] public string UserId;
         [JsonProperty("event")] public string Event = View;
+    }
+
+    /// <summary>Error codes of client routes (<see cref="ApiResult{T}.Code"/>).</summary>
+    public static class ErrorCodes
+    {
+        /// <summary>401: the player token is missing, expired or for another user (builds in signed mode).</summary>
+        public const string ClientAuth = "ERR_CLIENT_AUTH";
+        /// <summary>429: too many requests; retry after <see cref="ApiResult{T}.RetryAfter"/>.</summary>
+        public const string RateLimited = "ERR_RATE_LIMITED";
     }
 
     /// <summary>Generic <c>{status, code, message}</c> answer.</summary>

@@ -144,6 +144,7 @@ impl World {
                 store: purser_core::model::store::GOOGLE.into(),
                 apple_refund_mode: String::new(),
                 sns_topic_arn: String::new(),
+                client_auth: "open".into(),
             });
             for (id, k) in [("gems", kind::CONSUMABLE), ("no_ads", kind::NON_CONSUMABLE)] {
                 tx.db.product().insert(Product::new(APP, id, k));
@@ -188,14 +189,14 @@ impl World {
 
     fn purchase(&self) -> Purchase {
         self.test
-            .with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.purchase().id().find(&LEDGER_ID.to_string())))
+            .with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.purchase().id().find(LEDGER_ID.to_string())))
             .unwrap()
             .expect("ledger row")
     }
 
     fn find_purchase(&self) -> Option<Purchase> {
         self.test
-            .with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.purchase().id().find(&LEDGER_ID.to_string())))
+            .with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.purchase().id().find(LEDGER_ID.to_string())))
             .unwrap()
     }
 
@@ -336,7 +337,7 @@ fn consumable_is_granted_then_consumed() {
 fn client_granted_consumable_is_acknowledged_and_left_for_the_client_to_consume() {
     let w = World::new();
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.delivery = "none".into();
         tx.db.game_app().app_id().update(app);
     });
@@ -546,7 +547,7 @@ fn delivery_to_a_self_hosted_server_needs_the_owner_to_allow_it() {
         })
     };
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.spacetime_url = "https://stdb.example.com".into();
         tx.db.game_app().app_id().update(app);
     });
@@ -584,7 +585,7 @@ fn consumed_purchase_unknown_to_the_ledger_is_not_granted() {
 fn consumed_purchase_is_granted_when_the_client_consumes_itself() {
     let w = World::new();
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.client_consumes = true;
         tx.db.game_app().app_id().update(app);
     });
@@ -717,8 +718,8 @@ fn player_profile_shows_the_device_attributes_and_when_the_player_was_seen() {
         let r = AttributesRequest { app_id: APP.into(), user_id: "player-1".into(), attributes: attrs.as_object().unwrap().clone(), client: Default::default() };
         set_attributes(&mut w.ctx(), &r).unwrap_or_else(|o| o)
     };
-    assert_eq!(set(json!({ "email": "player@example.com", "level": 7 })).http, 200);
-    let o = set(json!({ "level": 8, "email": null }));
+    assert_eq!(set(json!({ "clan": "wolves", "level": 7 })).http, 200);
+    let o = set(json!({ "level": 8, "clan": null }));
     assert_eq!(o.body["attributes"], json!({ "level": "8" }));
     assert_eq!(set(json!({ "bad key": 1 })).http, 400);
 
@@ -744,7 +745,7 @@ fn player_profile_shows_the_device_attributes_and_when_the_player_was_seen() {
 #[test]
 fn app_display_name_is_set_and_cleared() {
     let w = World::new();
-    let game_key = w.read(|tx| tx.db.game_app().app_id().find(&APP.to_string()).unwrap().game_key);
+    let game_key = w.read(|tx| tx.db.game_app().app_id().find(APP.to_string()).unwrap().game_key);
     let set = |key: &str, name: &str| {
         w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_set_app_name(ctx, key.into(), name.into()))
     };
@@ -805,7 +806,7 @@ fn doctor_offline_reports_configuration_and_secret_scopes() {
         .test
         .with_reducer_tx(TestAuth::internal(), |tx| {
             use crate::health::app_check;
-            Ok::<_, ()>(tx.db.app_check().app_id().find(&APP.to_string()))
+            Ok::<_, ()>(tx.db.app_check().app_id().find(APP.to_string()))
         })
         .unwrap()
         .expect("report saved");
@@ -845,7 +846,7 @@ fn doctor_checks_the_game_reducers_without_calling_them() {
     assert_eq!(w.calls("/call/"), 0, "the doctor never calls game reducers");
 
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.grant_reducer = "fulfill".into();
         tx.db.game_app().app_id().update(app);
     });
@@ -860,7 +861,7 @@ fn doctor_does_not_send_the_token_to_a_host_that_is_not_allowed() {
     w.as_admin(false);
     w.set_secret(secret_name::SPACETIME_TOKEN, &billing_token());
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.spacetime_url = "https://evil.example.net".into();
         tx.db.game_app().app_id().update(app);
     });
@@ -1174,7 +1175,7 @@ fn a_revenue_report_of_one_app_reads_only_its_builds() {
     w.write(|tx| {
         use crate::revenue::revenue_daily;
         let mine = tx.db.revenue_daily().iter().next().unwrap();
-        let mut other = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut other = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         other.app_id = "com.other.game".into();
         other.game_key = "other".into();
         tx.db.game_app().insert(other);
@@ -1515,7 +1516,7 @@ fn admin_revoke_is_retried_by_the_worker_and_refused_for_products_the_player_doe
     assert_eq!(w.reducer_calls().last().unwrap(), "billing_revoke player-1 admin");
 
     w.write(|tx| {
-        let mut p = tx.db.purchase().id().find(&LEDGER_ID.to_string()).unwrap();
+        let mut p = tx.db.purchase().id().find(LEDGER_ID.to_string()).unwrap();
         p.status = status::EXPIRED.into();
         crate::ledger::save_purchase(tx, p);
     });
@@ -1600,7 +1601,7 @@ fn test_p8_verifier(pem: &str) -> p256::ecdsa::VerifyingKey {
 fn apple_offer_world(with_issuer: bool) -> World {
     let w = World::new();
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.app_id = IOS_APP.into();
         app.platform = purser_core::registry::platform::IOS.into();
         app.store = purser_core::model::store::APPLE.into();
@@ -1715,7 +1716,7 @@ fn promotional_offers_are_signed_only_for_enabled_ios_subscriptions() {
     assert_eq!(status(offer_request("bad user")), 400);
 
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&IOS_APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(IOS_APP.to_string()).unwrap();
         app.enabled = false;
         tx.db.game_app().app_id().update(app);
     });
@@ -1939,7 +1940,7 @@ fn channels_take_the_apps_and_rules_they_filter_for() {
     let w = World::new();
     w.as_admin(false);
     w.write(|tx| {
-        let mut other = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut other = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         other.app_id = "com.other.game".into();
         other.game_key = "other".into();
         tx.db.game_app().insert(other);
@@ -1988,7 +1989,7 @@ fn a_rejected_account_key_is_one_alert_for_all_its_builds() {
     setup_alerts(&w, false);
     w.write(|tx| {
         for id in ["com.studio.game.b", "com.studio.game.c"] {
-            let mut b = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+            let mut b = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
             b.app_id = id.into();
             tx.db.game_app().insert(b);
         }
@@ -2082,8 +2083,11 @@ fn silent_store_notifications_and_stale_exchange_rates_are_alerted_by_the_worker
 // Revenue: countries, trials, proceeds, cohorts, Apple Ads
 // ---------------------------------------------------------------------
 
-/// Country aggregate rows as `key → (purchases, trials, trial_conversions, renewals, refunds, gross, refunded)`.
-fn country_rows(w: &World) -> std::collections::BTreeMap<String, (u32, u32, u32, u32, u32, i64, i64)> {
+/// Country aggregate counters: (purchases, trials, trial_conversions, renewals, refunds, gross, refunded).
+type CountryRow = (u32, u32, u32, u32, u32, i64, i64);
+
+/// Country aggregate rows by key.
+fn country_rows(w: &World) -> std::collections::BTreeMap<String, CountryRow> {
     use crate::revenue::revenue_country_daily;
     w.test
         .with_reducer_tx(TestAuth::internal(), |tx| {
@@ -2372,7 +2376,7 @@ fn paywall_route_serves_the_default_variant_with_the_build_products() {
 /// An iOS build of the app whose `no_ads` has another store id, with the catalog id `no_ads`.
 fn add_ios_build_with_its_own_store_ids(w: &World) {
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.app_id = IOS_APP.into();
         app.platform = purser_core::registry::platform::IOS.into();
         app.store = purser_core::model::store::APPLE.into();
@@ -2427,7 +2431,7 @@ fn entitlements_and_webhooks_use_the_catalog_id() {
     let renamed = json!({ "app_id": APP, "product_id": "no_ads", "kind": "non_consumable", "catalog_id": "remove_ads" });
     admin_call(&w, |ctx| crate::admin_upsert_products(ctx, renamed.to_string())).unwrap();
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.delivery = "webhook".into();
         app.webhook_url = "https://hooks.example.com/billing".into();
         tx.db.game_app().app_id().update(app);
@@ -2605,6 +2609,13 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
         paywall_id: "pw_b".into(),
         country: String::new(),
         trial: false,
+        grace_until_ms: 0,
+        billing_issue: false,
+        auto_renew_off: false,
+        renew_product_id: String::new(),
+        replaced_by: String::new(),
+        refunded_micros: 0,
+        offer_id: String::new(),
     };
     let renewal = Purchase {
         id: "apple:1001".into(),
@@ -2680,7 +2691,7 @@ fn amazon_verify(w: &World, user: &str, product_id: &str, store_user_id: &str) -
 }
 
 fn find(w: &World, id: &str) -> Option<Purchase> {
-    w.test.with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.purchase().id().find(&id.to_string()))).unwrap()
+    w.test.with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.purchase().id().find(id.to_string()))).unwrap()
 }
 
 #[test]
@@ -2808,7 +2819,7 @@ fn amazon_sandbox_receipts_need_the_build_to_allow_them() {
     let w = World::new();
     add_amazon_build(&w);
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&AMAZON_APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(AMAZON_APP.to_string()).unwrap();
         app.allow_sandbox = true;
         tx.db.game_app().app_id().update(app);
     });
@@ -2828,7 +2839,7 @@ fn amazon_subscription_is_shared_with_the_game_and_rechecked_after_expiry() {
     w.script("verifyReceiptId", 200, &rvs_receipt("vip_sub", "SUBSCRIPTION", json!({ "renewalDate": renewal })));
     assert_eq!(amazon_verify(&w, "player-1", "vip_sub", AMAZON_USER).body["status"], "success");
     // Entitlements are per game: the Google build sees the Amazon subscription.
-    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip_sub"], renewal);
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip_sub"]["expires_at_ms"], renewal);
     let poll = |w: &World| {
         w.test
             .with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.store_poll().purchase_id().find(AMAZON_LEDGER_ID.to_string())))
@@ -2934,7 +2945,7 @@ fn amazon_notifications_come_from_the_pinned_topic_and_are_recent() {
 
     let pin = |topic: &str| {
         w.write(|tx| {
-            let mut app = tx.db.game_app().app_id().find(&AMAZON_APP.to_string()).unwrap();
+            let mut app = tx.db.game_app().app_id().find(AMAZON_APP.to_string()).unwrap();
             app.sns_topic_arn = topic.into();
             tx.db.game_app().app_id().update(app);
         })
@@ -3240,14 +3251,14 @@ fn xsolla_subscription_payments_renew_and_cancel() {
     assert_eq!(xsolla_webhook(&w, &payment(1001, first, "vip_monthly")).http, 204);
     let p = find(&w, "xsolla:1001").unwrap();
     assert_eq!((p.status.as_str(), p.purchase_token.as_str(), p.expires_at_ms), (status::COMPLETED, "subscription:321", first));
-    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip_monthly"], first);
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip_monthly"]["expires_at_ms"], first);
 
     // Renewal: a new transaction in the same chain.
     let second = first + 30 * day_ms;
     assert_eq!(xsolla_webhook(&w, &payment(1002, second, "vip_monthly")).http, 204);
     let r = find(&w, "xsolla:1002").unwrap();
     assert_eq!((r.original_transaction_id.as_str(), r.reason.as_str()), ("1001", "renewal"));
-    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip_monthly"], second);
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip_monthly"]["expires_at_ms"], second);
 
     // An item SKU paid as a subscription plan is refused.
     assert_eq!(xsolla_webhook(&w, &payment(1003, second, "no_ads")).http, 400);
@@ -3410,7 +3421,7 @@ fn stripe_checkout_creates_a_session_for_the_catalog_price() {
     assert_eq!(w.calls("api.stripe.com"), 1);
     // Local development pages are fine on builds that accept sandbox purchases.
     assert_eq!(crate::stripe::checkout(&mut w.ctx(), &req("price_gems", "player-1", "http://localhost:8080/ok")).0, 200);
-    let payment = w.fake.borrow().calls.iter().filter(|c| c.contains("checkout/sessions")).last().cloned().unwrap();
+    let payment = w.fake.borrow().calls.iter().rfind(|c| c.contains("checkout/sessions")).cloned().unwrap();
     assert!(payment.contains("mode=payment") && payment.contains("payment_intent_data[metadata][product_id]=price_gems"), "{payment}");
 }
 
@@ -3556,7 +3567,7 @@ fn stripe_subscription_first_period_renewal_and_end() {
     assert_eq!((renewal.reason.as_str(), renewal.original_transaction_id.as_str(), renewal.expires_at_ms), ("renewal", "sub_1", next_end * 1000));
     assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_grant player-1 renewal"));
     assert_eq!(grants(&w), 2);
-    assert_eq!(w.entitlements("player-1")["subscriptions"]["price_vip"], next_end * 1000);
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["price_vip"]["expires_at_ms"], next_end * 1000);
 
     // Auto-renew turned off: nothing changes until the subscription ends.
     let mut sub = json!({ "id": "sub_1", "object": "subscription", "status": "active", "cancel_at_period_end": true, "livemode": false });
@@ -3581,12 +3592,16 @@ fn stripe_refunds_and_disputes_revoke_and_count_as_refunds() {
     add_stripe_build(&w);
     let purchase = stripe_event("evt_1", "checkout.session.completed", stripe_session("price_gems", "player-1"));
     assert_eq!(stripe_webhook(&w, &purchase).http, 200);
-    // A partial refund keeps the purchase.
-    let partial = json!({ "id": "ch_1", "object": "charge", "amount": 500, "amount_refunded": 100, "refunded": false, "payment_intent": "pi_1" });
-    assert_eq!(stripe_webhook(&w, &stripe_event("evt_r0", "charge.refunded", partial)).body["status"], "ignored");
-    assert_eq!(find(&w, "stripe:pi_1").unwrap().status, status::COMPLETED);
+    // A partial refund keeps the purchase; revenue loses the refunded part (once per amount).
+    let partial = json!({ "id": "ch_1", "object": "charge", "amount": 500, "amount_refunded": 100, "refunded": false, "payment_intent": "pi_1", "currency": "jpy" });
+    assert_eq!(stripe_webhook(&w, &stripe_event("evt_r0", "charge.refunded", partial.clone())).body["status"], "ok");
+    assert_eq!(stripe_webhook(&w, &stripe_event("evt_r0", "charge.refunded", partial)).body["status"], "ok");
+    let p = find(&w, "stripe:pi_1").unwrap();
+    assert_eq!((p.status.as_str(), p.refunded_micros), (status::COMPLETED, 100_000_000));
+    let refunded: i64 = revenue_rows(&w).iter().filter(|(k, _)| k.contains(WEB_APP)).map(|(_, r)| r.4).sum();
+    assert_eq!(refunded, 100_000_000);
 
-    let full = json!({ "id": "ch_1", "object": "charge", "amount": 500, "amount_refunded": 500, "refunded": true, "payment_intent": "pi_1" });
+    let full = json!({ "id": "ch_1", "object": "charge", "amount": 500, "amount_refunded": 500, "refunded": true, "payment_intent": "pi_1", "currency": "jpy" });
     assert_eq!(stripe_webhook(&w, &stripe_event("evt_r1", "charge.refunded", full)).http, 200);
     assert_eq!(find(&w, "stripe:pi_1").unwrap().status, status::REVOKED);
     assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_revoke player-1 refund"));
@@ -3617,6 +3632,52 @@ fn stripe_refunds_and_disputes_revoke_and_count_as_refunds() {
     assert_eq!(find(&w, "stripe:in_7").unwrap().status, status::REVOKED);
     assert!(w.fake.borrow().calls.iter().any(|c| c.contains("invoice_payments?payment%5Btype%5D=payment_intent&payment%5Bpayment_intent%5D=pi_7")));
     assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_revoke player-2 refund"));
+
+    // The merchant wins the dispute: the period is granted again and its money counts again.
+    w.advance_clock(86_400 * 3);
+    let closed = json!({ "id": "dp_1", "object": "dispute", "charge": "ch_7", "payment_intent": "pi_7", "status": "won" });
+    assert_eq!(stripe_webhook(&w, &stripe_event("evt_d2", "charge.dispute.closed", closed)).http, 200);
+    assert_eq!(find(&w, "stripe:in_7").unwrap().status, status::COMPLETED);
+    assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_grant player-2 reinstated"));
+    assert_eq!(w.entitlements("player-2")["subscriptions"]["price_vip"]["expires_at_ms"], (now + 86_400 * 30) * 1000);
+    let lost = json!({ "id": "dp_2", "object": "dispute", "charge": "ch_1", "payment_intent": "pi_1", "status": "lost" });
+    assert_eq!(stripe_webhook(&w, &stripe_event("evt_d3", "charge.dispute.closed", lost)).body["status"], "ok");
+    assert_eq!(find(&w, "stripe:pi_1").unwrap().status, status::REVOKED);
+
+    // The rebuild counts the partial refund, the refund and the reinstatement on the same days.
+    let live = w.aggregates();
+    assert_eq!(w.aggregates_rebuilt_at_once(), live);
+}
+
+#[test]
+fn a_stripe_plan_change_replaces_the_subscription() {
+    let w = World::new();
+    add_stripe_build(&w);
+    let products = json!([{ "app_id": WEB_APP, "product_id": "price_vip_plus", "kind": "subscription" }]);
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_products(ctx, products.to_string())).unwrap();
+    let now = NOW_MICROS / 1_000_000;
+    let day = 86_400;
+    let invoice = |id: &str, reason: &str, price: &str| {
+        json!({
+            "id": id, "object": "invoice", "billing_reason": reason, "status": "paid", "amount_paid": 499, "currency": "usd", "livemode": false,
+            "parent": { "subscription_details": { "subscription": "sub_9", "metadata": stripe_meta("price_vip", "player-1") } },
+            "lines": { "data": [ { "period": { "end": now + 30 * day }, "pricing": { "price_details": { "price": price } } } ] },
+        })
+    };
+    assert_eq!(stripe_webhook(&w, &stripe_event("evt_p1", "invoice.paid", invoice("in_a", "subscription_create", "price_vip"))).http, 200);
+    w.advance_clock(day);
+    assert_eq!(stripe_webhook(&w, &stripe_event("evt_p2", "invoice.paid", invoice("in_b", "subscription_update", "price_vip_plus"))).http, 200);
+    w.run_worker();
+    let old = find(&w, "stripe:sub_9").unwrap();
+    assert_eq!((old.status.as_str(), old.replaced_by.as_str()), (status::EXPIRED, "stripe:in_b"));
+    assert_eq!(find(&w, "stripe:in_b").unwrap().product_id, "price_vip_plus");
+    let e = w.entitlements("player-1");
+    assert!(e["subscriptions"].get("price_vip").is_none() && e["subscriptions"].get("price_vip_plus").is_some(), "{e}");
+
+    // Auto-renew off is remembered on the latest period.
+    let sub = json!({ "id": "sub_9", "object": "subscription", "status": "active", "cancel_at_period_end": true, "livemode": false });
+    stripe_webhook(&w, &stripe_event("evt_p3", "customer.subscription.updated", sub));
+    assert!(find(&w, "stripe:in_b").unwrap().auto_renew_off);
 }
 
 #[test]
@@ -4012,7 +4073,7 @@ fn steam_subscription_is_an_agreement_rechecked_by_the_worker() {
     let p = find(&w, STEAM_LEDGER_ID).unwrap();
     assert_eq!((p.expires_at_ms, p.price_micros, p.kind.as_str()), (oct22, 4_990_000, "subscription"));
     assert_eq!(steam_order_row(&w, &order_id).agreement_id, "555");
-    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip_sub"], oct22);
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip_sub"]["expires_at_ms"], oct22);
     let poll = |w: &World| {
         w.test.with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.store_poll().purchase_id().find(STEAM_LEDGER_ID.to_string()))).unwrap()
     };
@@ -4073,6 +4134,13 @@ impl World {
             previous_user_id: String::new(),
             country: String::new(),
             trial: false,
+            grace_until_ms: 0,
+            billing_issue: false,
+            auto_renew_off: false,
+            renew_product_id: String::new(),
+            replaced_by: String::new(),
+            refunded_micros: 0,
+            offer_id: String::new(),
             paywall_placement: String::new(),
             paywall_variant_id: String::new(),
             paywall_test_id: String::new(),
@@ -4117,7 +4185,7 @@ fn overview_counts_the_ledger_in_one_pass() {
     w.put_purchase("google:4", APP, status::REVOKE_PENDING, 4);
     w.write(|tx| {
         for (id, at) in [("google:3", NOW_MICROS + 60_000_000), ("google:4", NOW_MICROS + 30_000_000)] {
-            let mut p = tx.db.purchase().id().find(&id.to_string()).unwrap();
+            let mut p = tx.db.purchase().id().find(id.to_string()).unwrap();
             p.next_attempt_at_micros = at;
             p.attempts = 2;
             p.last_error = "game db 503".into();
@@ -4159,6 +4227,15 @@ fn purchase_list_filters_before_the_limit() {
     let page = w.list_purchases(json!({ "since_micros": since, "app_ids": [APP], "status": "completed", "limit": 4 }));
     assert_eq!(listed_ids(&page), (0..4).map(|i| format!("google:mine-{i}")).collect::<Vec<_>>());
     assert_eq!(page["more"], true);
+    // The next page starts after the last row; pages never repeat or skip a row.
+    let mut q = json!({ "since_micros": since, "app_ids": [APP], "status": "completed", "limit": 4 });
+    q["until_micros"] = page["next"]["until_micros"].clone();
+    q["before_id"] = page["next"]["before_id"].clone();
+    let second = w.list_purchases(q);
+    assert_eq!(listed_ids(&second), ["google:mine-4", "google:mine-5"]);
+    assert_eq!((second["more"].as_bool(), second["next"].is_null()), (Some(false), true));
+    let consumables = w.list_purchases(json!({ "since_micros": 0, "app_ids": [APP], "kind": "subscription" }));
+    assert!(listed_ids(&consumables).is_empty());
 
     let exact = w.list_purchases(json!({ "since_micros": since, "app_ids": [APP], "status": "completed", "limit": 6 }));
     assert_eq!((listed_ids(&exact).len(), exact["more"].as_bool()), (6, Some(false)));
@@ -4265,7 +4342,7 @@ fn a_fresh_row_is_leased_as_it_is_written_so_the_worker_leaves_it_to_the_request
     let w = World::new();
     let mut ctx = w.ctx();
     let (app, product) = w.read(|tx| {
-        (tx.db.game_app().app_id().find(&APP.to_string()).unwrap(), tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap())
+        (tx.db.game_app().app_id().find(APP.to_string()).unwrap(), tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap())
     });
     let st = stores::google_fetch(&mut ctx, &app, &product, TOKEN, &mut Auth::default()).unwrap();
     let lease = ctx.tx(|tx| ledger::record_and_lease(tx, &app, &product, &st, &ledger::Claim::user("player-1", ""))).unwrap();
@@ -4385,7 +4462,7 @@ fn the_paywall_of_a_verify_is_stored_with_the_row() {
 fn apple_sandbox_world() -> World {
     let w = apple_offer_world(true);
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&IOS_APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(IOS_APP.to_string()).unwrap();
         app.allow_sandbox = true;
         tx.db.game_app().app_id().update(app);
     });
@@ -4434,7 +4511,7 @@ const CONSUMPTION_URL: &str = "PUT https://api.storekit-sandbox.itunes.apple.com
 fn refund_world(consent: Option<bool>, mode: &str) -> World {
     let w = apple_sandbox_world();
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&IOS_APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(IOS_APP.to_string()).unwrap();
         app.apple_refund_mode = mode.into();
         tx.db.game_app().app_id().update(app);
     });
@@ -4640,6 +4717,13 @@ fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -
         previous_user_id: String::new(),
         country: String::new(),
         trial: false,
+        grace_until_ms: 0,
+        billing_issue: false,
+        auto_renew_off: false,
+        renew_product_id: String::new(),
+        replaced_by: String::new(),
+        refunded_micros: 0,
+        offer_id: String::new(),
         paywall_placement: String::new(),
         paywall_variant_id: String::new(),
         paywall_test_id: String::new(),
@@ -4886,7 +4970,7 @@ fn summary_stats_read_only_the_aggregates_and_say_when_a_rebuild_runs() {
     price_products(&w, "USD");
     w.verify("player-1", "gems");
     w.as_admin(false);
-    w.write(|tx| crate::revenue::invalidate(tx));
+    w.write(crate::revenue::invalidate);
     let first = stats(&w, json!({ "summary": true }));
     assert_eq!(first["rebuilding"], true, "the worker has not rebuilt the aggregates yet");
     w.run_worker();
@@ -5071,7 +5155,7 @@ fn silent_notification_alerts_follow_the_store_of_each_build() {
     assert_eq!(alert_messages(&w).iter().filter(|m| m.rule == "notifications_silent").count(), 2);
     w.advance_clock(3600);
     w.run_worker();
-    let last = alert_messages(&w).into_iter().filter(|m| m.rule == "notifications_silent").last().unwrap();
+    let last = alert_messages(&w).into_iter().rfind(|m| m.rule == "notifications_silent").unwrap();
     assert_eq!((last.app_id.as_str(), last.state.as_str()), ("com.studio.game.web", "resolved"));
 }
 
@@ -5116,7 +5200,7 @@ fn a_failed_fx_backfill_waits_an_hour() {
     let w = World::new();
     w.as_admin(false);
     w.insert_ledger(vec![ledger_row("google:GPA.OLD", NOW_MICROS - 100 * DAY_MICROS, |p| p.currency = "EUR".into())], Vec::new());
-    w.write(|tx| crate::revenue::invalidate(tx));
+    w.write(crate::revenue::invalidate);
     w.script("api.frankfurter.dev/v1/latest", 200, r#"{"amount":1.0,"base":"USD","date":"2026-09-21","rates":{"EUR":0.9}}"#);
     w.script("api.frankfurter.dev/v1/20", 503, "");
     let history_calls = |w: &World| w.calls("api.frankfurter.dev/v1/20");
@@ -5244,8 +5328,13 @@ fn the_unity_sdk_purchase_flow_works() {
         assert_eq!(o.http, 200, "{route}: {}", o.body);
         if route == "/verify/google" {
             assert_eq!(o.body["status"], "success", "{}", o.body);
+            assert_eq!(w.purchase().offer_id, body_offer(req), "the offer is recorded");
         }
     }
+}
+
+fn body_offer(req: &Value) -> String {
+    req["body"]["offer_id"].as_str().unwrap_or("").to_string()
 }
 
 // ---------------------------------------------------------------------
@@ -5679,7 +5768,7 @@ mod role_tests {
                 });
             }
         });
-        w.write(|tx| crate::access::prune_audit(tx));
+        w.write(crate::access::prune_audit);
         assert_eq!(w.read(|tx| tx.db.admin_audit().count()), 0);
     }
 
@@ -5745,7 +5834,7 @@ fn a_voided_notification_of_another_package_leaves_the_purchase_alone() {
     let w = World::new();
     w.verify("player-1", "gems");
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.app_id = "com.example.other".into();
         tx.db.game_app().insert(app);
     });
@@ -5857,7 +5946,7 @@ fn a_build_whose_calls_time_out_does_not_hold_up_the_others() {
     const OTHER: &str = "com.studio.other";
     let w = World::new();
     w.write(|tx| {
-        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.app_id = OTHER.into();
         tx.db.game_app().insert(app);
         tx.db.product().insert(Product::new(OTHER, "gems", kind::CONSUMABLE));
@@ -6315,7 +6404,7 @@ mod scope_tests {
     fn scoped_world(role: &str) -> World {
         let w = World::new();
         w.write(|tx| {
-            let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+            let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
             app.app_id = OTHER_APP.into();
             app.game_key = "other".into();
             tx.db.game_app().insert(app);
@@ -6409,4 +6498,436 @@ mod scope_tests {
         let row = w.read(|tx| tx.db.admin().iter().find(|a| !a.protected).unwrap().game_keys);
         assert_eq!(row, "game");
     }
+}
+
+// --- Subscription lifecycle: upgrades, grace periods, re-checks ---
+
+/// A Google subscription with this state, product, order and expiry under `token`.
+fn google_subscription(w: &World, token: &str, state: &str, product: &str, order: &str, expires: &str, linked: &str) {
+    let needle = format!("subscriptionsv2/tokens/{token}");
+    w.fake.borrow_mut().overrides.retain(|(n, ..)| *n != needle);
+    let mut body = json!({
+        "subscriptionState": state,
+        "latestOrderId": order,
+        "acknowledgementState": "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+        "lineItems": [{ "productId": product, "expiryTime": expires, "autoRenewingPlan": { "autoRenewEnabled": true } }],
+    });
+    if !linked.is_empty() {
+        body["linkedPurchaseToken"] = json!(linked);
+    }
+    w.script(&needle, 200, &body.to_string());
+}
+
+fn verify_google_token(w: &World, user: &str, product: &str, token: &str) -> Outcome {
+    let r: VerifyRequest =
+        serde_json::from_value(json!({ "app_id": APP, "user_id": user, "product_id": product, "purchase_token": token })).unwrap();
+    verify(&mut w.ctx(), store::GOOGLE, &r)
+}
+
+fn add_subscriptions(w: &World, app: &str, ids: &[&str]) {
+    w.write(|tx| {
+        for id in ids {
+            tx.db.product().insert(Product::new(app, id, kind::SUBSCRIPTION));
+        }
+    });
+}
+
+#[test]
+fn a_google_upgrade_ends_the_replaced_subscription() {
+    let w = World::new();
+    keep_google_token_valid(&w, 60);
+    add_subscriptions(&w, APP, &["vip", "vip_plus"]);
+    google_subscription(&w, "tok-a", "SUBSCRIPTION_STATE_ACTIVE", "vip", "GPA.1000-0000-0000-00001", "2026-10-21T00:00:00Z", "");
+    assert_eq!(verify_google_token(&w, "player-1", "vip", "tok-a").body["status"], "success");
+
+    // The player upgrades: a new purchase token that names the old one.
+    google_subscription(&w, "tok-b", "SUBSCRIPTION_STATE_ACTIVE", "vip_plus", "GPA.2000-0000-0000-00001", "2026-10-21T00:00:00Z", "tok-a");
+    assert_eq!(verify_google_token(&w, "player-1", "vip_plus", "tok-b").body["status"], "success");
+    w.run_worker();
+
+    let old = find(&w, "google:GPA.1000-0000-0000-00001").unwrap();
+    assert_eq!((old.status.as_str(), old.replaced_by.as_str()), (status::EXPIRED, "google:GPA.2000-0000-0000-00001"));
+    assert_eq!(old.expires_at_ms, NOW_MICROS / 1000);
+    assert!(w.reducer_calls().contains(&"billing_revoke player-1 replaced".to_string()), "{:?}", w.reducer_calls());
+    let e = w.entitlements("player-1");
+    assert!(e["subscriptions"].get("vip").is_none() && e["subscriptions"].get("vip_plus").is_some(), "{e}");
+}
+
+#[test]
+fn a_google_grace_period_keeps_access_and_is_checked_daily() {
+    let w = World::new();
+    keep_google_token_valid(&w, 60);
+    add_subscriptions(&w, APP, &["vip"]);
+    // The renewal payment failed yesterday: in the grace period.
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_IN_GRACE_PERIOD", "vip", ORDER, "2026-09-20T00:00:00Z", "");
+    assert_eq!(w.verify("player-1", "vip").body["status"], "success");
+    let p = w.purchase();
+    let day_ms = 86_400_000;
+    assert_eq!((p.billing_issue, p.grace_until_ms), (true, NOW_MICROS / 1000 + day_ms));
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip"]["expires_at_ms"], NOW_MICROS / 1000 + day_ms);
+
+    // A day later the store charged the renewal; the notification was lost, the re-check finds it.
+    w.advance_clock(86_400 + 11 * 60);
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_ACTIVE", "vip", "GPA.1111-2222-3333-44444..0", "2026-10-20T00:00:00Z", "");
+    w.run_worker();
+    let renewal = find(&w, "google:GPA.1111-2222-3333-44444..0").expect("renewal recorded by the re-check");
+    assert_eq!((renewal.status.as_str(), renewal.billing_issue, renewal.grace_until_ms), (status::COMPLETED, false, 0));
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip"]["expires_at_ms"], 1_792_454_400_000i64);
+}
+
+fn subscription_notification(w: &World, kind: i64) -> Outcome {
+    w.google_notification(
+        RTDN_SECRET,
+        json!({ "packageName": APP, "subscriptionNotification": { "notificationType": kind, "purchaseToken": TOKEN, "subscriptionId": "vip" } }),
+    )
+}
+
+#[test]
+fn a_revoked_google_subscription_is_refunded_and_one_on_hold_ends_with_a_billing_issue() {
+    let w = World::new();
+    keep_google_token_valid(&w, 60);
+    add_subscriptions(&w, APP, &["vip"]);
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_ACTIVE", "vip", ORDER, "2026-10-21T00:00:00Z", "");
+    w.verify("player-1", "vip");
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_EXPIRED", "vip", ORDER, "2026-10-21T00:00:00Z", "");
+    assert_eq!(subscription_notification(&w, 12).http, 200);
+    assert_eq!(w.purchase().status, status::REVOKED, "SUBSCRIPTION_REVOKED is a refund, not an expiry");
+
+    let w = World::new();
+    keep_google_token_valid(&w, 60);
+    add_subscriptions(&w, APP, &["vip"]);
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_ACTIVE", "vip", ORDER, "2026-10-21T00:00:00Z", "");
+    w.verify("player-1", "vip");
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_ON_HOLD", "vip", ORDER, "2026-09-20T00:00:00Z", "");
+    subscription_notification(&w, 5);
+    let p = w.purchase();
+    assert_eq!((p.status.as_str(), p.billing_issue), (status::EXPIRED, true));
+}
+
+/// A JWS of an Apple payload (the module reads Server API answers without checking them: TLS).
+fn apple_jws(v: Value) -> String {
+    format!("{}.{}.sig", purser_core::jwt::b64url(br#"{"alg":"ES256"}"#), purser_core::jwt::b64url(v.to_string().as_bytes()))
+}
+
+/// The App Store reports transaction `id` (of subscription `100`) and, for the whole subscription,
+/// `latest` (id, product, expiry) with `status` and renewal info.
+fn apple_subscription(w: &World, id: &str, product: &str, latest: (&str, &str, i64), status: i64, renewal: Value) {
+    let tx = |id: &str, product: &str, expires: i64| {
+        apple_jws(json!({ "transactionId": id, "originalTransactionId": "100", "bundleId": IOS_APP, "productId": product,
+            "expiresDate": expires, "type": "Auto-Renewable Subscription", "environment": "Production" }))
+    };
+    w.fake.borrow_mut().overrides.retain(|(n, ..)| !n.contains("api.storekit.itunes.apple.com"));
+    w.script(
+        &format!("api.storekit.itunes.apple.com/inApps/v1/transactions/{id}"),
+        200,
+        &json!({ "signedTransactionInfo": tx(id, product, 1_792_000_000_000) }).to_string(),
+    );
+    let body = json!({ "data": [{ "subscriptionGroupIdentifier": "g", "lastTransactions": [{
+        "originalTransactionId": "100", "status": status,
+        "signedTransactionInfo": tx(latest.0, latest.1, latest.2), "signedRenewalInfo": apple_jws(renewal),
+    }]}]});
+    w.script("api.storekit.itunes.apple.com/inApps/v1/subscriptions/", 200, &body.to_string());
+}
+
+fn verify_apple_order(w: &World, product: &str, order: &str) -> Outcome {
+    let r: VerifyRequest =
+        serde_json::from_value(json!({ "app_id": IOS_APP, "user_id": "player-1", "product_id": product, "order_id": order })).unwrap();
+    verify(&mut w.ctx(), store::APPLE, &r)
+}
+
+#[test]
+fn apple_subscriptions_follow_the_latest_transaction_upgrades_and_grace() {
+    let w = apple_offer_world(true);
+    add_subscriptions(&w, IOS_APP, &["basic"]);
+    let now_ms = NOW_MICROS / 1000;
+    // The client sends an old transaction: the latest one of the subscription is recorded.
+    apple_subscription(&w, "101", "basic", ("102", "basic", now_ms + 1_000_000), 1, json!({ "autoRenewStatus": 1, "autoRenewProductId": "basic" }));
+    assert_eq!(verify_apple_order(&w, "basic", "101").body["status"], "success");
+    assert!(find(&w, "apple:101").is_none());
+    assert_eq!(find(&w, "apple:102").unwrap().status, status::COMPLETED);
+
+    // Upgrade within the group: the same original transaction, another product.
+    apple_subscription(&w, "103", "premium", ("103", "premium", now_ms + 2_000_000), 1, json!({ "autoRenewStatus": 0 }));
+    assert_eq!(verify_apple_order(&w, "premium", "103").body["status"], "success");
+    w.run_worker();
+    let old = find(&w, "apple:102").unwrap();
+    assert_eq!((old.status.as_str(), old.replaced_by.as_str()), (status::EXPIRED, "apple:103"));
+    assert!(find(&w, "apple:103").unwrap().auto_renew_off);
+
+    // The renewal fails: a grace period keeps access past the paid period.
+    w.advance_clock(2_000 + 60);
+    let grace_end = now_ms + 3_000_000;
+    apple_subscription(&w, "103", "premium", ("103", "premium", now_ms + 2_000_000), 4, json!({ "autoRenewStatus": 1, "gracePeriodExpiresDate": grace_end }));
+    assert_eq!(verify_apple_order(&w, "premium", "103").body["status"], "success");
+    let p = find(&w, "apple:103").unwrap();
+    assert_eq!((p.status.as_str(), p.billing_issue, p.grace_until_ms), (status::COMPLETED, true, grace_end));
+    let r = EntitlementsRequest { app_id: IOS_APP.into(), user_id: "player-1".into(), client: Default::default() };
+    let e = get_entitlements(&mut w.ctx(), &r).unwrap_or_else(|o| o).body;
+    assert_eq!(e["subscriptions"]["premium"]["expires_at_ms"], grace_end);
+    // The game got the new access end.
+    let last_grant = w.fake.borrow().calls.iter().rfind(|c| c.contains("/call/billing_grant")).cloned().unwrap();
+    assert!(last_grant.contains(&grace_end.to_string()), "{last_grant}");
+}
+
+// --- Access levels and subscription changes ---
+
+fn upsert_products(w: &World, products: Value) -> Result<(), String> {
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_products(ctx, products.to_string()))
+}
+
+fn outbox_kinds(w: &World) -> Vec<String> {
+    outbox(w)
+        .into_iter()
+        .filter(|r| r.kind == "webhook")
+        .map(|r| serde_json::from_str::<Value>(&r.event_json).unwrap()["kind"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn entitlements_list_access_levels_with_the_subscription_state() {
+    let w = World::new();
+    w.as_admin(false);
+    keep_google_token_valid(&w, 60);
+    upsert_products(
+        &w,
+        json!([
+            { "app_id": APP, "product_id": "vip", "kind": "subscription", "access": "premium, no_ads" },
+            { "app_id": APP, "product_id": "no_ads", "kind": "non_consumable", "access": "no_ads" },
+        ]),
+    )
+    .unwrap();
+    let consumable = upsert_products(&w, json!({ "app_id": APP, "product_id": "gems", "kind": "consumable", "access": "premium" }));
+    assert!(consumable.unwrap_err().contains("ERR_BAD_PRODUCT"));
+    // A missing `access` keeps the stored levels.
+    upsert_products(&w, json!({ "app_id": APP, "product_id": "vip", "kind": "subscription", "price_micros": 4_990_000, "currency": "USD" })).unwrap();
+
+    connect(&w, "webhook", json!({ "url": "https://hooks.example.com/billing" }));
+    w.set_secret(secret_name::INTEGRATION_WEBHOOK_SECRET, "whk");
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_ACTIVE", "vip", ORDER, "2026-10-21T00:00:00Z", "");
+    w.verify("player-1", "vip");
+    let e = w.entitlements("player-1");
+    let premium = &e["access"]["premium"];
+    assert_eq!((premium["product_id"].as_str(), premium["will_renew"].as_bool(), premium["in_grace"].as_bool()), (Some("vip"), Some(true), Some(false)));
+    assert_eq!(e["access"]["no_ads"]["product_id"], "vip");
+    assert_eq!(e["subscriptions"]["vip"]["store"], "google");
+
+    // The player turns auto-renew off, then the renewal payment fails: integrations hear about both.
+    let needle = format!("subscriptionsv2/tokens/{TOKEN}");
+    w.fake.borrow_mut().overrides.retain(|(n, ..)| *n != needle);
+    let canceled = json!({
+        "subscriptionState": "SUBSCRIPTION_STATE_ACTIVE", "latestOrderId": ORDER, "acknowledgementState": "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+        "lineItems": [{ "productId": "vip", "expiryTime": "2026-10-21T00:00:00Z", "autoRenewingPlan": { "autoRenewEnabled": false } }],
+    });
+    w.script(&needle, 200, &canceled.to_string());
+    subscription_notification(&w, 3);
+    assert_eq!(w.entitlements("player-1")["access"]["premium"]["will_renew"], false);
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_IN_GRACE_PERIOD", "vip", ORDER, "2026-10-21T00:00:00Z", "");
+    subscription_notification(&w, 6);
+    assert_eq!(w.entitlements("player-1")["access"]["premium"]["billing_issue"], true);
+    let kinds = outbox_kinds(&w);
+    assert!(kinds.contains(&"cancel".to_string()) && kinds.contains(&"uncancel".to_string()) && kinds.contains(&"billing_issue".to_string()), "{kinds:?}");
+    let subs = &stats(&w, json!({}))["subscriptions"];
+    assert_eq!((subs["billing_issue_now"].as_u64(), subs["auto_renew_off_now"].as_u64(), subs["in_grace_now"].as_u64()), (Some(1), Some(0), Some(0)));
+}
+
+#[test]
+fn an_upgrade_sends_a_product_change() {
+    let w = World::new();
+    w.as_admin(false);
+    keep_google_token_valid(&w, 60);
+    add_subscriptions(&w, APP, &["vip", "vip_plus"]);
+    connect(&w, "webhook", json!({ "url": "https://hooks.example.com/billing" }));
+    w.set_secret(secret_name::INTEGRATION_WEBHOOK_SECRET, "whk");
+    google_subscription(&w, "tok-a", "SUBSCRIPTION_STATE_ACTIVE", "vip", "GPA.1000-0000-0000-00001", "2026-10-21T00:00:00Z", "");
+    verify_google_token(&w, "player-1", "vip", "tok-a");
+    google_subscription(&w, "tok-b", "SUBSCRIPTION_STATE_ACTIVE", "vip_plus", "GPA.2000-0000-0000-00001", "2026-10-21T00:00:00Z", "tok-a");
+    verify_google_token(&w, "player-1", "vip_plus", "tok-b");
+    let change = outbox(&w)
+        .into_iter()
+        .map(|r| serde_json::from_str::<Value>(&r.event_json).unwrap())
+        .find(|e| e["kind"] == "product_change")
+        .expect("product_change queued");
+    assert_eq!((change["product_id"].as_str(), change["previous_product_id"].as_str()), (Some("vip_plus"), Some("vip")));
+}
+
+// --- Client route protection ---
+
+const CLIENT_SECRET: &str = "0123456789abcdef0123456789abcdef";
+
+fn set_client_auth(w: &World, mode: &str) {
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
+        app.client_auth = mode.into();
+        tx.db.game_app().app_id().update(app);
+    });
+}
+
+fn guard(w: &World, route: &str, authorization: &str, user: &str) -> Result<crate::client_guard::Passed, crate::client_guard::Refused> {
+    crate::client_guard::check(&mut w.ctx(), route, authorization, APP, user, true)
+}
+
+#[test]
+fn signed_builds_need_a_player_token() {
+    let w = World::new();
+    assert!(guard(&w, "entitlements", "", "player-1").is_ok(), "open builds take any request");
+    set_client_auth(&w, "signed");
+    w.set_secret(secret_name::CLIENT_AUTH_SECRET, CLIENT_SECRET);
+    let refused = guard(&w, "entitlements", "", "player-1").unwrap_err();
+    assert_eq!((refused.http, refused.body["code"].as_str()), (401, Some("ERR_CLIENT_AUTH")));
+    let exp = NOW_MICROS / 1_000_000 + 600;
+    let token = purser_core::client_api::sign_player_token(CLIENT_SECRET, "player-1", "game", exp);
+    assert!(guard(&w, "entitlements", &format!("Bearer {token}"), "player-1").is_ok());
+    assert_eq!(guard(&w, "entitlements", &format!("Bearer {token}"), "player-2").unwrap_err().http, 401);
+    // The admin reducer keeps the mode when the input leaves it out, and refuses unknown ones.
+    w.as_admin(false);
+    let upsert = |extra: Value| {
+        let mut app = json!({ "app_id": APP, "platform": "android", "game_key": "game", "delivery": "none" });
+        app.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_game_app(ctx, app.to_string()))
+    };
+    upsert(json!({})).unwrap();
+    assert_eq!(w.read(|tx| tx.db.game_app().app_id().find(APP.to_string()).unwrap().client_auth), "signed");
+    assert!(upsert(json!({ "client_auth": "maybe" })).unwrap_err().contains("ERR_BAD_APP"));
+}
+
+#[test]
+fn client_routes_are_rate_limited_per_player_and_build() {
+    let w = World::new();
+    for _ in 0..3 {
+        assert!(guard(&w, "restore", "", "player-1").is_ok());
+    }
+    let refused = guard(&w, "restore", "", "player-1").unwrap_err();
+    assert_eq!((refused.http, refused.body["code"].as_str(), refused.retry_after), (429, Some("ERR_RATE_LIMITED"), Some(10)));
+    let response = refused.into_response();
+    assert_eq!(response.headers().get("retry-after").unwrap(), "10");
+    assert!(guard(&w, "restore", "", "player-2").is_ok(), "another player has its own bucket");
+    w.advance_clock(10);
+    assert!(guard(&w, "restore", "", "player-1").is_ok(), "refilled");
+    // Idle buckets are deleted by the worker.
+    w.advance_clock(600);
+    w.run_worker();
+    assert_eq!(w.read(|tx| { use crate::client_guard::rate_bucket; tx.db.rate_bucket().iter().count() }), 0);
+}
+
+#[test]
+fn answers_are_signed_when_the_build_has_a_key() {
+    use ed25519_dalek::Verifier;
+    let w = World::new();
+    assert!(guard(&w, "entitlements", "", "player-1").unwrap().signing_key.is_none());
+    // 32 bytes of 0x09, base64.
+    let seed = format!("{}CQk=", "CQkJ".repeat(10));
+    w.set_secret(secret_name::RESPONSE_SIGNING_KEY, &seed);
+    let key = guard(&w, "entitlements", "", "player-1").unwrap().signing_key.unwrap();
+    let body = w.entitlements("player-1");
+    let response = crate::client_guard::answer(200, &body, Some(&key));
+    let sig = response.headers().get("x-purser-signature").unwrap().to_str().unwrap().to_string();
+    let public = purser_core::jwt::b64_decode_any(&purser_core::client_api::public_key(&seed).unwrap()).unwrap();
+    let public = ed25519_dalek::VerifyingKey::from_bytes(&public.try_into().unwrap()).unwrap();
+    let sig = ed25519_dalek::Signature::from_slice(&purser_core::jwt::b64_decode_any(&sig).unwrap()).unwrap();
+    assert!(public.verify(body.to_string().as_bytes(), &sig).is_ok(), "the signature covers the exact body");
+    assert!(crate::client_guard::answer(400, &body, Some(&key)).headers().get("x-purser-signature").is_none());
+}
+
+#[test]
+fn personal_attributes_need_a_signed_build() {
+    let w = World::new();
+    let set = |w: &World, attrs: Value| {
+        let r: AttributesRequest = serde_json::from_value(json!({ "app_id": APP, "user_id": "player-1", "attributes": attrs })).unwrap();
+        set_attributes(&mut w.ctx(), &r).unwrap_or_else(|o| o)
+    };
+    assert_eq!(set(&w, json!({ "level": 5 })).http, 200);
+    let o = set(&w, json!({ "email": "player@example.com" }));
+    assert_eq!(o.http, 403);
+    assert!(o.body["message"].as_str().unwrap().contains("ERR_PERSONAL_ATTRIBUTE"));
+    assert_eq!(set(&w, json!({ "email": null })).http, 200, "removing is allowed");
+    set_client_auth(&w, "signed");
+    assert_eq!(set(&w, json!({ "email": "player@example.com" })).http, 200);
+}
+
+#[test]
+fn healthz_reports_a_stopped_worker() {
+    let w = World::new();
+    assert_eq!(health_report(&mut w.ctx()).body["status"], "starting");
+    w.run_worker();
+    let o = health_report(&mut w.ctx());
+    assert_eq!((o.http, o.body["status"].as_str()), (200, Some("healthy")));
+    w.advance_clock(6 * 60);
+    let o = health_report(&mut w.ctx());
+    assert_eq!((o.http, o.body["status"].as_str(), o.body["worker_age_secs"].as_i64()), (503, Some("worker_stopped"), Some(360)));
+}
+
+// --- Player data: transfers, export, erasure ---
+
+#[test]
+fn the_transfer_policy_limits_restores_on_other_players() {
+    let w = World::new();
+    keep_google_token_valid(&w, 60);
+    assert_eq!(w.verify("player-1", "no_ads").body["status"], "success");
+    w.as_admin(false);
+    let set = |policy: Value| w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::player_data::admin_set_transfer_policy(ctx, "game".into(), policy.to_string()));
+    assert!(set(json!({ "mode": "sometimes" })).unwrap_err().contains("ERR_BAD_POLICY"));
+    set(json!({ "mode": "cooldown", "cooldown_days": 30 })).unwrap();
+
+    // The first move is allowed, the next one within 30 days is not.
+    assert_eq!(w.restore("player-2", "no_ads").body["results"][0]["status"], "success");
+    assert_eq!(w.purchase().user_id, "player-2");
+    let o = w.restore("player-3", "no_ads");
+    assert!(o.body["results"][0]["message"].as_str().unwrap().contains("ERR_TRANSFER_LIMIT"), "{}", o.body);
+    assert_eq!(w.purchase().user_id, "player-2");
+    w.advance_clock(31 * 86_400);
+    assert_eq!(w.restore("player-3", "no_ads").body["results"][0]["status"], "success");
+
+    // Support moves a purchase whatever the policy says.
+    set(json!({ "mode": "never" })).unwrap();
+    let r: Value = serde_json::from_str(&crate::player_data::admin_transfer_purchase(&mut w.ctx(), LEDGER_ID.into(), "player-9".into())).unwrap();
+    assert_eq!(r["ok"], true, "{r}");
+    assert_eq!(w.purchase().user_id, "player-9");
+    assert!(w.reducer_calls().contains(&"billing_revoke player-3 transfer".to_string()), "{:?}", w.reducer_calls());
+    let bad: Value = serde_json::from_str(&crate::player_data::admin_transfer_purchase(&mut w.ctx(), LEDGER_ID.into(), "bad id!".into())).unwrap();
+    assert!(bad["error"].as_str().unwrap().contains("ERR_BAD_USER"));
+}
+
+#[test]
+fn a_player_can_be_exported_and_erased() {
+    let w = World::new();
+    w.verify("player-1", "no_ads");
+    let r = AttributesRequest { app_id: APP.into(), user_id: "player-1".into(), attributes: json!({ "level": 3 }).as_object().unwrap().clone(), client: Default::default() };
+    assert_eq!(set_attributes(&mut w.ctx(), &r).unwrap_or_else(|o| o).http, 200);
+    w.as_admin(false);
+
+    let export: Value = serde_json::from_str(&crate::player_data::admin_export_player(&mut w.ctx(), "game".into(), "player-1".into())).unwrap();
+    assert_eq!(export["purchases"][0]["id"], LEDGER_ID, "{export}");
+    assert!(export["purchases"][0]["history"].as_array().unwrap().len() >= 2);
+    assert_eq!(export["profiles"][0]["attributes"]["level"], "3");
+
+    let revenue_before = revenue_rows(&w);
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::player_data::admin_erase_player(ctx, "game".into(), "player-1".into())).unwrap();
+    let p = w.purchase();
+    assert!(p.user_id.starts_with("erased:"), "{}", p.user_id);
+    let logs = purchase_events(&w, LEDGER_ID);
+    assert!(logs.iter().all(|(_, details)| !details.contains("player-1")), "{logs:?}");
+    assert!(w.read(|tx| crate::players::of_user(tx, "player-1")).is_empty());
+    assert_eq!(w.entitlements("player-1")["non_consumables"], json!([]));
+    assert_eq!(revenue_rows(&w), revenue_before, "revenue is kept");
+    let audit = w.read(|tx| { use crate::access::admin_audit; tx.db.admin_audit().iter().map(|a| a.detail).collect::<Vec<_>>() });
+    assert!(audit.iter().all(|d| !d.contains("player-1")));
+}
+
+#[test]
+fn every_route_is_in_the_openapi_description() {
+    let openapi = include_str!("../../../docs/openapi.yaml");
+    assert!(openapi.contains(&format!("\n  version: {}\n", env!("CARGO_PKG_VERSION"))), "docs/openapi.yaml: info.version is not the crate version");
+    let mut routes: Vec<String> = [
+        "/healthz", "/restore", "/entitlements", "/paywall", "/paywall/event", "/attributes", "/offers/apple/sign",
+        "/checkout/xsolla", "/checkout/xsolla/status", "/checkout/steam", "/checkout/stripe", "/verify/stripe",
+    ]
+    .iter()
+    .map(|r| r.to_string())
+    .collect();
+    for s in purser_core::registry::STORES {
+        routes.extend(s.verify_route());
+        routes.extend(s.notify_route());
+    }
+    let missing: Vec<&String> = routes.iter().filter(|r| !openapi.contains(&format!("\n  {r}:\n"))).collect();
+    assert!(missing.is_empty(), "routes missing from docs/openapi.yaml: {missing:?}");
 }

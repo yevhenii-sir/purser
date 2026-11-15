@@ -299,6 +299,32 @@ pub fn refund_delta_with(store_name: &str, was_granted: bool, price_micros: i64,
     Some(d)
 }
 
+/// Part of a granted purchase was refunded (`amount_micros`); the purchase stays granted, so only
+/// the money is counted, not a refund.
+pub fn partial_refund_delta(store_name: &str, was_granted: bool, amount_micros: i64, facts: &PeriodFacts) -> Option<Delta> {
+    if !is_store(store_name) || !was_granted || facts.trial || amount_micros <= 0 {
+        return None;
+    }
+    let mut d = Delta { refunded_micros: amount_micros, ..Default::default() };
+    if facts.after_first_year {
+        d.refunded_after_year_micros = amount_micros;
+    }
+    Some(d)
+}
+
+/// A refunded purchase is valid again (a dispute the merchant won): the money it brought
+/// (`amount_micros`, what the refund took) counts again, as gross without a new purchase.
+pub fn reinstate_delta(store_name: &str, was_granted: bool, amount_micros: i64, facts: &PeriodFacts) -> Option<Delta> {
+    if !is_store(store_name) || !was_granted || facts.trial || amount_micros <= 0 {
+        return None;
+    }
+    let mut d = Delta { gross_micros: amount_micros, ..Default::default() };
+    if facts.after_first_year {
+        d.gross_after_year_micros = amount_micros;
+    }
+    Some(d)
+}
+
 pub fn expire_delta(store_name: &str, product_kind: &str) -> Option<Delta> {
     (is_store(store_name) && product_kind == kind::SUBSCRIPTION).then(|| Delta { expirations: 1, ..Default::default() })
 }
@@ -779,6 +805,27 @@ pub fn ledger_metrics(rows: &[LedgerRow], fx: &FxTable, q: &Query, now_micros: i
             by_month[offset] += value;
         }
     }
+    // LTV per payer after 1, 3, 6 and 12 months: of the cohorts old enough, cumulative net revenue
+    // up to that month over their payers.
+    let ltv: Vec<Value> = [1usize, 3, 6, 12]
+        .iter()
+        .map(|months| {
+            let (mut revenue, mut payers, mut count) = (0i64, 0u32, 0u32);
+            for (payers_of, by_month) in cohorts.values() {
+                if by_month.len() >= *months {
+                    revenue += by_month[..*months].iter().sum::<i64>();
+                    payers += payers_of;
+                    count += 1;
+                }
+            }
+            json!({
+                "months": months,
+                "cohorts": count,
+                "payers": payers,
+                "per_payer_usd_micros": if payers == 0 { Value::Null } else { json!(revenue / payers as i64) },
+            })
+        })
+        .collect();
     let skip = cohorts.len().saturating_sub(MAX_COHORTS);
     let cohorts: Vec<Value> = cohorts
         .into_iter()
@@ -799,6 +846,19 @@ pub fn ledger_metrics(rows: &[LedgerRow], fx: &FxTable, q: &Query, now_micros: i
 
     // Apple Ads campaigns and trials, for purchases made in the range.
     let in_range: Vec<&LedgerRow> = rows.iter().copied().filter(|r| (q.from..=q.to).contains(&day(r))).collect();
+
+    // ARPPU: net revenue of the range's paid purchases over the users who paid in it.
+    let mut paying: BTreeSet<&str> = BTreeSet::new();
+    let mut paid_net = 0i64;
+    for r in in_range.iter().filter(|r| !r.trial) {
+        paying.insert(r.user_id.as_str());
+        paid_net += net_usd(&mut usd, r);
+    }
+    let arppu = json!({
+        "payers": paying.len(),
+        "net_usd_micros": paid_net,
+        "arppu_usd_micros": if paying.is_empty() { Value::Null } else { json!(paid_net / paying.len() as i64) },
+    });
     let mut campaigns: BTreeMap<&str, Campaign> = BTreeMap::new();
     for r in in_range.iter().filter(|r| !r.asa_campaign.is_empty()) {
         let c = campaigns.entry(r.asa_campaign.as_str()).or_default();
@@ -848,6 +908,8 @@ pub fn ledger_metrics(rows: &[LedgerRow], fx: &FxTable, q: &Query, now_micros: i
 
     json!({
         "cohorts": cohorts,
+        "ltv": ltv,
+        "arppu": arppu,
         "by_asa_campaign": by_asa,
         "trials": {
             "started": started,
@@ -1138,5 +1200,13 @@ mod tests {
         assert_eq!((asa[1]["payers"].as_u64(), asa[1]["refunds"].as_u64(), asa[1]["net_usd_micros"].as_i64()), (Some(2), Some(1), Some(1_000_000)));
 
         assert_eq!(m["trials"], json!({ "started": 3, "converted": 1, "pending": 1, "conversion_rate": 0.5 }));
+
+        // LTV: the first month of both cohorts (8 / 5 payers), three months of September only.
+        let ltv = m["ltv"].as_array().unwrap();
+        assert_eq!((ltv[0]["months"].as_u64(), ltv[0]["cohorts"].as_u64(), ltv[0]["per_payer_usd_micros"].as_i64()), (Some(1), Some(2), Some(1_600_000)));
+        assert_eq!((ltv[1]["cohorts"].as_u64(), ltv[1]["per_payer_usd_micros"].as_i64()), (Some(1), Some(3_000_000)));
+        assert_eq!((ltv[2]["cohorts"].as_u64(), ltv[2]["per_payer_usd_micros"].is_null()), (Some(0), true));
+        // ARPPU of the range: 19 USD net over u1, u2, old, t1, u5, u6.
+        assert_eq!(m["arppu"], json!({ "payers": 6, "net_usd_micros": 19_000_000, "arppu_usd_micros": 3_166_666 }));
     }
 }

@@ -275,6 +275,8 @@ def unity_config(route, builds, products):
             item.setdefault("storeIds", {})[store_of[p["app_id"]]] = p["product_id"]
         if p.get("price_micros") and p.get("currency") and "price" not in item:
             item.update(price=p["price_micros"] / 1e6, currency=p["currency"])
+        if p.get("access") and "access" not in item:
+            item["access"] = [a for a in p["access"].split(",") if a]
     config = {"serverBaseUrl": route, "builds": [{"store": b["store"], "appId": b["app_id"]} for b in builds],
               "products": list(by_id.values())}
     return json.dumps(config, indent=2)

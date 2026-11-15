@@ -25,3 +25,5 @@ purser-core = { path = "../core", features = ["testing"] }
 spacetimedb = { version = "=2.14.1", features = ["unstable", "test-utils"] }
 # Test-only App Store key for promotional offer signatures (same version as purser-core).
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pem", "pkcs8", "std"] }
+# Test-only check of signed client answers (same version as purser-core).
+ed25519-dalek = { version = "2.2", default-features = false }

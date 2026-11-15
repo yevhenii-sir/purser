@@ -30,14 +30,18 @@ namespace Purser
         /// (it is fine before the player logs in) and <see cref="IBillingService.SetUserId"/> or pass a
         /// <paramref name="userIdProvider"/> so purchases can be credited.
         /// </summary>
+        /// <param name="playerTokenProvider">Player tokens from the game backend, for builds that require signed client
+        /// requests (<see cref="IPlayerTokenProvider"/>).</param>
         public static IBillingService Create(BillingConfig config, IUserIdProvider userIdProvider = null,
-            IAnalyticsIdProvider analyticsIdProvider = null, IAttributionProvider attributionProvider = null)
+            IAnalyticsIdProvider analyticsIdProvider = null, IAttributionProvider attributionProvider = null,
+            IPlayerTokenProvider playerTokenProvider = null)
         {
             return new BillingService(config, new BillingDependencies
             {
                 UserIdProvider = userIdProvider,
                 AnalyticsIdProvider = analyticsIdProvider,
                 AttributionProvider = attributionProvider,
+                PlayerTokenProvider = playerTokenProvider,
             });
         }
 

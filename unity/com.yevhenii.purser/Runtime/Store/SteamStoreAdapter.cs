@@ -177,7 +177,7 @@ namespace Purser
                 Language = NullIfEmpty(m_Bridge.Language),
                 Ticket = NullIfEmpty(await WebApiTicketAsync()),
             };
-            var res = await m_Http.PostAsync<SteamCheckoutResponse>("/checkout/steam", request, Lifetime);
+            var res = await m_Http.PostAsync<SteamCheckoutResponse>("/checkout/steam", request, userId, Lifetime);
             var checkout = res.Value;
             if (!res.IsHttpSuccess || checkout == null ||
                 !ulong.TryParse(checkout.OrderId, NumberStyles.None, CultureInfo.InvariantCulture, out var orderId))
@@ -270,6 +270,13 @@ namespace Purser
         protected override StoreOrder ToOrder(CheckoutOrder o, object native = null) =>
             new StoreOrder(Platform, o.Sku, o.OrderId, null, native ?? o,
                 m_Bridge.SteamId == 0 ? null : m_Bridge.SteamId.ToString(CultureInfo.InvariantCulture));
+
+        /// <inheritdoc/>
+        public override void SetPlayerTokenProvider(IPlayerTokenProvider provider)
+        {
+            base.SetPlayerTokenProvider(provider);
+            m_Http.Tokens = provider;
+        }
 
         /// <summary>Lets go of the Steam callback and cancels running checkouts.</summary>
         public override void Dispose()

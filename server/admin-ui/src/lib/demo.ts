@@ -92,9 +92,15 @@ function listPurchases(json: string) {
     .filter((p) => Number(p.created_at_micros) >= Number(q.since_micros || 0))
     .filter((p) => !apps.length || apps.includes(p.app_id))
     .filter((p) => !q.status || p.status === q.status)
+    .filter((p) => !q.kind || p.kind === q.kind)
+    .filter((p) => !q.subscription || (p.kind === "subscription" && ["verified", "granted", "completed"].includes(p.status) && Number(p.expires_at_ms) > Date.now()))
     .sort((a, b) => Number(b.created_at_micros) - Number(a.created_at_micros))
   const limit = Number(q.limit) || 200
-  return { rows: rows.slice(0, limit), more: rows.length > limit }
+  // The demo pages by position: `before_id` is the index to continue from.
+  const start = Number(q.before_id || 0)
+  const page = rows.slice(start, start + limit)
+  const more = rows.length > start + limit
+  return { rows: page, more, next: more ? { until_micros: 0, before_id: String(start + limit) } : null }
 }
 
 function findPlayer(query: string) {
@@ -135,6 +141,8 @@ function storeCreatePreview(json: string) {
 const PROCS: Record<string, (...args: never[]) => unknown> = {
   admin_store_create_preview: storeCreatePreview,
   whoami: () => "0x" + S.identity,
+  admin_response_public_key: () => ({ public_key: null }),
+  admin_transfer_policy: () => ({ mode: "always", cooldown_days: 0, max_transfers: 0 }),
   admin_me: () => ({ identity: S.identity, name: S.tables.admin?.find((a: Row) => a.protected)?.name || "", role: "owner", owner: true, game_keys: [] }),
   admin_overview: () => S.procs.admin_overview,
   admin_select: (json: string) => {

@@ -37,6 +37,13 @@ pub fn transaction_url(base: &str, transaction_id: &str) -> Result<String, Strin
     Ok(format!("{base}/inApps/v1/transactions/{transaction_id}"))
 }
 
+/// `GET` Get All Subscription Statuses: the latest transaction and renewal info of every
+/// subscription of the customer the transaction belongs to ([`parse_subscription_statuses`]).
+pub fn subscription_statuses_url(base: &str, transaction_id: &str) -> Result<String, String> {
+    transaction_url(base, transaction_id)?;
+    Ok(format!("{base}/inApps/v1/subscriptions/{transaction_id}"))
+}
+
 /// `PUT`: answer to a `CONSUMPTION_REQUEST` notification ([`crate::consumption::request`]).
 pub fn consumption_url(base: &str, transaction_id: &str) -> Result<String, String> {
     transaction_url(base, transaction_id)?;
@@ -97,6 +104,9 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
     let expires_at_ms = ms("expiresDate");
     let state = if ms("revocationDate") > 0 {
         TxState::Revoked
+    } else if p["isUpgraded"].as_bool() == Some(true) {
+        // Replaced by a higher subscription of the same group, which gives access from now on.
+        TxState::Expired
     } else if expires_at_ms > 0 && expires_at_ms <= now_ms {
         TxState::Expired
     } else {
@@ -127,7 +137,80 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
         linked_purchase_token: String::new(),
         country: crate::country::normalize(&s("storefront")),
         trial: is_free_trial(p),
+        grace_until_ms: 0,
+        billing_issue: false,
+        auto_renew_off: false,
+        renew_product_id: String::new(),
     })
+}
+
+/// Parses the response of [`subscription_statuses_url`]: the subscription whose original transaction
+/// is `original_transaction_id`, as its latest transaction with the renewal info applied (grace
+/// period, billing retry, auto-renew, pending downgrade). `None` when the response does not list
+/// that subscription. Only call with a body that came from Apple over TLS.
+pub fn parse_subscription_statuses(body: &str, original_transaction_id: &str, now_ms: i64) -> Result<Option<StoreTx>, String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad Apple response: {e}"))?;
+    let Some(last) = v["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|group| group["lastTransactions"].as_array().into_iter().flatten())
+        .find(|t| id_text(&t["originalTransactionId"]) == original_transaction_id)
+    else {
+        return Ok(None);
+    };
+    let jws = last["signedTransactionInfo"].as_str().ok_or("no signedTransactionInfo in the subscription status")?;
+    let mut tx = parse_transaction_payload(&decode_jws_payload(jws)?, now_ms)?;
+    let renewal = match last["signedRenewalInfo"].as_str() {
+        Some(jws) => decode_jws_payload(jws)?,
+        None => Value::Null,
+    };
+    apply_renewal(&mut tx, last["status"].as_i64().unwrap_or(0), &renewal, now_ms);
+    Ok(Some(tx))
+}
+
+/// `status` of a subscription in Get All Subscription Statuses.
+pub mod subscription_status {
+    pub const ACTIVE: i64 = 1;
+    pub const EXPIRED: i64 = 2;
+    pub const BILLING_RETRY: i64 = 3;
+    pub const GRACE_PERIOD: i64 = 4;
+    pub const REVOKED: i64 = 5;
+}
+
+fn apply_renewal(tx: &mut StoreTx, status: i64, renewal: &Value, now_ms: i64) {
+    let ms = |v: &Value| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())).unwrap_or(0);
+    tx.auto_renew_off = renewal["autoRenewStatus"].as_i64() == Some(0);
+    let next = renewal["autoRenewProductId"].as_str().unwrap_or("");
+    tx.renew_product_id = if next == tx.product_id { String::new() } else { next.to_string() };
+    if tx.state == TxState::Revoked {
+        return;
+    }
+    match status {
+        subscription_status::GRACE_PERIOD => {
+            let until = ms(&renewal["gracePeriodExpiresDate"]);
+            tx.billing_issue = true;
+            tx.grace_until_ms = until;
+            tx.state = if tx.access_until_ms() > now_ms { TxState::Active } else { TxState::Expired };
+        }
+        subscription_status::BILLING_RETRY => {
+            tx.billing_issue = true;
+            tx.state = TxState::Expired;
+        }
+        subscription_status::ACTIVE => tx.state = TxState::Active,
+        subscription_status::EXPIRED => tx.state = TxState::Expired,
+        subscription_status::REVOKED => tx.state = TxState::Revoked,
+        _ => {}
+    }
+}
+
+/// Apple ids come as strings or numbers.
+fn id_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => String::new(),
+    }
 }
 
 /// A free-trial period: `offerDiscountType` `FREE_TRIAL`; payloads without that field (older
@@ -419,6 +502,56 @@ mod tests {
         assert_eq!((intro.country.as_str(), intro.trial), ("US", false));
         assert!(p(r#"{"transactionId":"3","offerType":1,"price":0}"#).trial, "older payload without offerDiscountType");
         assert!(!p(r#"{"transactionId":"4","offerType":2,"price":0}"#).trial, "promotional offer is not a trial");
+    }
+
+    #[test]
+    fn upgraded_transaction_ends() {
+        let p: Value = serde_json::from_str(
+            r#"{"transactionId":"5","originalTransactionId":"1","productId":"basic","expiresDate":9999999999999,"isUpgraded":true}"#,
+        )
+        .unwrap();
+        assert_eq!(parse_transaction_payload(&p, 0).unwrap().state, TxState::Expired);
+    }
+
+    #[test]
+    fn subscription_statuses() {
+        let tx = |id: &str, product: &str, expires: i64| {
+            fake_jws(&format!(
+                r#"{{"transactionId":"{id}","originalTransactionId":"100","bundleId":"com.game","productId":"{product}","expiresDate":{expires}}}"#
+            ))
+        };
+        let body = |status: i64, renewal: &str| {
+            format!(
+                r#"{{"environment":"Production","bundleId":"com.game","data":[{{"subscriptionGroupIdentifier":"g",
+                "lastTransactions":[
+                    {{"originalTransactionId":"200","status":1,"signedTransactionInfo":"{}"}},
+                    {{"originalTransactionId":"100","status":{status},"signedTransactionInfo":"{}","signedRenewalInfo":"{}"}}]}}]}}"#,
+                tx("201", "other", 9_000),
+                tx("105", "premium", 5_000),
+                fake_jws(renewal)
+            )
+        };
+        let parse = |b: &str, now: i64| parse_subscription_statuses(b, "100", now).unwrap().unwrap();
+
+        // The latest transaction of the subscription, not the one the client sent.
+        let active = parse(&body(1, r#"{"autoRenewStatus":1,"autoRenewProductId":"premium"}"#), 1_000);
+        assert_eq!((active.transaction_id.as_str(), active.product_id.as_str()), ("105", "premium"));
+        assert_eq!((active.state, active.auto_renew_off, active.renew_product_id.as_str()), (TxState::Active, false, ""));
+
+        let downgrade = parse(&body(1, r#"{"autoRenewStatus":1,"autoRenewProductId":"basic"}"#), 1_000);
+        assert_eq!(downgrade.renew_product_id, "basic");
+        assert!(parse(&body(1, r#"{"autoRenewStatus":0}"#), 1_000).auto_renew_off);
+
+        // Grace period after the paid period: still active, with a billing issue.
+        let grace = parse(&body(4, r#"{"autoRenewStatus":1,"gracePeriodExpiresDate":8000}"#), 6_000);
+        assert_eq!((grace.state, grace.billing_issue, grace.grace_until_ms, grace.access_until_ms()), (TxState::Active, true, 8_000, 8_000));
+        let over = parse(&body(4, r#"{"autoRenewStatus":1,"gracePeriodExpiresDate":8000}"#), 8_001);
+        assert_eq!(over.state, TxState::Expired);
+
+        let retry = parse(&body(3, r#"{"autoRenewStatus":1,"isInBillingRetryPeriod":true}"#), 6_000);
+        assert_eq!((retry.state, retry.billing_issue), (TxState::Expired, true));
+        assert_eq!(parse(&body(5, "{}"), 1_000).state, TxState::Revoked);
+        assert!(parse_subscription_statuses(&body(1, "{}"), "999", 0).unwrap().is_none());
     }
 
     #[test]

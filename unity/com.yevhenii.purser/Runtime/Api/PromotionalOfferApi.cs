@@ -49,6 +49,6 @@ namespace Purser
     {
         public Task<ApiResult<ApplePromotionalOfferResponse>> SignApplePromotionalOfferAsync(ApplePromotionalOfferRequest request,
             CancellationToken ct = default) =>
-            PostAsync<ApplePromotionalOfferResponse>("/offers/apple/sign", request, ct);
+            m_Http.PostAsync<ApplePromotionalOfferResponse>("/offers/apple/sign", request, request?.UserId, ct);
     }
 }

@@ -10,7 +10,7 @@ use crate::config;
 use crate::ctx::{tx_now_micros, Budget, Ctx};
 use crate::delivery_client;
 use crate::stores;
-use crate::{game_app, purchase, purchase_log, GameApp, Product, Purchase, PurchaseLog, RetrySchedule};
+use crate::{game_app, product, purchase, purchase_log, GameApp, Product, Purchase, PurchaseLog, RetrySchedule};
 use purser_core::event::{delivery, event_type, reason, BillingEvent};
 use purser_core::model::{kind, status, store, StoreTx};
 use purser_core::paywall::Attribution;
@@ -117,6 +117,8 @@ pub struct Claim {
     pub currency: String,
     /// Paywall the client says the purchase was made from.
     pub paywall: Attribution,
+    /// The store offer the client says the player bought; empty when none.
+    pub offer_id: String,
 }
 
 impl Claim {
@@ -144,7 +146,72 @@ pub fn record_and_lease(tx: &TxContext, app: &GameApp, product: &Product, st: &S
 
 /// Writes the ledger row of an active store transaction. `leased`: a row with new work is hidden
 /// from the worker right away, the caller runs it. Returns the id and the row when it got new work.
+/// A subscription ends the rows it replaced (see [`replace_older`]).
 fn record(
+    tx: &TxContext,
+    app: Option<&GameApp>,
+    product: &Product,
+    st: &StoreTx,
+    claim: &Claim,
+    leased: bool,
+) -> Result<(String, Option<Purchase>), String> {
+    let recorded = record_row(tx, app, product, st, claim, leased)?;
+    if product.kind == kind::SUBSCRIPTION {
+        replace_older(tx, st, &recorded.0);
+    }
+    Ok(recorded)
+}
+
+/// Subscription changes (integration events) when the store reports new renewal details.
+pub fn lifecycle_events(p: &Purchase, billing_issue: bool, auto_renew_off: bool) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if p.kind != kind::SUBSCRIPTION || !status::is_owned(&p.status) {
+        return out;
+    }
+    match (p.auto_renew_off, auto_renew_off) {
+        (false, true) => out.push(event_kind::CANCEL),
+        (true, false) => out.push(event_kind::UNCANCEL),
+        _ => {}
+    }
+    match (p.billing_issue, billing_issue) {
+        (false, true) => out.push(event_kind::BILLING_ISSUE),
+        (true, false) => out.push(event_kind::BILLING_RECOVERED),
+        _ => {}
+    }
+    out
+}
+
+/// Ends the owned rows of other products that the subscription `new_id` replaced: the same
+/// original transaction (Apple upgrades within a subscription group, web subscriptions) or the
+/// Google purchase its `linkedPurchaseToken` names (upgrade / downgrade / crossgrade). The game
+/// gets `revoke` (reason `replaced`) for them; revenue and the integrations see no churn.
+fn replace_older(tx: &TxContext, st: &StoreTx, new_id: &str) {
+    let now_ms = tx_now_micros(tx) / 1000;
+    let mut chain: Vec<Purchase> = tx.db.purchase().original_transaction_id().filter(st.original_transaction_id.as_str()).collect();
+    if st.store == store::GOOGLE && !st.linked_purchase_token.is_empty() {
+        chain.extend(tx.db.purchase().purchase_token().filter(st.linked_purchase_token.as_str()));
+    }
+    for mut p in chain {
+        let replaced = p.id != new_id
+            && p.store == st.store
+            && p.app_id == st.app_id
+            && p.kind == kind::SUBSCRIPTION
+            && status::is_owned(&p.status)
+            && purser_core::model::replaces(&st.product_id, &p.product_id, p.access_until_ms(), now_ms);
+        if replaced {
+            let previous = p.product_id.clone();
+            p.replaced_by = new_id.to_string();
+            let details = format!("replaced by {new_id} ({})", st.product_id);
+            if set_inactive(tx, p, status::EXPIRE_PENDING, now_ms, &details, false).is_some() {
+                if let Some(new) = tx.db.purchase().id().find(new_id.to_string()) {
+                    integrations::enqueue_change(tx, &new, &previous);
+                }
+            }
+        }
+    }
+}
+
+fn record_row(
     tx: &TxContext,
     app: Option<&GameApp>,
     product: &Product,
@@ -169,9 +236,16 @@ fn record(
                     st.transaction_id
                 ));
             }
-            // Non-consumables and subscriptions follow the store account (restore on a new profile).
+            // Non-consumables and subscriptions follow the store account (restore on a new profile),
+            // as far as the app's transfer policy allows.
             // The previous owner has the reward in the game: it gets `revoke` (reason `transfer`)
             // before the new one gets `grant`, so one purchase cannot unlock several profiles.
+            if status::is_owned(&p.status) {
+                let game_key = app.map(|a| a.game_key.clone()).or_else(|| config::find_app(tx, &p.app_id).map(|a| a.game_key)).unwrap_or_default();
+                crate::player_data::policy(tx, &game_key)
+                    .allows(&crate::player_data::past_transfers(tx, &p.id), now)
+                    .map_err(|e| format!("[ERR_TRANSFER_LIMIT] {e}"))?;
+            }
             let owes_revoke = match p.status.as_str() {
                 status::TRANSFER_PENDING => p.previous_user_id.clone(), // still not revoked
                 s if status::is_owned(s) => p.user_id.clone(),
@@ -185,6 +259,11 @@ fn record(
             changes.push(format!("expires {} -> {}", p.expires_at_ms, st.expires_at_ms));
             p.expires_at_ms = st.expires_at_ms;
         }
+        if p.grace_until_ms != st.grace_until_ms {
+            // Access ends at another time: the game gets `grant` again with it.
+            changes.push(format!("grace until {} -> {}", p.grace_until_ms, st.grace_until_ms));
+            p.grace_until_ms = st.grace_until_ms;
+        }
         if !status::is_owned(&p.status) {
             changes.push(format!("status {} -> active", p.status));
         }
@@ -194,7 +273,26 @@ fn record(
             p.app_instance_id = claim.app_instance_id.clone();
             filled = true;
         }
+        if p.offer_id.is_empty() && !claim.offer_id.is_empty() {
+            p.offer_id = claim.offer_id.clone();
+            filled = true;
+        }
         filled |= crate::paywalls::attribute(&mut p, &claim.paywall);
+        // Renewal details (billing issue, auto-renew, pending downgrade) change no access.
+        let renewal = (st.billing_issue, st.auto_renew_off, st.renew_product_id.as_str());
+        let lifecycle = lifecycle_events(&p, st.billing_issue, st.auto_renew_off);
+        if (p.billing_issue, p.auto_renew_off, p.renew_product_id.as_str()) != renewal {
+            log_event(
+                tx,
+                &id,
+                "renewal_info",
+                &format!("billing_issue={} auto_renew_off={} renews_to={}", st.billing_issue, st.auto_renew_off, st.renew_product_id),
+            );
+            p.billing_issue = st.billing_issue;
+            p.auto_renew_off = st.auto_renew_off;
+            p.renew_product_id = st.renew_product_id.clone();
+            filled = true;
+        }
         if !changes.is_empty() {
             p.status = if p.previous_user_id.is_empty() { status::VERIFIED } else { status::TRANSFER_PENDING }.to_string();
             p.store_action = action;
@@ -203,11 +301,17 @@ fn record(
             p.updated_at_micros = now;
             crate::ledger::save_purchase(tx, p.clone());
             log_event(tx, &id, "reverified", &changes.join("; "));
+            for ev in lifecycle {
+                integrations::enqueue(tx, &p, ev);
+            }
             return Ok((id, Some(p)));
         }
         if filled {
             // Only the client's details: the row keeps its state and schedule.
-            crate::ledger::save_purchase(tx, p);
+            crate::ledger::save_purchase(tx, p.clone());
+        }
+        for ev in lifecycle {
+            integrations::enqueue(tx, &p, ev);
         }
         return Ok((id, None));
     }
@@ -226,6 +330,11 @@ fn record(
         next_attempt_at_micros: next_attempt,
         country: st.country.clone(),
         trial: st.trial,
+        grace_until_ms: st.grace_until_ms,
+        billing_issue: st.billing_issue,
+        auto_renew_off: st.auto_renew_off,
+        renew_product_id: st.renew_product_id.clone(),
+        offer_id: claim.offer_id.clone(),
         ..Purchase::new(st.store, &st.transaction_id, &st.app_id, product, user_id, now)
     };
     // A renewal keeps the paywall of the subscription's first purchase; else the client's.
@@ -251,22 +360,31 @@ pub fn consumed_elsewhere(tx: &TxContext, app: &GameApp, product: &Product, st: 
         && st.store == store::GOOGLE
         && product.kind == kind::CONSUMABLE
         && st.consumed
-        && tx.db.purchase().id().find(&st.ledger_id()).is_none()
+        && tx.db.purchase().id().find(st.ledger_id()).is_none()
 }
 
 fn latest(rows: impl Iterator<Item = Purchase>) -> Option<Purchase> {
-    rows.max_by_key(|p| (p.expires_at_ms, p.created_at_micros))
+    rows.max_by_key(|p| (p.access_until_ms(), p.created_at_micros))
 }
 
 /// Ledger rows of the subscription / purchase a store transaction belongs to (newest first wins).
 pub fn find_related(tx: &TxContext, st: &StoreTx) -> Option<Purchase> {
-    if let Some(p) = tx.db.purchase().id().find(&st.ledger_id()) {
+    if let Some(p) = tx.db.purchase().id().find(st.ledger_id()) {
         return Some(p);
     }
     if st.store == store::GOOGLE {
         latest(tx.db.purchase().purchase_token().filter(st.purchase_token.as_str()))
     } else {
         latest(tx.db.purchase().original_transaction_id().filter(st.original_transaction_id.as_str()))
+    }
+}
+
+/// The newest row of the subscription / purchase a ledger row belongs to (itself when it is the newest).
+pub fn find_related_row(tx: &TxContext, p: &Purchase) -> Option<Purchase> {
+    if p.store == store::GOOGLE {
+        latest(tx.db.purchase().purchase_token().filter(p.purchase_token.as_str()))
+    } else {
+        latest(tx.db.purchase().original_transaction_id().filter(p.original_transaction_id.as_str()))
     }
 }
 
@@ -300,6 +418,91 @@ pub fn mark_inactive(tx: &TxContext, p: Purchase, new_status: &str, expires_at_m
     set_inactive(tx, p, new_status, expires_at_ms, details, true)
 }
 
+/// Part of an owned purchase was refunded: `total_micros` so far (Stripe partial refunds). The
+/// purchase stays granted; revenue loses the new part. False when nothing changed.
+pub fn partial_refund(tx: &TxContext, mut p: Purchase, total_micros: i64, details: &str) -> bool {
+    let total = total_micros.min(p.price_micros);
+    let more = total - p.refunded_micros;
+    if more <= 0 || !status::is_owned(&p.status) {
+        return false;
+    }
+    crate::revenue::on_partial_refund(tx, &p, more);
+    p.refunded_micros = total;
+    p.updated_at_micros = tx_now_micros(tx);
+    let id = p.id.clone();
+    crate::ledger::save_purchase(tx, p);
+    // The amount alone: the revenue rebuild reads it.
+    log_event(tx, &id, "partial_refund", &more.to_string());
+    log::info!("{id}: partial refund of {more} micros ({details})");
+    true
+}
+
+/// A purchase the store took back for a dispute is valid again (Stripe: the merchant won it): it
+/// is granted again (reason `reinstated`) and its money counts again. Not for admin revokes.
+pub fn reinstate(tx: &TxContext, mut p: Purchase, details: &str) -> Option<String> {
+    let revoked = matches!(p.status.as_str(), status::REVOKE_PENDING | status::REVOKED);
+    if !revoked || crate::support::revoked_by_admin(tx, &p.id) {
+        return None;
+    }
+    crate::revenue::on_reinstate(tx, &p);
+    let now = tx_now_micros(tx);
+    if p.kind != kind::CONSUMABLE {
+        let before = tx
+            .db
+            .purchase_log()
+            .purchase_id()
+            .filter(p.id.as_str())
+            .filter(|l| l.event == ACCESS_WAS_UNTIL)
+            .max_by_key(|l| (l.at_micros, l.id))
+            .and_then(|l| l.details.parse().ok());
+        if let Some(until) = before {
+            p.expires_at_ms = until;
+        }
+    }
+    p.status = status::VERIFIED.to_string();
+    p.attempts = 0;
+    p.last_error.clear();
+    p.next_attempt_at_micros = now;
+    p.updated_at_micros = now;
+    let id = p.id.clone();
+    crate::ledger::save_purchase(tx, p);
+    log_event(tx, &id, "reinstated", details);
+    Some(id)
+}
+
+/// The last status change of a row was [`reinstate`]: its next grant says so.
+fn is_reinstated(tx: &TxContext, p: &Purchase) -> bool {
+    p.status == status::VERIFIED
+        && tx
+            .db
+            .purchase_log()
+            .purchase_id()
+            .filter(p.id.as_str())
+            .filter(|l| l.event == "reinstated" || l.event == status::VERIFIED || l.event == "reverified" || l.event == status::REVOKED)
+            .max_by_key(|l| (l.at_micros, l.id))
+            .is_some_and(|l| l.event == "reinstated")
+}
+
+/// Moves an owned purchase to `new_user_id` (an admin's transfer): the owner gets `revoke`
+/// (reason `transfer`) before the new one gets `grant`. Returns the row id to advance.
+pub fn transfer_to(tx: &TxContext, mut p: Purchase, new_user_id: &str, details: &str) -> String {
+    let now = tx_now_micros(tx);
+    let owes_revoke = match p.status.as_str() {
+        status::TRANSFER_PENDING => p.previous_user_id.clone(),
+        _ => p.user_id.clone(),
+    };
+    let from = std::mem::replace(&mut p.user_id, new_user_id.to_string());
+    p.previous_user_id = if owes_revoke == new_user_id { String::new() } else { owes_revoke };
+    p.status = if p.previous_user_id.is_empty() { status::VERIFIED } else { status::TRANSFER_PENDING }.to_string();
+    p.attempts = 0;
+    p.next_attempt_at_micros = now;
+    p.updated_at_micros = now;
+    let id = p.id.clone();
+    crate::ledger::save_purchase(tx, p);
+    log_event(tx, &id, "reverified", &format!("user {from} -> {new_user_id}; {details}"));
+    id
+}
+
 /// Revoke by an admin (`support::admin_revoke_purchase`): same path as a store refund, but not a
 /// refund, so revenue is not touched (the worker also sends no integration event).
 pub fn mark_revoked_by_admin(tx: &TxContext, p: Purchase, now_ms: i64, details: &str) -> Option<String> {
@@ -326,6 +529,7 @@ fn set_inactive(tx: &TxContext, mut p: Purchase, new_status: &str, expires_at_ms
         p.user_id = std::mem::take(&mut p.previous_user_id);
     }
     p.status = new_status.to_string();
+    let access_was_until = p.expires_at_ms;
     if p.kind != kind::CONSUMABLE {
         p.expires_at_ms = expires_at_ms;
     }
@@ -333,14 +537,26 @@ fn set_inactive(tx: &TxContext, mut p: Purchase, new_status: &str, expires_at_ms
     p.next_attempt_at_micros = now;
     p.updated_at_micros = now;
     let id = p.id.clone();
+    let kind = p.kind.clone();
     crate::ledger::save_purchase(tx, p);
     log_event(tx, &id, new_status, &details);
+    if kind != kind::CONSUMABLE && access_was_until != expires_at_ms {
+        // What [`reinstate`] gives back.
+        log_event(tx, &id, ACCESS_WAS_UNTIL, &access_was_until.to_string());
+    }
     Some(id)
 }
 
+/// Purchase log event: the access end a revoke or expiry replaced (details: the old `expires_at_ms`).
+const ACCESS_WAS_UNTIL: &str = "access_was_until";
+
 /// Applies an inactive store state (refund / revoke / expiry) to the ledger.
 pub fn record_inactive(tx: &TxContext, st: &StoreTx, details: &str) -> Option<String> {
-    let p = find_related(tx, st)?;
+    let mut p = find_related(tx, st)?;
+    // Why it ended: a failed renewal payment (billing retry, account hold) or auto-renew off.
+    p.billing_issue = st.billing_issue;
+    p.auto_renew_off = st.auto_renew_off;
+    p.grace_until_ms = 0;
     let now_ms = tx_now_micros(tx) / 1000;
     match st.state {
         purser_core::model::TxState::Revoked => mark_inactive(tx, p, status::REVOKE_PENDING, now_ms, details),
@@ -362,9 +578,13 @@ pub struct Step {
     store_auth: stores::Auth,
     /// Catalog id of the purchased product (webhook deliveries carry it).
     catalog_id: String,
+    /// A `verified` row granted again after a won dispute ([`reinstate`]).
+    reinstated: bool,
 }
 
 /// Outcome of [`lease`]: a step to [`run`], or the row as it is (nothing to do now).
+// A short-lived return value: boxing the large row would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 pub enum Lease {
     Step(Box<Step>),
     Idle(Option<Purchase>),
@@ -384,14 +604,15 @@ fn prepare(tx: &TxContext, app: GameApp, row: Purchase) -> Lease {
         stores::Auth::default()
     };
     let catalog_id = if delivers { crate::catalog_id_of(tx, &row.app_id, &row.product_id) } else { String::new() };
-    Lease::Step(Box::new(Step { app, row, delivery, revoked_by_admin, store_auth, catalog_id }))
+    let reinstated = row.was_granted && is_reinstated(tx, &row);
+    Lease::Step(Box::new(Step { app, row, delivery, revoked_by_admin, store_auth, catalog_id, reinstated }))
 }
 
 /// Takes the row for processing if it has pending work: hides it from the worker for
 /// `LEASE_MICROS` and reads what its step needs. `app`: the build, when the caller has it.
 pub fn lease(tx: &TxContext, id: &str, app: Option<&GameApp>) -> Lease {
     let now = tx_now_micros(tx);
-    let Some(mut p) = tx.db.purchase().id().find(&id.to_string()) else { return Lease::Idle(None) };
+    let Some(mut p) = tx.db.purchase().id().find(id.to_string()) else { return Lease::Idle(None) };
     if p.next_attempt_at_micros == 0 || p.next_attempt_at_micros > now {
         return Lease::Idle(Some(p));
     }
@@ -416,7 +637,7 @@ pub fn lease(tx: &TxContext, id: &str, app: Option<&GameApp>) -> Lease {
 /// `lease_app`: the caller goes on with the row, so it is leased (and its next step prepared) in
 /// the same transaction; `None` leaves the next step to the worker.
 fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event: Option<&str>, lease_app: Option<&GameApp>) -> Lease {
-    let Some(mut p) = tx.db.purchase().id().find(&id.to_string()) else { return Lease::Idle(None) };
+    let Some(mut p) = tx.db.purchase().id().find(id.to_string()) else { return Lease::Idle(None) };
     if p.status != from {
         // Changed meanwhile (e.g. by a notification): go on from its current state.
         return match lease_app {
@@ -463,7 +684,7 @@ fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event:
 }
 
 fn fail(tx: &TxContext, id: &str, error: &str) -> Option<Purchase> {
-    let mut p = tx.db.purchase().id().find(&id.to_string())?;
+    let mut p = tx.db.purchase().id().find(id.to_string())?;
     let now = tx_now_micros(tx);
     let delay = retry_delay_secs(p.attempts);
     p.attempts += 1;
@@ -489,7 +710,8 @@ fn billing_event(p: &Purchase, event: &str, why: &str, now_ms: i64) -> BillingEv
         transaction_id: p.transaction_id.clone(),
         original_transaction_id: p.original_transaction_id.clone(),
         user_id: p.user_id.clone(),
-        expires_at_ms: p.expires_at_ms,
+        // Access end: the game keeps the product through a grace period.
+        expires_at_ms: p.access_until_ms(),
         price_micros: p.price_micros,
         currency: p.currency.clone(),
         timestamp_ms: now_ms,
@@ -530,7 +752,7 @@ pub fn run_within(ctx: &mut impl Ctx, lease: Lease, budget: Budget) -> Option<Pu
 
 /// One step of a leased purchase; `next_step`: lease it again for the next step if this budget allows.
 fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease {
-    let Step { app, row: p, delivery, revoked_by_admin, mut store_auth, catalog_id } = step;
+    let Step { app, row: p, delivery, revoked_by_admin, mut store_auth, catalog_id, reinstated } = step;
     let billing_event = |p: &Purchase, event: &str, why: &str, now_ms: i64| BillingEvent { catalog_product_id: catalog_id.clone(), ..billing_event(p, event, why, now_ms) };
     let creds = delivery.as_ref();
     let now_ms = ctx.now_ms();
@@ -538,7 +760,8 @@ fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease 
         status::VERIFIED => {
             let next = if p.store_action.is_empty() { status::COMPLETED } else { status::GRANTED };
             let ev = integrations::grant_kind(&p);
-            delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::GRANT, &p.reason, now_ms))
+            let why = if reinstated { reason::REINSTATED } else { p.reason.as_str() };
+            delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::GRANT, why, now_ms))
                 .map(|_| (next, Some(ev)))
         }
         status::GRANTED => stores::finish(ctx, &app, &p, &mut store_auth).map(|_| (status::COMPLETED, None)),
@@ -554,6 +777,11 @@ fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease 
             let (why, ev) = if revoked_by_admin { (reason::ADMIN, None) } else { (reason::REFUND, Some(event_kind::REFUND)) };
             delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, why, now_ms))
                 .map(|_| (status::REVOKED, ev))
+        }
+        // A replaced subscription (upgrade) is no churn: no integration event.
+        status::EXPIRE_PENDING if !p.replaced_by.is_empty() => {
+            delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, reason::REPLACED, now_ms))
+                .map(|_| (status::EXPIRED, None))
         }
         status::EXPIRE_PENDING => {
             delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, reason::EXPIRE, now_ms))
@@ -599,8 +827,10 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
             .take(WORKER_BATCH)
             .map(|p| (p.id, p.app_id))
             .collect();
+        crate::settings::set(tx, crate::settings::key::WORKER_HEARTBEAT, &now.to_string());
         crate::access::prune_audit(tx);
         crate::retention::daily(tx);
+        crate::client_guard::prune(tx);
         (picked, crate::revenue::upkeep(tx))
     });
     let budget = Budget::new(ctx, crate::ctx::WORKER_BUDGET_SECS);
@@ -616,7 +846,7 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
         }
         let started = crate::ctx::last_tx_micros();
         advance(ctx, &id, purchases);
-        if crate::ctx::last_tx_micros() - started >= crate::net::TIMEOUT_SECS as i64 * 1_000_000 {
+        if crate::ctx::last_tx_micros() - started >= crate::net::TIMEOUT_SECS * 1_000_000 {
             slow.insert(app_id);
         }
     }
@@ -629,8 +859,11 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
     crate::revenue::catch_up(ctx, &upkeep);
 }
 
-/// Active subscriptions and owned non-consumables of a user across all apps of the same game.
+/// What a user owns across all apps of the same game (see `purser_core::customer`): access
+/// levels, active subscriptions with their renewal state, non-consumables. Keyed by catalog id:
+/// the same product bought in another store of the app is the same entitlement.
 pub fn entitlements(tx: &TxContext, app: &GameApp, user_id: &str) -> Value {
+    use purser_core::customer::{access_levels, customer_info, Owned};
     let now_ms = tx_now_micros(tx) / 1000;
     let apps: BTreeSet<String> = tx
         .db
@@ -639,34 +872,41 @@ pub fn entitlements(tx: &TxContext, app: &GameApp, user_id: &str) -> Value {
         .filter(app.game_key.as_str())
         .map(|a| a.app_id)
         .collect();
-
-    let mut subscriptions: BTreeMap<String, i64> = BTreeMap::new();
-    let mut non_consumables: BTreeSet<String> = BTreeSet::new();
-    // Keyed by catalog id: the same product bought in another store of the app is the same entitlement.
+    let mut products: BTreeMap<(String, String), Option<Product>> = BTreeMap::new();
+    let mut product = |app_id: &str, product_id: &str| {
+        products
+            .entry((app_id.to_string(), product_id.to_string()))
+            .or_insert_with(|| tx.db.product().key().find(crate::product_key(app_id, product_id)))
+            .clone()
+    };
+    let mut owned = Vec::new();
     for p in tx.db.purchase().user_id().filter(user_id) {
-        if !apps.contains(&p.app_id) || !status::is_owned(&p.status) {
+        if !apps.contains(&p.app_id) || !status::is_owned(&p.status) || p.kind == kind::CONSUMABLE {
             continue;
         }
-        let id = crate::catalog_id_of(tx, &p.app_id, &p.product_id);
-        match p.kind.as_str() {
-            kind::SUBSCRIPTION if p.expires_at_ms == 0 || p.expires_at_ms > now_ms => {
-                let e = subscriptions.entry(id).or_insert(p.expires_at_ms);
-                if *e != 0 && (p.expires_at_ms == 0 || p.expires_at_ms > *e) {
-                    *e = p.expires_at_ms;
-                }
-            }
-            kind::NON_CONSUMABLE => {
-                non_consumables.insert(id);
-            }
-            _ => {}
-        }
+        let row = product(&p.app_id, &p.product_id);
+        let renews_to = if p.renew_product_id.is_empty() {
+            String::new()
+        } else {
+            product(&p.app_id, &p.renew_product_id).map_or(p.renew_product_id.clone(), |r| r.catalog_id().to_string())
+        };
+        owned.push(Owned {
+            catalog_id: row.as_ref().map_or(p.product_id.clone(), |r| r.catalog_id().to_string()),
+            access: row.as_ref().map(|r| access_levels(&r.access).map(str::to_string).collect()).unwrap_or_default(),
+            kind: p.kind,
+            store: p.store,
+            expires_at_ms: p.expires_at_ms,
+            grace_until_ms: p.grace_until_ms,
+            billing_issue: p.billing_issue,
+            auto_renew_off: p.auto_renew_off,
+            renews_to,
+            trial: p.trial,
+            purchased_at_ms: p.created_at_micros / 1000,
+        });
     }
-    json!({
-        "user_id": user_id,
-        "game_key": app.game_key,
-        "subscriptions": subscriptions,
-        "non_consumables": non_consumables,
-        "server_time_ms": now_ms,
-    })
+    let mut info = customer_info(&owned, now_ms);
+    info["user_id"] = json!(user_id);
+    info["game_key"] = json!(app.game_key);
+    info
 }
 

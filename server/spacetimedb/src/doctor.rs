@@ -83,6 +83,8 @@ const ALL_SECRETS: &[&str] = &[
     secret_name::APPLE_NOTIFICATION_SECRET,
     secret_name::SPACETIME_TOKEN,
     secret_name::WEBHOOK_SECRET,
+    secret_name::CLIENT_AUTH_SECRET,
+    secret_name::RESPONSE_SIGNING_KEY,
 ];
 
 fn snapshot(ctx: &mut impl Ctx, app_id: &str) -> Result<Snapshot, String> {
@@ -208,6 +210,31 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
             None => v(Level::Warn, "missing", format!("Set {name} on the app's Keys tab")),
         };
         r.add(&format!("secret:{name}"), &format!("Secret {name}"), verdict);
+    }
+
+    // --- Client requests -------------------------------------------------------------------
+    let signed = app.client_auth == purser_core::client_api::mode::SIGNED;
+    let token_secret = s.value(secret_name::CLIENT_AUTH_SECRET).map(str::len);
+    let verdict = match (signed, token_secret) {
+        (false, _) => v(
+            Level::Info,
+            "open: any client may name any player",
+            "Use player ids nobody can guess. With a game backend, sign player tokens (Client requests: signed) so nobody can read or change another player's data.",
+        ),
+        (true, Some(n)) if n >= purser_core::client_api::MIN_SECRET_BYTES => v(Level::Ok, "signed player tokens", ""),
+        (true, _) => v(
+            Level::Fail,
+            "signed, but client_auth_secret is missing or shorter than 32 characters",
+            "Every client request is refused until the build has the secret its game backend signs player tokens with.",
+        ),
+    };
+    r.add("client_auth", "Client requests", verdict);
+    if let Some(seed) = s.value(secret_name::RESPONSE_SIGNING_KEY) {
+        let verdict = match purser_core::client_api::public_key(seed) {
+            Ok(public) => v(Level::Ok, format!("signed, public key {public}"), ""),
+            Err(e) => v(Level::Fail, e, "Generate a new key on the app's Keys tab"),
+        };
+        r.add("response_signing", "Signed answers", verdict);
     }
 
     // --- Store access ----------------------------------------------------------------------
@@ -736,6 +763,7 @@ fn probe_ga4(ctx: &mut impl Ctx, app: &GameApp, firebase_app_id: &str, api_secre
         attribution: Default::default(),
         country: String::new(),
         commission_percent: purser_core::revenue::DEFAULT_COMMISSION_PERCENT,
+        previous_product_id: String::new(),
     };
     match ga4::build(&event, firebase_app_id, api_secret, true) {
         Ok(Built::Send(call)) => {

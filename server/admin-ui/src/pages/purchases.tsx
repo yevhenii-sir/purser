@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
-import { GiftIcon, SearchIcon, UserCheckIcon, UserIcon } from "lucide-react"
+import { DownloadIcon, GiftIcon, SearchIcon, UserCheckIcon, UserIcon } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -8,22 +9,53 @@ import { AppCombobox } from "@/components/app-combobox"
 import { ErrorBox, Field, Loading, Mono, PageHeader, Section, StatusBadge } from "@/components/common"
 import { RichTable } from "@/components/rich-table"
 import { PurchaseSheet } from "@/components/purchase-sheet"
-import { call, proc, route, select } from "@/lib/api"
+import { call, proc, select } from "@/lib/api"
 import { useAppIndex, useApps } from "@/lib/apps"
 import { errorText, fmtMs, fmtTime, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { openPlayer } from "@/lib/player"
-import { catalogIdOf, STATUSES, type GameApp, type Product, type Purchase } from "@/lib/types"
+import { catalogIdOf, KINDS, STATUSES, type GameApp, type Product, type Purchase } from "@/lib/types"
+import { downloadBlob } from "@/lib/utils"
 import { playerRoute, type PageProps } from "@/routes"
 
 const ANY = "__any__"
-/** Rows of the list; `admin_list_purchases` says when more match. */
+/** Rows per page of the list; `admin_list_purchases` says when more match and where they start. */
 const LIST_LIMIT = 500
+/** Rows per request and at most in one CSV export. */
+const EXPORT_PAGE = 1000
+const EXPORT_MAX = 50_000
+
+/** Subscription views of the list (`subscription` of `admin_list_purchases`). */
+const SUBSCRIPTION_VIEWS: [string, string][] = [
+  ["active", "Active subscriptions"],
+  ["grace", "In a grace period"],
+  ["billing_issue", "Payment failed"],
+  ["auto_renew_off", "Auto-renew off"],
+]
+
+type Page = { rows: Purchase[]; more: boolean; next: { until_micros: number; before_id: string } | null }
+
+const CSV_COLUMNS: (keyof Purchase | string)[] = [
+  "id", "app_id", "store", "product_id", "kind", "user_id", "status", "reason", "environment", "price_micros", "currency", "country",
+  "transaction_id", "original_transaction_id", "created_at_micros", "updated_at_micros", "expires_at_ms", "trial", "auto_renew_off",
+  "billing_issue", "grace_until_ms", "refunded_micros", "offer_id",
+]
+
+function toCsv(rows: Purchase[]): string {
+  const cell = (v: unknown) => {
+    const t = v === null || v === undefined ? "" : String(v)
+    return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t
+  }
+  return [CSV_COLUMNS.join(","), ...rows.map((r) => CSV_COLUMNS.map((c) => cell((r as unknown as Record<string, unknown>)[c])).join(","))].join("\n")
+}
 
 /** `appIds`: only purchases of these store apps (the app page); `embedded`: no page header. */
 export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: string[]; embedded?: boolean }) {
   const [query, setQuery] = useState("")
-  const [filter, setFilter] = useState({ q: "", status: ANY, days: "7" })
+  const [filter, setFilter] = useState({ q: "", status: ANY, days: "7", kind: ANY, sub: ANY })
+  /** Pages loaded after the first one ("Load more"), for the filter they were loaded with. */
+  const [later, setLater] = useState<{ key: string; pages: Page[] }>({ key: "", pages: [] })
+  const [exporting, setExporting] = useState(false)
   const [open, setOpen] = useState<string | null>(null)
   const [dialog, setDialog] = useState<"grant" | "entitlements" | null>(null)
   // App filter of the global page (an app key, "" = every app); the app page passes `appIds`.
@@ -39,7 +71,15 @@ export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: s
     const ids = appKey ? new Set(appKey.split(",")) : null
     return (groups || []).flatMap((g) => g.apps).filter((a) => !ids || ids.has(a.app_id))
   }, [groups, appKey])
-  const { data, error, loading, reload } = useAsync(async (): Promise<{ rows: Purchase[]; more: boolean }> => {
+  const listQuery = () => ({
+    since_micros: (Date.now() - Number(filter.days) * 86_400_000) * 1000,
+    app_ids: shownKey?.split(",") || [],
+    status: filter.status === ANY ? "" : filter.status,
+    kind: filter.sub !== ANY ? "subscription" : filter.kind === ANY ? "" : filter.kind,
+    subscription: filter.sub === ANY ? "" : filter.sub,
+  })
+  const filterKey = JSON.stringify([filter, shownKey])
+  const { data, error, loading, reload } = useAsync(async (): Promise<Page> => {
     const q = filter.q.trim()
     const status = filter.status === ANY ? "" : filter.status
     const ids = shownKey?.split(",") || []
@@ -54,12 +94,37 @@ export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: s
         rows = rows.filter((r) => only.has(r.app_id))
       }
       if (status) rows = rows.filter((r) => r.status === status)
-      return { rows: rows.sort((a, b) => Number(b.updated_at_micros) - Number(a.updated_at_micros)), more: false }
+      return { rows: rows.sort((a, b) => Number(b.updated_at_micros) - Number(a.updated_at_micros)), more: false, next: null }
     }
     // Newest first, filtered on the server before the limit.
-    const since = (Date.now() - Number(filter.days) * 86_400_000) * 1000
-    return proc("admin_list_purchases", JSON.stringify({ since_micros: since, app_ids: ids, status, limit: LIST_LIMIT }))
+    return proc("admin_list_purchases", JSON.stringify({ ...listQuery(), limit: LIST_LIMIT }))
   }, [filter, shownKey])
+  const pages = data ? [data, ...(later.key === filterKey ? later.pages : [])] : []
+  const rows = pages.flatMap((p) => p.rows)
+  const last = pages.at(-1)
+  const loadMore = async () => {
+    if (!last?.next) return
+    const page = await tryAct(() => proc<Page>("admin_list_purchases", JSON.stringify({ ...listQuery(), ...last.next, limit: LIST_LIMIT })))
+    if (page) setLater((l) => ({ key: filterKey, pages: [...(l.key === filterKey ? l.pages : []), page] }))
+  }
+  const exportCsv = async () => {
+    setExporting(true)
+    try {
+      const out: Purchase[] = []
+      let next: Page["next"] = null
+      do {
+        const page: Page = await proc<Page>("admin_list_purchases", JSON.stringify({ ...listQuery(), ...(next || {}), limit: EXPORT_PAGE }))
+        out.push(...page.rows)
+        next = page.next
+      } while (next && out.length < EXPORT_MAX)
+      downloadBlob(`purchases-${new Date().toISOString().slice(0, 10)}.csv`, toCsv(out), "text/csv")
+      if (next) toast.warning(`Exported the newest ${out.length} purchases; pick a shorter period for the rest`)
+    } catch (e) {
+      toast.error(errorText(e))
+    } finally {
+      setExporting(false)
+    }
+  }
 
   const actions = (
     <>
@@ -86,11 +151,26 @@ export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: s
             {STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
           </SelectContent>
         </Select>
+        <Select value={filter.sub !== ANY ? "subscription" : filter.kind} onValueChange={(kind) => setFilter((f) => ({ ...f, kind, sub: ANY }))} disabled={!!filter.q}>
+          <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ANY}>All kinds</SelectItem>
+            {KINDS.map((k) => <SelectItem key={k} value={k}>{k.replace("_", "-")}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={filter.sub} onValueChange={(sub) => setFilter((f) => ({ ...f, sub }))} disabled={!!filter.q}>
+          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ANY}>Any state</SelectItem>
+            {SUBSCRIPTION_VIEWS.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+          </SelectContent>
+        </Select>
         <Select value={filter.days} onValueChange={(days) => setFilter((f) => ({ ...f, days }))} disabled={!!filter.q}>
           <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
           <SelectContent>{["1", "7", "30", "365"].map((d) => <SelectItem key={d} value={d}>Last {d} d</SelectItem>)}</SelectContent>
         </Select>
         <Button variant="outline" onClick={() => setFilter((f) => ({ ...f, q: query }))}>Search</Button>
+        <Button variant="outline" disabled={exporting || !!filter.q} onClick={exportCsv} title="All purchases of the filter as CSV"><DownloadIcon /> {exporting ? "Exporting…" : "CSV"}</Button>
         <Button variant="outline" disabled={!query.trim()} onClick={() => openPlayer(query, go)} title="Open the player this user_id, transaction id or purchase token belongs to">
           <UserIcon /> Open player
         </Button>
@@ -99,12 +179,12 @@ export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: s
       <Section>
         {error ? <ErrorBox error={error} /> : loading || !data ? <Loading rows={6} /> : (
           <RichTable
-            rows={data.rows}
+            rows={rows}
             onRowClick={(r) => setOpen(r.id)}
             rowKey={(r) => r.id}
             empty="Nothing found."
             noun="purchases"
-            summary={data.more ? `The newest ${data.rows.length} purchases: pick a shorter period or a status to see the rest` : undefined}
+            summary={last?.more ? `The newest ${rows.length} purchases of the period and filters` : undefined}
             initialSort={{ id: "Updated", desc: true }}
             columns={[
               { title: "Updated", size: 170, sort: (r) => r.updated_at_micros, cell: (r) => <span className="whitespace-nowrap">{fmtTime(r.updated_at_micros)}</span> },
@@ -143,6 +223,7 @@ export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: s
             ]}
           />
         )}
+        {last?.next && !loading && <div className="mt-3 flex justify-center"><Button variant="outline" onClick={loadMore}>Load {LIST_LIMIT} more</Button></div>}
       </Section>
       <PurchaseSheet id={open} onClose={(changed) => { setOpen(null); if (changed) reload() }} />
       <GrantDialog open={dialog === "grant"} apps={apps} onClose={() => setDialog(null)} onDone={reload} />
@@ -213,7 +294,10 @@ function EntitlementsDialog({ open, apps, onClose }: { open: boolean; apps: Game
   const check = async () => {
     setError("")
     try {
-      setResult((await route("/entitlements", { app_id: target, user_id: user })).json)
+      // Through the admin procedure: client routes of signed builds need a player token.
+      const game = apps.find((x) => x.app_id === target)?.game_key
+      const profile = await proc<{ entitlements: { game_key: string }[] }>("admin_user_profile", user.trim())
+      setResult(profile.entitlements.find((e) => e.game_key === game) ?? { access: {}, subscriptions: {}, non_consumables: [] })
     } catch (e) {
       setResult(null)
       setError(errorText(e))

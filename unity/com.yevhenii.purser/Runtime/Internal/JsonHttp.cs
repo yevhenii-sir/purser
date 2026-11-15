@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
@@ -6,15 +8,30 @@ using UnityEngine;
 
 namespace Purser
 {
-    /// <summary>JSON POST to the billing server, shared by the API client and the checkout adapters.</summary>
+    /// <summary>
+    /// JSON POST to the billing server, shared by the API client and the checkout adapters: player tokens
+    /// (<see cref="IPlayerTokenProvider"/>, one retry with a fresh token on <c>401 ERR_CLIENT_AUTH</c>), the error
+    /// code and <c>Retry-After</c> of an answer, and an optional check of the raw answer (signed responses).
+    /// </summary>
     internal sealed class JsonHttp
     {
+        /// <summary>A <c>Retry-After</c> longer than this is cut to it.</summary>
+        public static readonly TimeSpan MaxRetryAfter = TimeSpan.FromSeconds(60);
+
         private readonly string m_BaseUrl;
         private readonly int m_TimeoutSeconds;
         /// <summary>Set for an insecure URL outside the Editor: every request throws it.</summary>
         private readonly string m_Refusal;
+        private PlayerTokenCache m_Tokens;
 
         public IHttpTransport Transport { get; }
+
+        /// <summary>Player tokens for the requests; null sends none.</summary>
+        public IPlayerTokenProvider Tokens
+        {
+            get => m_Tokens;
+            set => m_Tokens = PlayerTokenCache.Of(value);
+        }
 
         /// <param name="isEditor">Test hook; default <c>Application.isEditor</c>.</param>
         public JsonHttp(string baseUrl, int timeoutSeconds, IHttpTransport transport, bool? isEditor = null)
@@ -27,20 +44,74 @@ namespace Purser
             m_Refusal = UrlPolicy.ServerUrlProblem(baseUrl, isEditor ?? Application.isEditor);
         }
 
-        /// <summary>Sends <paramref name="body"/> as JSON; a 4xx/5xx answer keeps its parsed body.</summary>
+        /// <summary>
+        /// Sends <paramref name="body"/> as JSON for the player <paramref name="userId"/> (signed with a player token
+        /// when <see cref="Tokens"/> is set and the user is known); a 4xx/5xx answer keeps its parsed body.
+        /// <paramref name="check"/> sees every 2xx answer and returns why it must not be trusted (the answer then has no
+        /// value and that error), or null.
+        /// </summary>
         /// <exception cref="BillingException">The server URL is not https outside the Editor.</exception>
-        public async Task<ApiResult<T>> PostAsync<T>(string path, object body, CancellationToken ct) where T : class
+        public async Task<ApiResult<T>> PostAsync<T>(string path, object body, string userId, CancellationToken ct,
+            Func<HttpResponse, string> check = null) where T : class
         {
             ThrowIfRefused();
-            var res = await Transport.SendAsync("POST", m_BaseUrl + path, JsonConvert.SerializeObject(body), m_TimeoutSeconds, ct);
-            return Parse<T>(res);
+            var json = JsonConvert.SerializeObject(body);
+            var tokens = m_Tokens;
+            var user = string.IsNullOrEmpty(userId) ? null : userId;
+            string token = null;
+            if (tokens != null && user != null)
+            {
+                var (value, error) = await TokenAsync(tokens, user, ct);
+                if (error != null)
+                    return new ApiResult<T>(0, null, error);
+                token = value;
+            }
+            var res = await SendAsync(path, json, token, ct);
+            if (tokens != null && user != null && IsClientAuthFailure(res))
+            {
+                // The token expired or was revoked: ask the game backend once more and retry once.
+                tokens.Invalidate(user, token);
+                var (fresh, error) = await TokenAsync(tokens, user, ct);
+                if (error != null)
+                    return new ApiResult<T>(0, null, error);
+                res = await SendAsync(path, json, fresh, ct);
+            }
+            return Parse<T>(res, check);
         }
 
         public async Task<HttpResponse> GetAsync(string path, CancellationToken ct)
         {
             ThrowIfRefused();
-            return await Transport.SendAsync("GET", m_BaseUrl + path, null, m_TimeoutSeconds, ct);
+            return await Transport.SendAsync("GET", m_BaseUrl + path, null, null, m_TimeoutSeconds, ct);
         }
+
+        private Task<HttpResponse> SendAsync(string path, string json, string token, CancellationToken ct)
+        {
+            var headers = string.IsNullOrEmpty(token)
+                ? null
+                : new Dictionary<string, string> { ["Authorization"] = "Bearer " + token };
+            return Transport.SendAsync("POST", m_BaseUrl + path, json, headers, m_TimeoutSeconds, ct);
+        }
+
+        private static async Task<(string Token, string Error)> TokenAsync(PlayerTokenCache tokens, string user, CancellationToken ct)
+        {
+            try
+            {
+                return (await tokens.GetTokenAsync(user, ct), null);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception e)
+            {
+                // Reported like a network failure: the request is retried later.
+                return (null, "player token unavailable: " + e.Message);
+            }
+        }
+
+        private static bool IsClientAuthFailure(HttpResponse res) =>
+            res.Status == 401 && ErrorCode(res.Body) == ErrorCodes.ClientAuth;
 
         private void ThrowIfRefused()
         {
@@ -48,10 +119,18 @@ namespace Purser
                 throw new BillingException(m_Refusal);
         }
 
-        private static ApiResult<T> Parse<T>(HttpResponse res) where T : class
+        private static ApiResult<T> Parse<T>(HttpResponse res, Func<HttpResponse, string> check) where T : class
         {
             if (res.IsTransportError)
                 return new ApiResult<T>(0, null, res.Error);
+            var retryAfter = res.Status == 429 ? RetryAfter(res.GetHeader("Retry-After")) : null;
+            var code = res.Status >= 200 && res.Status < 300 ? null : ErrorCode(res.Body);
+            if (check != null && res.Status >= 200 && res.Status < 300)
+            {
+                var problem = check(res);
+                if (problem != null)
+                    return new ApiResult<T>(res.Status, null, problem, code, retryAfter);
+            }
             T value = null;
             string error = null;
             if (!string.IsNullOrEmpty(res.Body))
@@ -67,7 +146,33 @@ namespace Purser
             }
             if (error == null && (res.Status < 200 || res.Status >= 300))
                 error = $"HTTP {res.Status}: {Truncate(res.Body)}";
-            return new ApiResult<T>(res.Status, value, error);
+            return new ApiResult<T>(res.Status, value, error, code, retryAfter);
+        }
+
+        /// <summary>The <c>code</c> of an error body (<see cref="ErrorCodes"/>), or null.</summary>
+        private static string ErrorCode(string body)
+        {
+            if (string.IsNullOrEmpty(body) || body.IndexOf("\"code\"", StringComparison.Ordinal) < 0)
+                return null;
+            try
+            {
+                return JsonConvert.DeserializeObject<StatusResponse>(body)?.Code;
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        /// <summary><c>Retry-After</c> in seconds (an HTTP date is not used by the server), capped at
+        /// <see cref="MaxRetryAfter"/>; null when missing or unreadable.</summary>
+        internal static TimeSpan? RetryAfter(string header)
+        {
+            if (string.IsNullOrWhiteSpace(header) ||
+                !double.TryParse(header.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) || seconds < 0)
+                return null;
+            var wait = TimeSpan.FromSeconds(Math.Min(seconds, MaxRetryAfter.TotalSeconds));
+            return wait;
         }
 
         private static string Truncate(string s) => s == null ? "" : s.Length <= 300 ? s : s.Substring(0, 300);

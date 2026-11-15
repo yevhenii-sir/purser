@@ -302,7 +302,58 @@ fn refund_delta(tx: &ReducerContext, p: &Purchase) -> Option<Delta> {
     if p.store == store::MANUAL {
         return None;
     }
-    rv::refund_delta_with(&p.store, p.was_granted, p.price_micros, &period_facts(tx, p))
+    rv::refund_delta_with(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &period_facts(tx, p))
+}
+
+/// Part of a purchase was refunded (`amount_micros` more than before).
+pub fn on_partial_refund(tx: &ReducerContext, p: &Purchase, amount_micros: i64) {
+    if !counts_live(tx, p) {
+        return;
+    }
+    if let Some(d) = rv::partial_refund_delta(&p.store, p.was_granted, amount_micros, &period_facts(tx, p)) {
+        apply(tx, p, today(tx), &d);
+    }
+}
+
+/// A refunded purchase is valid again (Stripe dispute won).
+pub fn on_reinstate(tx: &ReducerContext, p: &Purchase) {
+    if !counts_live(tx, p) {
+        return;
+    }
+    if let Some(d) = rv::reinstate_delta(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &period_facts(tx, p)) {
+        apply(tx, p, today(tx), &d);
+    }
+}
+
+/// What the purchase log says about money taken back and given back, in order: partial refunds
+/// (`partial_refund`, the amount in its details), refunds that were reversed (`revoke_pending`
+/// followed by `reinstated`). The rebuild counts them on their days, like the live hooks.
+fn logged_money(p: &Purchase, logs: &[(String, String, i64)], f: &PeriodFacts) -> Vec<(i64, Delta)> {
+    let mut out = Vec::new();
+    let mut revoked_at = None;
+    let remaining = p.price_micros - p.refunded_micros;
+    for (event, details, at) in logs {
+        match event.as_str() {
+            "partial_refund" => {
+                if let Some(d) = details.parse().ok().and_then(|a| rv::partial_refund_delta(&p.store, p.was_granted, a, f)) {
+                    out.push((*at, d));
+                }
+            }
+            e if e == status::REVOKE_PENDING => revoked_at = revoked_at.or(Some(*at)),
+            "reinstated" => {
+                if let Some(r) = revoked_at.take() {
+                    if let Some(d) = rv::refund_delta_with(&p.store, p.was_granted, remaining, f) {
+                        out.push((r, d));
+                    }
+                }
+                if let Some(d) = rv::reinstate_delta(&p.store, p.was_granted, remaining, f) {
+                    out.push((*at, d));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn rebuild_state(tx: &ReducerContext) -> Rebuild {
@@ -408,9 +459,16 @@ fn count_purchases(tx: &ReducerContext, rows: &[Purchase]) {
             continue;
         }
         let f = facts.get(&p.id).copied().unwrap_or(PeriodFacts { trial: p.trial, ..Default::default() });
-        let logs: Vec<(String, i64)> = tx.db.purchase_log().purchase_id().filter(p.id.as_str()).map(|l| (l.event, l.at_micros)).collect();
-        // When the ledger first recorded `event` for the purchase.
-        let first_logged = |event: &str| logs.iter().filter(|(e, _)| e == event).map(|(_, at)| *at).min();
+        let mut full_logs: Vec<(String, String, i64)> =
+            tx.db.purchase_log().purchase_id().filter(p.id.as_str()).map(|l| (l.event, l.details, l.at_micros)).collect();
+        full_logs.sort_by_key(|(_, _, at)| *at);
+        let logs: Vec<(String, i64)> = full_logs.iter().map(|(e, _, at)| (e.clone(), *at)).collect();
+        // When the ledger recorded `event` for the purchase (after its last reinstatement).
+        let reinstated_at = logs.iter().filter(|(e, _)| e == "reinstated").map(|(_, at)| *at).max().unwrap_or(i64::MIN);
+        let first_logged = |event: &str| logs.iter().filter(|(e, at)| e == event && *at > reinstated_at).map(|(_, at)| *at).min();
+        for (at, d) in logged_money(p, &full_logs, &f) {
+            b.add(p, day_of_micros(at), &d);
+        }
 
         if p.was_granted {
             if let Some(d) = rv::grant_delta_with(&p.store, grant_kind(p), p.price_micros, &f) {
@@ -420,7 +478,7 @@ fn count_purchases(tx: &ReducerContext, rows: &[Purchase]) {
         let inactive = match p.status.as_str() {
             // Revoked by an admin: not a refund (see `support`).
             status::REVOKE_PENDING | status::REVOKED if !crate::support::revoked_by_admin(tx, &p.id) => {
-                Some((status::REVOKE_PENDING, rv::refund_delta_with(&p.store, p.was_granted, p.price_micros, &f)))
+                Some((status::REVOKE_PENDING, rv::refund_delta_with(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &f)))
             }
             status::EXPIRE_PENDING | status::EXPIRED => Some((status::EXPIRE_PENDING, rv::expire_delta(&p.store, &p.kind))),
             _ => None,
@@ -569,8 +627,15 @@ pub fn rebuild_at_once(tx: &ReducerContext) {
     for k in keys {
         tx.db.revenue_country_daily().key().delete(&k);
     }
+    let all_logs = |id: &str| -> Vec<(String, String, i64)> {
+        let mut l: Vec<(String, String, i64)> = tx.db.purchase_log().purchase_id().filter(id).map(|l| (l.event, l.details, l.at_micros)).collect();
+        l.sort_by_key(|(_, _, at)| *at);
+        l
+    };
     let logged_at = |id: &str, event: &str| -> Vec<i64> {
-        tx.db.purchase_log().purchase_id().filter(id).filter(|l| l.event == event).map(|l| l.at_micros).collect()
+        let logs = all_logs(id);
+        let reinstated_at = logs.iter().filter(|(e, ..)| e == "reinstated").map(|(.., at)| *at).max().unwrap_or(i64::MIN);
+        logs.into_iter().filter(|(e, _, at)| e == event && (event == "transferred" || *at > reinstated_at)).map(|(.., at)| at).collect()
     };
     let rows: Vec<Purchase> = tx.db.purchase().iter().collect();
     for p in &rows {
@@ -578,6 +643,9 @@ pub fn rebuild_at_once(tx: &ReducerContext) {
             if let Some(d) = rv::grant_delta_with(&p.store, grant_kind(p), p.price_micros, &period_facts(tx, p)) {
                 apply(tx, p, day_of_micros(p.created_at_micros), &d);
             }
+        }
+        for (at, d) in logged_money(p, &all_logs(&p.id), &period_facts(tx, p)) {
+            apply(tx, p, day_of_micros(at), &d);
         }
         let inactive = match p.status.as_str() {
             status::REVOKE_PENDING | status::REVOKED if !crate::support::revoked_by_admin(tx, &p.id) => {
@@ -612,6 +680,7 @@ pub fn admin_rebuild_revenue(ctx: &ReducerContext, app_ids_json: String) -> Resu
 
 /// Marks every aggregate stale: the worker rebuilds them from the ledger (once imports have
 /// stopped). A rebuild that is already running starts over, so it counts the new rows too.
+#[cfg(test)]
 pub fn invalidate(tx: &ReducerContext) {
     invalidate_apps(tx, &[]);
 }
@@ -636,7 +705,7 @@ pub fn admin_set_fx_override(ctx: &ReducerContext, currency: String, units_per_u
     let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_set_fx_override", &currency, &units_per_usd.to_string());
     let currency = currency.trim().to_uppercase();
-    if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_alphabetic()) || !(units_per_usd > 0.0) {
+    if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_alphabetic()) || units_per_usd.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return Err("[ERR_BAD_FX] currency must be an ISO code and the rate positive".into());
     }
     let row = FxOverride { currency: currency.clone(), units_per_usd };
@@ -652,7 +721,7 @@ pub fn admin_set_fx_override(ctx: &ReducerContext, currency: String, units_per_u
 pub fn admin_delete_fx_override(ctx: &ReducerContext, currency: String) -> Result<(), String> {
     let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_delete_fx_override", &currency, "");
-    ctx.db.fx_override().currency().delete(&currency.trim().to_uppercase());
+    ctx.db.fx_override().currency().delete(currency.trim().to_uppercase());
     Ok(())
 }
 
@@ -669,7 +738,7 @@ fn active_subscriptions(tx: &ReducerContext) -> BTreeMap<(String, String, String
             continue;
         }
         let k = (p.app_id.clone(), p.original_transaction_id.clone());
-        if latest.get(&k).map_or(true, |q| p.expires_at_ms > q.expires_at_ms) {
+        if latest.get(&k).is_none_or(|q| p.expires_at_ms > q.expires_at_ms) {
             latest.insert(k, p);
         }
     }
@@ -679,6 +748,39 @@ fn active_subscriptions(tx: &ReducerContext) -> BTreeMap<(String, String, String
         let e = out.entry((p.app_id, p.product_id, p.environment, p.currency)).or_default();
         e.0 += 1;
         e.1 += rv::monthly_micros(p.price_micros, period);
+    }
+    out
+}
+
+/// How far back a subscription in a grace period may have ended its paid period (the longest
+/// store grace period is Apple's 28 days).
+const GRACE_LOOKBACK_MS: i64 = 35 * 86_400_000;
+
+/// Subscriptions that give access now, by renewal state: (auto-renew off, in a grace period,
+/// billing issue). One per subscription (its latest row).
+fn subscription_states(tx: &ReducerContext, keep: &dyn Fn(&str) -> bool, include_sandbox: bool) -> (u32, u32, u32) {
+    let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
+    let mut latest: BTreeMap<(String, String), Purchase> = BTreeMap::new();
+    for p in tx.db.purchase().expires_at_ms().filter((now_ms - GRACE_LOOKBACK_MS)..) {
+        let skip = p.kind != kind::SUBSCRIPTION
+            || p.store == store::MANUAL
+            || !status::is_owned(&p.status)
+            || p.access_until_ms() <= now_ms
+            || !keep(&p.app_id)
+            || (!include_sandbox && p.environment == purser_core::model::environment::SANDBOX);
+        if skip {
+            continue;
+        }
+        let k = (p.app_id.clone(), p.original_transaction_id.clone());
+        if latest.get(&k).is_none_or(|q| p.access_until_ms() > q.access_until_ms()) {
+            latest.insert(k, p);
+        }
+    }
+    let mut out = (0, 0, 0);
+    for p in latest.values() {
+        out.0 += p.auto_renew_off as u32;
+        out.1 += (p.grace_until_ms > now_ms && p.expires_at_ms <= now_ms) as u32;
+        out.2 += p.billing_issue as u32;
     }
     out
 }
@@ -1021,7 +1123,7 @@ fn paywall_views(tx: &ReducerContext, games: Option<&BTreeSet<String>>, from: i3
         .paywall_daily()
         .day()
         .filter(from..=to)
-        .filter(|r| games.map_or(true, |g| r.placement_key.split_once('/').is_some_and(|(game, _)| g.contains(game))))
+        .filter(|r| games.is_none_or(|g| r.placement_key.split_once('/').is_some_and(|(game, _)| g.contains(game))))
         .map(|r| r.views)
         .sum()
 }
@@ -1152,6 +1254,10 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
             today,
         });
         report["fx"]["overrides"] = json!(tx.db.fx_override().iter().map(|o| (o.currency, o.units_per_usd)).collect::<BTreeMap<_, _>>());
+        let (auto_renew_off, in_grace, billing_issue) = subscription_states(tx, &keep, q.include_sandbox);
+        report["subscriptions"]["auto_renew_off_now"] = json!(auto_renew_off);
+        report["subscriptions"]["in_grace_now"] = json!(in_grace);
+        report["subscriptions"]["billing_issue_now"] = json!(billing_issue);
 
         // Cohorts reach up to today: they need the rates after `to` too.
         let ledger_fx = if to >= today { table } else { load_fx(tx, from, today) };

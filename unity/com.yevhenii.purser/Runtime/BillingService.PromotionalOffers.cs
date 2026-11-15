@@ -14,13 +14,18 @@ namespace Purser
             RequireAppStore();
             var config = m_Config.FindById(productId) ?? m_Config.FindByStoreId(productId)
                 ?? throw new BillingException($"Unknown product {productId}");
-            var user = CurrentUser() ?? throw new BillingException("User id is not set");
+            var user = SyncUser() ?? throw new BillingException("User id is not set");
             var (offer, error) = await SignOfferAsync(config.StoreId(m_Store.Store), offerId, user, ct);
             return offer ?? throw new BillingException(error);
         }
 
         /// <inheritdoc/>
-        public async Task<PurchaseResult> PurchaseWithPromotionalOfferAsync(string productId, string offerId,
+        public Task<PurchaseResult> PurchaseWithPromotionalOfferAsync(string productId, string offerId,
+            CancellationToken ct = default) =>
+            PurchaseWithPromotionalOfferAsync(productId, offerId, null, ct);
+
+        /// <inheritdoc/>
+        public async Task<PurchaseResult> PurchaseWithPromotionalOfferAsync(string productId, string offerId, Paywall paywall,
             CancellationToken ct = default)
         {
             if (!IsInitialized || m_Disposed)
@@ -28,7 +33,7 @@ namespace Purser
             if (m_IsEditor && Platform != BillingPlatform.Apple)
             {
                 m_Log.Warning($"Promotional offer {offerId} needs an App Store device; buying {productId} without it in the Editor.");
-                return await PurchaseAsync(productId, ct);
+                return await PurchaseAsync(productId, new PurchaseOptions { Paywall = paywall }, ct);
             }
             RequireAppStore();
 
@@ -41,7 +46,7 @@ namespace Purser
                     message: "promotional offers apply to subscriptions only");
             if (string.IsNullOrEmpty(offerId))
                 return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: "offer id is empty");
-            var user = CurrentUser();
+            var user = SyncUser();
             if (user == null)
                 return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: "user id is not set");
             if (!(m_Store is IApplePromotionalOfferStore offerStore))
@@ -56,35 +61,27 @@ namespace Purser
             try
             {
                 var (offer, error) = await SignOfferAsync(storeId, offerId, user, ct);
-                if (offer == null || m_Disposed || CurrentUser() != user)
+                if (offer == null || m_Disposed || SyncUser() != user)
                 {
                     m_Waiters.Remove(storeId);
                     return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId,
                         message: error ?? "the player changed while the offer was being signed");
                 }
                 BindAccount();
+                // The offer id goes to /verify (revenue by offer), the paywall to the A/B test results.
+                SetContext(storeId, paywall, offerId);
                 offerStore.PurchaseWithPromotionalOffer(storeId, offer);
             }
             catch (Exception e)
             {
                 m_Waiters.Remove(storeId);
+                m_PurchaseContext.Remove(storeId);
                 if (e is OperationCanceledException)
                     throw;
                 return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: e.Message);
             }
 
-            using (ct.Register(() => waiter.TrySetCanceled()))
-            {
-                try
-                {
-                    return await waiter.Task;
-                }
-                finally
-                {
-                    if (m_Waiters.TryGetValue(storeId, out var current) && current == waiter)
-                        m_Waiters.Remove(storeId);
-                }
-            }
+            return await AwaitResultAsync(storeId, waiter, ct);
         }
 
         private void RequireAppStore()

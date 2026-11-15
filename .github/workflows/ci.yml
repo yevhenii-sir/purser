@@ -42,6 +42,8 @@ jobs:
           workspaces: server
       # Builds spacetimedb-core (vendored OpenSSL, v8): slow on the first run, cached afterwards.
       - run: cargo test -p purser --locked
+      # Same build: no warnings in either crate (tests included).
+      - run: cargo clippy -p purser-core -p purser --all-targets --locked -- -D warnings
 
   wasm:
     name: wasm build
@@ -75,6 +77,7 @@ jobs:
           cache: npm
           cache-dependency-path: server/admin-ui/package-lock.json
       - run: npm ci
+      - run: npm run lint
       - run: npm run build
       - name: The demo build works
         run: npm run build:demo

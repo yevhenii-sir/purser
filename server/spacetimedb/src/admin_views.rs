@@ -36,6 +36,8 @@ pub fn purchase_row(p: &Purchase) -> Value {
         "previous_user_id": p.previous_user_id, "country": p.country, "trial": p.trial,
         "paywall_placement": p.paywall_placement, "paywall_variant_id": p.paywall_variant_id,
         "paywall_test_id": p.paywall_test_id, "paywall_id": p.paywall_id,
+        "grace_until_ms": p.grace_until_ms, "billing_issue": p.billing_issue, "auto_renew_off": p.auto_renew_off,
+        "renew_product_id": p.renew_product_id, "replaced_by": p.replaced_by, "refunded_micros": p.refunded_micros, "offer_id": p.offer_id,
     })
 }
 
@@ -46,7 +48,7 @@ pub fn apps_summary(tx: &spacetimedb::ReducerContext, only: Option<&std::collect
         .db
         .game_app()
         .iter()
-        .filter(|a| only.map_or(true, |o| o.contains(&a.app_id)))
+        .filter(|a| only.is_none_or(|o| o.contains(&a.app_id)))
         .map(|a| (a.app_id.clone(), json!({ "app_id": a.app_id, "summary": "", "checked_at_micros": 0, "catalog_ids": [], "integrations": [] })))
         .collect();
     for c in tx.db.app_check().iter() {
@@ -86,7 +88,7 @@ pub fn admin_apps_summary(ctx: &mut ProcedureContext) -> String {
 /// index, soonest first), apps, builds, products and queued integration events. `only`: the
 /// builds the admin may see (`None` = all).
 pub fn overview(tx: &spacetimedb::ReducerContext, only: Option<&std::collections::BTreeSet<String>>) -> Value {
-    let visible = |app_id: &str| only.map_or(true, |o| o.contains(app_id));
+    let visible = |app_id: &str| only.is_none_or(|o| o.contains(app_id));
     let mut by_status: BTreeMap<String, u64> = BTreeMap::new();
     let mut total = 0u64;
     for c in tx.db.purchase_count().iter().filter(|c| visible(&c.app_id)) {
@@ -109,6 +111,8 @@ pub fn overview(tx: &spacetimedb::ReducerContext, only: Option<&std::collections
         }
     }
     json!({
+        "worker_age_secs": crate::settings::worker_age_secs(tx),
+        "worker_stale_after_secs": crate::settings::WORKER_STALE_MICROS / 1_000_000,
         "total": total,
         "by_status": by_status,
         "pending": pending,
@@ -151,6 +155,36 @@ pub struct ListQuery {
     /// Rows to return (default 200, at most 1000).
     #[serde(default)]
     pub limit: usize,
+    /// Only this product kind / store (empty: all).
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub store: String,
+    /// Subscriptions that give access now and are: `active` (any), `grace`, `billing_issue`,
+    /// `auto_renew_off` (empty: no such filter).
+    #[serde(default)]
+    pub subscription: String,
+    /// The next page: rows of `until_micros` itself only with an id before this one (the `next`
+    /// of the previous answer).
+    #[serde(default)]
+    pub before_id: String,
+}
+
+/// The `subscription` filter of [`ListQuery`].
+fn subscription_matches(p: &Purchase, filter: &str, now_ms: i64) -> bool {
+    if filter.is_empty() {
+        return true;
+    }
+    let gives_access = p.kind == purser_core::model::kind::SUBSCRIPTION
+        && purser_core::model::status::is_owned(&p.status)
+        && (p.access_until_ms() == 0 || p.access_until_ms() > now_ms);
+    gives_access
+        && match filter {
+            "grace" => p.grace_until_ms > now_ms && p.expires_at_ms <= now_ms,
+            "billing_issue" => p.billing_issue,
+            "auto_renew_off" => p.auto_renew_off,
+            _ => true,
+        }
 }
 
 /// Purchases updated in `[since, until]` that match the filters, newest first, at most `limit`;
@@ -161,9 +195,16 @@ pub fn list_purchases(tx: &TxContext, q: &ListQuery) -> (Vec<Purchase>, bool) {
     let limit = if q.limit == 0 { LIST_DEFAULT_LIMIT } else { q.limit.min(LIST_MAX_LIMIT) };
     let since = q.since_micros.max(0);
     let mut hi = q.until_micros.unwrap_or(i64::MAX);
-    let keep = |p: &Purchase| q.status.is_empty() || p.status == q.status;
-    // The first window ends at `until`, or now when `until` is open (rows are stamped with tx time).
     let now = tx_now_micros(tx);
+    let until = q.until_micros;
+    let keep = |p: &Purchase| {
+        (q.status.is_empty() || p.status == q.status)
+            && (q.kind.is_empty() || p.kind == q.kind)
+            && (q.store.is_empty() || p.store == q.store)
+            && subscription_matches(p, &q.subscription, now / 1000)
+            && (q.before_id.is_empty() || Some(p.updated_at_micros) != until || p.id < q.before_id)
+    };
+    // The first window ends at `until`, or now when `until` is open (rows are stamped with tx time).
     let mut window = FIRST_WINDOW_MICROS;
     let mut lo = hi.min(now).saturating_sub(window).max(since);
     let mut out: Vec<Purchase> = Vec::new();
@@ -188,8 +229,10 @@ pub fn list_purchases(tx: &TxContext, q: &ListQuery) -> (Vec<Purchase>, bool) {
     (out, more)
 }
 
-/// `query_json`: `{"since_micros", "until_micros"?, "app_ids"?, "status"?, "limit"?}`.
-/// Returns `{"rows": [purchase...], "more": bool}`, newest `updated_at_micros` first.
+/// `query_json`: `{"since_micros", "until_micros"?, "app_ids"?, "status"?, "kind"?, "store"?,
+/// "subscription"?, "before_id"?, "limit"?}`. Returns `{"rows": [purchase...], "more": bool,
+/// "next": {"until_micros", "before_id"} | null}`, newest `updated_at_micros` first; pass `next`
+/// back for the following page.
 #[spacetimedb::procedure]
 pub fn admin_list_purchases(ctx: &mut ProcedureContext, query_json: String) -> String {
     let q: ListQuery = if query_json.trim().is_empty() {
@@ -211,7 +254,9 @@ pub fn admin_list_purchases(ctx: &mut ProcedureContext, query_json: String) -> S
             }
         }
         let (rows, more) = list_purchases(tx, &q);
-        Ok::<_, String>(json!({ "rows": rows.iter().map(purchase_row).collect::<Vec<_>>(), "more": more }))
+        // Where the next page starts: the last row's time, rows at that time after its id.
+        let next = rows.last().filter(|_| more).map(|p| json!({ "until_micros": p.updated_at_micros, "before_id": p.id }));
+        Ok::<_, String>(json!({ "rows": rows.iter().map(purchase_row).collect::<Vec<_>>(), "more": more, "next": next }))
     });
     match result {
         Ok(v) => v.to_string(),

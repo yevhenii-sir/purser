@@ -195,7 +195,7 @@ namespace Purser
 
         private static async Task<(long Status, string Body)> PostAsync(string token)
         {
-            var res = await UnityWebRequestTransport.Send("POST", ApiUrl, token, "text/plain", TimeoutSeconds, CancellationToken.None);
+            var res = await UnityWebRequestTransport.Send("POST", ApiUrl, token, "text/plain", null, TimeoutSeconds, CancellationToken.None);
             return (res.Status, res.IsTransportError ? null : res.Body);
         }
     }

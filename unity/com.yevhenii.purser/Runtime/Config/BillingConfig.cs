@@ -80,6 +80,11 @@ namespace Purser
         [Min(1)]
         public int requestTimeoutSeconds = DefaultRequestTimeoutSeconds;
 
+        [Tooltip("Base64 Ed25519 public key of signed server responses (the build's response signing key on the admin " +
+                 "page). When set, /entitlements and /restore answers without a valid X-Purser-Signature are rejected " +
+                 "and the cached customer info is kept. Empty = off.")]
+        public string responseSigningPublicKey = "";
+
         [Tooltip("Delays between verification retries when the server is unreachable. " +
                  "After the last one the purchase stays pending and is retried on the next launch.")]
         public int[] retryDelaysSeconds = { 5, 30, 120, 600 };
@@ -92,12 +97,12 @@ namespace Purser
                  "The server then refuses to credit the purchase to another player.")]
         public bool bindPurchasesToUser = true;
 
-        [Tooltip("Load entitlements from the server right after initialization.")]
+        [Tooltip("Load the customer info from the server right after initialization.")]
         public bool refreshEntitlementsOnInit = true;
 
-        [Tooltip("IsActive trusts subscriptions from entitlements received at most this many days ago (device clock), " +
-                 "e.g. the offline cache; older ones count again after the next refresh from the server. Non-consumables " +
-                 "are not affected. 0 = no limit.")]
+        [Tooltip("IsActive, HasAccess and GetExpiration trust subscriptions and expiring access from customer info " +
+                 "received at most this many days ago (device clock), e.g. the offline cache; older ones count again " +
+                 "after the next refresh from the server. Non-consumables and lifetime access are not affected. 0 = no limit.")]
         [Min(0)]
         public int entitlementsMaxAgeDays = DefaultEntitlementsMaxAgeDays;
 
@@ -127,8 +132,9 @@ namespace Purser
         /// <summary>
         /// Merges the config JSON copied from the admin panel (or from <see cref="ToJson"/>) into this config and returns
         /// what changed: <c>{"serverBaseUrl", "builds": [{"store", "appId"}], "products": [{"id", "type",
-        /// "storeIds": {"apple": "..."}, "price": 0.99, "currency": "USD", "period": "P1M"}]}</c> (<c>price</c> /
-        /// <c>currency</c>: the fallback price; <c>period</c>: the fallback subscription period). A build is matched by its store, a product by its id or any of its store ids.
+        /// "storeIds": {"apple": "..."}, "price": 0.99, "currency": "USD", "period": "P1M", "access": ["premium"]}]}</c>
+        /// (<c>price</c> / <c>currency</c>: the fallback price; <c>period</c>: the fallback subscription period;
+        /// <c>access</c>: the access levels, replaced when the JSON lists them). A build is matched by its store, a product by its id or any of its store ids.
         /// <see cref="ConfigMergeMode.Additive"/> only adds and updates: builds and products only in this config stay.
         /// <see cref="ConfigMergeMode.Mirror"/> also removes them and the store ids the JSON does not list, so the
         /// config matches the admin panel (fallback prices are kept where the JSON has none). <c>type</c> accepts
@@ -206,7 +212,10 @@ namespace Purser
                 {
                     changes.Add(new ConfigChange(ConfigChangeKind.Added, $"Product {incoming.id}", Describe(incoming)));
                     if (apply)
+                    {
+                        incoming.access = incoming.access ?? new string[0];
                         products.Add(incoming);
+                    }
                     matched.Add(incoming);
                     continue;
                 }
@@ -235,6 +244,9 @@ namespace Purser
                 var periodChanged = incoming.HasFallbackPeriod && incoming.fallbackPeriod != BillingPeriods.Normalize(current.fallbackPeriod);
                 if (periodChanged)
                     diffs.Add($"period {(current.HasFallbackPeriod ? current.fallbackPeriod : "none")} → {incoming.fallbackPeriod}");
+                var accessChanged = incoming.access != null && !incoming.AccessLevels().SequenceEqual(current.AccessLevels());
+                if (accessChanged)
+                    diffs.Add($"access {AccessText(current)} → {AccessText(incoming)}");
                 if (diffs.Count == 0)
                     continue;
                 changes.Add(new ConfigChange(ConfigChangeKind.Updated, $"Product {current.id}", string.Join("; ", diffs)));
@@ -249,6 +261,8 @@ namespace Purser
                     current.WithFallbackPrice(incoming.fallbackPrice, incoming.fallbackCurrency.ToUpperInvariant());
                 if (periodChanged)
                     current.WithFallbackPeriod(incoming.fallbackPeriod);
+                if (accessChanged)
+                    current.WithAccess(incoming.access);
             }
             if (mirrorProducts)
             {
@@ -270,7 +284,15 @@ namespace Purser
                 parts.Add(p.FallbackPriceText);
             if (p.HasFallbackPeriod)
                 parts.Add("every " + p.fallbackPeriod);
+            if (p.AccessLevels().Count > 0)
+                parts.Add("access " + AccessText(p));
             return string.Join("; ", parts);
+        }
+
+        private static string AccessText(BillingProductConfig p)
+        {
+            var levels = p.AccessLevels();
+            return levels.Count == 0 ? "none" : string.Join(", ", levels);
         }
 
         private static List<BillingBuild> ParseBuilds(JArray items)
@@ -299,6 +321,16 @@ namespace Purser
                 if (!Enum.TryParse(type, true, out BillingProductType parsedType))
                     throw new FormatException($"product '{id}': unknown type '{(string)item["type"]}'");
                 var product = new BillingProductConfig(id, parsedType);
+                // Not listed: null, so a merge keeps the product's access levels.
+                product.access = null;
+                if (item["access"] is JArray levels)
+                {
+                    if (levels.Any(l => l.Type != JTokenType.String))
+                        throw new FormatException($"product '{id}': access must be a list of names");
+                    product.WithAccess(levels.Select(l => (string)l).ToArray());
+                }
+                else if (item["access"] != null && item["access"].Type != JTokenType.Null)
+                    throw new FormatException($"product '{id}': access must be a list of names");
                 var price = item["price"];
                 if (price != null && price.Type != JTokenType.Null)
                 {
@@ -343,6 +375,8 @@ namespace Purser
                         }
                         if (p.HasFallbackPeriod)
                             item["period"] = BillingPeriods.Normalize(p.fallbackPeriod);
+                        if (p.AccessLevels().Count > 0)
+                            item["access"] = new JArray(p.AccessLevels());
                         var overrides = (p.storeIds ?? new List<StoreProductId>())
                             .Where(s => s != null && !string.IsNullOrEmpty(s.store) && !string.IsNullOrEmpty(s.id) && s.id != p.id)
                             .GroupBy(s => s.store)
@@ -401,6 +435,8 @@ namespace Purser
                 problems.Add("Request timeout must be at least 1 second.");
             if (entitlementsMaxAgeDays < 0)
                 problems.Add("Entitlements max age must not be negative (0 = no limit).");
+            if (!string.IsNullOrWhiteSpace(responseSigningPublicKey) && ResponseSignature.DecodeKey(responseSigningPublicKey) == null)
+                problems.Add("Response signing public key must be a base64 Ed25519 public key (32 bytes); every signed answer is rejected until it is.");
             if (retryDelaysSeconds == null)
                 problems.Add("Retry delays are not set.");
             else if (Array.Exists(retryDelaysSeconds, d => d < 0))

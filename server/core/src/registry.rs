@@ -137,8 +137,9 @@ pub struct StoreInfo {
     pub product_import: bool,
     /// Product kinds the admin page can create in the store (`admin_store_create`); empty: none.
     pub product_create: &'static [&'static str],
-    /// The worker re-checks subscriptions around their expiry (stores whose renewals may not be
-    /// notified; see `poll.rs` in the module).
+    /// The worker re-checks subscriptions when their access ends (stores whose notifications may
+    /// be missed or never set up; see `poll.rs` in the module): a renewal nobody notified is
+    /// granted, an end is applied, a grace period is followed.
     pub polls_subscriptions: bool,
     /// Name of the section in docs/store-setup.md.
     pub docs: &'static str,
@@ -252,7 +253,7 @@ pub const GOOGLE: StoreInfo = StoreInfo {
     app_id_is_store_id: true,
     product_import: true,
     product_create: &[kind::CONSUMABLE, kind::NON_CONSUMABLE, kind::SUBSCRIPTION],
-    polls_subscriptions: false,
+    polls_subscriptions: true,
     docs: "google-play",
 };
 
@@ -307,7 +308,7 @@ pub const APPLE: StoreInfo = StoreInfo {
     app_id_is_store_id: true,
     product_import: true,
     product_create: &[kind::CONSUMABLE, kind::NON_CONSUMABLE, kind::SUBSCRIPTION],
-    polls_subscriptions: false,
+    polls_subscriptions: true,
     docs: "app-store",
 };
 

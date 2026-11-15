@@ -73,7 +73,7 @@ fn prepare(tx: &TxContext, row: &AppleConsumptionOutbox) -> Result<(GameApp, Str
         return Err("not answered: the player did not consent to share consumption data".into());
     }
     let body = consumption::request(&facts, &app.apple_refund_mode)
-        .ok_or_else(|| if facts.revoked { "not answered: already refunded" } else { "not answered: refund requests are off" })?;
+        .ok_or(if facts.revoked { "not answered: already refunded" } else { "not answered: refund requests are off" })?;
     Ok((app, p.transaction_id, body))
 }
 

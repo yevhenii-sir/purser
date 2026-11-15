@@ -508,6 +508,10 @@ pub fn store_tx(app_id: &str, product_id: &str, p: &Paid, original: &str) -> Sto
         linked_purchase_token: String::new(),
         country: p.country.clone(),
         trial: false,
+        grace_until_ms: 0,
+        billing_issue: false,
+        auto_renew_off: false,
+        renew_product_id: String::new(),
     }
 }
 

@@ -39,6 +39,12 @@ pub mod reason {
     pub const TRANSFER: &str = "transfer";
     /// Revoked by an admin (support); not a store refund.
     pub const ADMIN: &str = "admin";
+    /// Another subscription replaced this one (upgrade / downgrade / crossgrade): its `grant` comes
+    /// with the new product.
+    pub const REPLACED: &str = "replaced";
+    /// A purchase revoked for a payment dispute is granted again: the merchant won the dispute.
+    /// Grant it although this `transaction_id` was granted (and revoked) before.
+    pub const REINSTATED: &str = "reinstated";
 }
 
 /// Event sent to games (the one reducer argument, or the webhook body).
@@ -47,7 +53,7 @@ pub mod reason {
 pub struct BillingEvent {
     /// `grant` | `revoke`
     pub event: String,
-    /// `purchase` | `renewal` | `refund` | `expire` | `transfer` | `admin`
+    /// `purchase` | `renewal` | `refund` | `expire` | `transfer` | `admin` | `replaced` | `reinstated`
     pub reason: String,
     pub store: String,
     pub environment: String,

@@ -66,7 +66,7 @@
       "platforms": [
         "android"
       ],
-      "polls_subscriptions": false,
+      "polls_subscriptions": true,
       "product_create": [
         "consumable",
         "non_consumable",
@@ -112,7 +112,7 @@
       "platforms": [
         "ios"
       ],
-      "polls_subscriptions": false,
+      "polls_subscriptions": true,
       "product_create": [
         "consumable",
         "non_consumable",
@@ -263,7 +263,7 @@
         "subscription"
       ],
       "product_import": false,
-      "refunds": "Webhooks (charge.refunded, charge.dispute.created, customer.subscription.deleted)",
+      "refunds": "Webhooks (charge.refunded, charge.dispute.created / closed, customer.subscription.deleted)",
       "reports_price": true,
       "secrets": [
         {

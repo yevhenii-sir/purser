@@ -15,7 +15,10 @@ const ECDSA_SHA256: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02];
 const ECDSA_SHA384: &[u8] = &[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03];
 
 /// One DER element: (tag, whole element, content, rest).
-pub fn element(input: &[u8]) -> Result<(u8, &[u8], &[u8], &[u8]), String> {
+pub type Element<'a> = (u8, &'a [u8], &'a [u8], &'a [u8]);
+
+/// Splits the first DER element off `input`.
+pub fn element(input: &[u8]) -> Result<Element<'_>, String> {
     let err = || "malformed DER".to_string();
     let (&tag, rest) = input.split_first().ok_or_else(err)?;
     let (&first, rest) = rest.split_first().ok_or_else(err)?;

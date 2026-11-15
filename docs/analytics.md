@@ -40,7 +40,8 @@ Taxes (VAT, digital services taxes) are not modelled, so real payouts are lower 
 - **Trial → paid**: of the free trials started in the period, the share that has a later paid period of the same subscription. Trials still running (not expired, not paid yet) are left out of the rate.
 - **Renewal rate** = renewals ÷ (renewals + expirations): of the subscription periods that ended, the share that continued. Renewals include the first paid period after a trial; expirations include trials that ended unpaid.
 - **Churn** = expirations ÷ active subscriptions at the first daily snapshot of the period (or month), per 30 days. The snapshots start on the day the analytics version was installed, so churn is empty before that.
-- **Subscriptions by month** shows these per calendar month. Auto-renew turned off is not counted separately: the subscription counts once it expires.
+- **Subscriptions by month** shows these per calendar month.
+- **Active subscriptions** also says how many of them will not renew (auto-renew off), had a renewal payment fail, and are in the store's grace period after it (`auto_renew_off_now`, `billing_issue_now`, `in_grace_now`). A subscription replaced by another (upgrade, downgrade) is not an expiration.
 
 ## Revenue tree
 
@@ -58,6 +59,11 @@ Active subscriptions and MRR are those of the last daily snapshot of the period.
 ## Payer cohorts
 
 Payers (user ids with a granted, non-trial store purchase) are grouped by the month of their first payment, for cohorts that start in the selected period. Each cell is the cohort's cumulative net revenue per payer by month since the first payment (M0 = that month), up to today; refunded purchases count as 0. Computed from the ledger when the report is opened.
+
+## ARPPU and LTV
+
+- **ARPPU**: net revenue of the period's paid purchases ÷ the users who paid in the period (`arppu`).
+- **LTV, N months**: cumulative net revenue per payer N months after the first payment (1, 3, 6, 12), over the payer cohorts of the period that are that old already (`ltv`). Empty until a cohort is old enough.
 
 ## Apple Ads
 
@@ -87,6 +93,8 @@ The ECB publishes about 30 currencies. Others (UAH, VND, …) are listed as *No 
 | `subscriptions` | `active_now`, `mrr_usd_micros`, `series[]`, `new_subscriptions`, `trials_started`, `trial_conversions`, `renewals`, `expirations`, `active_at_start`, `churn_rate`, `renewal_rate`, `monthly[]` |
 | `trials` | `started`, `converted`, `pending`, `conversion_rate` (trials started in the period) |
 | `cohorts[]` | `cohort` (`YYYY-MM`), `payers`, `revenue_usd_micros[]` and `per_payer_usd_micros[]` (cumulative by month since the first payment) |
+| `ltv[]` | `months`, `cohorts`, `payers`, `per_payer_usd_micros` (null without a cohort that old) |
+| `arppu` | `payers`, `net_usd_micros`, `arppu_usd_micros` |
 | `by_asa_campaign[]` | `campaign_id`, `payers`, `payments`, `trials`, `refunds`, `gross_usd_micros`, `refunded_usd_micros`, `net_usd_micros` |
 | `fx` | `as_of`, `missing`, `overrides` |
 | `rebuilding` | `true` while the aggregates are being rebuilt from the ledger (the numbers may be incomplete) |

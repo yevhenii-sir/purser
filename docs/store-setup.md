@@ -268,10 +268,10 @@ By hand:
    - `checkout.session.completed`, `checkout.session.async_payment_succeeded`
    - `invoice.paid` (or `invoice.payment_succeeded`)
    - `customer.subscription.updated`, `customer.subscription.deleted`
-   - `charge.refunded`, `charge.dispute.created`
+   - `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`
 3. Copy the endpoint's **Signing secret** (`whsec_…`) into `stripe_webhook_secret` of the build.
 
-Every webhook is checked with its `Stripe-Signature` (5 minutes tolerance); a wrong secret shows up in the setup check as *notifications are rejected*. Stripe retries failed deliveries for three days; retries and duplicates never grant twice. Partial refunds keep the purchase; a full refund or a dispute revokes it. Plan changes in the customer portal are not followed (the subscription keeps the product it was bought as): turn off switching plans there.
+Every webhook is checked with its `Stripe-Signature` (5 minutes tolerance); a wrong secret shows up in the setup check as *notifications are rejected*. Stripe retries failed deliveries for three days; retries and duplicates never grant twice. Partial refunds keep the purchase and take the refunded part out of revenue; a full refund or a dispute revokes it, and a dispute you win grants it again (reason `reinstated`). Plan changes (customer portal, API) are followed: the invoice that charges the new Price makes it the subscription's product and ends the old one (reason `replaced`); every Price you let players switch to must be a product of the build.
 
 ### Test
 

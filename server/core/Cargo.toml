@@ -20,6 +20,8 @@ rsa = { version = "0.9", default-features = false, features = ["std", "pem", "sh
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pem", "pkcs8", "std"] }
 p384 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
 ecdsa = { version = "0.16", default-features = false, features = ["verifying", "std"] }
+# Signed answers of the client routes (`client_api`); the same crate SpacetimeDB uses.
+ed25519-dalek = { version = "2.2", default-features = false }
 
 [features]
 # `apple::testing`: an App Store-shaped signing chain for the module's tests.

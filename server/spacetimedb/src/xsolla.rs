@@ -27,7 +27,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use spacetimedb::http::{handler, HandlerContext, Request, Response};
 
-use crate::web::{answer, respond, Answer};
+use crate::web::{answer, Answer};
 
 /// Webhook error in the format Xsolla shows in Publisher Account.
 fn rejected(http: u16, code: &str, message: impl Into<String>) -> Answer {
@@ -38,7 +38,6 @@ fn ok_204(status: &str, message: impl Into<String>) -> Answer {
     answer(204, status, message)
 }
 
-use crate::web::json as parse;
 
 /// The enabled Xsolla build `app_id`, inside a transaction.
 fn xsolla_app(tx: &spacetimedb::TxContext, app_id: &str) -> Result<GameApp, Answer> {
@@ -63,6 +62,15 @@ fn rows_by_token(tx: &spacetimedb::TxContext, app_id: &str, token: &str) -> Vec<
 // ---------------------------------------------------------------------
 // Checkout
 // ---------------------------------------------------------------------
+
+impl crate::client_guard::ClientRequest for CheckoutRequest {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
 
 #[derive(Deserialize)]
 pub(crate) struct CheckoutRequest {
@@ -210,10 +218,16 @@ fn client_ip(req: &Request) -> String {
 #[handler]
 pub(crate) fn checkout_route(ctx: &mut HandlerContext, req: Request) -> Response {
     let ip = client_ip(&req);
-    respond(match parse::<CheckoutRequest>(req) {
-        Ok(r) => checkout(ctx, &r, &ip),
-        Err(a) => a,
-    })
+    crate::client_guard::run(ctx, req, "checkout", false, |ctx, r: &CheckoutRequest| checkout(ctx, r, &ip))
+}
+
+impl crate::client_guard::ClientRequest for StatusRequest {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn user_id(&self) -> &str {
+        &self.user_id
+    }
 }
 
 #[derive(Deserialize)]
@@ -274,10 +288,7 @@ pub(crate) fn checkout_status(ctx: &mut impl Ctx, r: &StatusRequest) -> Answer {
 
 #[handler]
 pub(crate) fn checkout_status_route(ctx: &mut HandlerContext, req: Request) -> Response {
-    respond(match parse::<StatusRequest>(req) {
-        Ok(r) => checkout_status(ctx, &r),
-        Err(a) => a,
-    })
+    crate::client_guard::run(ctx, req, "entitlements", false, |ctx, r: &StatusRequest| checkout_status(ctx, r))
 }
 
 // ---------------------------------------------------------------------
@@ -337,7 +348,7 @@ pub(crate) fn notification(ctx: &mut impl Ctx, req: Request) -> Answer {
                 log::info!("{source} for {} ({transaction_id}): the purchase stays granted", app.app_id);
                 return ok_204("ignored", "partial refund: the purchase stays granted");
             }
-            refunded(ctx, &app, &transaction_id, &order_id, &format!("{source} {reason}").trim().to_string())
+            refunded(ctx, &app, &transaction_id, &order_id, format!("{source} {reason}").trim())
         }
         Event::SubscriptionCanceled { subscription_id, ends_ms } => subscription_canceled(ctx, &app, &subscription_id, ends_ms, &source),
         Event::Other => ok_204("ignored", format!("{} needs no action", w.notification_type)),
@@ -403,6 +414,8 @@ fn paid(ctx: &mut impl Ctx, app: &GameApp, p: &x::Paid, source: &str) -> Answer 
 }
 
 /// Outcome of the transaction that records a paid order.
+// A short-lived return value: boxing the large row would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 enum Paid {
     UnknownProduct,
     WrongKind(Product),
@@ -415,7 +428,7 @@ fn refunded(ctx: &mut impl Ctx, app: &GameApp, transaction_id: &str, order_id: &
     let (app_id, tid, oid, details_c) = (app.app_id.clone(), transaction_id.to_string(), order_id.to_string(), details.to_string());
     let changed = ctx.tx(|tx| {
         let by_tx = (!tid.is_empty())
-            .then(|| tx.db.purchase().id().find(&ledger_id(store::XSOLLA, &tid)))
+            .then(|| tx.db.purchase().id().find(ledger_id(store::XSOLLA, &tid)))
             .flatten()
             .filter(|p| p.app_id == app_id);
         let row = by_tx.or_else(|| rows_by_token(tx, &app_id, &oid).into_iter().max_by_key(|p| p.created_at_micros));

@@ -31,7 +31,7 @@ pub fn get(ctx: &ReducerContext, app_id: &str) -> StoreNotifyHealth {
     ctx.db
         .store_notify_health()
         .app_id()
-        .find(&app_id.to_string())
+        .find(app_id.to_string())
         .unwrap_or_else(|| StoreNotifyHealth { app_id: app_id.to_string(), ..Default::default() })
 }
 
@@ -57,7 +57,7 @@ fn negligible(old: &StoreNotifyHealth, new: &StoreNotifyHealth) -> bool {
 /// Updates (or creates) the row of a build; skips writes that change nothing but recent times.
 pub fn touch(ctx: &ReducerContext, app_id: &str, f: impl FnOnce(&mut StoreNotifyHealth, i64)) {
     let now = ctx.timestamp.to_micros_since_unix_epoch();
-    let old = ctx.db.store_notify_health().app_id().find(&app_id.to_string());
+    let old = ctx.db.store_notify_health().app_id().find(app_id.to_string());
     let mut row = old.clone().unwrap_or_else(|| StoreNotifyHealth { app_id: app_id.to_string(), ..Default::default() });
     f(&mut row, now);
     match old {

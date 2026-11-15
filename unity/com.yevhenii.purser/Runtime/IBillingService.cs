@@ -11,6 +11,8 @@ namespace Purser
     /// </summary>
     public interface IBillingService : IDisposable
     {
+        /// <summary>The store is connected and the products are loaded. False before <see cref="InitializeAsync"/>
+        /// completed and while the store is disconnected (<see cref="StoreDisconnected"/>).</summary>
         bool IsInitialized { get; }
 
         BillingPlatform Platform { get; }
@@ -18,11 +20,12 @@ namespace Purser
         /// <summary>Store id of the billing server the purchases go to (<see cref="BillingStores"/>).</summary>
         string Store { get; }
 
-        /// <summary>Products loaded from the store (localized prices).</summary>
+        /// <summary>Products loaded from the store (localized prices, subscription offers).</summary>
         IReadOnlyList<StoreProduct> Products { get; }
 
-        /// <summary>Last known entitlements (from the server or the local cache).</summary>
-        Entitlements Entitlements { get; }
+        /// <summary>Last known customer info: access levels, subscriptions, non-consumables (from the server or the
+        /// local cache).</summary>
+        CustomerInfo CustomerInfo { get; }
 
         event Action Initialized;
 
@@ -34,7 +37,16 @@ namespace Purser
 
         event Action<PurchaseResult> PurchaseFailed;
 
-        event Action<Entitlements> EntitlementsChanged;
+        /// <summary>What the customer info gives changed (a purchase, a renewal, an expiry, another player); not raised
+        /// when a refresh brought the same items.</summary>
+        event Action<CustomerInfo> CustomerInfoChanged;
+
+        /// <summary>The store connection dropped after initialization (the reason, for logs). <see cref="IsInitialized"/>
+        /// is false until <see cref="StoreReconnected"/>; the service reconnects by itself with backoff.</summary>
+        event Action<string> StoreDisconnected;
+
+        /// <summary>The store is connected again after <see cref="StoreDisconnected"/>; the customer info is refreshed.</summary>
+        event Action StoreReconnected;
 
         /// <summary>Connects to the store and loads products. Safe to call once; later calls return the same task.</summary>
         Task InitializeAsync(CancellationToken ct = default);
@@ -61,27 +73,50 @@ namespace Purser
 
         StoreProduct GetProduct(string productId);
 
+        /// <summary>Buys a product. Cancelling <paramref name="ct"/> stops waiting for the result; the store purchase goes
+        /// on and its result still arrives through the events.</summary>
         Task<PurchaseResult> PurchaseAsync(string productId, CancellationToken ct = default);
 
-        /// <summary>"Restore purchases": re-verifies what the store reports and returns fresh entitlements.</summary>
-        Task<Entitlements> RestoreAsync(CancellationToken ct = default);
+        /// <summary>Same as <see cref="PurchaseAsync(string, CancellationToken)"/>, and the server records the
+        /// purchase for the paywall's placement, variant and test (A/B test results).</summary>
+        Task<PurchaseResult> PurchaseAsync(string productId, Paywall paywall, CancellationToken ct = default);
 
-        Task<Entitlements> RefreshEntitlementsAsync(CancellationToken ct = default);
+        /// <summary>Same as <see cref="PurchaseAsync(string, CancellationToken)"/> with a paywall, the store offer the
+        /// player buys (<c>offer_id</c> for revenue by offer) and a subscription it replaces
+        /// (<see cref="PurchaseOptions"/>).</summary>
+        Task<PurchaseResult> PurchaseAsync(string productId, PurchaseOptions options, CancellationToken ct = default);
+
+        /// <summary>"Restore purchases": re-verifies what the store reports and returns fresh customer info.</summary>
+        Task<CustomerInfo> RestoreAsync(CancellationToken ct = default);
+
+        /// <summary>Asks the server for the customer info; the cached copy (<see cref="CustomerInfo.IsFromCache"/>) when it
+        /// cannot be reached or its answer is not trusted (signed responses).</summary>
+        Task<CustomerInfo> RefreshCustomerInfoAsync(CancellationToken ct = default);
+
+        /// <summary>The player has this access level (e.g. <c>premium</c>) now: check levels rather than product ids.
+        /// Expiring access counts only while the customer info is fresh (<see cref="BillingConfig.entitlementsMaxAgeDays"/>).</summary>
+        bool HasAccess(string accessLevel);
 
         /// <summary>Owned non-consumable or active subscription (any platform id of the configured product).</summary>
         bool IsActive(string productId);
 
-        /// <summary>Subscription expiration in UTC; null when not subscribed or never expires.</summary>
+        /// <summary>Subscription expiration in UTC; null when not subscribed, never expires, or the customer info is too
+        /// old to trust (<see cref="BillingConfig.entitlementsMaxAgeDays"/>, like <see cref="IsActive"/>).</summary>
         DateTime? GetExpiration(string productId);
 
         /// <summary>
         /// App Store only: buys a subscription with a promotional offer (a discount for current or lapsed
         /// subscribers set up in App Store Connect). The server signs the offer for the current player
-        /// (<c>POST /offers/apple/sign</c>), then the purchase goes through Unity IAP and the server as usual.
-        /// Throws <see cref="BillingException"/> on Google Play, where offers are picked on the client by their
-        /// offer token. In the Editor the product is bought without the offer.
+        /// (<c>POST /offers/apple/sign</c>), then the purchase goes through Unity IAP and the server as usual (with the
+        /// offer id as <c>offer_id</c>). Throws <see cref="BillingException"/> on Google Play, where offers are picked on
+        /// the client by their offer token. In the Editor the product is bought without the offer.
         /// </summary>
         Task<PurchaseResult> PurchaseWithPromotionalOfferAsync(string productId, string offerId, CancellationToken ct = default);
+
+        /// <summary>Same as <see cref="PurchaseWithPromotionalOfferAsync(string, string, CancellationToken)"/>, and the
+        /// server records the purchase for the paywall (A/B test results).</summary>
+        Task<PurchaseResult> PurchaseWithPromotionalOfferAsync(string productId, string offerId, Paywall paywall,
+            CancellationToken ct = default);
 
         /// <summary>
         /// App Store only: a server-signed promotional offer for the current player, for games that buy through
@@ -98,10 +133,6 @@ namespace Purser
         /// <exception cref="PaywallNotFoundException">No enabled placement with this id on the server.</exception>
         /// <exception cref="BillingException">The server is unreachable and nothing is cached, or it refused the request.</exception>
         Task<Paywall> GetPaywallAsync(string placementId, CancellationToken ct = default);
-
-        /// <summary>Same as <see cref="PurchaseAsync(string, CancellationToken)"/>, and the server records the
-        /// purchase for the paywall's placement, variant and test (A/B test results).</summary>
-        Task<PurchaseResult> PurchaseAsync(string productId, Paywall paywall, CancellationToken ct = default);
 
         /// <summary>Reports that the paywall was shown (a view in A/B test results). Call once per display.
         /// Never throws for network problems; returns false when the view was not recorded.</summary>

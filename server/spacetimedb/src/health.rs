@@ -44,7 +44,7 @@ pub fn get(ctx: &ReducerContext, app_id: &str) -> AppHealth {
     ctx.db
         .app_health()
         .app_id()
-        .find(&app_id.to_string())
+        .find(app_id.to_string())
         .unwrap_or_else(|| AppHealth { app_id: app_id.to_string(), ..Default::default() })
 }
 
@@ -69,7 +69,7 @@ fn negligible(old: &AppHealth, new: &AppHealth) -> bool {
 /// less than a minute and no verdict changes (see [`negligible`]).
 pub fn touch(ctx: &ReducerContext, app_id: &str, f: impl FnOnce(&mut AppHealth, i64)) {
     let now = ctx.timestamp.to_micros_since_unix_epoch();
-    let old = ctx.db.app_health().app_id().find(&app_id.to_string());
+    let old = ctx.db.app_health().app_id().find(app_id.to_string());
     let mut row = old.clone().unwrap_or_else(|| AppHealth { app_id: app_id.to_string(), ..Default::default() });
     f(&mut row, now);
     match old {

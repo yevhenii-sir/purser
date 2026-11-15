@@ -7,8 +7,9 @@ namespace Purser.VContainer
     /// <summary>
     /// VContainer registration. Compiled only when the <c>jp.hadashikick.vcontainer</c> package is installed.
     /// <code>builder.RegisterPurser(billingConfig);</code>
-    /// Optional <see cref="IUserIdProvider"/>, <see cref="IAnalyticsIdProvider"/>, <see cref="IAttributionProvider"/> and
-    /// <see cref="IStoreAdapter"/> (Amazon, Steam, Stripe, Xsolla) registrations are picked up.
+    /// Optional <see cref="IUserIdProvider"/>, <see cref="IAnalyticsIdProvider"/>, <see cref="IAttributionProvider"/>,
+    /// <see cref="IPlayerTokenProvider"/> and <see cref="IStoreAdapter"/> (Amazon, Steam, Stripe, Xsolla) registrations
+    /// are picked up.
     /// </summary>
     public static class PurserVContainerExtensions
     {
@@ -26,6 +27,7 @@ namespace Purser.VContainer
                 UserIdProvider = resolver.TryResolve<IUserIdProvider>(out var users) ? users : null,
                 AnalyticsIdProvider = resolver.TryResolve<IAnalyticsIdProvider>(out var analytics) ? analytics : null,
                 AttributionProvider = resolver.TryResolve<IAttributionProvider>(out var attribution) ? attribution : null,
+                PlayerTokenProvider = resolver.TryResolve<IPlayerTokenProvider>(out var tokens) ? tokens : null,
                 Store = resolver.TryResolve<IStoreAdapter>(out var store) ? store : null,
             }), lifetime);
 

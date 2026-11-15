@@ -1,7 +1,9 @@
 //! Subscription re-checks for stores whose renewals may never reach the server
-//! (`StoreInfo::polls_subscriptions`, e.g. Amazon when Real-Time Notifications are not set up).
+//! (`StoreInfo::polls_subscriptions`: Google and Apple when a notification is lost or not set up,
+//! Amazon without Real-Time Notifications).
 //!
-//! An active subscription of such a store gets a `store_poll` row due shortly after its expiry.
+//! An active subscription of such a store gets a `store_poll` row due shortly after its access
+//! ends (the paid period, or the grace period: a Google grace period is checked daily).
 //! The worker (`ledger::process_pending`, [`due`] + [`run_due`]) looks a few due ones up again in
 //! the store: renewed →
 //! the ledger takes the new expiry (the game gets `grant` again with it) and the next re-check is
@@ -30,7 +32,7 @@ pub struct StorePoll {
 /// First re-check this long after the expiry: stores renew shortly before or at it.
 const AFTER_EXPIRY_MICROS: i64 = 10 * 60 * 1_000_000;
 /// Re-checks per worker run (one store call each).
-const BATCH: usize = 5;
+const BATCH: usize = 10;
 /// Backoff while the store has not decided yet; then the row is dropped.
 const BACKOFF_SECS: [i64; 5] = [3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600];
 
@@ -41,11 +43,11 @@ pub fn schedule(tx: &TxContext, ledger_id: &str, st: &StoreTx, product_kind: &st
         return;
     }
     let id = ledger_id.to_string();
-    if st.state != TxState::Active || st.expires_at_ms <= 0 {
+    if st.state != TxState::Active || st.access_until_ms() <= 0 {
         tx.db.store_poll().purchase_id().delete(&id);
         return;
     }
-    let next = st.expires_at_ms * 1000 + AFTER_EXPIRY_MICROS;
+    let next = st.access_until_ms() * 1000 + AFTER_EXPIRY_MICROS;
     match tx.db.store_poll().purchase_id().find(&id) {
         // Same expiry, no re-checks counted: nothing to write (a repeated verify or notification).
         Some(r) if r.next_poll_at_micros == next && r.attempts == 0 => {}
@@ -59,10 +61,10 @@ pub fn schedule(tx: &TxContext, ledger_id: &str, st: &StoreTx, product_kind: &st
 }
 
 fn backoff(tx: &TxContext, id: &str) {
-    let Some(mut row) = tx.db.store_poll().purchase_id().find(&id.to_string()) else { return };
+    let Some(mut row) = tx.db.store_poll().purchase_id().find(id.to_string()) else { return };
     let Some(delay) = BACKOFF_SECS.get(row.attempts as usize) else {
         log::info!("Subscription re-check of {id}: no answer from the store, giving up");
-        tx.db.store_poll().purchase_id().delete(&id.to_string());
+        tx.db.store_poll().purchase_id().delete(id.to_string());
         return;
     };
     row.attempts += 1;
@@ -71,7 +73,7 @@ fn backoff(tx: &TxContext, id: &str) {
 }
 
 fn drop_row(tx: &TxContext, id: &str) {
-    tx.db.store_poll().purchase_id().delete(&id.to_string());
+    tx.db.store_poll().purchase_id().delete(id.to_string());
 }
 
 /// What the worker has to re-check, read in one transaction (see [`run_due`]).
@@ -104,6 +106,11 @@ fn check(ctx: &mut impl Ctx, id: &str, budget: Budget) {
     let key = id.to_string();
     let loaded = ctx.tx(|tx| {
         let p = tx.db.purchase().id().find(&key)?;
+        // A later period of the subscription is in the ledger already (notified): it has its own re-check.
+        let newer = ledger::find_related_row(tx, &p).filter(|n| n.id != p.id && n.access_until_ms() > p.access_until_ms());
+        if newer.is_some() {
+            return None;
+        }
         let app = config::find_app(tx, &p.app_id)?;
         let product = config::find_product(tx, &p.app_id, &p.product_id);
         Some((p, app, product))
@@ -127,7 +134,7 @@ fn check(ctx: &mut impl Ctx, id: &str, budget: Budget) {
         }
     };
     match st.state {
-        TxState::Active if st.expires_at_ms > p.expires_at_ms => {
+        TxState::Active if st.access_until_ms() > p.access_until_ms() || st.transaction_id != p.transaction_id => {
             let product = product.unwrap_or_else(|| Product::new(&p.app_id, &p.product_id, &p.kind));
             // Re-schedules itself for the new expiry.
             let recorded = ctx.tx(|tx| ledger::record_active(tx, &product, &st, &p.user_id, &p.app_instance_id));

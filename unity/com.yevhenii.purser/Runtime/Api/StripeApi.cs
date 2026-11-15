@@ -59,9 +59,9 @@ namespace Purser
     public sealed partial class BillingApiClient : IStripeCheckoutApi
     {
         public Task<ApiResult<StripeCheckoutResponse>> CreateStripeCheckoutAsync(StripeCheckoutRequest request, CancellationToken ct = default) =>
-            PostAsync<StripeCheckoutResponse>("/checkout/stripe", request, ct);
+            m_Http.PostAsync<StripeCheckoutResponse>("/checkout/stripe", request, request?.UserId, ct);
 
         public Task<ApiResult<VerifyResponse>> VerifyStripeSessionAsync(StripeSessionRequest request, CancellationToken ct = default) =>
-            PostAsync<VerifyResponse>("/verify/stripe", request, ct);
+            m_Http.PostAsync<VerifyResponse>("/verify/stripe", request, request?.UserId, ct);
     }
 }

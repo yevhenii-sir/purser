@@ -4,6 +4,7 @@
 //!   1. `{app_id}/{name}`   — this exact store app
 //!   2. `{account}/{name}`  — the developer account the app belongs to (`GameApp::account`)
 //!   3. `default/{name}`
+//!
 //! So apps published from different Google Play / App Store Connect accounts (or delivering to
 //! different SpacetimeDB servers) each get their own keys.
 
@@ -60,6 +61,11 @@ pub mod secret_name {
     pub const ALERT_DISCORD_WEBHOOK_URL: &str = "alert_discord_webhook_url";
     /// Alerts: optional HMAC key of the alert webhook (`X-Billing-Signature`).
     pub const ALERT_WEBHOOK_SECRET: &str = "alert_webhook_secret";
+    /// HS256 key the game's backend signs player tokens with (builds with `client_auth = signed`).
+    pub const CLIENT_AUTH_SECRET: &str = "client_auth_secret";
+    /// Ed25519 seed (32 bytes, base64) the server signs `/entitlements` and `/restore` answers
+    /// with; the game checks them with its public key.
+    pub const RESPONSE_SIGNING_KEY: &str = "response_signing_key";
     /// Amazon Developer Console → Shared Key (Receipt Verification Service).
     pub const AMAZON_SHARED_SECRET: &str = purser_core::amazon::SHARED_SECRET;
     /// Steamworks publisher Web API key (ISteamMicroTxn).
@@ -85,6 +91,8 @@ pub mod secret_name {
                 | ADJUST_S2S_TOKEN
                 | APPMETRICA_POST_API_KEY
                 | GCS_SERVICE_ACCOUNT_JSON
+                | CLIENT_AUTH_SECRET
+                | RESPONSE_SIGNING_KEY
                 | ALERT_TELEGRAM_BOT_TOKEN
                 | ALERT_SLACK_WEBHOOK_URL
                 | ALERT_DISCORD_WEBHOOK_URL
@@ -105,7 +113,7 @@ pub struct Secret {
 
 pub fn secret(tx: &TxContext, app: &GameApp, name: &str) -> Option<Secret> {
     for scope in [app.app_id.as_str(), app.account.as_str(), DEFAULT_SCOPE] {
-        if let Some(c) = tx.db.credential().key().find(&credential_key(scope, name)) {
+        if let Some(c) = tx.db.credential().key().find(credential_key(scope, name)) {
             if !c.value.is_empty() {
                 return Some(Secret { scope: scope.to_string(), value: c.value });
             }
@@ -119,18 +127,18 @@ pub fn require_secret(tx: &TxContext, app: &GameApp, name: &str) -> Result<Secre
 }
 
 pub fn find_app(tx: &TxContext, app_id: &str) -> Option<GameApp> {
-    tx.db.game_app().app_id().find(&app_id.to_string())
+    tx.db.game_app().app_id().find(app_id.to_string())
 }
 
 pub fn find_product(tx: &TxContext, app_id: &str, product_id: &str) -> Option<Product> {
-    tx.db.product().key().find(&crate::product_key(app_id, product_id))
+    tx.db.product().key().find(crate::product_key(app_id, product_id))
 }
 
 pub fn cached_token(tx: &TxContext, key: &str, now_micros: i64, min_validity_micros: i64) -> Option<String> {
     tx.db
         .access_token_cache()
         .key()
-        .find(&key.to_string())
+        .find(key.to_string())
         .filter(|c| c.expires_at_micros > now_micros + min_validity_micros)
         .map(|c| c.token)
 }

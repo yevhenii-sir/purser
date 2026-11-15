@@ -2946,6 +2946,7 @@ dependencies = [
 name = "purser"
 version = "0.7.0"
 dependencies = [
+ "ed25519-dalek",
  "http",
  "log",
  "p256",
@@ -2962,6 +2963,7 @@ version = "0.7.0"
 dependencies = [
  "base64 0.22.1",
  "ecdsa",
+ "ed25519-dalek",
  "hex",
  "hmac",
  "p256",

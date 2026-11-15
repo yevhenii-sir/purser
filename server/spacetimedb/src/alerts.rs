@@ -703,7 +703,7 @@ pub fn admin_upsert_alert_channel(ctx: &ReducerContext, json: String) -> Result<
     } else {
         ctx.db.alert_channel().name().find(&name)
     };
-    if let Some(other) = ctx.db.alert_channel().name().find(&name).filter(|c| existing.as_ref().map_or(true, |e| e.id != c.id)) {
+    if let Some(other) = ctx.db.alert_channel().name().find(&name).filter(|c| existing.as_ref().is_none_or(|e| e.id != c.id)) {
         return Err(format!("[ERR_BAD_ALERT] another channel is named {}", other.name));
     }
     let mut row = existing.clone().unwrap_or(AlertChannel {
@@ -853,7 +853,7 @@ pub fn forget_build(tx: &ReducerContext, app_id: &str) {
 }
 
 fn dismiss(ctx: &ReducerContext, key: &str) {
-    if let Some(mut s) = ctx.db.alert_state().key().find(&key.to_string()) {
+    if let Some(mut s) = ctx.db.alert_state().key().find(key.to_string()) {
         s.active = false;
         s.suppressed = 0;
         ctx.db.alert_state().key().update(s);

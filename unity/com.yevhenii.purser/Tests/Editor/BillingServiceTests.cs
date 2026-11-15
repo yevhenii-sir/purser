@@ -402,14 +402,14 @@ namespace Purser.Tests
         }
 
         [Test]
-        public void Entitlements_MapConfiguredIdsAcrossPlatforms()
+        public void CustomerInfo_MapsConfiguredIdsAcrossPlatforms()
         {
             CreateService();
             var expires = new DateTimeOffset(Now.AddDays(10)).ToUnixTimeMilliseconds();
             m_Api.EntitlementsResult = FakeApi.Entitlements(new Dictionary<string, long> { ["premium_ios"] = expires }, "vip");
             m_Api.EntitlementsResult.Value.ServerTimeMs = new DateTimeOffset(Now).ToUnixTimeMilliseconds();
 
-            var ent = Sync.Run(m_Service.RefreshEntitlementsAsync());
+            var ent = Sync.Run(m_Service.RefreshCustomerInfoAsync());
             Assert.IsFalse(ent.IsFromCache);
             Assert.IsTrue(m_Service.IsActive("premium"), "bought on iOS, checked on Android");
             Assert.IsTrue(m_Service.IsActive("vip"));
@@ -418,7 +418,7 @@ namespace Purser.Tests
         }
 
         [Test]
-        public void Entitlements_KeyedByCatalogId_MapToTheConfig()
+        public void CustomerInfo_KeyedByCatalogId_MapsToTheConfig()
         {
             // Servers key entitlements by the app's catalog id: the config's product id.
             CreateService();
@@ -426,26 +426,26 @@ namespace Purser.Tests
             m_Api.EntitlementsResult = FakeApi.Entitlements(new Dictionary<string, long> { ["premium"] = expires });
             m_Api.EntitlementsResult.Value.ServerTimeMs = new DateTimeOffset(Now).ToUnixTimeMilliseconds();
 
-            Sync.Run(m_Service.RefreshEntitlementsAsync());
+            Sync.Run(m_Service.RefreshCustomerInfoAsync());
             Assert.IsTrue(m_Service.IsActive("premium"));
             Assert.IsTrue(m_Service.IsActive("premium_android"), "by a store id too");
         }
 
         [Test]
-        public void Entitlements_ServerDown_ReturnsCachedCopy()
+        public void CustomerInfo_ServerDown_ReturnsCachedCopy()
         {
             CreateService();
             m_Api.EntitlementsResult = FakeApi.Entitlements(new Dictionary<string, long>(), "vip");
-            Sync.Run(m_Service.RefreshEntitlementsAsync());
+            Sync.Run(m_Service.RefreshCustomerInfoAsync());
 
-            m_Api.EntitlementsResult = new ApiResult<EntitlementsDto>(0, null, "offline");
-            var ent = Sync.Run(m_Service.RefreshEntitlementsAsync());
+            m_Api.EntitlementsResult = new ApiResult<CustomerInfoDto>(0, null, "offline");
+            var ent = Sync.Run(m_Service.RefreshCustomerInfoAsync());
             Assert.IsTrue(ent.IsFromCache);
             Assert.IsTrue(ent.Owns("vip"));
         }
 
         [Test]
-        public void Restore_SendsOwnedPurchasesAndUpdatesEntitlements()
+        public void Restore_SendsOwnedPurchasesAndUpdatesCustomerInfo()
         {
             CreateService();
             m_Store.Owned.Add(FakeStore.GoogleOrder("vip", "tok-a", "GPA.A"));
@@ -454,7 +454,7 @@ namespace Purser.Tests
             m_Api.RestoreResult = new ApiResult<RestoreResponse>(200, new RestoreResponse
             {
                 Results = new List<RestoreItemResult>(),
-                Entitlements = FakeApi.Entitlements(new Dictionary<string, long>(), "vip").Value,
+                CustomerInfo = FakeApi.Entitlements(new Dictionary<string, long>(), "vip").Value,
             }, null);
 
             var ent = Sync.Run(m_Service.RestoreAsync());

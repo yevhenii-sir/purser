@@ -7,7 +7,7 @@ namespace Purser
     /// <summary>
     /// Drop-in component: put it on a GameObject in the first scene, assign a <see cref="BillingConfig"/>,
     /// then use <see cref="Service"/> (or <see cref="Current"/>) and call <see cref="SetUserId"/> after login.
-    /// For DI containers use <see cref="Billing.Create(BillingConfig, IUserIdProvider, IAnalyticsIdProvider, IAttributionProvider)"/> instead.
+    /// For DI containers use <see cref="Billing.Create(BillingConfig, IUserIdProvider, IAnalyticsIdProvider, IAttributionProvider, IPlayerTokenProvider)"/> instead.
     /// </summary>
     [DefaultExecutionOrder(-1000)]
     [DisallowMultipleComponent]
@@ -27,6 +27,10 @@ namespace Purser
 
         [Tooltip("Optional component implementing IAnalyticsIdProvider (Firebase app_instance_id for GA4).")]
         [SerializeField] private MonoBehaviour analyticsIdProvider;
+
+        [Tooltip("Optional component implementing IPlayerTokenProvider: player tokens from the game backend, for builds " +
+                 "that require signed client requests.")]
+        [SerializeField] private MonoBehaviour playerTokenProvider;
 
         [Tooltip("Optional component implementing IStoreAdapterFactory: the store adapter for Amazon, Steam, Stripe or " +
                  "Xsolla builds. Empty: Unity IAP (Google Play, App Store).")]
@@ -69,6 +73,7 @@ namespace Purser
             {
                 AnalyticsIdProvider = analyticsIdProvider as IAnalyticsIdProvider,
                 AttributionProvider = attributionProvider as IAttributionProvider,
+                PlayerTokenProvider = playerTokenProvider as IPlayerTokenProvider,
                 Store = (storeAdapterFactory as IStoreAdapterFactory)?.CreateStore(config),
             });
             if (initializeOnAwake)

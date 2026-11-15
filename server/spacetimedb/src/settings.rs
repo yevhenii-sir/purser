@@ -43,6 +43,17 @@ pub mod key {
     pub const RETENTION_DAYS: &str = "retention_days";
     /// Day of the last retention step.
     pub const RETENTION_DAY: &str = "retention_day";
+    /// Last run of the ledger worker (micros): `/healthz` and the admin page report a stopped worker.
+    pub const WORKER_HEARTBEAT: &str = "worker_heartbeat_micros";
+}
+
+/// A worker that has not run for this long has stopped (it runs every minute).
+pub const WORKER_STALE_MICROS: i64 = 5 * 60 * 1_000_000;
+
+/// Seconds since the worker last ran; `None` before its first run.
+pub fn worker_age_secs(ctx: &ReducerContext) -> Option<i64> {
+    let at = get_i64(ctx, key::WORKER_HEARTBEAT);
+    (at > 0).then(|| (ctx.timestamp.to_micros_since_unix_epoch() - at).max(0) / 1_000_000)
 }
 
 /// Keys `admin_set_setting` may change.
@@ -55,7 +66,7 @@ pub const ADMIN_KEYS: &[&str] = &[
 ];
 
 pub fn get(ctx: &ReducerContext, key: &str) -> Option<String> {
-    ctx.db.server_state().key().find(&key.to_string()).map(|r| r.value)
+    ctx.db.server_state().key().find(key.to_string()).map(|r| r.value)
 }
 
 pub fn get_i64(ctx: &ReducerContext, key: &str) -> i64 {

@@ -62,9 +62,12 @@ nav:
   - Getting started: getting-started.md
   - Store setup: store-setup.md
   - Game integration: game-integration.md
+  - Paywalls and A/B tests: paywalls.md
+  - App Store promotional offers: apple-offers.md
   - Revenue analytics: analytics.md
+  - Owner alerts: alerts.md
   - Self-hosting: self-hosting.md
-  - Migrating from Adapty: migrating-from-adapty.md
+  - Moving servers and from Adapty: migrating-from-adapty.md
   - MCP server: mcp.md
   - API reference: api.md
   - Server reference: https://github.com/yevhenii-sir/purser/blob/main/server/README.md

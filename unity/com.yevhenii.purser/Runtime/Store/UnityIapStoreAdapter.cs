@@ -9,9 +9,11 @@ namespace Purser
 {
     /// <summary>
     /// <see cref="IStoreAdapter"/> on Unity IAP 5 (<c>StoreController</c>). Unity IAP products are registered
-    /// with the store product id as their id, so orders map 1:1 to the billing server catalog.
+    /// with the store product id as their id, so orders map 1:1 to the billing server catalog. Reports a dropped store
+    /// connection (<see cref="IStoreConnectionEvents"/>) and changes Google Play subscriptions
+    /// (<see cref="ISubscriptionChangeStore"/>).
     /// </summary>
-    public sealed partial class UnityIapStoreAdapter : IStoreAdapter
+    public sealed partial class UnityIapStoreAdapter : IStoreAdapter, IStoreConnectionEvents, ISubscriptionChangeStore
     {
         private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(30);
 
@@ -33,6 +35,10 @@ namespace Purser
         public event Action<StoreOrder> OrderDeferred;
         public event Action<StorePurchaseFailure> PurchaseFailed;
         public event Action<StoreOrder, bool, string> OrderFinished;
+        /// <inheritdoc/>
+        public event Action<string> Disconnected;
+        /// <inheritdoc/>
+        public event Action<string> ChangeDeferred;
 
         /// <param name="platform"><see cref="BillingPlatform.Google"/> or <see cref="BillingPlatform.Apple"/>; other
         /// platforms run Unity IAP's fake store (Editor) under the Google store id.</param>
@@ -55,6 +61,9 @@ namespace Purser
             m_Store.OnPurchaseConfirmed += HandlePurchaseConfirmed;
             m_Store.OnPurchaseFailed += HandlePurchaseFailed;
             m_Store.OnPurchaseDeferred += HandlePurchaseDeferred;
+            var google = m_Store.GooglePlayStoreExtendedPurchaseService;
+            if (google != null)
+                google.OnDeferredPaymentUntilRenewalDate += HandleChangeDeferred;
         }
 
         public async Task ConnectAsync(CancellationToken ct)
@@ -65,7 +74,10 @@ namespace Purser
             if (connect.IsFaulted && !m_Connect.Task.IsCompleted)
                 throw new BillingException("Store connection failed: " + connect.Exception?.GetBaseException().Message);
             if (m_Store.GetConnectionState() == ConnectionState.Connected)
+            {
+                m_Connect.TrySetResult(true);
                 return;
+            }
             await TaskTimeout.With(m_Connect.Task, OperationTimeout, ct, "store connection");
         }
 
@@ -149,6 +161,72 @@ namespace Purser
             m_Store.OnPurchaseConfirmed -= HandlePurchaseConfirmed;
             m_Store.OnPurchaseFailed -= HandlePurchaseFailed;
             m_Store.OnPurchaseDeferred -= HandlePurchaseDeferred;
+            var google = m_Store.GooglePlayStoreExtendedPurchaseService;
+            if (google != null)
+                google.OnDeferredPaymentUntilRenewalDate -= HandleChangeDeferred;
+        }
+
+        /// <summary>
+        /// Google Play: <c>UpgradeDowngradeSubscription</c> from the owned order of
+        /// <paramref name="replacedStoreProductId"/> (looked up with <c>FetchPurchases</c> when Unity IAP has not listed
+        /// it yet). App Store: a plain purchase (StoreKit replaces a subscription of the same group by itself).
+        /// </summary>
+        public void PurchaseReplacing(string storeProductId, string replacedStoreProductId, ReplacementMode mode)
+        {
+            if (Platform != BillingPlatform.Google)
+            {
+                Purchase(storeProductId);
+                return;
+            }
+            _ = ReplaceAsync(storeProductId, replacedStoreProductId, mode);
+        }
+
+        private async Task ReplaceAsync(string storeProductId, string replacedStoreProductId, ReplacementMode mode)
+        {
+            try
+            {
+                var product = m_Store.GetProductById(storeProductId);
+                var google = m_Store.GooglePlayStoreExtendedPurchaseService;
+                if (product == null || !product.availableToPurchase || google == null)
+                {
+                    PurchaseFailed?.Invoke(new StorePurchaseFailure(storeProductId, "product is not available in the store", false));
+                    return;
+                }
+                var current = FindOwnedOrder(m_Store.GetPurchases(), replacedStoreProductId);
+                if (current == null)
+                {
+                    var owned = await FetchPurchasesAsync(CancellationToken.None);
+                    current = owned.Where(o => o.StoreProductId == replacedStoreProductId).Select(o => o.Native as Order)
+                        .FirstOrDefault(o => o != null);
+                }
+                if (current == null)
+                {
+                    PurchaseFailed?.Invoke(new StorePurchaseFailure(storeProductId,
+                        $"the subscription {replacedStoreProductId} to replace is not owned on this Google account", false));
+                    return;
+                }
+                google.UpgradeDowngradeSubscription(current, product, (GooglePlayReplacementMode)(int)mode);
+            }
+            catch (Exception e)
+            {
+                m_Log.Error($"Subscription change to {storeProductId} failed: {e}");
+                PurchaseFailed?.Invoke(new StorePurchaseFailure(storeProductId, "subscription change: " + e.Message, false));
+            }
+        }
+
+        private static Order FindOwnedOrder(IEnumerable<Order> orders, string storeProductId)
+        {
+            if (orders == null)
+                return null;
+            foreach (var order in orders)
+            {
+                if (order is FailedOrder || order is DeferredOrder)
+                    continue;
+                var product = ProductOf(order);
+                if (product?.definition?.storeSpecificId == storeProductId || product?.definition?.id == storeProductId)
+                    return order;
+            }
+            return null;
         }
 
         // ---- Unity IAP events ----
@@ -159,33 +237,80 @@ namespace Purser
         {
             var message = failure?.Message ?? "unknown";
             m_Log.Warning("Store disconnected: " + message);
-            m_Connect?.TrySetException(new BillingException("Store connection failed: " + message));
+            if (m_Connect != null && !m_Connect.Task.IsCompleted)
+            {
+                // Connecting (also a reconnection): ConnectAsync fails.
+                m_Connect.TrySetException(new BillingException("Store connection failed: " + message));
+                return;
+            }
+            if (m_Connect != null && m_Connect.Task.Status == TaskStatus.RanToCompletion)
+                Disconnected?.Invoke(message);
+        }
+
+        private void HandleChangeDeferred(DeferredPaymentUntilRenewalDateOrder order)
+        {
+            var storeId = order?.SubscriptionOrdered?.definition?.storeSpecificId ?? order?.SubscriptionOrdered?.definition?.id;
+            if (!string.IsNullOrEmpty(storeId))
+                ChangeDeferred?.Invoke(storeId);
         }
 
         private void HandleProductsFetched(List<Product> products)
         {
             var result = new List<StoreProduct>();
+            var appleDetails = AppleProductDetails();
             foreach (var product in products)
             {
                 var storeId = product.definition?.storeSpecificId ?? product.definition?.id;
                 var config = FindConfig(storeId);
                 var meta = product.metadata;
-                // Google Play reports the period; Unity IAP 5 keeps the App Store's internal (the config's fallback is used).
-                var period = meta?.GetGoogleProductMetadata()?.subscriptionPeriod;
+                var price = meta?.localizedPrice ?? 0m;
+                string period = null;
+                IReadOnlyList<StoreOffer> offers = null;
+                bool? introEligible = null;
+                var google = meta?.GetGoogleProductMetadata();
+                if (google != null)
+                {
+                    period = google.subscriptionPeriod;
+                    (offers, introEligible) = StoreOfferParser.Google(google.subscriptionPeriod, price, meta.localizedPriceString,
+                        meta.isoCurrencyCode, google.freeTrialPeriod, google.introductoryPrice, google.introductoryPricePeriod,
+                        google.introductoryPriceCycles, google.originalJson);
+                }
+                else if (storeId != null && appleDetails != null && appleDetails.TryGetValue(storeId, out var details))
+                {
+                    (period, offers, introEligible) = StoreOfferParser.Apple(details, price, meta?.localizedPriceString, meta?.isoCurrencyCode);
+                }
                 result.Add(new StoreProduct(
                     config?.id ?? storeId,
                     storeId,
                     config?.type ?? FromUnityType(product.definition?.type ?? ProductType.Consumable),
                     meta?.localizedPriceString,
-                    meta?.localizedPrice ?? 0m,
+                    price,
                     meta?.isoCurrencyCode,
                     meta?.localizedTitle,
                     meta?.localizedDescription,
                     product.availableToPurchase,
                     product,
-                    subscriptionPeriod: period));
+                    subscriptionPeriod: period,
+                    offers: offers,
+                    introEligible: introEligible));
             }
             m_Products?.TrySetResult(result);
+        }
+
+        /// <summary>App Store: StoreKit details per product id (period, introductory offer, eligibility); null elsewhere.</summary>
+        private Dictionary<string, string> AppleProductDetails()
+        {
+            if (Platform != BillingPlatform.Apple)
+                return null;
+            try
+            {
+                return m_Store.AppleStoreExtendedProductService?.GetProductDetails();
+            }
+            catch (Exception e)
+            {
+                m_Log.Warning("App Store product details unavailable: " + e.Message);
+                return null;
+            }
         }
 
         private void HandleProductsFetchFailed(ProductFetchFailed failure)

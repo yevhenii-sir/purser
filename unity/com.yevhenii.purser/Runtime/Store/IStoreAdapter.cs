@@ -37,10 +37,26 @@ namespace Purser
         /// the price per day of a weekly and a yearly subscription.</summary>
         public int SubscriptionPeriodDays => BillingPeriods.Days(SubscriptionPeriod);
 
+        /// <summary>
+        /// Subscriptions: the offers the store reports, with their pricing phases (free trial, introductory price, the
+        /// regular price). Google Play through Unity IAP 5: the one offer Unity IAP buys (the first offer of the
+        /// product), without its id and token, which Unity IAP keeps internal. App Store: the introductory offer
+        /// (whether the player can still get it is <see cref="IntroEligible"/>). Empty elsewhere.
+        /// </summary>
+        public IReadOnlyList<StoreOffer> Offers { get; }
+
+        /// <summary>Whether the player can get the introductory offer (free trial or intro price); null when the store
+        /// does not say. App Store: StoreKit's <c>isEligibleForIntroOffer</c>. Google Play lists only offers the
+        /// player is eligible for: true when the offer has a trial or intro phase, otherwise unknown.</summary>
+        public bool? IntroEligible { get; }
+
         public StoreProduct(string id, string storeId, BillingProductType type, string localizedPrice, decimal price,
             string currency, string title, string description, bool availableToPurchase, object native = null,
-            bool isFallbackPrice = false, string subscriptionPeriod = null, bool isFallbackPeriod = false)
+            bool isFallbackPrice = false, string subscriptionPeriod = null, bool isFallbackPeriod = false,
+            IReadOnlyList<StoreOffer> offers = null, bool? introEligible = null)
         {
+            Offers = offers ?? new StoreOffer[0];
+            IntroEligible = introEligible;
             IsFallbackPrice = isFallbackPrice;
             SubscriptionPeriod = BillingPeriods.Normalize(subscriptionPeriod);
             IsFallbackPeriod = isFallbackPeriod && SubscriptionPeriod.Length > 0;
@@ -57,6 +73,72 @@ namespace Purser
         }
 
         public long PriceMicros => (long)decimal.Round(Price * 1_000_000m);
+    }
+
+    /// <summary>A subscription offer of a store product (<see cref="StoreProduct.Offers"/>).</summary>
+    public sealed class StoreOffer
+    {
+        /// <summary>The store's offer id (App Store offer id, Google offer id); null when the store does not give it.</summary>
+        public string Id { get; }
+
+        /// <summary>Google Play offer token; null when the store or Unity IAP does not give it (Unity IAP 5 keeps it
+        /// internal).</summary>
+        public string Token { get; }
+
+        /// <summary>The phases in order: free trial, introductory price, then the regular price.</summary>
+        public IReadOnlyList<PricingPhase> PricingPhases { get; }
+
+        /// <summary>The offer starts with a free trial.</summary>
+        public bool HasFreeTrial
+        {
+            get
+            {
+                foreach (var phase in PricingPhases)
+                    if (phase.IsFreeTrial)
+                        return true;
+                return false;
+            }
+        }
+
+        /// <summary>Creates an offer (store adapters, tests).</summary>
+        public StoreOffer(string id, string token, IReadOnlyList<PricingPhase> pricingPhases)
+        {
+            Id = string.IsNullOrEmpty(id) ? null : id;
+            Token = string.IsNullOrEmpty(token) ? null : token;
+            PricingPhases = pricingPhases ?? new PricingPhase[0];
+        }
+    }
+
+    /// <summary>One phase of a <see cref="StoreOffer"/>: a price for a number of billing periods.</summary>
+    public sealed class PricingPhase
+    {
+        /// <summary>Price per billing period (0 for a free trial).</summary>
+        public decimal Price { get; }
+
+        /// <summary>The price as the store formats it, e.g. <c>$0.99</c>; empty when unknown.</summary>
+        public string LocalizedPrice { get; }
+
+        /// <summary>ISO 4217 currency, e.g. USD; null when unknown.</summary>
+        public string Currency { get; }
+
+        /// <summary>Billing period, ISO 8601 (<c>P1W</c>, <c>P1M</c>, <c>P1Y</c>).</summary>
+        public string Period { get; }
+
+        /// <summary>How many periods the phase lasts; 0 = it recurs until cancelled (the regular price).</summary>
+        public int Cycles { get; }
+
+        /// <summary>The phase is free.</summary>
+        public bool IsFreeTrial => Price == 0m;
+
+        /// <summary>Creates a phase (store adapters, tests).</summary>
+        public PricingPhase(decimal price, string localizedPrice, string currency, string period, int cycles)
+        {
+            Price = price < 0 ? 0 : price;
+            LocalizedPrice = localizedPrice ?? "";
+            Currency = string.IsNullOrEmpty(currency) ? null : currency;
+            Period = BillingPeriods.Normalize(period);
+            Cycles = Math.Max(0, cycles);
+        }
     }
 
     /// <summary>ISO 8601 subscription periods (<c>P1M</c>) as stores and the admin panel write them.</summary>
@@ -185,5 +267,34 @@ namespace Purser
 
         /// <summary>Apple "Restore purchases": re-delivers owned purchases through <see cref="OrderPending"/>.</summary>
         Task<bool> RestoreTransactionsAsync(CancellationToken ct);
+    }
+
+    /// <summary>
+    /// Optional <see cref="IStoreAdapter"/> capability: the store connection can drop after
+    /// <see cref="IStoreAdapter.ConnectAsync"/> succeeded. <see cref="BillingService"/> then reconnects with
+    /// <see cref="IStoreAdapter.ConnectAsync"/> (with backoff) and raises <see cref="IBillingService.StoreDisconnected"/>.
+    /// Implemented by <see cref="UnityIapStoreAdapter"/>.
+    /// </summary>
+    public interface IStoreConnectionEvents
+    {
+        /// <summary>The connected store disconnected (the reason, for logs). Not raised while connecting: a failed
+        /// <see cref="IStoreAdapter.ConnectAsync"/> throws instead.</summary>
+        event Action<string> Disconnected;
+    }
+
+    /// <summary>
+    /// Optional <see cref="IStoreAdapter"/> capability: a subscription purchase that replaces the player's current
+    /// subscription (upgrade, downgrade). The result arrives like any purchase. Implemented by
+    /// <see cref="UnityIapStoreAdapter"/> (Google Play; on the App Store a purchase in the same subscription group
+    /// replaces the old one by itself).
+    /// </summary>
+    public interface ISubscriptionChangeStore
+    {
+        /// <summary>Buys <paramref name="storeProductId"/> in place of the owned <paramref name="replacedStoreProductId"/>.</summary>
+        void PurchaseReplacing(string storeProductId, string replacedStoreProductId, ReplacementMode mode);
+
+        /// <summary>A change with <see cref="ReplacementMode.Deferred"/> was accepted: it takes effect at the next
+        /// renewal and has no transaction now (the store product id of the new subscription).</summary>
+        event Action<string> ChangeDeferred;
     }
 }

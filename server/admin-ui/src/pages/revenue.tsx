@@ -207,7 +207,8 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Net revenue" value={usd(r.totals.net_usd_micros)} hint={`gross ${usd(r.totals.gross_usd_micros)}`} />
             <Stat label="Refunds" value={usd(r.totals.refunded_usd_micros)} hint={`${r.totals.refunds} · ${(r.totals.refund_rate * 100).toFixed(1)}% of payments`} />
-            <Stat label="Active subscriptions" value={subs.active_now} hint={`MRR ${usd(subs.mrr_usd_micros)}`} />
+            <Stat label="Active subscriptions" value={subs.active_now}
+              hint={`MRR ${usd(subs.mrr_usd_micros)} · ${subs.auto_renew_off_now ?? 0} won't renew · ${subs.billing_issue_now ?? 0} payment issues (${subs.in_grace_now ?? 0} in grace)`} />
             <Stat label="Payments" value={payments(r.totals)}
               hint={`${r.totals.purchases} purchases · ${r.totals.new_subscriptions} new subs · ${r.totals.renewals} renewals`} />
             <Stat
@@ -393,6 +394,15 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
             />
           </Section>
 
+          {r.arppu && r.ltv && (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+              <Stat label="ARPPU" value={r.arppu.arppu_usd_micros === null ? "—" : usd(r.arppu.arppu_usd_micros)} hint={`${r.arppu.payers} paying users in the period`} />
+              {r.ltv.map((l) => (
+                <Stat key={l.months} label={`LTV, ${l.months} month${l.months > 1 ? "s" : ""}`} value={l.per_payer_usd_micros === null ? "—" : usd(l.per_payer_usd_micros)}
+                  hint={l.cohorts ? `per payer · ${l.cohorts} cohort${l.cohorts > 1 ? "s" : ""}, ${l.payers} payers` : "no cohort that old in the period"} />
+              ))}
+            </div>
+          )}
           <CohortSection cohorts={r.cohorts} from={r.from} to={r.to} />
 
           <Section

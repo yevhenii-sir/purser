@@ -28,7 +28,9 @@ namespace Purser
         public string GetUserId() => UserId;
     }
 
-    /// <summary>User id read from a delegate, e.g. <c>() => conn.Identity?.ToString()</c>.</summary>
+    /// <summary>User id read from a delegate, e.g. <c>() => conn.Identity?.ToString()</c>. The service reads it again
+    /// before server requests, when the app returns to the foreground and once a second: a new id (login, logout,
+    /// account switch) works like <see cref="IBillingService.SetUserId"/>.</summary>
     public sealed class FuncUserIdProvider : IUserIdProvider
     {
         private readonly Func<string> m_Get;

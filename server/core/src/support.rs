@@ -141,8 +141,92 @@ pub fn spending(rows: &[SpendRow], fx: &FxTable) -> Value {
     })
 }
 
+/// How owned purchases (non-consumables, subscriptions) move between player ids of an app when a
+/// restore names another player (`transfer_policy/{game_key}` setting; default `always`).
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+pub struct TransferPolicy {
+    /// `always` | `cooldown` | `never` ([`transfer_mode`]).
+    pub mode: String,
+    /// `cooldown`: days after a transfer before the purchase may move again.
+    #[serde(default)]
+    pub cooldown_days: u32,
+    /// Transfers one purchase may have in all; 0 = no limit.
+    #[serde(default)]
+    pub max_transfers: u32,
+}
+
+pub mod transfer_mode {
+    /// The purchase follows the store account at once (the default).
+    pub const ALWAYS: &str = "always";
+    /// At most one transfer per `cooldown_days`.
+    pub const COOLDOWN: &str = "cooldown";
+    /// Never: a restore on another player id is refused; support moves purchases by hand.
+    pub const NEVER: &str = "never";
+}
+
+impl Default for TransferPolicy {
+    fn default() -> Self {
+        TransferPolicy { mode: transfer_mode::ALWAYS.into(), cooldown_days: 0, max_transfers: 0 }
+    }
+}
+
+impl TransferPolicy {
+    pub fn parse(json: &str) -> Result<TransferPolicy, String> {
+        let p: TransferPolicy = serde_json::from_str(json).map_err(|e| format!("invalid transfer policy: {e}"))?;
+        match p.mode.as_str() {
+            transfer_mode::ALWAYS | transfer_mode::NEVER => Ok(p),
+            transfer_mode::COOLDOWN if (1..=365).contains(&p.cooldown_days) => Ok(p),
+            transfer_mode::COOLDOWN => Err("cooldown_days must be 1 to 365".into()),
+            other => Err(format!("transfer mode '{other}' must be always, cooldown or never")),
+        }
+    }
+
+    /// May a purchase move to another player now? `past`: when it moved before (micros).
+    pub fn allows(&self, past: &[i64], now_micros: i64) -> Result<(), String> {
+        if self.mode == transfer_mode::NEVER {
+            return Err("purchases of this app do not move to another player id; ask support".into());
+        }
+        if self.max_transfers > 0 && past.len() >= self.max_transfers as usize {
+            return Err(format!("this purchase already moved {} times, the limit of the app", past.len()));
+        }
+        if self.mode == transfer_mode::COOLDOWN {
+            let wait = self.cooldown_days as i64 * crate::time::MICROS_PER_DAY;
+            if let Some(last) = past.iter().max().filter(|last| now_micros - **last < wait) {
+                let days = (last + wait - now_micros + crate::time::MICROS_PER_DAY - 1) / crate::time::MICROS_PER_DAY;
+                return Err(format!("this purchase moved recently; it can move again in {days} day(s)"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The player id an erased player's purchases keep (GDPR erasure): not the id, but the same one
+/// for every row, so the ledger still tells which purchases belonged together.
+pub fn erased_user_id(user_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("erased:{}", &hex::encode(Sha256::digest(user_id.as_bytes()))[..32])
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transfer_policies() {
+        let day = crate::time::MICROS_PER_DAY;
+        let now = 100 * day;
+        assert_eq!(TransferPolicy::default().allows(&[now - 1, now - 2], now), Ok(()));
+        let never = TransferPolicy::parse(r#"{"mode":"never"}"#).unwrap();
+        assert!(never.allows(&[], now).is_err());
+        let cooldown = TransferPolicy::parse(r#"{"mode":"cooldown","cooldown_days":30,"max_transfers":3}"#).unwrap();
+        assert_eq!(cooldown.allows(&[], now), Ok(()));
+        assert!(cooldown.allows(&[now - 10 * day], now).unwrap_err().contains("in 20 day"));
+        assert_eq!(cooldown.allows(&[now - 31 * day], now), Ok(()));
+        assert!(cooldown.allows(&[1, 2, 3], now).unwrap_err().contains("3 times"));
+        assert!(TransferPolicy::parse(r#"{"mode":"cooldown"}"#).is_err());
+        assert!(TransferPolicy::parse(r#"{"mode":"sometimes"}"#).is_err());
+        assert!(erased_user_id("player-1").starts_with("erased:") && erased_user_id("player-1") == erased_user_id("player-1"));
+        assert_ne!(erased_user_id("player-1"), erased_user_id("player-2"));
+    }
+
     use super::*;
     use crate::fx::Rates;
     use crate::time::parse_day;

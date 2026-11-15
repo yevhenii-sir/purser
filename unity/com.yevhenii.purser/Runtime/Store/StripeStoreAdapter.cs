@@ -149,6 +149,13 @@ namespace Purser
                 () => !string.IsNullOrEmpty(order.StoreProductId) && m_Cancelled.Remove(order.StoreProductId), ct);
         }
 
+        /// <summary>Signs the Stripe routes with player tokens when the API client supports it.</summary>
+        public override void SetPlayerTokenProvider(IPlayerTokenProvider provider)
+        {
+            base.SetPlayerTokenProvider(provider);
+            (m_Api as IPlayerTokenConsumer)?.SetPlayerTokenProvider(provider);
+        }
+
         /// <summary>Session ids waiting for an answer (tests, diagnostics).</summary>
         internal IReadOnlyList<string> PendingSessionIds => PendingOrderIds;
 

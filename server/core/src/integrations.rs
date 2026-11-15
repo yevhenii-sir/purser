@@ -20,8 +20,22 @@ pub mod event_kind {
     pub const RENEWAL: &str = "renewal";
     pub const REFUND: &str = "refund";
     pub const EXPIRE: &str = "expire";
+    /// The player turned auto-renew off: the subscription ends with its period.
+    pub const CANCEL: &str = "cancel";
+    /// Auto-renew turned back on.
+    pub const UNCANCEL: &str = "uncancel";
+    /// The store could not charge a renewal (grace period, billing retry, account hold).
+    pub const BILLING_ISSUE: &str = "billing_issue";
+    /// The failed renewal was charged after all.
+    pub const BILLING_RECOVERED: &str = "billing_recovered";
+    /// Another subscription replaced this one (upgrade / downgrade / crossgrade):
+    /// `product_id` is the new product, `previous_product_id` the old one.
+    pub const PRODUCT_CHANGE: &str = "product_change";
     /// Sent from `admin_test_integration`; carries no revenue.
     pub const TEST: &str = "test";
+
+    /// Subscription changes without money: only the webhook and the Cloud Storage export get them.
+    pub const LIFECYCLE: &[&str] = &[CANCEL, UNCANCEL, BILLING_ISSUE, BILLING_RECOVERED, PRODUCT_CHANGE];
 }
 
 pub mod integration_kind {
@@ -141,6 +155,8 @@ pub struct OutEvent {
     /// Estimated store commission of this payment in percent: the app's rate, reduced after the first
     /// paid year of a subscription (`revenue::Commission`).
     pub commission_percent: f64,
+    /// `product_change`: the product the subscription was before; empty otherwise.
+    pub previous_product_id: String,
 }
 
 /// What an integration reports as revenue (`revenue` in its settings).
@@ -623,7 +639,8 @@ pub mod webhook {
         #[serde(default)]
         pub send_sandbox: bool,
         /// Only these event kinds; empty = all (`purchase`, `subscription_start`, `renewal`,
-        /// `refund`, `expire`; `test` always passes).
+        /// `refund`, `expire`, and the subscription changes of `event_kind::LIFECYCLE`; `test`
+        /// always passes).
         #[serde(default)]
         pub events: Vec<String>,
     }
@@ -1000,6 +1017,7 @@ mod tests {
             attribution,
             country: String::new(),
             commission_percent: crate::revenue::DEFAULT_COMMISSION_PERCENT,
+            previous_product_id: String::new(),
         }
     }
 

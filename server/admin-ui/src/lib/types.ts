@@ -23,6 +23,8 @@ export interface GameApp {
   store: string
   /** App Store builds: how refund requests are answered (`off` / empty, `inform`, `prefer`). */
   apple_refund_mode: string
+  /** `open` | `signed`: whether client requests need a player token signed by the game's backend. */
+  client_auth: string
   /** Amazon builds: the only SNS topic notifications are accepted from (empty: any). */
   sns_topic_arn: string
 }
@@ -42,6 +44,8 @@ export interface Product {
   apple_group: string
   /** The app's own id of the product, the same in every store; empty = `product_id` (`catalogIdOf`). */
   catalog_id: string
+  /** Access levels the product unlocks, comma-separated (`premium,no_ads`). */
+  access: string
 }
 
 /** The app's own id of a product (paywalls and entitlements use it): its catalog id, else its store id. */
@@ -167,6 +171,10 @@ export interface Stats {
   by_country: (Money & { country: string })[]
   proceeds: { estimated: boolean; percent: number; after_year_percent: number; by_app: Record<string, number> }
   cohorts: Cohort[]
+  /** Net revenue per payer after 1, 3, 6 and 12 months, over the cohorts old enough (null: none yet). */
+  ltv: { months: number; cohorts: number; payers: number; per_payer_usd_micros: number | null }[]
+  /** Net revenue of the period's paid purchases per paying user. */
+  arppu: { payers: number; net_usd_micros: number; arppu_usd_micros: number | null }
   by_asa_campaign: AsaCampaign[]
   trials: { started: number; converted: number; pending: number; conversion_rate: number | null }
   by_currency: {
@@ -192,6 +200,10 @@ export interface Stats {
     /** Renewals / (renewals + expirations). */
     renewal_rate: number | null
     monthly: SubscriptionMonth[]
+    /** Subscriptions giving access now that will not renew / are in a grace period / have a billing issue. */
+    auto_renew_off_now: number
+    in_grace_now: number
+    billing_issue_now: number
   }
   fx: { as_of: string | null; missing: string[]; overrides: Record<string, number> }
   /** The worker is recomputing the revenue aggregates: totals may be incomplete for a while. */
@@ -225,6 +237,10 @@ export interface IntegrationHealth {
 
 /** `admin_overview`: ledger counters for the Overview page. */
 export interface Overview {
+  /** Seconds since the ledger worker last ran (null before its first run). */
+  worker_age_secs: number | null
+  /** Older than this: the worker has stopped (`/healthz` answers 503). */
+  worker_stale_after_secs: number
   total: number
   by_status: Record<string, number>
   /** Rows the worker still has to process, soonest retry first (at most 200). */
@@ -247,6 +263,8 @@ export const SECRET_NAMES: [string, string][] = [
   ...STORE_SECRETS.map((s): [string, string] => [s.name, s.label]),
   ["spacetime_token", "Token of the identity the game database trusts"],
   ["webhook_secret", "HMAC key for webhook delivery"],
+  ["client_auth_secret", "Key the game's backend signs player tokens with (Client requests: signed)"],
+  ["response_signing_key", "Ed25519 key the server signs /entitlements and /restore answers with"],
   ["appsflyer_s2s_key", "AppsFlyer S2S key"],
   ["ga4_api_secret", "GA4 Measurement Protocol API secret"],
   ["tenjin_sdk_key", "Tenjin SDK key"],

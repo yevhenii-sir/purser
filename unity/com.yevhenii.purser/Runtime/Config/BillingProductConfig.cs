@@ -60,6 +60,11 @@ namespace Purser
                  "panel's config.")]
         public string fallbackPeriod;
 
+        [Tooltip("Access levels the product unlocks (e.g. premium, no_ads), as set for it on the server. The server " +
+                 "reports them in the customer info; the Editor's local purchases (editorMode = SkipServer) grant them " +
+                 "from here. Comes with the admin panel's config.")]
+        public string[] access = new string[0];
+
         public BillingProductConfig() { }
 
         public BillingProductConfig(string id, BillingProductType type, params StoreProductId[] storeIds)
@@ -83,6 +88,17 @@ namespace Purser
             fallbackPeriod = BillingPeriods.Normalize(period);
             return this;
         }
+
+        /// <summary>Sets the access levels the product unlocks (fluent, for configs built in code).</summary>
+        public BillingProductConfig WithAccess(params string[] levels)
+        {
+            access = (levels ?? new string[0]).Where(l => !string.IsNullOrWhiteSpace(l)).Select(l => l.Trim()).Distinct().ToArray();
+            return this;
+        }
+
+        /// <summary>The non-empty, distinct access levels of <see cref="access"/>.</summary>
+        public IReadOnlyList<string> AccessLevels() =>
+            (access ?? new string[0]).Where(l => !string.IsNullOrWhiteSpace(l)).Select(l => l.Trim()).Distinct().ToList();
 
         /// <summary>True when a valid fallback subscription period is set.</summary>
         public bool HasFallbackPeriod => BillingPeriods.Normalize(fallbackPeriod).Length > 0;

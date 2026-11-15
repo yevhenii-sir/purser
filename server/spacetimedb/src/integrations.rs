@@ -180,7 +180,7 @@ pub(crate) fn load_attribution(tx: &ReducerContext, app_id: &str, user_id: &str)
     tx.db
         .user_attribution()
         .key()
-        .find(&attribution_key(app_id, user_id))
+        .find(attribution_key(app_id, user_id))
         .and_then(|r| serde_json::from_str(&r.attribution_json).ok())
         .unwrap_or_default()
 }
@@ -203,6 +203,7 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         attribution: load_attribution(tx, &p.app_id, &p.user_id),
         country: p.country.clone(),
         commission_percent: crate::revenue::commission(tx).percent_for_period(&p.app_id, crate::revenue::period_facts(tx, p).after_first_year),
+        previous_product_id: String::new(),
     }
 }
 
@@ -253,6 +254,14 @@ pub fn enqueue(tx: &ReducerContext, p: &Purchase, kind: &str) {
     enqueue_event(tx, &app, &p.id, &event, None);
 }
 
+/// `product_change`: subscription `p` replaced one of `previous_product_id`.
+pub fn enqueue_change(tx: &ReducerContext, p: &Purchase, previous_product_id: &str) {
+    let Some(app) = tx.db.game_app().app_id().find(&p.app_id) else { return };
+    let mut event = out_event(tx, &app, p, event_kind::PRODUCT_CHANGE);
+    event.previous_product_id = previous_product_id.to_string();
+    enqueue_event(tx, &app, &p.id, &event, None);
+}
+
 /// Queues an already built event; `only` limits it to one integration (test events).
 pub fn enqueue_event(tx: &ReducerContext, app: &GameApp, purchase_id: &str, event: &OutEvent, only: Option<&str>) -> usize {
     let json = serde_json::to_string(event).unwrap_or_default();
@@ -279,7 +288,7 @@ pub fn enqueue_event(tx: &ReducerContext, app: &GameApp, purchase_id: &str, even
 /// OAuth token fetched beforehand for integrations that need one (Cloud Storage).
 fn build_call(tx: &TxContext, row: &IntegrationOutbox, event: &OutEvent, access_token: &str) -> Result<Built, String> {
     let app = config::find_app(tx, &row.app_id).ok_or("app is not configured")?;
-    let integration = tx.db.integration().key().find(&integration_key(&row.app_id, &row.kind));
+    let integration = tx.db.integration().key().find(integration_key(&row.app_id, &row.kind));
     let Some(integration) = integration.filter(|i| i.enabled) else {
         return Ok(Built::Skip(format!("{} integration is disabled", row.kind)));
     };

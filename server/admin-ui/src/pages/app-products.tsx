@@ -56,6 +56,9 @@ function storeIdsOf(r: Row, apps: GameApp[]): Record<string, string> {
 
 type Listing = { title: string; description: string; period: string; apple_group: string }
 
+/** The access levels of a product (the same on every build; the first build that has them). */
+const accessOfRow = (r: Row) => Object.values(r.by).map((p) => p?.access || "").find(Boolean) || ""
+
 /** The store listing of a product: each field from the first build that has it set. */
 function listingOfRow(r: Row): Listing {
   const ps = Object.values(r.by).filter((p): p is Product => !!p)
@@ -109,6 +112,7 @@ export function AppProductsTab({ data, go }: TabProps) {
       return {
         product_id: r.product_id, kind: r.kind, store_ids: storeIdsOf(r, g.apps),
         price_micros: priced ? Number(priced.price_micros) : 0, currency: priced?.currency || "", period: listingOfRow(r).period,
+        access: accessOfRow(r).split(",").filter(Boolean),
       }
     })
     const text = toUnityConfig(await publicRoute(), g.apps.map((a) => ({ store: storeOf(a).id, app_id: a.app_id })), products)
@@ -176,6 +180,7 @@ export function AppProductsTab({ data, go }: TabProps) {
             columns={[
               { title: "Product", cell: (r) => <Mono>{r.product_id}</Mono> },
               { title: "Type", cell: (r) => r.kind },
+              { title: "Access", cell: (r) => accessOfRow(r) ? <span className="text-xs">{accessOfRow(r).split(",").join(", ")}</span> : <span className="text-muted-foreground">—</span> },
               ...g.apps.map((a) => ({
                 title: buildLabel(a),
                 cell: (r: Row) => {
@@ -262,6 +267,7 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
   const setOwnOf = (appId: string, patch: Partial<{ price: string; currency: string }>) => setOwn((o) => ({ ...o, [appId]: { ...o[appId], ...patch } }))
   const [listing, setListing] = useState<Listing>(() => (row ? listingOfRow(row) : { title: "", description: "", period: "", apple_group: "" }))
   const setL = (patch: Partial<Listing>) => setListing((l) => ({ ...l, ...patch }))
+  const [access, setAccess] = useState(() => (row ? accessOfRow(row).split(",").join(", ") : ""))
   const [on, setOn] = useState<Record<string, boolean>>(() => Object.fromEntries(apps.map((a) => [a.app_id, row ? !!row.by[a.app_id] : true])))
   /** Store id per build where it differs from the product id (Stripe Price ids, reverse-domain App Store ids). */
   const [storeIds, setStoreIds] = useState<Record<string, string>>(() =>
@@ -284,7 +290,7 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
       return { price_micros: Math.round(Number(p || 0) * 1e6), currency: ((o?.price.trim() && o.currency.trim()) || currency).trim().toUpperCase() }
     }
     const items = apps.filter((a) => on[a.app_id]).map((a) => ({
-      app_id: a.app_id, product_id: storeIdOf(a), catalog_id: id, kind, ...priceOf(a),
+      app_id: a.app_id, product_id: storeIdOf(a), catalog_id: id, kind, ...priceOf(a), access: kind === "consumable" ? "" : access,
       // Sent even when empty: clearing a field here clears it on every build.
       title: listing.title.trim(), description: listing.description.trim(),
       ...(kind === "subscription" ? { period: listing.period, apple_group: listing.apple_group.trim() } : {}),
@@ -316,6 +322,11 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
               <SelectContent>{KINDS.map((k) => <SelectItem key={k} value={k}>{k}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
+          {kind !== "consumable" && (
+            <Field label="Access levels" className="sm:col-span-2" hint="What the product unlocks, comma-separated (premium, no_ads). The game checks a level instead of product ids, so a monthly, a yearly and a lifetime product can all unlock premium.">
+              <Input className="font-mono text-xs" value={access} onChange={(e) => setAccess(e.target.value)} placeholder="e.g. premium" />
+            </Field>
+          )}
           <Field label="Price" hint="For every build without its own price below."><Input type="number" step="0.01" min="0" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
           <Field label="Currency (ISO)" hint="USD, EUR, …"><Input value={currency} maxLength={3} onChange={(e) => setCurrency(e.target.value)} /></Field>
           <div className="space-y-2 border-t pt-4 sm:col-span-2">
@@ -484,7 +495,7 @@ interface UnityImportProps {
 function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImportProps) {
   const [text, setText] = useState("")
   const [error, setError] = useState<string | null>(null)
-  const [parsed, setParsed] = useState<{ rows: CatalogRow[]; storeIds: Record<string, Record<string, string>>; unknown: UnityBuild[] } | null>(null)
+  const [parsed, setParsed] = useState<{ rows: CatalogRow[]; storeIds: Record<string, Record<string, string>>; access: Record<string, string[]>; unknown: UnityBuild[] } | null>(null)
   const [picked, setPicked] = useState<PickedProduct[]>([])
   const onPick = useCallback((p: PickedProduct[]) => setPicked(p), [])
   /** The app's product of a build: by catalog id, else by the build's store id. */
@@ -507,7 +518,7 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
         }
       })
       const unknown = c.builds.filter((b) => !apps.some((a) => a.app_id === b.app_id && storeOf(a).id === b.store))
-      setParsed({ rows, storeIds: Object.fromEntries(c.products.map((u) => [u.product_id, u.store_ids])), unknown })
+      setParsed({ rows, storeIds: Object.fromEntries(c.products.map((u) => [u.product_id, u.store_ids])), access: Object.fromEntries(c.products.map((u) => [u.product_id, u.access])), unknown })
       setError(null)
     } catch (e) {
       setError(errorText(e))
@@ -526,6 +537,8 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
           : { price_micros: p.price_micros, currency: p.currency }),
         // Same for the period: the Unity fallback period only where the server has none.
         ...(p.period && !had?.period ? { period: p.period } : {}),
+        // Access levels of the config, where the server has none yet.
+        ...(parsed.access[p.product_id]?.length && !had?.access ? { access: parsed.access[p.product_id].join(",") } : {}),
       }
     }))
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Saved ${picked.length} product(s)`)

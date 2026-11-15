@@ -197,13 +197,19 @@ Admins who are not the owner cannot read private tables with `/sql`. The admin p
 
 Every change is recorded in `admin_audit`: who, the reducer, the target and a short detail with secret-looking fields hidden. Rows are kept 180 days, at most 10 000.
 
-Other admin reducers: `admin_set_setting("public_base_url", url)` (also `store_commission_percent`, `store_commission_after_year_percent`, `store_commission_by_app` for the proceeds estimate, see [docs/analytics.md](../docs/analytics.md), and `retention_days`: player profiles, attribution ids of players without an active subscription and paywall view counts are deleted this many days after their last change, default 730; the ledger and revenue are kept), `admin_delete_game_app`, `admin_delete_product`, `admin_delete_credential`, `admin_upsert_admin`, `admin_remove_admin`, `admin_requeue_purchase(id)` (retry now), `admin_grant_manual(json)` (manual grant: compensations and promos; goes through the same ledger and delivery, not sent to GA4), `admin_revoke_purchase(purchase_id, reason)` (procedure: revokes a purchase the player owns through the ledger; the game receives `revoke` with `reason = admin`; idempotent).
+Other admin reducers: `admin_set_setting("public_base_url", url)` (also `store_commission_percent`, `store_commission_after_year_percent`, `store_commission_by_app` for the proceeds estimate, see [docs/analytics.md](../docs/analytics.md), and `retention_days`: player profiles, attribution ids of players without an active subscription and paywall view counts are deleted this many days after their last change, default 730; the ledger and revenue are kept), `admin_delete_game_app`, `admin_delete_product`, `admin_delete_credential`, `admin_upsert_admin`, `admin_remove_admin`, `admin_requeue_purchase(id)` (retry now), `admin_grant_manual(json)` (manual grant: compensations and promos; goes through the same ledger and delivery, not sent to GA4), `admin_revoke_purchase(purchase_id, reason)` (procedure: revokes a purchase the player owns through the ledger; the game receives `revoke` with `reason = admin`; idempotent), `admin_transfer_purchase(purchase_id, new_user_id)` (procedure, Support: moves an owned non-consumable or subscription to another player, `revoke` with `transfer` then `grant`), `admin_set_transfer_policy(game_key, json)` / `admin_transfer_policy(game_key)` (how restores move purchases between player ids: `{"mode": "always" | "cooldown" | "never", "cooldown_days", "max_transfers"}`; a refused restore answers `[ERR_TRANSFER_LIMIT]`), `admin_export_player(game_key, user_id)` (procedure, Support: everything stored about a player of an app, for a GDPR access request) and `admin_erase_player(game_key, user_id)` (Support: deletes the profile, attributes and attribution ids; purchases stay for revenue under `erased:<hash>`, also in their history and the audit log).
 
 **An admin revoke is not a refund.** Revenue and integrations stay as they are, because the store kept the money; the purchase is marked in the `admin_revoke` table. If the store refunds it later, the refund is counted then (and sent to integrations) without a second `revoke` to the game. A store purchase that the store still reports as active comes back when the player restores it: the store stays the source of truth for paid products.
 
 ## HTTP API
 
 Base: `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route`
+
+Client routes (`/verify/*`, `/restore`, `/entitlements`, `/attributes`, `/paywall`, `/paywall/event`, `/offers/apple/sign`, `/checkout/*`) go through one guard (`client_guard.rs`, rules in `purser_core::client_api`):
+
+- **Player tokens.** A build with `client_auth = signed` refuses requests without `Authorization: Bearer <token>`: an HS256 JWT `{"sub": <user_id>, "exp": <unix seconds>, "aud": <game_key>}` (`aud` optional) signed by the game's backend with the build's `client_auth_secret` (at least 32 characters; the Delivery tab creates one). The answer is `401 {"status": "error", "code": "ERR_CLIENT_AUTH"}`. An open build (the default) takes any `user_id`, so player ids must be hard to guess, and `/attributes` refuses personal keys (`email`, `phone`, `name`, `first_name`, `last_name`) there.
+- **Rate limits.** Token buckets per player of a build and, for routes that call the stores, per build (`client_api::limits`: `/verify` 30 a minute per player and 600 per build, `/restore` 6 and 120, `/entitlements` and `/paywall` 60 per player, ...). Over a limit: `429 {"code": "ERR_RATE_LIMITED"}` with `Retry-After: <seconds>`. Buckets live in `rate_bucket`; the worker deletes idle ones.
+- **Signed answers.** With a `response_signing_key` (Ed25519 seed, 32 bytes base64; the Delivery tab creates one in the browser), `/entitlements` and `/restore` answers carry `X-Purser-Signature: <base64 signature of the exact body>`; `admin_response_public_key(app_id)` shows the public key games check it with.
 
 ### `POST /verify/<store>`: `/verify/google`, `/verify/apple`, `/verify/amazon`, `/verify/steam`
 
@@ -245,13 +251,16 @@ Orders live in `steam_order` (`initiated` → `authorized` → `finalized`, or `
 
 ### `POST /entitlements`
 
-`{"app_id": "...", "user_id": "..."}` → active subscriptions and non-consumables across all apps with the same `game_key`, keyed by catalog product id (a product bought in any store of the app is the same entitlement):
+`{"app_id": "...", "user_id": "..."}` → what the player owns across all apps with the same `game_key`, keyed by catalog product id (a product bought in any store of the app is the same entitlement): the access levels the products unlock (the Products tab, `product.access`), the active subscriptions with their renewal state, the non-consumables. Only what gives access now is listed; an access level shows the purchase that lasts longest.
 
 ```json
-{"subscriptions": {"month_sub": 1793876523123}, "non_consumables": ["one_time_sub"], "server_time_ms": 1791188212478, "game_key": "...", "user_id": "..."}
+{"access": {"premium": {"product_id": "month_sub", "store": "google", "expires_at_ms": 1793876523123, "purchased_at_ms": 1791188212478,
+                        "will_renew": true, "in_grace": false, "billing_issue": false, "trial": false}},
+ "subscriptions": {"month_sub": {"product_id": "month_sub", "store": "google", "expires_at_ms": 1793876523123, "...": "the same fields"}},
+ "non_consumables": ["one_time_sub"], "server_time_ms": 1791188212478, "game_key": "...", "user_id": "..."}
 ```
 
-Replaces `adapty_is_purchased` / `adapty_get_subscription_expires_at_ms`.
+`expires_at_ms` is when access ends (the store's grace period after a failed renewal included; 0 = never); `renews_to` names a pending downgrade.
 
 ### `POST /restore`
 
@@ -295,13 +304,13 @@ Play Console → Monetization setup → Real-time developer notifications → Pu
 
 ### `POST /notify/apple`
 
-App Store Connect → App Information → App Store Server Notifications → **Version 2**, Production and Sandbox URL. The `signedPayload` must be signed by Apple (ES256, `x5c` chain up to Apple Root CA - G3); anything else is refused with 401. You can add `?secret=` and set `apple_notification_secret` as an extra check. Only `transactionId` is taken from `signedPayload`; the transaction is re-queried from Apple. You can test the setup with `POST /inApps/v1/notifications/test`. A `CONSUMPTION_REQUEST` (a player asked for a refund) is answered with `PUT /inApps/v2/transactions/consumption/{transactionId}` when the build's `apple_refund_mode` is on and the player consented (`attribution.refund_data_consent = "true"`).
+App Store Connect → App Information → App Store Server Notifications → **Version 2**, Production and Sandbox URL. The `signedPayload` must be signed by Apple (ES256, `x5c` chain up to Apple Root CA - G3); anything else is refused with 401. You can add `?secret=` and set `apple_notification_secret` as an extra check. Only `transactionId` is taken from `signedPayload`; the transaction is re-queried from Apple, an auto-renewable subscription with Get All Subscription Statuses (`GET /inApps/v1/subscriptions/{transactionId}`): its latest transaction (a renewal, an upgrade within the group) and renewal info (grace period, billing retry, auto-renew, a pending downgrade). `/verify/apple` does the same, so an old `transactionId` from the client still finds the current period. You can test the setup with `POST /inApps/v1/notifications/test`. A `CONSUMPTION_REQUEST` (a player asked for a refund) is answered with `PUT /inApps/v2/transactions/consumption/{transactionId}` when the build's `apple_refund_mode` is on and the player consented (`attribution.refund_data_consent = "true"`).
 
 ### `POST /notify/amazon?app=<app_id>`
 
 Amazon Developer Console → the app → **App Services → Real-Time Notifications** → endpoint URL (one per app, so `?app=` names the build). Amazon delivers through Amazon SNS: the module verifies the SNS signature (certificate from `https://sns.<region>.amazonaws.com/…pem`, cached for a day, SHA1 and SHA256 signatures) and rejects anything else with 401, as well as messages more than 6 hours old and, when the build pins one (`sns_topic_arn`), messages of another topic. The endpoint confirmation message is stored, and the next setup check shows its token: paste it into the console within 48 hours. Notifications only name a receipt: the module looks it up again with RVS and applies refunds (`*_CANCELLED`), renewals and expirations. Receipts the client has not verified yet are ignored.
 
-Without notifications, Amazon subscriptions are still re-checked by the worker shortly after their renewal date (`store_poll` table; backoff 1 h → 24 h, then dropped until the client verifies or restores again). An Amazon subscription keeps one receipt across renewals: a renewal updates `expires_at_ms` of its ledger row and the game gets `grant` again with the new expiry (no separate renewal revenue).
+Without notifications, Amazon subscriptions are still re-checked by the worker shortly after their renewal date (`store_poll` table; backoff 1 h → 24 h, then dropped until the client verifies or restores again). Google Play and App Store subscriptions are re-checked the same way when their access ends, so a lost notification never leaves a renewal ungranted or an ended subscription active; a Google Play grace period (the store reports no end for it) keeps access a day at a time, re-checked daily. An Amazon subscription keeps one receipt across renewals: a renewal updates `expires_at_ms` of its ledger row and the game gets `grant` again with the new expiry (no separate renewal revenue).
 
 ### `POST /checkout/xsolla`
 
@@ -335,9 +344,10 @@ Stripe webhooks of one build (an endpoint per build, its signing secret in `stri
 | Event | Effect |
 |---|---|
 | `checkout.session.completed`, `checkout.session.async_payment_succeeded` | grants a paid one-time purchase (transaction id = PaymentIntent id) or the first subscription period (transaction id = Subscription id; one call fetches the Subscription for the period end) |
-| `invoice.paid`, `invoice.payment_succeeded` | `subscription_create`: the first period (same row); `subscription_cycle`: a renewal (transaction id = Invoice id, original = Subscription id) |
-| `customer.subscription.updated` (to `canceled` / `unpaid` / `incomplete_expired`), `customer.subscription.deleted` | the newest period expires (`revoke` with `expire`) |
-| `charge.refunded` (full refunds only), `charge.dispute.created` | revokes the purchase or period and counts a refund; a subscription payment is found by its invoice (`charge.invoice`, or one `GET /v1/invoice_payments` call on newer API versions) |
+| `invoice.paid`, `invoice.payment_succeeded` | `subscription_create`: the first period (same row); `subscription_cycle`, `subscription_update`: a renewal or a plan change (transaction id = Invoice id, original = Subscription id); the product is the Price the invoice charges, and a period of another product ends the previous one (`revoke` with `replaced`) |
+| `customer.subscription.updated` (to `canceled` / `unpaid` / `incomplete_expired`), `customer.subscription.deleted` | the newest period expires (`revoke` with `expire`); an active one only updates `auto_renew_off` (`cancel_at_period_end`) |
+| `charge.refunded`, `charge.dispute.created` | a full refund or a dispute revokes the purchase or period and counts a refund; a partial refund keeps it and counts the refunded amount (`refunded_micros`); a subscription payment is found by its invoice (`charge.invoice`, or one `GET /v1/invoice_payments` call on newer API versions) |
+| `charge.dispute.closed` (`won`) | the disputed purchase is granted again (`grant` with `reinstated`) and its money counts again |
 
 Prices come from the event (minor units, zero- and three-decimal currencies handled); test-mode events (`livemode: false`) are sandbox purchases; the country is the customer's billing address. Retried and duplicate events are idempotent (the ledger id is the store transaction), and an event never makes a refunded or ended purchase active again. Events without our metadata (Payment Links, other integrations) are acknowledged and ignored.
 

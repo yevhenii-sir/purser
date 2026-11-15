@@ -39,10 +39,10 @@ use purser_core::{amazon, apple, consumption, sns};
 use purser_core::integrations::sanitize_attribution;
 use purser_core::google::{self, Rtdn};
 use purser_core::model::{environment, kind, status, store, StoreTx, TxState};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use spacetimedb::http::{handler, router, Body, HandlerContext, Request, Response, Router};
+use crate::client_guard::{self, ClientRequest};
 
 /// Max purchases per `/restore` call (each one is several store calls).
 const MAX_RESTORE_ITEMS: usize = 20;
@@ -72,9 +72,34 @@ impl From<web::Answer> for Outcome {
     }
 }
 
-fn parse_body<T: DeserializeOwned>(req: Request) -> Result<T, Outcome> {
-    web::json(req).map_err(Outcome::from)
+impl From<Outcome> for web::Answer {
+    fn from(o: Outcome) -> Self {
+        (o.http, o.body)
+    }
 }
+
+impl ClientRequest for VerifyRequest {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
+
+macro_rules! client_request {
+    ($($t:ty),*) => {$(
+        impl ClientRequest for $t {
+            fn app_id(&self) -> &str {
+                &self.app_id
+            }
+            fn user_id(&self) -> &str {
+                &self.user_id
+            }
+        }
+    )*};
+}
+client_request!(EntitlementsRequest, RestoreRequest, PaywallRequest, AttributesRequest, PaywallEventRequest);
 
 pub(crate) fn valid_user_id(u: &str) -> bool {
     !u.is_empty() && u.len() <= 128 && u.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
@@ -136,6 +161,9 @@ struct VerifyRequest {
     test_id: String,
     #[serde(default)]
     paywall_id: String,
+    /// The store offer the player bought (Google offer or base plan id, Apple promotional offer id).
+    #[serde(default)]
+    offer_id: String,
     /// Device the client runs on (shown on the admin page's player profile).
     #[serde(default)]
     client: ClientInfo,
@@ -159,10 +187,8 @@ fn likely_environment(tx: &TxContext, store_id: &str, order_id: &str) -> String 
     if order_id.is_empty() || !matches!(store_id, store::APPLE | store::AMAZON) {
         return String::new();
     }
-    tx.db.purchase().id().find(&purser_core::model::ledger_id(store_id, order_id)).map(|p| p.environment).unwrap_or_default()
+    tx.db.purchase().id().find(purser_core::model::ledger_id(store_id, order_id)).map(|p| p.environment).unwrap_or_default()
 }
-
-/// Remembers when clients last verified (and whether the store look-up worked).
 
 fn verify(ctx: &mut impl Ctx, store_name: &str, r: &VerifyRequest) -> Outcome {
     if !valid_user_id(&r.user_id) {
@@ -207,6 +233,8 @@ fn health_only(ctx: &mut impl Ctx, app_id: &str, fetched_ok: bool, o: Outcome) -
 }
 
 /// Outcome of the transaction that records a verified purchase.
+// A short-lived return value: boxing the large row would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 enum Recorded {
     ConsumedElsewhere,
     Refused(String),
@@ -269,7 +297,6 @@ fn verify_with(
         "is_sub": product.kind == kind::SUBSCRIPTION,
         "expires_date_ms": st.expires_at_ms,
         "environment": st.environment,
-        "token": if st.store == store::GOOGLE { r.purchase_token.clone() } else { st.transaction_id.clone() },
         // `client`: no game backend, the client grants the reward and then finishes the purchase
         // in the store (Google consume / Apple finishTransaction / Amazon notifyFulfillment).
         "delivery": if delivery::grants_on_client(&app.delivery) { "client" } else { "server" },
@@ -287,6 +314,7 @@ fn verify_with(
                 price_micros: r.price_micros,
                 currency: r.currency.clone(),
                 paywall: r.paywall(),
+                offer_id: if purser_core::paywall::is_valid_id(&r.offer_id) { r.offer_id.clone() } else { String::new() },
                 ..ledger::Claim::user(&r.user_id, &r.app_instance_id)
             };
             let attribution = sanitize_attribution(&r.attribution);
@@ -351,11 +379,7 @@ fn verify_store(ctx: &mut HandlerContext, req: Request) -> Response {
     if !known {
         return Outcome::status(404, "error", format!("no verification route for store '{store_name}'")).into_response();
     }
-    match parse_body::<VerifyRequest>(req) {
-        Ok(r) => verify(ctx, &store_name, &r),
-        Err(o) => o,
-    }
-    .into_response()
+    client_guard::run(ctx, req, "verify", false, |ctx, r: &VerifyRequest| verify(ctx, &store_name, r).into())
 }
 
 // ---------------------------------------------------------------------
@@ -390,10 +414,7 @@ fn get_entitlements(ctx: &mut impl Ctx, r: &EntitlementsRequest) -> Result<Outco
 
 #[handler]
 fn entitlements(ctx: &mut HandlerContext, req: Request) -> Response {
-    parse_body::<EntitlementsRequest>(req)
-        .and_then(|r| get_entitlements(ctx, &r))
-        .unwrap_or_else(|o| o)
-        .into_response()
+    client_guard::run(ctx, req, "entitlements", true, |ctx, r: &EntitlementsRequest| get_entitlements(ctx, r).unwrap_or_else(|o| o).into())
 }
 
 #[derive(Deserialize)]
@@ -475,6 +496,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
             variant_id: String::new(),
             test_id: String::new(),
             paywall_id: String::new(),
+            offer_id: String::new(),
             client: ClientInfo::default(),
         };
         let o = verify_with(ctx, &app, product, &mut auth, &environment, &v);
@@ -491,10 +513,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
 
 #[handler]
 fn restore(ctx: &mut HandlerContext, req: Request) -> Response {
-    parse_body::<RestoreRequest>(req)
-        .and_then(|r| restore_purchases(ctx, &r))
-        .unwrap_or_else(|o| o)
-        .into_response()
+    client_guard::run(ctx, req, "restore", true, |ctx, r: &RestoreRequest| restore_purchases(ctx, r).unwrap_or_else(|o| o).into())
 }
 
 // ---------------------------------------------------------------------
@@ -531,10 +550,7 @@ fn get_paywall(ctx: &mut impl Ctx, r: &PaywallRequest) -> Result<Outcome, Outcom
 
 #[handler]
 fn paywall(ctx: &mut HandlerContext, req: Request) -> Response {
-    parse_body::<PaywallRequest>(req)
-        .and_then(|r| get_paywall(ctx, &r))
-        .unwrap_or_else(|o| o)
-        .into_response()
+    client_guard::run(ctx, req, "paywall", false, |ctx, r: &PaywallRequest| get_paywall(ctx, r).unwrap_or_else(|o| o).into())
 }
 
 // ---------------------------------------------------------------------
@@ -558,6 +574,14 @@ fn set_attributes(ctx: &mut impl Ctx, r: &AttributesRequest) -> Result<Outcome, 
     }
     ctx.tx(|tx| {
         let app = enabled_app(tx, &r.app_id)?;
+        if app.client_auth != purser_core::client_api::mode::SIGNED {
+            let personal = r.attributes.iter().find(|(k, v)| {
+                purser_core::client_api::PERSONAL_ATTRIBUTES.contains(&k.as_str()) && !(v.is_null() || v.as_str() == Some(""))
+            });
+            if let Some((k, _)) = personal {
+                return Err(Outcome::status(403, "forbidden", format!("[ERR_PERSONAL_ATTRIBUTE] '{k}' needs player tokens (client_auth = signed)")));
+            }
+        }
         players::touch(tx, &app.app_id, &r.user_id, &r.client);
         players::set_attributes(tx, &app.app_id, &r.user_id, &r.attributes).map_err(|e| Outcome::status(400, "error", e))
     })
@@ -566,10 +590,7 @@ fn set_attributes(ctx: &mut impl Ctx, r: &AttributesRequest) -> Result<Outcome, 
 
 #[handler]
 fn player_attributes(ctx: &mut HandlerContext, req: Request) -> Response {
-    parse_body::<AttributesRequest>(req)
-        .and_then(|r| set_attributes(ctx, &r))
-        .unwrap_or_else(|o| o)
-        .into_response()
+    client_guard::run(ctx, req, "attributes", false, |ctx, r: &AttributesRequest| set_attributes(ctx, r).unwrap_or_else(|o| o).into())
 }
 
 fn default_paywall_event() -> String {
@@ -603,10 +624,7 @@ fn paywall_event_outcome(ctx: &mut impl Ctx, r: &PaywallEventRequest) -> Result<
 
 #[handler]
 fn paywall_event(ctx: &mut HandlerContext, req: Request) -> Response {
-    parse_body::<PaywallEventRequest>(req)
-        .and_then(|r| paywall_event_outcome(ctx, &r))
-        .unwrap_or_else(|o| o)
-        .into_response()
+    client_guard::run(ctx, req, "paywall_event", false, |ctx, r: &PaywallEventRequest| paywall_event_outcome(ctx, r).unwrap_or_else(|o| o).into())
 }
 
 // ---------------------------------------------------------------------
@@ -614,6 +632,8 @@ fn paywall_event(ctx: &mut HandlerContext, req: Request) -> Response {
 // ---------------------------------------------------------------------
 
 /// Outcome of the transaction that applies an active store transaction from a notification.
+// A short-lived return value: boxing the large row would only add an allocation.
+#[allow(clippy::large_enum_variant)]
 enum Synced {
     UnknownProduct,
     ConsumedElsewhere,
@@ -770,7 +790,13 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         Rtdn::Subscription { token, subscription_id, notification_type, .. } => {
             let product = product_or_subscription(&app, product, &subscription_id, kind::SUBSCRIPTION);
             match stores::google_fetch(ctx, &app, &product, &token, &mut auth) {
-                Ok(st) => sync_store_tx(ctx, &app, st, &format!("rtdn subscription type={notification_type}")),
+                Ok(mut st) => {
+                    // The API reports a revoked subscription as expired: it was refunded.
+                    if notification_type == google::subscription_notification::REVOKED {
+                        st.state = TxState::Revoked;
+                    }
+                    sync_store_tx(ctx, &app, st, &format!("rtdn subscription type={notification_type}"))
+                }
                 Err(e) => notification_fetch_error(e),
             }
         }
@@ -793,7 +819,7 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
                     .db
                     .purchase()
                     .id()
-                    .find(&purser_core::model::ledger_id(store::GOOGLE, &order_id))
+                    .find(purser_core::model::ledger_id(store::GOOGLE, &order_id))
                     .or_else(|| {
                         tx.db
                             .purchase()
@@ -840,7 +866,7 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     let checked = ctx.tx(|tx| {
         let app = config::find_app(tx, &n.bundle_id).filter(|a| config::app_store(a).id == store::APPLE)?;
         let expected = config::secret(tx, &app, secret_name::APPLE_NOTIFICATION_SECRET).map(|s| s.value);
-        let secret_ok = expected.as_deref().map_or(true, |exp| web::secret_matches(exp, &secret));
+        let secret_ok = expected.as_deref().is_none_or(|exp| web::secret_matches(exp, &secret));
         let rejected = match (&signature, secret_ok) {
             (Some(e), _) => Some(format!("not signed by Apple: {e}")),
             (None, false) => Some(WRONG_SECRET.to_string()),
@@ -878,7 +904,7 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     let outcome = sync_store_tx(ctx, &app, st, source.trim());
     if let Some(st) = related {
         let queued = ctx.tx(|tx| {
-            ledger::find_related(tx, &st).map(|p| crate::consumption::enqueue(tx, &app, &p.id, &st.environment))
+            ledger::find_related(tx, &st).map(|p| crate::consumption::enqueue(tx, &app, &p.id, st.environment))
         });
         if queued.is_none() {
             log::info!("{source}: {} is not in the ledger, refund request not answered", st.ledger_id());
@@ -1030,14 +1056,7 @@ fn dispatch_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
 
 #[handler]
 fn offers_apple_sign(ctx: &mut HandlerContext, req: Request) -> Response {
-    match parse_body::<crate::offers::AppleOfferRequest>(req) {
-        Ok(r) => {
-            let (http, body) = crate::offers::sign_apple_offer(ctx, &r);
-            Outcome::new(http, body)
-        }
-        Err(o) => o,
-    }
-    .into_response()
+    client_guard::run(ctx, req, "offers", false, |ctx, r: &crate::offers::AppleOfferRequest| crate::offers::sign_apple_offer(ctx, r))
 }
 
 /// Admin UI (single static page). It talks to `/sql`, `/call/admin_*` and `/logs` of this database
@@ -1063,19 +1082,25 @@ fn admin_page(_ctx: &mut HandlerContext, _req: Request) -> Response {
 /// `POST /checkout/steam`: the server starts a Steam purchase with its publisher key.
 #[handler]
 fn checkout_steam(ctx: &mut HandlerContext, req: Request) -> Response {
-    match parse_body::<crate::steam::CheckoutRequest>(req) {
-        Ok(r) => {
-            let (http, body) = crate::steam::checkout(ctx, &r);
-            Outcome::new(http, body)
-        }
-        Err(o) => o,
-    }
-    .into_response()
+    client_guard::run(ctx, req, "checkout", false, |ctx, r: &crate::steam::CheckoutRequest| crate::steam::checkout(ctx, r))
 }
 
 #[handler]
-fn healthz(_ctx: &mut HandlerContext, _req: Request) -> Response {
-    Outcome::new(200, json!({ "status": "healthy", "version": env!("CARGO_PKG_VERSION") })).into_response()
+fn healthz(ctx: &mut HandlerContext, _req: Request) -> Response {
+    health_report(ctx).into_response()
+}
+
+/// `/healthz`: the database answers and the ledger worker runs (503 when it has not run for
+/// `settings::WORKER_STALE_MICROS`; right after a publish it has not run yet: `starting`).
+fn health_report(ctx: &mut impl Ctx) -> Outcome {
+    let age = ctx.tx(|tx| crate::settings::worker_age_secs(tx));
+    let stale = crate::settings::WORKER_STALE_MICROS / 1_000_000;
+    let (http, status) = match age {
+        None => (200, "starting"),
+        Some(a) if a > stale => (503, "worker_stopped"),
+        Some(_) => (200, "healthy"),
+    };
+    Outcome::new(http, json!({ "status": status, "version": env!("CARGO_PKG_VERSION"), "worker_age_secs": age }))
 }
 
 #[router]

@@ -12,15 +12,16 @@ Purser calls one grant and one revoke reducer of the game's database, each takin
 
 ## Moving the ledger to another server
 
-The ledger moves together with the database, so the new server knows every granted purchase and `/entitlements` works immediately, without `/restore`:
+The whole database moves (`migrate.py` = a `backup.py` backup of the old database restored into the new one), so the new server knows every granted purchase, its configuration, admins and keys, and `/entitlements` works immediately, without `/restore`:
 
-1. Publish the module on the new server, allow hosts and upload the configuration (`seed.py --server <new>`).
-2. Copy the ledger. Import is available only to the database owner (`admin_import_purchases`); existing rows are skipped:
+1. Publish the same purser version on the new server and allow its hosts.
+2. Copy the database (as the owner of both; every copied table of the new database is replaced):
    ```bash
    python migrate.py --from maincloud --from-db <your-billing-db> --to myserver --to-db new-billing --dry-run
    python migrate.py --from maincloud --from-db <your-billing-db> --to myserver --to-db new-billing
    ```
-3. Switch clients (`serverBaseUrl`) and store notifications (RTDN, App Store Notifications) to the new address.
-4. Run `migrate.py` once more: it picks up purchases the old server recorded after the first copy.
+3. Switch clients (`serverBaseUrl`) and store notifications (RTDN, App Store Notifications) to the new address right away: purchases the old server records after the copy stay there (copy again before switching to start over).
 
 Unfinished rows (`next_attempt_at_micros > 0`) are completed by the new server's worker, but while the old server is still running it may complete them too. That's safe as long as the game is idempotent on `transaction_id`, and for consume “already consumed” already counts as success.
+
+To bring purchases from another billing system, the owner can call `admin_import_purchases` with ledger rows (at most 500 per call; existing rows are skipped).

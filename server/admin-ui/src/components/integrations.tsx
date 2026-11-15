@@ -25,7 +25,7 @@ const REVENUE_MODES = [
 ]
 /** Integrations that get every amount in the event instead of one revenue figure. */
 const ALL_AMOUNTS: Kind[] = ["webhook", "gcs"]
-const EVENT_KINDS = ["purchase", "subscription_start", "renewal", "refund", "expire"]
+const EVENT_KINDS = ["purchase", "subscription_start", "renewal", "refund", "expire", "cancel", "uncancel", "billing_issue", "billing_recovered", "product_change"]
 const AF_EVENTS: [string, string][] = [["purchase", "af_purchase"], ["subscription_start", "af_subscribe"], ["renewal", "subscription_renew"], ["refund", "refund"], ["expire", "(off)"]]
 const ANY = "__all__"
 

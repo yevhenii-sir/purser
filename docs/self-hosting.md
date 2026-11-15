@@ -92,4 +92,19 @@ The module cannot call private addresses (`127.0.0.1`, `10.x`, …). Deliveries 
 
 ## Upgrading
 
-Publish the new `purser.wasm` to the same database name. Don't pass `--delete-data` / `-c` (it deletes the ledger) unless the release notes say the release needs it. New tables and indexes are created automatically.
+Publish the new `purser.wasm` to the same database name. New tables and indexes are created automatically.
+
+A release whose notes say it needs `--delete-data` changes tables in a way SpacetimeDB cannot migrate in place. Keep the data with a backup around the publish (from `server/`, as the database owner):
+
+```bash
+python backup.py backup  --server maincloud --database <your-billing-db> --dir backups/before-upgrade
+spacetime publish --delete-data -b purser.wasm <your-billing-db>
+python backup.py restore --server maincloud --database <your-billing-db> --dir backups/before-upgrade
+```
+
+`backup.py` reads every table through the owner's `/sql` (no caches, queued integration events or worker schedules) and writes it back into the new database. The backup must come from the same purser version as the database it is restored into; when a release changes a table, its notes say how to carry the data over.
+
+## Backups and monitoring
+
+- **Backups:** `python backup.py backup --dir backups/$(date +%F)` from a scheduled job (cron, a CI schedule) with the owner token in `PURSER_TOKEN`. Keep the files private: they hold the store keys and secrets in `credential`.
+- **Monitoring:** watch `GET <route>/healthz` with any uptime monitor. It answers `200 {"status": "healthy"}` while the ledger worker runs, `503 {"status": "worker_stopped"}` when it has not run for 5 minutes (purchases, renewals and alerts wait until it runs again; the admin page's Overview offers to restart it), `starting` right after a publish.

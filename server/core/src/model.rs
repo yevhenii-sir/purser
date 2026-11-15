@@ -110,6 +110,18 @@ pub struct StoreTx {
     /// This transaction is a free-trial period (Google offer phase `freeTrial`, Apple
     /// `offerDiscountType` `FREE_TRIAL`): nothing was paid.
     pub trial: bool,
+    /// Subscriptions: the renewal payment failed but the store keeps access until then (Apple
+    /// billing grace period, Google grace period); 0 = not in a grace period. Access lasts until
+    /// [`StoreTx::access_until_ms`].
+    pub grace_until_ms: i64,
+    /// Subscriptions: the store could not charge the renewal (grace period, Apple billing retry,
+    /// Google account hold).
+    pub billing_issue: bool,
+    /// Subscriptions: the player turned auto-renew off; the subscription ends at `expires_at_ms`.
+    pub auto_renew_off: bool,
+    /// Subscriptions: the product the next renewal switches to (a downgrade waiting for the end of
+    /// the period, Apple `autoRenewProductId`); empty when it renews the same product or unknown.
+    pub renew_product_id: String,
 }
 
 impl StoreTx {
@@ -143,8 +155,58 @@ impl StoreTx {
     pub fn ledger_id(&self) -> String {
         ledger_id(self.store, &self.transaction_id)
     }
+
+    /// When access ends: the paid period, or the grace period after it; 0 = never.
+    pub fn access_until_ms(&self) -> i64 {
+        access_until_ms(self.expires_at_ms, self.grace_until_ms)
+    }
+}
+
+/// When access to a purchase ends: `expires_at_ms` (paid period, 0 = never) or the grace period
+/// after it, whichever is later.
+pub fn access_until_ms(expires_at_ms: i64, grace_until_ms: i64) -> i64 {
+    if expires_at_ms == 0 {
+        0
+    } else {
+        expires_at_ms.max(grace_until_ms)
+    }
+}
+
+/// A newer active transaction of a subscription (same Apple / Steam / web original transaction, or
+/// a Google purchase whose `linkedPurchaseToken` names the older one) replaces an older owned row
+/// of another product that would still give access: an upgrade or crossgrade. The older row ends
+/// now. Rows of the same product are earlier periods of it (renewals) and stay as they are; a row
+/// whose access already ended has nothing to take away.
+pub fn replaces(new_product_id: &str, old_product_id: &str, old_access_until_ms: i64, now_ms: i64) -> bool {
+    new_product_id != old_product_id && (old_access_until_ms == 0 || old_access_until_ms > now_ms)
 }
 
 pub fn ledger_id(store: &str, transaction_id: &str) -> String {
     format!("{store}:{transaction_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_lasts_through_the_grace_period() {
+        assert_eq!(access_until_ms(0, 0), 0);
+        assert_eq!(access_until_ms(1_000, 0), 1_000);
+        assert_eq!(access_until_ms(1_000, 5_000), 5_000);
+        assert_eq!(access_until_ms(9_000, 5_000), 9_000);
+        // A purchase that never expires stays unlimited whatever the grace field says.
+        assert_eq!(access_until_ms(0, 5_000), 0);
+    }
+
+    #[test]
+    fn an_upgrade_replaces_the_other_product_only_while_it_gives_access() {
+        let now = 10_000;
+        assert!(replaces("premium", "basic", 20_000, now));
+        assert!(replaces("premium", "basic", 0, now));
+        // A renewal of the same product, or a product whose access already ended.
+        assert!(!replaces("basic", "basic", 20_000, now));
+        assert!(!replaces("premium", "basic", 9_000, now));
+        assert!(!replaces("premium", "basic", now, now));
+    }
 }

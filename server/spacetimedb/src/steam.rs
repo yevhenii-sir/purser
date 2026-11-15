@@ -292,7 +292,7 @@ pub fn admin_upsert_steam_items(ctx: &ReducerContext, json: String) -> Result<()
             .db
             .product()
             .key()
-            .find(&crate::product_key(&i.app_id, &i.product_id))
+            .find(crate::product_key(&i.app_id, &i.product_id))
             .ok_or_else(|| format!("[ERR_BAD_PRODUCT] unknown product {}:{}", i.app_id, i.product_id))?;
         let prices = s::parse_prices(&i.prices.map(|v| v.to_string()).unwrap_or_default())
             .map_err(|e| format!("[ERR_BAD_PRODUCT] {}: {e}", i.product_id))?;
@@ -380,6 +380,15 @@ fn update_order(ctx: &mut impl Ctx, order_id: u64, f: impl Fn(&mut SteamOrder, i
 // ---------------------------------------------------------------------
 // Checkout
 // ---------------------------------------------------------------------
+
+impl crate::client_guard::ClientRequest for CheckoutRequest {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
 
 #[derive(Deserialize)]
 pub struct CheckoutRequest {
@@ -848,7 +857,7 @@ pub fn run_due(ctx: &mut impl Ctx, due: Due, budget: Budget) {
     }
     poll_reports(ctx, due.reports, budget);
     if due.prune {
-        ctx.tx(|tx| prune_orders(tx));
+        ctx.tx(prune_orders);
     }
 }
 
@@ -895,7 +904,7 @@ fn recheck_order(ctx: &mut impl Ctx, order_id: u64, budget: Budget) {
         let o = tx.db.steam_order().order_id().find(order_id)?;
         let app = config::find_app(tx, &o.app_id)?;
         let product = config::find_product(tx, &o.app_id, &o.product_id)?;
-        let recorded = tx.db.purchase().id().find(&order_ledger_id(&o)).is_some();
+        let recorded = tx.db.purchase().id().find(order_ledger_id(&o)).is_some();
         Some((o, app, product, recorded))
     });
     let Some((order, app, product, recorded)) = loaded else {
@@ -970,7 +979,7 @@ fn close_order(ctx: &mut impl Ctx, order_id: u64, new_status: &str, why: &str) {
 }
 
 fn report_row(tx: &TxContext, app_id: &str) -> SteamReport {
-    tx.db.steam_report().app_id().find(&app_id.to_string()).unwrap_or_else(|| SteamReport {
+    tx.db.steam_report().app_id().find(app_id.to_string()).unwrap_or_else(|| SteamReport {
         app_id: app_id.to_string(),
         cursor: purser_core::time::format_rfc3339(tx_now_micros(tx) / 1000 - REPORT_LOOKBACK_MS),
         next_poll_at_micros: 0,

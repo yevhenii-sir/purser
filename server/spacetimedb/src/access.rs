@@ -29,7 +29,7 @@ pub struct Who {
 impl Who {
     /// May see and change this app (`game_key`).
     pub fn sees_game(&self, game_key: &str) -> bool {
-        self.scope.as_ref().map_or(true, |s| s.contains(game_key))
+        self.scope.as_ref().is_none_or(|s| s.contains(game_key))
     }
 
     /// May see and change this build (an unknown build only for unlimited admins).

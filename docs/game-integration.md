@@ -14,11 +14,21 @@ Event (`v1` argument or webhook body; the webhook body also has `catalog_product
 
 `product_id` is the id in the store the purchase was made in. When the stores use different ids for one product (a Stripe Price id, a reverse-domain App Store id), webhook bodies also carry `catalog_product_id`, the app's own id of the product (the Products tab; the same as `product_id` when no other is set). The `v1` reducer argument keeps its fields, so grant by store id there (or keep the same id in every store). `/entitlements` is keyed by the catalog id.
 
-`event`: `grant` | `revoke`; `reason`: `purchase` | `renewal` | `refund` | `expire` | `transfer` | `admin` (revoked by support from the admin page; handle it like `refund`). An event may arrive again on retries, so the game **must be idempotent**:
-- **consumable** — grant once per `(transaction_id, event)`;
+`event`: `grant` | `revoke`; `reason`:
+- `purchase`, `renewal`;
+- `refund`, `expire`;
+- `transfer` (below);
+- `admin`: revoked by support from the admin page; handle it like `refund`;
+- `replaced`: the player switched to another subscription (upgrade, downgrade, crossgrade in Google Play, an App Store subscription group or Stripe). The `grant` of the new product comes with its own `transaction_id`;
+- `reinstated`: a purchase revoked for a payment dispute is granted again, because the merchant won the dispute.
+
+`expires_at_ms` of a subscription is when access ends: the paid period, or the store's grace period after a failed renewal payment.
+
+An event may arrive again on retries, so the game **must be idempotent**:
+- **consumable** — grant once per `(transaction_id, event, reason)`: a `reinstated` grant follows a `revoke` of the same transaction;
 - **non-consumables and subscriptions** — apply as state: “`user_id` has / doesn't have `product_id` until `expires_at_ms`”. Applying state is idempotent by itself. Don't drop repeats by `(transaction_id, event)` alone: after a transfer the same transaction legitimately arrives as a `grant` for a different `user_id`.
 
-**Transfer (`transfer`).** Non-consumables and subscriptions belong to the store account. If a player restores them on a different `user_id` (reinstall, second profile), billing first sends the previous owner a `revoke` with `reason = transfer` and their `user_id`, and only after it is delivered successfully, a `grant` to the new one. The game must **remove the reward from the previous `user_id`**: otherwise one purchase would unlock several profiles. Until the `revoke` is delivered, the purchase is in `transfer_pending` status in the ledger (the previous owner is in `previous_user_id`), no `grant` is sent to the new owner, the worker retries the `revoke` with the usual backoff, and `/verify` and `/restore` respond `pending`. If a refund or subscription expiration arrives before delivery, the transfer is canceled and the previous owner receives the `revoke`. Transfers are not sent to GA4 or AppsFlyer. Consumables are never transferred (`ERR_TX_CLAIMED`).
+**Transfer (`transfer`).** Non-consumables and subscriptions belong to the store account. If a player restores them on a different `user_id` (reinstall, second profile), billing first sends the previous owner a `revoke` with `reason = transfer` and their `user_id`, and only after it is delivered successfully, a `grant` to the new one. The game must **remove the reward from the previous `user_id`**: otherwise one purchase would unlock several profiles. Until the `revoke` is delivered, the purchase is in `transfer_pending` status in the ledger (the previous owner is in `previous_user_id`), no `grant` is sent to the new owner, the worker retries the `revoke` with the usual backoff, and `/verify` and `/restore` respond `pending`. If a refund or subscription expiration arrives before delivery, the transfer is canceled and the previous owner receives the `revoke`. Transfers are not sent to GA4 or AppsFlyer. Consumables are never transferred (`ERR_TX_CLAIMED`). An app can limit transfers against account sharing (Delivery tab → Restores on another player: at most one per N days, at most N per purchase, or never); a refused restore answers `[ERR_TRANSFER_LIMIT]`, and support can still move a purchase on the player page.
 
 - **`v1`** (recommended) — a single struct argument:
 
@@ -72,6 +82,31 @@ The order that guarantees the reward is never lost:
 3. Only then does the client finish the purchase in the store: consume in Google, `finishTransaction` in Apple. The Unity package does this itself after the `PurchaseSucceeded` handlers.
 
 If the game crashes between steps 1 and 3, the purchase isn't consumed and Google delivers it again. The server answers `success` from the ledger, and the client uses `transaction_id` to tell whether the reward was already granted. Non-consumables and subscriptions are checked via `/entitlements` (`IsActive` in Unity). The “consumed outside this server” protection doesn't get in the way here: the ledger row appears before the client consumes.
+
+## Client requests: player tokens, limits, signed answers
+
+Every client request is plain HTTP + JSON, whatever the engine. Three optional protections, set per build on the app's Delivery tab:
+
+**Player tokens** (Client requests: *signed*). Without them anyone who knows a player id can read that player's `/entitlements` or change their attributes; with a game backend, turn them on. The backend signs a short-lived HS256 JWT for the signed-in player with the build's `client_auth_secret`, the client sends it as `Authorization: Bearer <token>` on every request, and requests without a valid one get `401` with `"code": "ERR_CLIENT_AUTH"` (ask the backend for a new token and retry).
+
+```js
+// Node (jsonwebtoken)
+const token = jwt.sign({ sub: userId, aud: "<game key>" }, process.env.PURSER_CLIENT_AUTH_SECRET, { algorithm: "HS256", expiresIn: "1h" })
+```
+
+```csharp
+// C# (System.IdentityModel.Tokens.Jwt)
+var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secret));
+var token = new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(
+    audience: "<game key>", claims: new[] { new Claim("sub", userId) },
+    expires: DateTime.UtcNow.AddHours(1), signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256)));
+```
+
+`aud` (the app's key, `game_key`) is optional. Open builds take any player id: use ids nobody can guess (UUIDs), and personal attributes (`email`, `phone`, `name`) cannot be set there.
+
+**Rate limits** (always on). Over a limit the answer is `429` with `"code": "ERR_RATE_LIMITED"` and `Retry-After: <seconds>`: wait that long and retry; a purchase is not finished because of it.
+
+**Signed answers** (a response signing key). `/entitlements` and `/restore` answers carry `X-Purser-Signature`: the base64 Ed25519 signature of the exact response body. Check it with the build's public key (Delivery tab) before trusting or caching the answer, so an offline copy on the device cannot be edited.
 
 ## Client integration
 

@@ -147,6 +147,10 @@ fn tx(app_id: &str, user_id: &str, receipt_id: &str, product_id: &str, state: Tx
         // RVS reports neither the marketplace nor free-trial phases.
         country: String::new(),
         trial: false,
+        grace_until_ms: 0,
+        billing_issue: false,
+        auto_renew_off: false,
+        renew_product_id: String::new(),
     }
 }
 

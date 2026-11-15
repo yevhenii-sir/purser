@@ -21,6 +21,7 @@
         "variant_id": "var-a",
         "test_id": "test-1",
         "paywall_id": "pw-1",
+        "offer_id": "monthly-intro",
         "client": {
           "device": "Xiaomi 23117RA68G",
           "os": "Android OS 16 / API-36",
@@ -218,7 +219,7 @@
         "app_id": "com.studio.game",
         "user_id": "player-1",
         "attributes": {
-          "email": "player@example.com",
+          "clan": "wolves",
           "level": 7,
           "old": null
         },

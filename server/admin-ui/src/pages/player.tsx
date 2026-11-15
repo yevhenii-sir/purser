@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react"
-import { BanIcon, CheckIcon, CopyIcon, GiftIcon, RefreshCwIcon, RotateCwIcon } from "lucide-react"
+import { ArrowRightLeftIcon, BanIcon, CheckIcon, CopyIcon, DownloadIcon, EraserIcon, GiftIcon, RefreshCwIcon, RotateCwIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Stat, StatusBadge, Tone } from "@/components/common"
 import { RichTable } from "@/components/rich-table"
@@ -13,7 +14,8 @@ import { useAppName, useApps } from "@/lib/apps"
 import { ago, fmtMs, fmtTime, money, usd } from "@/lib/format"
 import { act, tryAct, useAsync, useCopy } from "@/lib/hooks"
 import type { Purchase, PurchaseStatus } from "@/lib/types"
-import { appRoute, type PageProps } from "@/routes"
+import { appRoute, playerRoute, type PageProps } from "@/routes"
+import { downloadBlob } from "@/lib/utils"
 import { useCan } from "@/lib/roles"
 import { GrantDialog } from "@/pages/purchases"
 
@@ -24,10 +26,23 @@ interface ProfilePurchase extends Purchase {
   admin_revoke: { by: string; note: string; at_micros: number } | null
 }
 
+/** An access level or subscription in `/entitlements`. */
+interface EntitlementState {
+  product_id: string
+  store: string
+  expires_at_ms: number
+  will_renew: boolean
+  in_grace: boolean
+  billing_issue: boolean
+  trial: boolean
+  renews_to?: string
+}
+
 /** What `/entitlements` returns for one game. */
 interface Entitlements {
   game_key: string
-  subscriptions: Record<string, number>
+  access: Record<string, EntitlementState>
+  subscriptions: Record<string, EntitlementState>
   non_consumables: string[]
   server_time_ms: number
 }
@@ -98,6 +113,9 @@ interface EntitlementRow {
   product_id: string
   kind: "subscription" | "non_consumable"
   expires_ms: number
+  /** Subscriptions: renewal state; the access levels the product gives. */
+  state?: EntitlementState
+  access: string[]
   /** Ledger rows that make it active: revoking the entitlement revokes all of them. */
   purchases: ProfilePurchase[]
 }
@@ -142,12 +160,15 @@ function entitlementRows(profile: Profile): EntitlementRow[] {
     profile.purchases.filter((p) =>
       isOwned(p) && p.product_id === product && p.kind === kind && gameOf.get(p.app_id) === game &&
       (kind === "non_consumable" || !Number(p.expires_at_ms) || Number(p.expires_at_ms) > now))
+  const levels = (e: Entitlements, product: string) => Object.entries(e.access || {}).filter(([, s]) => s.product_id === product).map(([l]) => l)
   return profile.entitlements.flatMap((e) => [
-    ...Object.entries(e.subscriptions).map(([product_id, expires_ms]) => ({
-      game_key: e.game_key, product_id, kind: "subscription" as const, expires_ms, purchases: backing(e.game_key, product_id, "subscription"),
+    ...Object.entries(e.subscriptions).map(([product_id, state]) => ({
+      game_key: e.game_key, product_id, kind: "subscription" as const, expires_ms: state.expires_at_ms, state, access: levels(e, product_id),
+      purchases: backing(e.game_key, product_id, "subscription"),
     })),
     ...e.non_consumables.map((product_id) => ({
-      game_key: e.game_key, product_id, kind: "non_consumable" as const, expires_ms: 0, purchases: backing(e.game_key, product_id, "non_consumable"),
+      game_key: e.game_key, product_id, kind: "non_consumable" as const, expires_ms: 0, access: levels(e, product_id),
+      purchases: backing(e.game_key, product_id, "non_consumable"),
     })),
   ])
 }
@@ -223,6 +244,7 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
   const [open, setOpen] = useState<string | null>(null)
   const [grant, setGrant] = useState(false)
   const [revoke, setRevoke] = useState<{ title: string; purchases: ProfilePurchase[] } | null>(null)
+  const [moving, setMoving] = useState<ProfilePurchase | null>(null)
   const { data, error, loading, reload } = useAsync(() => proc<Profile>("admin_user_profile", userId), [userId])
   const apps = useApps().apps
   const appName = useAppName()
@@ -233,6 +255,28 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
 
   const s = data.summary
   const ents = entitlementRows(data)
+  const games = [...new Set(data.builds.map((b) => b.game_key).filter((g): g is string => !!g))]
+  const exportData = async () => {
+    const out = await tryAct(async () => {
+      const parts = []
+      for (const g of games) parts.push(await proc<unknown>("admin_export_player", g, data.user_id))
+      return parts
+    })
+    if (out) downloadBlob(`player-${data.user_id}.json`, JSON.stringify({ user_id: data.user_id, apps: out }, null, 2), "application/json")
+  }
+  const erase = async () => {
+    const typed = prompt(`Erase ${data.user_id} from ${games.map(appName).join(", ")}? The profile, attributes and attribution ids are deleted; purchases stay for revenue under an anonymous id, and the player loses what they own. Type the user id to confirm.`)
+    if (typed !== data.user_id) return
+    const ok = await tryAct(async () => {
+      for (const g of games) await call("admin_erase_player", g, data.user_id)
+      return true
+    }, "Erased")
+    if (ok) reload()
+  }
+  const move = async (p: ProfilePurchase, to: string) => {
+    const r = await tryAct(() => proc<{ ok: boolean; status: string }>("admin_transfer_purchase", p.id, to.trim()), "Moved")
+    if (r) { setMoving(null); go(playerRoute(to.trim())) }
+  }
   const problems = data.purchases.filter((p) => p.attention)
   const support = can("support")
   const seen = new Set(data.builds.map((b) => b.app_id))
@@ -242,6 +286,9 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
     <div className="flex justify-end gap-1">
       {p.attention && (
         <Button size="sm" variant="ghost" onClick={() => requeue(p, reload)} title="Retry now"><RotateCwIcon /></Button>
+      )}
+      {isOwned(p) && p.kind !== "consumable" && (
+        <Button size="sm" variant="ghost" title="Move to another player" onClick={() => setMoving(p)}><ArrowRightLeftIcon /></Button>
       )}
       {isOwned(p) && (
         <Button size="sm" variant="ghost" className="text-destructive" title="Revoke"
@@ -273,6 +320,8 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" onClick={reload}><RefreshCwIcon /> Refresh</Button>
+          {support && games.length > 0 && <Button variant="outline" onClick={exportData}><DownloadIcon /> Export data</Button>}
+          {support && games.length > 0 && <Button variant="outline" className="text-destructive" onClick={erase}><EraserIcon /> Erase</Button>}
           {support && <Button onClick={() => setGrant(true)}><GiftIcon /> Manual grant</Button>}
         </div>
       </div>
@@ -318,7 +367,15 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
             { title: "App", cell: (r) => appName(r.game_key) },
             { title: "Product", cell: (r) => <Mono>{r.product_id}</Mono> },
             { title: "Type", cell: (r) => r.kind === "subscription" ? "subscription" : "non-consumable" },
+            { title: "Access", cell: (r) => r.access.length ? <span className="text-xs">{r.access.join(", ")}</span> : <span className="text-muted-foreground">—</span> },
             { title: "Expires", cell: (r) => <span className="whitespace-nowrap">{r.expires_ms ? fmtMs(r.expires_ms) : "never"}</span> },
+            {
+              title: "Renewal",
+              cell: (r) => !r.state ? <span className="text-muted-foreground">—</span>
+                : r.state.billing_issue ? <Tone tone="bad">{r.state.in_grace ? "payment failed · grace period" : "payment failed"}</Tone>
+                : r.state.will_renew ? <Tone tone="ok">{r.state.renews_to ? `renews as ${r.state.renews_to}` : r.state.trial ? "trial, renews" : "renews"}</Tone>
+                : <Tone tone="warn">auto-renew off</Tone>,
+            },
             { title: "Purchases", cell: (r) => r.purchases.length, num: true },
             {
               title: "",
@@ -418,7 +475,27 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
 
       <PurchaseSheet id={open} onClose={(changed) => { setOpen(null); if (changed) reload() }} />
       <GrantDialog open={grant} apps={grantApps} userId={data.user_id} onClose={() => setGrant(false)} onDone={reload} />
+      <MoveDialog purchase={moving} onClose={() => setMoving(null)} onMove={move} />
       <RevokeDialog target={revoke} onClose={() => setRevoke(null)} onDone={reload} />
     </div>
+  )
+}
+
+/** Asks for the player a purchase moves to (`admin_transfer_purchase`). */
+function MoveDialog({ purchase, onClose, onMove }: { purchase: ProfilePurchase | null; onClose: () => void; onMove: (p: ProfilePurchase, to: string) => void }) {
+  const [to, setTo] = useState("")
+  return (
+    <Dialog open={!!purchase} onOpenChange={(o) => { if (!o) { onClose(); setTo("") } }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Move {purchase?.product_id} to another player</DialogTitle>
+          <DialogDescription>
+            The game gets revoke (reason transfer) for this player, then grant for the new one. The app's transfer policy does not apply to support.
+          </DialogDescription>
+        </DialogHeader>
+        <Field label="New user id"><Input className="font-mono text-xs" value={to} onChange={(e) => setTo(e.target.value)} placeholder="user id" /></Field>
+        <DialogFooter><Button disabled={!to.trim() || !purchase} onClick={() => purchase && onMove(purchase, to)}><ArrowRightLeftIcon /> Move</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

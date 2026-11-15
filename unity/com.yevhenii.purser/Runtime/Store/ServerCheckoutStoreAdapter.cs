@@ -51,9 +51,10 @@ namespace Purser
     /// Base of the adapters whose purchase starts on the billing server: remembers started orders across launches
     /// (re-raised on <see cref="ConnectAsync"/> until the server answers for them), lists products from the config,
     /// has nothing to restore from the store (owned products come from the server's entitlements) and no account
-    /// binding (the server puts the billing user id into the order). Derive from it for another such store.
+    /// binding (the server puts the billing user id into the order). Derive from it for another such store; its
+    /// server calls sign with the player tokens of <see cref="PlayerTokens"/>.
     /// </summary>
-    public abstract class ServerCheckoutStoreAdapter : ICheckoutStoreAdapter
+    public abstract class ServerCheckoutStoreAdapter : ICheckoutStoreAdapter, IPlayerTokenConsumer
     {
         /// <summary>A started order, persisted until the server answers for it.</summary>
         protected sealed class CheckoutOrder
@@ -91,6 +92,13 @@ namespace Purser
 
         /// <summary>Billing user id of the purchase being started; null before the first <see cref="PrepareCheckout"/>.</summary>
         protected string CurrentUser => string.IsNullOrEmpty(Checkout?.UserId) ? null : Checkout.UserId;
+
+        /// <summary>Player tokens for the adapter's server calls (<see cref="IPlayerTokenProvider"/>); null when the build
+        /// does not sign client requests.</summary>
+        protected IPlayerTokenProvider PlayerTokens { get; private set; }
+
+        /// <summary>Signs the adapter's server calls with player tokens. Overrides call the base.</summary>
+        public virtual void SetPlayerTokenProvider(IPlayerTokenProvider provider) => PlayerTokens = provider;
 
         /// <inheritdoc/>
         public abstract BillingPlatform Platform { get; }
@@ -260,7 +268,8 @@ namespace Purser
         }
 
         /// <summary>Asks the server until the order is no longer unpaid or <paramref name="timeout"/> passes (then the
-        /// last answer, usually <c>pending_or_canceled</c>). <paramref name="stop"/>: the player gave up.</summary>
+        /// last answer, usually <c>pending_or_canceled</c>). <paramref name="stop"/>: the player gave up. A rate-limited
+        /// answer (429) waits for its <c>Retry-After</c> when that is longer than <paramref name="interval"/>.</summary>
         protected async Task<ApiResult<VerifyResponse>> PollAsync(Func<CancellationToken, Task<ApiResult<VerifyResponse>>> ask,
             TimeSpan interval, TimeSpan timeout, Func<bool> stop, CancellationToken ct)
         {
@@ -270,11 +279,12 @@ namespace Purser
                 if (stop != null && stop())
                     return Answer(VerifyStatus.PendingOrCanceled, "checkout cancelled");
                 var res = await ask(ct);
-                var unpaid = res == null || res.IsTransportError || res.HttpStatus >= 500 ||
+                var unpaid = res == null || res.IsTransportError || res.HttpStatus >= 500 || res.IsRateLimited ||
                              res.Value?.Status == VerifyStatus.PendingOrCanceled;
                 if (!unpaid || UtcNow() >= deadline)
                     return res;
-                await Delay(interval, ct);
+                var wait = res?.RetryAfter is TimeSpan retryAfter && retryAfter > interval ? retryAfter : interval;
+                await Delay(wait, ct);
             }
         }
 

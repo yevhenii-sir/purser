@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use spacetimedb::http::{handler, HandlerContext, Request, Response};
 use spacetimedb::TxContext;
 
-use crate::web::{answer, respond, Answer};
+use crate::web::{answer, Answer};
 
 fn store_error(e: StoreError) -> Answer {
     match e {
@@ -103,6 +103,15 @@ fn json_body(res: &HttpResult) -> Result<Value, StoreError> {
 // POST /checkout/stripe
 // ---------------------------------------------------------------------------------------------
 
+impl crate::client_guard::ClientRequest for CheckoutRequest {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
+
 #[derive(Deserialize)]
 pub struct CheckoutRequest {
     pub app_id: String,
@@ -166,10 +175,7 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> Answer {
 
 #[handler]
 pub fn checkout_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
-    respond(match crate::web::json::<CheckoutRequest>(req) {
-        Ok(r) => checkout(ctx, &r),
-        Err(a) => a,
-    })
+    crate::client_guard::run(ctx, req, "checkout", false, |ctx, r: &CheckoutRequest| checkout(ctx, r))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -216,7 +222,7 @@ fn apply_grant(
         if g.subscription != (product.kind == kind::SUBSCRIPTION) {
             return Err(answer(400, "invalid", format!("{} is a {} in the catalog", product.product_id, product.kind)));
         }
-        if let Some(p) = tx.db.purchase().id().find(&g.tx.ledger_id()).filter(|p| !status::is_owned(&p.status)) {
+        if let Some(p) = tx.db.purchase().id().find(g.tx.ledger_id()).filter(|p| !status::is_owned(&p.status)) {
             return Err(answer(200, if matches!(p.status.as_str(), status::EXPIRED | status::EXPIRE_PENDING) { status::EXPIRED } else { status::REVOKED }, "the purchase is no longer active"));
         }
         integrations::save_attribution(tx, &g.tx.app_id, &claim.user_id, &client.attribution);
@@ -261,6 +267,15 @@ fn verify_answer(app: &GameApp, g: &Grant, p: &Purchase) -> Answer {
 // ---------------------------------------------------------------------------------------------
 // POST /verify/stripe
 // ---------------------------------------------------------------------------------------------
+
+impl crate::client_guard::ClientRequest for VerifyRequest {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
 
 /// `{app_id, user_id, session_id}`. `product_id` is not needed: the session names it.
 #[derive(Deserialize)]
@@ -331,10 +346,7 @@ pub fn verify_session(ctx: &mut impl Ctx, r: &VerifyRequest) -> Answer {
 
 #[handler]
 pub fn verify_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
-    respond(match crate::web::json::<VerifyRequest>(req) {
-        Ok(r) => verify_session(ctx, &r),
-        Err(a) => a,
-    })
+    crate::client_guard::run(ctx, req, "verify", false, |ctx, r: &VerifyRequest| verify_session(ctx, r))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -380,16 +392,26 @@ pub fn handle_notification(ctx: &mut impl Ctx, app_param: &str, signature: &str,
         st::event::SUBSCRIPTION_UPDATED | st::event::SUBSCRIPTION_DELETED => {
             match st::subscription_end(&event.kind, &event.object, ctx.now_ms()) {
                 Some(end) => expire(ctx, &app, &end, &source),
-                None => answer(200, "ok", "subscription still active"),
+                None => match st::subscription_renewal(&event.object) {
+                    Some(r) => renewal_changed(ctx, &app, &r, &source),
+                    None => answer(200, "ok", "subscription still active"),
+                },
             }
         }
         st::event::CHARGE_REFUNDED => match st::charge_refund(&event.object) {
-            Some(r) => revoke(ctx, &app, &mut key, &r, &source),
-            None => answer(200, "ignored", "partial refund"),
+            Some(st::Refund::Full(r)) => revoke(ctx, &app, &mut key, &r, &source),
+            Some(st::Refund::Partial { reversal, refunded_micros, currency }) => {
+                partial_refund(ctx, &app, &mut key, &reversal, refunded_micros, &currency, &source)
+            }
+            None => answer(200, "ignored", "nothing refunded"),
         },
         st::event::DISPUTE_CREATED => match st::dispute(&event.object) {
             Some(r) => revoke(ctx, &app, &mut key, &r, &source),
             None => answer(200, "ignored", "dispute without a payment"),
+        },
+        st::event::DISPUTE_CLOSED => match st::dispute_won(&event.object) {
+            Some(r) => reinstate(ctx, &app, &mut key, &r, &source),
+            None => answer(200, "ok", "dispute lost: the purchase stays revoked"),
         },
         _ => answer(200, "ignored", format!("event {} is not used", event.kind)),
     }
@@ -459,7 +481,7 @@ fn expire(ctx: &mut impl Ctx, app: &GameApp, end: &st::Ended, source: &str) -> A
 fn find_reversed(ctx: &mut impl Ctx, app: &GameApp, pi: &str, invoice: &str) -> Option<Purchase> {
     let (app_id, pi, invoice) = (app.app_id.clone(), pi.to_string(), invoice.to_string());
     ctx.tx(|tx| {
-        let by_id = |id: &str| (!id.is_empty()).then(|| tx.db.purchase().id().find(&ledger_id(store::STRIPE, id))).flatten();
+        let by_id = |id: &str| (!id.is_empty()).then(|| tx.db.purchase().id().find(ledger_id(store::STRIPE, id))).flatten();
         let by_token = |t: &str| {
             (!t.is_empty())
                 .then(|| tx.db.purchase().purchase_token().filter(t).filter(|p| p.store == store::STRIPE).max_by_key(|p| p.created_at_micros))
@@ -469,9 +491,64 @@ fn find_reversed(ctx: &mut impl Ctx, app: &GameApp, pi: &str, invoice: &str) -> 
     })
 }
 
-/// A full refund or a dispute: the purchase (or subscription period) it paid for is revoked and
-/// counted as refunded revenue.
-fn revoke(ctx: &mut impl Ctx, app: &GameApp, key: &mut Auth, r: &Reversal, source: &str) -> Answer {
+/// `cancel_at_period_end` changed: the latest period of the subscription says whether it renews.
+fn renewal_changed(ctx: &mut impl Ctx, app: &GameApp, r: &st::Renewal, source: &str) -> Answer {
+    let (app_id, sub, off, src) = (app.app_id.clone(), r.subscription_id.clone(), r.auto_renew_off, source.to_string());
+    ctx.tx(|tx| {
+        let latest = tx
+            .db
+            .purchase()
+            .original_transaction_id()
+            .filter(sub.as_str())
+            .filter(|p| p.app_id == app_id && p.store == store::STRIPE)
+            .max_by_key(|p| (p.expires_at_ms, p.created_at_micros));
+        if let Some(mut p) = latest.filter(|p| p.auto_renew_off != off) {
+            let events = ledger::lifecycle_events(&p, p.billing_issue, off);
+            p.auto_renew_off = off;
+            let id = p.id.clone();
+            ledger::save_purchase(tx, p.clone());
+            ledger::log_event(tx, &id, "renewal_info", &format!("{src}: auto_renew_off={off}"));
+            for ev in events {
+                crate::integrations::enqueue(tx, &p, ev);
+            }
+        }
+    });
+    answer(200, "ok", "")
+}
+
+/// A partial refund: the purchase stays granted, revenue loses the refunded part.
+fn partial_refund(ctx: &mut impl Ctx, app: &GameApp, key: &mut Auth, r: &Reversal, total_micros: i64, currency: &str, source: &str) -> Answer {
+    let p = match paid_row(ctx, app, key, r, source) {
+        Ok(Some(p)) => p,
+        Ok(None) => return answer(200, "ignored", "payment not in the ledger"),
+        Err(a) => return a,
+    };
+    if !p.currency.eq_ignore_ascii_case(currency) {
+        return answer(200, "ignored", "refund in another currency than the purchase");
+    }
+    let details = format!("{source} charge={}", r.charge);
+    ctx.tx(|tx| ledger::partial_refund(tx, p.clone(), total_micros, &details));
+    answer(200, "ok", "")
+}
+
+/// A dispute the merchant won: the revoked purchase is granted again.
+fn reinstate(ctx: &mut impl Ctx, app: &GameApp, key: &mut Auth, r: &Reversal, source: &str) -> Answer {
+    let p = match paid_row(ctx, app, key, r, source) {
+        Ok(Some(p)) => p,
+        Ok(None) => return answer(200, "ignored", "payment not in the ledger"),
+        Err(a) => return a,
+    };
+    let details = format!("{source} charge={}", r.charge);
+    let changed = ctx.tx(|tx| ledger::reinstate(tx, p.clone(), &details).map(|id| ledger::lease(tx, &id, Some(app))));
+    if let Some(lease) = changed {
+        ledger::run(ctx, lease);
+    }
+    answer(200, "ok", "")
+}
+
+/// The ledger row a payment (PaymentIntent / Invoice) paid for. `Err`: answer the webhook with it
+/// (Stripe retries).
+fn paid_row(ctx: &mut impl Ctx, app: &GameApp, key: &mut Auth, r: &Reversal, source: &str) -> Result<Option<Purchase>, Answer> {
     let mut row = find_reversed(ctx, app, &r.payment_intent, &r.invoice);
     if row.is_none() && r.invoice.is_empty() && !r.payment_intent.is_empty() {
         // Current API versions: the invoice of a subscription payment is only in its invoice payment.
@@ -487,10 +564,20 @@ fn revoke(ctx: &mut impl Ctx, app: &GameApp, key: &mut Auth, r: &Reversal, sourc
             Err(StoreError::Invalid(_)) => {}
             Err(e) => {
                 log::warn!("{source}: {}", e.message());
-                return answer(503, "error", "retry later");
+                return Err(answer(503, "error", "retry later"));
             }
         }
     }
+    Ok(row)
+}
+
+/// A full refund or a dispute: the purchase (or subscription period) it paid for is revoked and
+/// counted as refunded revenue.
+fn revoke(ctx: &mut impl Ctx, app: &GameApp, key: &mut Auth, r: &Reversal, source: &str) -> Answer {
+    let row = match paid_row(ctx, app, key, r, source) {
+        Ok(row) => row,
+        Err(a) => return a,
+    };
     let Some(p) = row else {
         return answer(200, "ignored", "payment not in the ledger");
     };

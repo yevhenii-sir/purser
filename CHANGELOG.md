@@ -2,8 +2,36 @@
 
 ## Unreleased
 
+### Breaking
+
+- Publish with `--delete-data`: the `purchase` table gains `grace_until_ms`, `billing_issue`, `auto_renew_off`, `renew_product_id`, `replaced_by` and `refunded_micros`.
+- Game events have two new reasons: `revoke` with `replaced` (another subscription replaced this one) and `grant` with `reinstated` (a won dispute). A subscription's `expires_at_ms` includes the store's grace period. Consumables are deduplicated by `(transaction_id, event, reason)`.
+- Stripe webhook endpoints need `charge.dispute.closed` (**Create webhook in Stripe** adds it; the setup check reports it missing).
+- `/entitlements` (and the `entitlements` of `/restore`) answers access levels and the state of each subscription: `{"access": {level: state}, "subscriptions": {product: state}, "non_consumables", ...}` with `expires_at_ms`, `will_renew`, `in_grace`, `billing_issue`, `trial`, `store`, `renews_to` per item, instead of `{"subscriptions": {product: expiry}}`. The Unity package of this version reads it.
+- The `/verify` answer has no `token` field any more (it was unused). `/verify` takes an optional `offer_id`, stored on the purchase.
+- Client routes are rate limited (`429` + `Retry-After`), and `/attributes` refuses personal keys (`email`, `phone`, `name`, ...) unless the build uses player tokens.
+- `product` gains `access`, `game_app` gains `client_auth`.
+
+### Added
+
+- Access levels: a product lists what it unlocks (`premium`, `no_ads`; Products tab, `access` in `admin_upsert_products`); `/entitlements` answers them with the subscription behind each.
+- Subscription changes for the integrations (webhook and Cloud Storage export): `cancel` (auto-renew off), `uncancel`, `billing_issue`, `billing_recovered`, `product_change` (with `previous_product_id`).
+- Admin page: the purchase list pages past its first 500 rows (**Load more**), filters by kind and by subscription state (active, grace period, payment failed, auto-renew off) and exports CSV; `admin_list_purchases` takes `kind`, `store`, `subscription` and the `next` cursor of its answer.
+- Revenue: ARPPU of the period and LTV per payer after 1, 3, 6 and 12 months (`arppu`, `ltv`).
+- docs/openapi.yaml describes every route (Amazon, Steam, Stripe, Xsolla, checkout), player tokens, `401` / `429`; a test keeps it in step with the routes and the crate version. CI runs clippy (`-D warnings`) and the admin page lint.
+- Player data: **Export data** and **Erase** on the player page (`admin_export_player`, `admin_erase_player`: profile, attributes and attribution ids deleted, purchases kept under an anonymous id), **Move to another player** for an owned purchase (`admin_transfer_purchase`), and a transfer policy per app for restores on another player id (`admin_set_transfer_policy`: always, at most once per N days, never; at most N moves per purchase).
+- `server/backup.py`: backs a database up to JSON files through the owner's `/sql` and restores them into a freshly published one, so a release that needs `--delete-data` keeps its data (docs/self-hosting.md, Upgrading). `migrate.py` copies a whole database to another server with it (it copied only the ledger).
+- `/healthz` reports the ledger worker: `503 {"status": "worker_stopped"}` when it has not run for 5 minutes, `starting` before its first run; the Overview shows a stopped worker with a button to restart it.
+- Revenue: subscriptions that will not renew, are in a grace period or have a payment issue (`auto_renew_off_now`, `in_grace_now`, `billing_issue_now`; Active subscriptions on the Revenue page).
+- Client security (app Delivery tab): player tokens signed by the game backend (`client_auth = signed`, `client_auth_secret`), and signed `/entitlements` / `/restore` answers (`response_signing_key`, Ed25519, `X-Purser-Signature`; `admin_response_public_key`). The setup check reports both.
+
 ### Fixed
 
+- Subscription upgrades no longer leave the old subscription active: a Google purchase that replaces another (`linkedPurchaseToken`), an App Store upgrade within a subscription group (`isUpgraded`) and a Stripe plan change end the replaced subscription (`revoke` with reason `replaced`, no churn in revenue or integrations).
+- App Store subscriptions are looked up with Get All Subscription Statuses: an old `transactionId` from the client finds the latest period, and a billing grace period keeps access instead of ending it.
+- Google Play: a grace period keeps access (re-checked daily), an account hold ends the subscription with a billing issue, `SUBSCRIPTION_REVOKED` is a refund instead of an expiry.
+- Google Play and App Store subscriptions are re-checked by the worker when their access ends, so a lost notification no longer leaves a renewal ungranted.
+- Stripe: partial refunds count in revenue (the purchase stays), a won dispute grants the purchase again, a plan change switches the product, `cancel_at_period_end` is recorded.
 - Admin page: fields of two-column dialogs line up at the top when one of them has a hint or a longer label.
 
 ## 0.7.0 - 2026-11-15

@@ -296,7 +296,7 @@ function SetupTab({ data, reload }: TabProps) {
 // Delivery: how rewards reach the app, shared by its builds
 // ---------------------------------------------------------------------------------------------
 
-type Flags = Pick<GameApp, "enabled" | "allow_sandbox" | "client_consumes" | "account" | "apple_refund_mode" | "sns_topic_arn">
+type Flags = Pick<GameApp, "enabled" | "allow_sandbox" | "client_consumes" | "account" | "apple_refund_mode" | "sns_topic_arn" | "client_auth">
 
 const REFUND_MODES = [
   { value: "off", label: "Don't answer" },
@@ -314,7 +314,7 @@ function DeliveryTab({ data, reload, go }: TabProps) {
     revoke_reducer: first.revoke_reducer || DELIVERY_DEFAULTS.revoke_reducer,
   })
   const [flags, setFlags] = useState<Record<string, Flags>>(() =>
-    Object.fromEntries(g.apps.map((a) => [a.app_id, { enabled: a.enabled, allow_sandbox: a.allow_sandbox, client_consumes: a.client_consumes, account: a.account || "default", apple_refund_mode: a.apple_refund_mode || "off", sns_topic_arn: a.sns_topic_arn }])))
+    Object.fromEntries(g.apps.map((a) => [a.app_id, { enabled: a.enabled, allow_sandbox: a.allow_sandbox, client_consumes: a.client_consumes, account: a.account || "default", apple_refund_mode: a.apple_refund_mode || "off", sns_topic_arn: a.sns_topic_arn, client_auth: a.client_auth || "open" }])))
   const differs = g.apps.some((a) => a.delivery !== first.delivery || a.spacetime_db !== first.spacetime_db || a.webhook_url !== first.webhook_url)
 
   const save = async () => {
@@ -370,6 +370,19 @@ function DeliveryTab({ data, reload, go }: TabProps) {
                   onCheckedChange={(v) => setFlags((f) => ({ ...f, [a.app_id]: { ...f[a.app_id], [k]: v === true } }))} />
               ),
             })),
+            {
+              title: "Client requests",
+              cell: (a: GameApp) => (
+                <Select value={flags[a.app_id]?.client_auth || "open"}
+                  onValueChange={(v) => setFlags((f) => ({ ...f, [a.app_id]: { ...f[a.app_id], client_auth: v } }))}>
+                  <SelectTrigger size="sm" className="w-44"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="open">Open</SelectItem>
+                    <SelectItem value="signed">Signed player tokens</SelectItem>
+                  </SelectContent>
+                </Select>
+              ),
+            },
             ...(g.apps.some((a) => storeOf(a).id === "apple") ? [{
               title: "Refund requests",
               cell: (a: GameApp) => storeOf(a).id !== "apple" ? <span className="text-muted-foreground">-</span> : (
@@ -400,13 +413,78 @@ function DeliveryTab({ data, reload, go }: TabProps) {
           ]}
         />
         <p className="mt-3 text-xs text-muted-foreground">
+          Client requests: open builds accept any player id from the client (use ids nobody can guess); signed builds need a player token from the game's backend on every request (see Client security below).
           Client consumes: the Android client consumes purchases itself (e.g. still through Adapty); otherwise consumed purchases unknown to the ledger are rejected as granted elsewhere.
           SNS topic: Amazon notifications are accepted only from this topic (the setup check shows the topic they come from).
           Refund requests: when an App Store player asks for a refund, Apple asks the server whether the purchase was delivered and used; the answer is sent only for players who consented in the game (<Mono>SetRefundDataConsent</Mono> in the Unity package).
           Press Save above to apply.
         </p>
       </Section>
+      <ClientSecuritySection apps={g.apps} reload={reload} />
+      <TransferPolicySection gameKey={g.key} />
     </>
+  )
+}
+
+/** 32 random bytes from the browser (the module has no secure random source). */
+function randomBytes(): Uint8Array {
+  const b = new Uint8Array(32)
+  crypto.getRandomValues(b)
+  return b
+}
+
+const base64 = (b: Uint8Array) => btoa(String.fromCharCode(...b))
+const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("")
+
+/** Player token secret and the response signing key of the app's builds. */
+function ClientSecuritySection({ apps, reload }: { apps: GameApp[]; reload: () => void }) {
+  const canSet = useCan()("secrets")
+  const [shown, setShown] = useState<{ title: string; value: string; note: string } | null>(null)
+  const publicKey = useAsync(() => proc<{ public_key: string | null }>("admin_response_public_key", apps[0].app_id), [apps[0].app_id])
+  const setAll = async (name: string, value: string) => {
+    for (const a of apps) await call("admin_set_credential", a.app_id, name, value)
+  }
+  const newTokenSecret = async () => {
+    if (!confirm("Create a new player token secret for every build of this app? Tokens signed with the old one stop working.")) return
+    const secret = hex(randomBytes())
+    const ok = await tryAct(async () => { await setAll("client_auth_secret", secret); return true }, "Secret saved")
+    if (ok) setShown({ title: "Player token secret", value: secret, note: "Give it to your game backend: it signs HS256 player tokens {sub: user_id, aud: app, exp} with it. It is not shown again." })
+  }
+  const newSigningKey = async () => {
+    if (!confirm("Create a new response signing key for every build of this app? Games with the old public key stop trusting answers until they are updated.")) return
+    const ok = await tryAct(async () => { await setAll("response_signing_key", base64(randomBytes())); return true }, "Key saved")
+    if (ok) { publicKey.reload(); reload() }
+  }
+  return (
+    <Section title="Client security" description="Optional protection of the client requests (/verify, /restore, /entitlements, ...). Every client sends plain HTTP: an Authorization header and, for signed answers, a header to check.">
+      <div className="space-y-4 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-medium">Player tokens</p>
+            <p className="text-xs text-muted-foreground">For builds with Client requests: signed. Your game backend signs a short-lived token for the player; the client sends <Mono>Authorization: Bearer &lt;token&gt;</Mono>.</p>
+          </div>
+          {canSet && <Button size="sm" variant="outline" onClick={newTokenSecret}>New token secret</Button>}
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="font-medium">Signed answers</p>
+            <p className="text-xs text-muted-foreground">The server signs /entitlements and /restore answers (<Mono>X-Purser-Signature</Mono>, Ed25519); the game checks them with the public key, so its offline copy cannot be edited.</p>
+            {publicKey.data?.public_key && <div className="mt-2 max-w-xl"><CopyField label="Public key (BillingConfig.responseSigningPublicKey)" value={publicKey.data.public_key} /></div>}
+          </div>
+          {canSet && <Button size="sm" variant="outline" onClick={newSigningKey}>{publicKey.data?.public_key ? "New signing key" : "Create signing key"}</Button>}
+        </div>
+      </div>
+      <Dialog open={!!shown} onOpenChange={(o) => !o && setShown(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{shown?.title}</DialogTitle>
+            <DialogDescription>{shown?.note}</DialogDescription>
+          </DialogHeader>
+          {shown && <CopyField label={shown.title} value={shown.value} />}
+          <DialogFooter><Button onClick={() => setShown(null)}>Done</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Section>
   )
 }
 
@@ -498,3 +576,42 @@ function KeysTab({ data, reload }: TabProps) {
   )
 }
 
+
+interface TransferPolicy { mode: "always" | "cooldown" | "never"; cooldown_days: number; max_transfers: number }
+
+/** How purchases move between player ids when a restore names another player (`admin_set_transfer_policy`). */
+function TransferPolicySection({ gameKey }: { gameKey: string }) {
+  const canSet = useCan()("configure")
+  const loaded = useAsync(() => proc<TransferPolicy>("admin_transfer_policy", gameKey), [gameKey])
+  const [edit, setEdit] = useState<TransferPolicy | null>(null)
+  const p = edit || loaded.data
+  if (!p) return null
+  const set = (patch: Partial<TransferPolicy>) => setEdit({ ...p, ...patch })
+  const save = async () => {
+    const ok = await tryAct(() => call("admin_set_transfer_policy", gameKey, JSON.stringify(p)), "Saved")
+    if (ok !== undefined) { setEdit(null); loaded.reload() }
+  }
+  return (
+    <Section title="Restores on another player" description="Non-consumables and subscriptions follow the store account: a restore on another player id moves them there (the previous player gets revoke). Limit it against account sharing; support can always move a purchase on the player page."
+      actions={canSet && edit ? <Button onClick={save}>Save</Button> : undefined}>
+      <div className="grid items-start gap-4 sm:grid-cols-3">
+        <Field label="Purchases move">
+          <Select value={p.mode} disabled={!canSet} onValueChange={(v) => set({ mode: v as TransferPolicy["mode"], cooldown_days: v === "cooldown" ? (p.cooldown_days || 30) : p.cooldown_days })}>
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="always">Always</SelectItem>
+              <SelectItem value="cooldown">At most once per period</SelectItem>
+              <SelectItem value="never">Never (support only)</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        {p.mode === "cooldown" && (
+          <Field label="Days between moves"><Input type="number" min={1} max={365} disabled={!canSet} value={p.cooldown_days} onChange={(e) => set({ cooldown_days: Number(e.target.value) })} /></Field>
+        )}
+        {p.mode !== "never" && (
+          <Field label="Moves per purchase" hint="0 = no limit"><Input type="number" min={0} disabled={!canSet} value={p.max_transfers} onChange={(e) => set({ max_transfers: Number(e.target.value) })} /></Field>
+        )}
+      </div>
+    </Section>
+  )
+}

@@ -18,7 +18,8 @@ namespace Purser.Tests
         public readonly List<HttpResponse> Statuses = new List<HttpResponse>();
         private int m_Status;
 
-        public Task<HttpResponse> SendAsync(string method, string url, string jsonBody, int timeoutSeconds, CancellationToken ct)
+        public Task<HttpResponse> SendAsync(string method, string url, string jsonBody, IReadOnlyDictionary<string, string> headers,
+            int timeoutSeconds, CancellationToken ct)
         {
             Requests.Add((url, JObject.Parse(jsonBody)));
             if (url.EndsWith("/checkout/xsolla"))
@@ -43,7 +44,8 @@ namespace Purser.Tests
     {
         public readonly List<CancellationToken> Tokens = new List<CancellationToken>();
 
-        public Task<HttpResponse> SendAsync(string method, string url, string jsonBody, int timeoutSeconds, CancellationToken ct)
+        public Task<HttpResponse> SendAsync(string method, string url, string jsonBody, IReadOnlyDictionary<string, string> headers,
+            int timeoutSeconds, CancellationToken ct)
         {
             Tokens.Add(ct);
             var tcs = new TaskCompletionSource<HttpResponse>();

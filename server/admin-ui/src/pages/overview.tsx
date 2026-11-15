@@ -1,9 +1,13 @@
 import { useState } from "react"
+import { TriangleAlertIcon } from "lucide-react"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
 import { DataTable, ErrorBox, Loading, Mono, PageHeader, Section, Stat, StatusBadge, Tone } from "@/components/common"
 import { PurchaseSheet } from "@/components/purchase-sheet"
-import { proc, route } from "@/lib/api"
+import { call, proc, route } from "@/lib/api"
 import { fmtTime, usd } from "@/lib/format"
-import { useAsync } from "@/lib/hooks"
+import { tryAct, useAsync } from "@/lib/hooks"
+import { useCan } from "@/lib/roles"
 import { revenueSummary } from "@/lib/revenue"
 import { STATUSES, type Overview, type PurchaseStatus } from "@/lib/types"
 import type { PageProps } from "@/routes"
@@ -27,9 +31,11 @@ export function OverviewPage({ go }: PageProps) {
   if (loading && !data) return <Loading rows={6} />
   if (!data) return null
   const { health, stats, overview: ov } = data
+  const stopped = ov.worker_age_secs !== null && ov.worker_age_secs > ov.worker_stale_after_secs
   return (
     <>
       <PageHeader title="Overview" description="Server status, the ledger and what the worker still has to finish." />
+      {stopped && <WorkerStopped minutes={Math.round(Number(ov.worker_age_secs) / 60)} onRestarted={reload} />}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
           label="Server"
@@ -73,5 +79,24 @@ export function OverviewPage({ go }: PageProps) {
       </div>
       <PurchaseSheet id={open} onClose={(changed) => { setOpen(null); if (changed) reload() }} />
     </>
+  )
+}
+
+/** The ledger worker has not run for a while: purchases, renewals and alerts wait. */
+function WorkerStopped({ minutes, onRestarted }: { minutes: number; onRestarted: () => void }) {
+  const canRestart = useCan()("configure")
+  const restart = async () => {
+    const ok = await tryAct(() => call("admin_ensure_worker"), "Worker scheduled")
+    if (ok !== undefined) onRestarted()
+  }
+  return (
+    <Alert variant="destructive">
+      <TriangleAlertIcon />
+      <AlertTitle>The worker stopped {minutes} minutes ago</AlertTitle>
+      <AlertDescription>
+        Purchases are not retried, subscriptions are not re-checked and owner alerts are not sent until it runs again. /healthz answers 503.
+        {canRestart && <Button size="sm" variant="outline" className="mt-2" onClick={restart}>Restart the worker</Button>}
+      </AlertDescription>
+    </Alert>
   )
 }
