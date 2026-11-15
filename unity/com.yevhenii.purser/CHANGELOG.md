@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-15
+
 ### Breaking
 
 - `/verify/<store>` and `/offers/apple/sign` send the build's id as `app_id` instead of `bundle_id`, like every other

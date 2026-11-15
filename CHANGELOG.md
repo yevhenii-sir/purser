@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-11-15
+
 ### Breaking
 
 Purser has no production users yet, so compatibility code is removed instead of kept. Publish this version with `--delete-data` and update the Unity package together with the server.
