@@ -5,7 +5,7 @@
 
 use spacetimedb::{ReducerContext, Table};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 #[spacetimedb::table(accessor = store_notify_health)]
 pub struct StoreNotifyHealth {
     #[primary_key]
@@ -24,26 +24,7 @@ pub struct StoreNotifyHealth {
     pub test_token: String,
     pub test_base: String,
     /// Amazon: the SNS topic of the last signed message (to pin it on the build).
-    #[default("")]
     pub last_topic: String,
-}
-
-// Written by hand: the column attribute `#[default]` clashes with `#[derive(Default)]`.
-impl Default for StoreNotifyHealth {
-    fn default() -> Self {
-        Self {
-            app_id: String::new(),
-            last_at_micros: 0,
-            last_test_at_micros: 0,
-            last_rejected_at_micros: 0,
-            last_rejected_reason: String::new(),
-            last_confirmation_at_micros: 0,
-            confirmation_token: String::new(),
-            test_token: String::new(),
-            test_base: String::new(),
-            last_topic: String::new(),
-        }
-    }
 }
 
 pub fn get(ctx: &ReducerContext, app_id: &str) -> StoreNotifyHealth {

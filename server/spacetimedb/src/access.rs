@@ -9,6 +9,7 @@ use crate::integrations::{integration, integration_health};
 use crate::paywalls::{paywall, paywall_test, placement};
 use crate::settings::server_state;
 use crate::store_create::store_create_job;
+use std::collections::BTreeSet;
 use crate::{admin, app_profile, credential, game_app, product, purchase, purchase_log, retry_schedule, spacetime_host, Admin};
 use purser_core::roles::{self, Cap, Role};
 use serde::Deserialize;
@@ -21,16 +22,95 @@ pub struct Who {
     pub identity: Identity,
     pub name: String,
     pub role: Role,
+    /// The apps (`game_key`) the admin is limited to; `None` = every app and the server settings.
+    pub scope: Option<BTreeSet<String>>,
 }
 
-/// Checks that the caller is an admin whose role has `cap`.
-pub fn require(ctx: &ReducerContext, cap: Cap) -> Result<Who, String> {
+impl Who {
+    /// May see and change this app (`game_key`).
+    pub fn sees_game(&self, game_key: &str) -> bool {
+        self.scope.as_ref().map_or(true, |s| s.contains(game_key))
+    }
+
+    /// May see and change this build (an unknown build only for unlimited admins).
+    pub fn sees_app(&self, ctx: &ReducerContext, app_id: &str) -> bool {
+        match &self.scope {
+            None => true,
+            Some(s) => ctx.db.game_app().app_id().find(app_id.to_string()).is_some_and(|a| s.contains(&a.game_key)),
+        }
+    }
+
+    pub fn check_game(&self, game_key: &str) -> Result<(), String> {
+        if self.sees_game(game_key) { Ok(()) } else { Err(format!("{SCOPE_ERROR} app {game_key}")) }
+    }
+
+    pub fn check_app(&self, ctx: &ReducerContext, app_id: &str) -> Result<(), String> {
+        if self.sees_app(ctx, app_id) { Ok(()) } else { Err(format!("{SCOPE_ERROR} build {app_id}")) }
+    }
+
+    /// A secret scope (a build, a developer account or `default`): limited admins only reach the
+    /// secrets of their own builds.
+    pub fn check_secret_scope(&self, ctx: &ReducerContext, scope: &str) -> Result<(), String> {
+        if self.scope.is_none() || ctx.db.game_app().app_id().find(scope.to_string()).is_some_and(|a| self.sees_game(&a.game_key)) {
+            Ok(())
+        } else {
+            Err(format!("{SCOPE_ERROR} the secrets of {scope} (developer account and default secrets need access to every app)"))
+        }
+    }
+
+    /// The builds the admin may see; `None` = all.
+    pub fn app_ids(&self, ctx: &ReducerContext) -> Option<BTreeSet<String>> {
+        self.scope.as_ref().map(|s| s.iter().flat_map(|g| ctx.db.game_app().game_key().filter(g.as_str()).map(|a| a.app_id)).collect())
+    }
+}
+
+/// The `game_keys` column as a list.
+pub fn split_game_keys(s: &str) -> Vec<String> {
+    s.split(',').map(str::trim).filter(|g| !g.is_empty()).map(str::to_string).collect()
+}
+
+/// Error prefix of an action outside the admin's apps.
+pub const SCOPE_ERROR: &str = "[ERR_SCOPE] you have no access to";
+
+/// The caller as an admin whose role has `cap`, limited to their apps or not.
+fn caller(ctx: &ReducerContext, cap: Cap) -> Result<Who, String> {
     let row = ctx.db.admin().identity().find(ctx.sender()).ok_or("[ERR_ADMIN_UNAUTHORIZED] Admin only")?;
     let role = Role::of(row.protected, &row.role);
     if !role.can(cap) {
         return Err(roles::denied(role, cap));
     }
-    Ok(Who { identity: row.identity, name: row.name, role })
+    let scope = (!row.protected && !row.game_keys.is_empty()).then(|| split_game_keys(&row.game_keys).into_iter().collect());
+    Ok(Who { identity: row.identity, name: row.name, role, scope })
+}
+
+/// An admin whose role has `cap` and who may reach every app: server-wide actions (settings,
+/// alerts, FX, hosts, admins, imports). Admins limited to some apps are refused.
+pub fn require(ctx: &ReducerContext, cap: Cap) -> Result<Who, String> {
+    let who = caller(ctx, cap)?;
+    if who.scope.is_some() {
+        return Err(format!("{SCOPE_ERROR} server-wide settings"));
+    }
+    Ok(who)
+}
+
+/// An admin whose role has `cap`, possibly limited to some apps: the caller checks every app it
+/// touches (`Who::check_app` / `check_game`) or filters what it returns.
+pub fn require_scoped(ctx: &ReducerContext, cap: Cap) -> Result<Who, String> {
+    caller(ctx, cap)
+}
+
+/// An admin whose role has `cap` and who may reach this build.
+pub fn require_app(ctx: &ReducerContext, cap: Cap, app_id: &str) -> Result<Who, String> {
+    let who = caller(ctx, cap)?;
+    who.check_app(ctx, app_id)?;
+    Ok(who)
+}
+
+/// An admin whose role has `cap` and who may reach this app (`game_key`).
+pub fn require_game(ctx: &ReducerContext, cap: Cap, game_key: &str) -> Result<Who, String> {
+    let who = caller(ctx, cap)?;
+    who.check_game(game_key)?;
+    Ok(who)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -92,13 +172,15 @@ pub fn prune_audit(ctx: &ReducerContext) {
 // Admins
 // ---------------------------------------------------------------------------------------------
 
-/// The caller as an admin: `{identity, name, role, owner}` or `{"error"}` (the admin page's sign-in).
+/// The caller as an admin: `{identity, name, role, owner, game_keys}` (`game_keys` empty = every
+/// app) or `{"error"}` (the admin page's sign-in).
 #[spacetimedb::procedure]
 pub fn admin_me(ctx: &mut ProcedureContext) -> String {
     crate::ctx::Ctx::tx(ctx, |tx| match tx.db.admin().identity().find(tx.sender()) {
         Some(a) => {
             let role = Role::of(a.protected, &a.role);
-            json!({ "identity": a.identity.to_hex().to_string(), "name": a.name, "role": role.as_str(), "owner": a.protected })
+            let game_keys = if a.protected { Vec::new() } else { split_game_keys(&a.game_keys) };
+            json!({ "identity": a.identity.to_hex().to_string(), "name": a.name, "role": role.as_str(), "owner": a.protected, "game_keys": game_keys })
         }
         None => json!({ "error": "[ERR_ADMIN_UNAUTHORIZED] this token is not an admin of this database" }),
     })
@@ -111,6 +193,9 @@ struct AdminInput {
     #[serde(default)]
     name: String,
     role: String,
+    /// The apps the admin is limited to; empty = every app.
+    #[serde(default)]
+    game_keys: Vec<String>,
 }
 
 fn parse_identity(hex: &str) -> Result<Identity, String> {
@@ -126,6 +211,12 @@ pub fn admin_upsert_admin(ctx: &ReducerContext, json: String) -> Result<(), Stri
     let identity = parse_identity(&i.identity)?;
     let role = Role::assignable(i.role.trim()).ok_or("[ERR_BAD_ROLE] role must be admin, editor, support or viewer")?;
     let name: String = i.name.trim().chars().take(80).collect();
+    let mut game_keys: Vec<String> = i.game_keys.iter().map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).collect();
+    game_keys.sort();
+    game_keys.dedup();
+    if let Some(unknown) = game_keys.iter().find(|g| ctx.db.game_app().game_key().filter(g.as_str()).next().is_none()) {
+        return Err(format!("[ERR_BAD_APP] no app {unknown}"));
+    }
     let existing = ctx.db.admin().identity().find(identity);
     if identity == ctx.sender() && existing.as_ref().is_some_and(|a| Role::of(a.protected, &a.role) != role) {
         return Err("[ERR_ADMIN_SELF] you cannot change your own role".into());
@@ -136,6 +227,7 @@ pub fn admin_upsert_admin(ctx: &ReducerContext, json: String) -> Result<(), Stri
         Some(mut a) => {
             a.name = name.clone();
             a.role = role.as_str().into();
+            a.game_keys = game_keys.join(",");
             ctx.db.admin().identity().update(a);
         }
         None => {
@@ -146,29 +238,12 @@ pub fn admin_upsert_admin(ctx: &ReducerContext, json: String) -> Result<(), Stri
                 name: name.clone(),
                 added_by: who.identity.to_hex().to_string(),
                 added_at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+                game_keys: game_keys.join(","),
             });
         }
     }
-    audit(ctx, &who, "admin_upsert_admin", &hex, &format!("{name} as {}", role.as_str()));
-    Ok(())
-}
-
-/// Adds an admin with the `admin` role by identity (scripts; the admin page uses `admin_upsert_admin`).
-#[spacetimedb::reducer]
-pub fn admin_add_admin(ctx: &ReducerContext, identity_hex: String) -> Result<(), String> {
-    let who = require(ctx, Cap::Owner)?;
-    let identity = parse_identity(&identity_hex)?;
-    if ctx.db.admin().identity().find(identity).is_none() {
-        ctx.db.admin().insert(Admin {
-            identity,
-            protected: false,
-            role: Role::Admin.as_str().into(),
-            name: String::new(),
-            added_by: who.identity.to_hex().to_string(),
-            added_at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
-        });
-        audit(ctx, &who, "admin_add_admin", &identity.to_hex(), "as admin");
-    }
+    let apps = if game_keys.is_empty() { "every app".to_string() } else { game_keys.join(", ") };
+    audit(ctx, &who, "admin_upsert_admin", &hex, &format!("{name} as {}, {apps}", role.as_str()));
     Ok(())
 }
 
@@ -239,8 +314,6 @@ fn matches(row: &Value, column: &str, value: &str) -> bool {
 /// tables need one), through the table's index when the column has one. Credentials only give
 /// their keys; server settings only the ones the admin page reads.
 fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<Vec<Value>, String> {
-    let cap = if matches!(table, "admin" | "admin_audit") { Cap::Admins } else { Cap::Read };
-    require(ctx, cap)?;
     let db = &ctx.db;
     let all = match table {
         "game_app" if column == "app_id" => rows(db.game_app().app_id().find(value.to_string()).into_iter()),
@@ -327,6 +400,8 @@ enum Equals {
 /// owner's): every value of the filter looked up through the index where the column has one, and
 /// only the asked `columns` of each row (all when empty).
 pub fn select(ctx: &ReducerContext, q: &SelectQuery) -> Result<Vec<Value>, String> {
+    // The admin list and the audit log are for admins who manage admins (and see every app).
+    let who = if matches!(q.table.as_str(), "admin" | "admin_audit") { require(ctx, Cap::Admins)? } else { require_scoped(ctx, Cap::Read)? };
     let mut out = match &q.filter {
         None => read(ctx, &q.table, "", "")?,
         Some(w) => {
@@ -346,6 +421,9 @@ pub fn select(ctx: &ReducerContext, q: &SelectQuery) -> Result<Vec<Value>, Strin
             rows
         }
     };
+    if let Some(apps) = who.app_ids(ctx) {
+        out.retain(|row| visible(ctx, &who, &apps, &q.table, row));
+    }
     if !q.columns.is_empty() {
         for row in &mut out {
             if let Value::Object(m) = row {
@@ -354,6 +432,23 @@ pub fn select(ctx: &ReducerContext, q: &SelectQuery) -> Result<Vec<Value>, Strin
         }
     }
     Ok(out)
+}
+
+/// A row an admin limited to some apps (`apps`: their builds) may read: rows of their builds or
+/// apps, the secret names of their builds, the server settings the page reads; never the alert
+/// channels and their log (server-wide).
+fn visible(ctx: &ReducerContext, who: &Who, apps: &BTreeSet<String>, table: &str, row: &Value) -> bool {
+    let s = |k: &str| row[k].as_str().unwrap_or("");
+    match table {
+        "alert_channel" | "alert_log" => false,
+        "credential" => s("key").split_once('/').is_some_and(|(scope, _)| apps.contains(scope)),
+        "paywall_test" => s("placement_key").split_once('/').is_some_and(|(game, _)| who.sees_game(game)),
+        "purchase_log" => ctx.db.purchase().id().find(s("purchase_id").to_string()).is_some_and(|p| apps.contains(&p.app_id)),
+        "alert_state" => apps.contains(s("app_id")),
+        _ if row.get("app_id").is_some() => apps.contains(s("app_id")),
+        _ if row.get("game_key").is_some() => who.sees_game(s("game_key")),
+        _ => true,
+    }
 }
 
 /// [`select`] as a procedure: a JSON array, or `{"error"}`.

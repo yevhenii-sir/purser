@@ -89,7 +89,7 @@ pub(crate) fn error_repeats(details: &str, error: &str) -> Option<u32> {
 
 /// Moves an owned purchase to `revoke_pending` as an admin revoke. `Ok(None)`: already revoked.
 pub fn revoke(tx: &TxContext, purchase_id: &str, reason: &str) -> Result<Option<String>, String> {
-    let who = crate::access::require(tx, purser_core::roles::Cap::Support)?;
+    let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Support)?;
     crate::access::audit(tx, &who, "admin_revoke_purchase", purchase_id, reason);
     let p = tx
         .db
@@ -97,6 +97,7 @@ pub fn revoke(tx: &TxContext, purchase_id: &str, reason: &str) -> Result<Option<
         .id()
         .find(&purchase_id.to_string())
         .ok_or("[ERR_PURCHASE_NOT_FOUND] Unknown purchase")?;
+    who.check_app(tx, &p.app_id)?;
     if !rules::admin_revoke_decision(&p.status).map_err(|e| format!("[ERR_NOT_REVOCABLE] {e}"))? {
         return Ok(None);
     }
@@ -152,10 +153,12 @@ fn fx_table(tx: &TxContext, rows: &[Purchase]) -> FxTable {
 }
 
 /// Everything support needs about one `user_id`, across every app of the database.
-pub fn profile(tx: &TxContext, user_id: &str) -> Value {
-    let mut rows: Vec<Purchase> = tx.db.purchase().user_id().filter(user_id).collect();
+/// `only`: the builds an admin limited to some apps may see (`None` = all).
+pub fn profile(tx: &TxContext, user_id: &str, only: Option<&BTreeSet<String>>) -> Value {
+    let visible = |app_id: &str| only.map_or(true, |o| o.contains(app_id));
+    let mut rows: Vec<Purchase> = tx.db.purchase().user_id().filter(user_id).filter(|p| visible(&p.app_id)).collect();
     rows.sort_by_key(|p| std::cmp::Reverse((p.created_at_micros, p.id.clone())));
-    let apps: Vec<GameApp> = tx.db.game_app().iter().collect();
+    let apps: Vec<GameApp> = tx.db.game_app().iter().filter(|a| visible(&a.app_id)).collect();
 
     let attribution: Vec<Value> = apps
         .iter()
@@ -166,7 +169,7 @@ pub fn profile(tx: &TxContext, user_id: &str) -> Value {
         })
         .collect();
 
-    let players = crate::players::of_user(tx, user_id);
+    let players: Vec<Value> = crate::players::of_user(tx, user_id).into_iter().filter(|p| p["app_id"].as_str().is_some_and(|a| visible(a))).collect();
     let mut seen: BTreeSet<String> = rows.iter().map(|p| p.app_id.clone()).collect();
     seen.extend(attribution.iter().filter_map(|a| a["app_id"].as_str().map(str::to_string)));
     seen.extend(players.iter().filter_map(|p| p["app_id"].as_str().map(str::to_string)));
@@ -224,8 +227,8 @@ pub fn profile(tx: &TxContext, user_id: &str) -> Value {
 #[spacetimedb::procedure]
 pub fn admin_user_profile(ctx: &mut ProcedureContext, user_id: String) -> String {
     let result = ctx.tx(|tx| {
-        crate::access::require(tx, purser_core::roles::Cap::Read)?;
-        Ok::<_, String>(profile(tx, &user_id))
+        let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read)?;
+        Ok::<_, String>(profile(tx, &user_id, who.app_ids(tx).as_ref()))
     });
     match result {
         Ok(v) => v.to_string(),
@@ -235,25 +238,27 @@ pub fn admin_user_profile(ctx: &mut ProcedureContext, user_id: String) -> String
 
 /// Players a search query points to: a user id, a ledger id, a transaction / order id (also a
 /// Google renewal order id) or a Google purchase token. In order of confidence, without repeats.
-pub fn find_players(tx: &TxContext, query: &str) -> Vec<Value> {
+/// `only`: the builds an admin limited to some apps may see (`None` = all).
+pub fn find_players(tx: &TxContext, query: &str, only: Option<&BTreeSet<String>>) -> Vec<Value> {
     let q = query.trim();
     if q.is_empty() {
         return Vec::new();
     }
+    let visible = |app_id: &str| only.map_or(true, |o| o.contains(app_id));
     let mut out: Vec<Value> = Vec::new();
     let mut add = |user_id: &str, via: &str, purchase_id: &str| {
         if !user_id.is_empty() && !out.iter().any(|m| m["user_id"] == user_id) {
             out.push(json!({ "user_id": user_id, "via": via, "purchase_id": purchase_id }));
         }
     };
-    if tx.db.purchase().user_id().filter(q).next().is_some() {
+    if tx.db.purchase().user_id().filter(q).any(|p| visible(&p.app_id)) {
         add(q, "user_id", "");
-    } else if tx.db.game_app().iter().any(|a| tx.db.user_attribution().key().find(&attribution_key(&a.app_id, q)).is_some()) {
+    } else if tx.db.game_app().iter().filter(|a| visible(&a.app_id)).any(|a| tx.db.user_attribution().key().find(&attribution_key(&a.app_id, q)).is_some()) {
         add(q, "attribution", "");
     }
     let (ledger_ids, originals) = rules::search_keys(q);
     for id in &ledger_ids {
-        if let Some(p) = tx.db.purchase().id().find(id) {
+        if let Some(p) = tx.db.purchase().id().find(id).filter(|p| visible(&p.app_id)) {
             add(&p.user_id, "transaction", &p.id);
         }
     }
@@ -262,11 +267,11 @@ pub fn find_players(tx: &TxContext, query: &str) -> Vec<Value> {
         v
     };
     for o in &originals {
-        for p in newest_first(tx.db.purchase().original_transaction_id().filter(o.as_str()).collect()) {
+        for p in newest_first(tx.db.purchase().original_transaction_id().filter(o.as_str()).filter(|p| visible(&p.app_id)).collect()) {
             add(&p.user_id, "original_transaction", &p.id);
         }
     }
-    for p in newest_first(tx.db.purchase().purchase_token().filter(q).collect()) {
+    for p in newest_first(tx.db.purchase().purchase_token().filter(q).filter(|p| visible(&p.app_id)).collect()) {
         add(&p.user_id, "purchase_token", &p.id);
     }
     out
@@ -276,8 +281,8 @@ pub fn find_players(tx: &TxContext, query: &str) -> Vec<Value> {
 #[spacetimedb::procedure]
 pub fn admin_find_player(ctx: &mut ProcedureContext, query: String) -> String {
     let result = ctx.tx(|tx| {
-        crate::access::require(tx, purser_core::roles::Cap::Read)?;
-        Ok::<_, String>(find_players(tx, &query))
+        let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read)?;
+        Ok::<_, String>(find_players(tx, &query, who.app_ids(tx).as_ref()))
     });
     match result {
         Ok(m) => json!({ "matches": m }).to_string(),

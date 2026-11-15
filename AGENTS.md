@@ -67,7 +67,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   the row is written first, `ledger::advance` tries inline, `ledger::process_pending` (scheduled
   worker) retries with backoff.
 - **Delivery** (`game_app.delivery`): `spacetimedb` (call `grant_reducer` / `revoke_reducer` on the
-  game DB with `spacetime_token`; `args_format` `v1` or `legacy`), `webhook` (HMAC `webhook_secret`),
+  game DB with `spacetime_token`; one argument, the `BillingEvent`), `webhook` (HMAC `webhook_secret`),
   `none` (client grants; `PurchaseResult.GrantOnClient`). Contract: [docs/game-integration.md](docs/game-integration.md).
 - **Account binding**: Google `obfuscatedAccountId` / Apple `appAccountToken` derived from `user_id`
   (`purser_core::google_account_id` / `apple_account_token`, mirrored by Unity `AccountIds` with the
@@ -95,8 +95,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - `/call/<name>` looks for a reducer first: every **procedure** call logs
   `External attempt to call nonexistent reducer "<name>"`. Harmless; the Logs page hides it.
 - `/sql` has no `SUM` / `GROUP BY`: aggregates are maintained by the module.
-- **`init` does not run on republish** and there is no upgrade hook. One-off migrations go into the
-  worker (`revenue::upkeep`, called from `process_pending`), guarded by a `server_state` key.
+- **`init` does not run on republish** and there is no upgrade hook (see Schema rules).
 - Outbound HTTP: only from procedures and HTTP handlers, outside a transaction; the procedure waits
   for the reply. `net::send` sets a 10 s timeout (`net::TIMEOUT_SECS`; the host allows up to 180 s and
   uses 30 s by default: the 500 ms in the `spacetimedb` crate docs is outdated). Private addresses
@@ -113,28 +112,20 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   `(app_id, created_at)` / `(app_id, updated_at)` ledger indexes, `(app_id, day)` of the daily
   revenue tables) and keep per-request work independent of the number of apps.
 
-## Schema rules (published databases upgrade in place)
+## Schema rules (no users yet: no legacy)
 
-- Until the first public release, breaking schema changes are allowed: rename or remove instead of
-  keeping legacy columns, and say in the changelog that the release needs a publish with
-  `--delete-data`. After that release the rules below apply.
-- New tables and indexes: fine (SpacetimeDB adds indexes in place). New column: **at the end** of the
-  struct with `#[default(...)]`.
-- Never rename, reorder, retype or remove existing columns or tables: SpacetimeDB cannot migrate
-  that in place (it needs a publish with `--delete-data`). Leave a deprecated field and stop using it.
+- Purser has no production users yet: change tables the clean way (rename, reorder, retype, remove)
+  instead of keeping legacy columns, `#[default]` attributes or upgrade code. A release whose schema
+  cannot be migrated in place says in both changelogs that it needs a publish with `--delete-data`.
+- New tables and indexes migrate in place (SpacetimeDB adds indexes automatically).
 
-## HTTP API rules (shipped game builds never update)
+## Client API rules (the server and the Unity SDK ship together)
 
-Every game build in players' hands keeps the SDK it shipped with, so the client HTTP API only grows:
-- New request fields are optional (`#[serde(default)]`); never rename, remove or make a field
-  required, never change what an existing `status` value means, never remove a route. Renamed
-  fields stay as `#[serde(alias)]`. Responses may gain fields (old clients ignore them).
-- A change that cannot be additive gets a new route next to the old one.
-- `server/spacetimedb/sdk-requests/<version>.json` holds the request bodies each released Unity SDK
-  sends; `every_released_sdk_request_is_still_accepted` parses all of them with the current server and
-  `released_sdk_purchase_flows_still_work` replays the purchase flow. Never edit a released file. A
-  release adds the file of its version (the test fails until it exists): copy the previous one and
-  add what the SDK started sending.
+- Request fields have one name each (`app_id`, never aliases); optional fields are only those a
+  client may legitimately leave out, not ones kept for older clients.
+- `server/spacetimedb/sdk-requests/current.json` holds what the current Unity SDK sends;
+  `every_request_of_the_unity_sdk_is_accepted` parses it and `the_unity_sdk_purchase_flow_works`
+  replays the purchase flow. Change it together with `Runtime/Api/Dto.cs` and the store adapters.
 
 ## Commands
 
@@ -237,7 +228,7 @@ in `registry::STORES`; builds cannot use it.
    and its arm in `dispatch_notification`. Notifications only say what to look up again
    (`stores::refetch` → `sync_store_tx`); keep health in `store_health::touch`. The test
    `every_registry_route_has_a_handler` fails until the arm exists. New client fields go to
-   `VerifyRequest` / `RestoreItem` with `#[serde(default)]`.
+   `VerifyRequest` / `RestoreItem` (and `sdk-requests/current.json` with the SDK).
 6. **Setup check** `server/spacetimedb/src/doctor.rs`: an online check arm in `check_app`
    (`check_<store>`, classifier in `purser_core::doctor`); notifications are reported generically
    from `store_notify_health`.
@@ -297,5 +288,5 @@ Page component in `pages/`, register it in `routes.tsx` (`PAGES` or `APP_TABS`);
 - If anything under `server/admin-ui` changed: `npm run build` and commit `admin/index.html`.
 - New Unity files have `.meta` files; Unity code compiles in your head at least — CI does not run
   Unity tests, so keep changes small and covered by EditMode tests in `Tests/Editor`.
-- Schema changes follow the rules above; the client HTTP API only grows (HTTP API rules); docs and
+- Schema and client API changes follow the rules above (a `--delete-data` release says so); docs and
   changelogs are updated.

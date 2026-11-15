@@ -14,8 +14,9 @@ pub const DEFAULT_SCOPE: &str = "default";
 
 /// The store of a build (`game_app.store`, or the platform's default). Rows are validated on
 /// write; a row that does not resolve (edited by hand) falls back to manual, which verifies nothing.
+/// The build's store (`admin_upsert_game_app` always stores the resolved id).
 pub fn app_store(app: &GameApp) -> &'static purser_core::registry::StoreInfo {
-    purser_core::registry::build_store(&app.platform, &app.store).unwrap_or(&purser_core::registry::MANUAL)
+    purser_core::registry::store(&app.store).unwrap_or(&purser_core::registry::MANUAL)
 }
 
 pub mod secret_name {

@@ -29,6 +29,12 @@ export const roleLabel = (r: Role) => (r === "owner" ? "Owner" : ROLES.find((x) 
 
 export const RoleContext = createContext<Role>("owner")
 
+/** The apps (`game_key`) the signed-in admin is limited to; empty = every app. */
+export const ScopeContext = createContext<string[]>([])
+
+/** The signed-in admin is limited to some apps: server-wide pages and actions are hidden. */
+export const useScoped = () => useContext(ScopeContext).length > 0
+
 export const useRole = () => useContext(RoleContext)
 
 /** `can(cap)` for the signed-in admin. */

@@ -76,7 +76,7 @@ Without Caddy, put any TLS proxy in front of `127.0.0.1:3000` with the same allo
 
 ## Upgrading
 
-- **Module:** run `./publish.sh` again (or with `--release <tag>`). It publishes to the same database and never passes `--delete-data`, so the ledger stays.
+- **Module:** run `./publish.sh` again (or with `--release <tag>`). It publishes to the same database and never passes `--delete-data`, so the ledger stays; a release that needs a clean database says so in its notes.
 - **SpacetimeDB:** change `SPACETIMEDB_VERSION` in `.env` (to the version the module release names), then `docker compose pull && docker compose up -d`.
 
 ## Data and backups

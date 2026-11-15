@@ -92,7 +92,7 @@ paths:
             schema:
               $ref: "#/components/schemas/VerifyRequest"
             example:
-              bundle_id: com.example.mygame
+              app_id: com.example.mygame
               user_id: c2005b4c1622269bf51cddf038743f7f
               product_id: diamonds_150
               purchase_token: "<Google purchaseToken>"
@@ -118,7 +118,7 @@ paths:
         Looks the transaction up in the App Store Server API, records it in the ledger and delivers the
         reward (unless the app's delivery is `none`). Repeating the call for the same transaction is safe.
 
-        `order_id` (the StoreKit `transactionId`, alias `transaction_id`) is required. For consumables,
+        `order_id` (the StoreKit `transactionId`) is required. For consumables,
         the transaction's `appAccountToken` must match `user_id`.
       requestBody:
         required: true
@@ -127,7 +127,7 @@ paths:
             schema:
               $ref: "#/components/schemas/VerifyRequest"
             example:
-              bundle_id: com.example.mygame
+              app_id: com.example.mygame
               user_id: c2005b4c1622269bf51cddf038743f7f
               product_id: month_sub
               order_id: "2000000123456789"
@@ -365,9 +365,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [bundle_id, product_id, offer_id, user_id]
+              required: [app_id, product_id, offer_id, user_id]
               properties:
-                bundle_id: { type: string, examples: [com.example.mygame] }
+                app_id: { type: string, examples: [com.example.mygame] }
                 product_id: { type: string, description: Subscription product id }
                 offer_id: { type: string, description: Promotional offer id from App Store Connect }
                 user_id: { $ref: "#/components/schemas/UserId" }
@@ -381,7 +381,7 @@ paths:
                 type: object
                 properties:
                   status: { type: string, const: success }
-                  bundle_id: { type: string }
+                  app_id: { type: string }
                   product_id: { type: string }
                   offer_id: { type: string }
                   key_id: { type: string }
@@ -419,8 +419,8 @@ paths:
               type: object
               required: [app_id, placement]
               properties:
-                app_id: { type: string, description: Package / bundle id of the build. Alias `bundle_id`. }
-                placement: { type: string, description: Alias `placement_id`. }
+                app_id: { type: string, description: Package / bundle id of the build. }
+                placement: { type: string, description: }
                 user_id: { $ref: "#/components/schemas/UserId" }
                 client: { $ref: "#/components/schemas/ClientInfo" }
       responses:
@@ -516,7 +516,7 @@ paths:
               type: object
               required: [app_id, user_id, attributes]
               properties:
-                app_id: { type: string, description: Package / bundle id of the build. Alias `bundle_id`. }
+                app_id: { type: string, description: Package / bundle id of the build. }
                 user_id: { $ref: "#/components/schemas/UserId" }
                 attributes:
                   type: object
@@ -590,15 +590,12 @@ components:
 
     VerifyRequest:
       type: object
-      required: [bundle_id, user_id, product_id]
+      required: [app_id, user_id, product_id]
       properties:
-        bundle_id:
-          type: string
-          description: Android package or iOS bundle id of the build. Alias `app_id`.
-          examples: [com.example.mygame]
         app_id:
           type: string
-          description: Alias of `bundle_id`; send one of them.
+          description: "The build's id (`game_app.app_id`): Android package, iOS bundle id, Steam AppID or the id of an Amazon / web build."
+          examples: [com.example.mygame]
         user_id:
           $ref: "#/components/schemas/UserId"
         product_id:
@@ -610,11 +607,8 @@ components:
         order_id:
           type: string
           description: |
-            Apple `transactionId` (required for `/verify/apple`) or Google `orderId` (optional).
-            Alias `transaction_id`.
-        transaction_id:
-          type: string
-          description: Alias of `order_id`.
+            Apple `transactionId` (required for `/verify/apple`), Amazon `receiptId` (required for
+            `/verify/amazon`) or Google `orderId` (optional).
         app_instance_id:
           type: string
           description: Firebase `app_instance_id` of the client, for GA4.
@@ -711,10 +705,7 @@ components:
       properties:
         app_id:
           type: string
-          description: Any build of the game. Alias `bundle_id`.
-        bundle_id:
-          type: string
-          description: Alias of `app_id`; send one of them.
+          description: Any build of the game.
         user_id:
           $ref: "#/components/schemas/UserId"
         client:
@@ -755,10 +746,7 @@ components:
       properties:
         app_id:
           type: string
-          description: The build the purchases come from. Alias `bundle_id`.
-        bundle_id:
-          type: string
-          description: Alias of `app_id`; send one of them.
+          description: The build the purchases come from.
         user_id:
           $ref: "#/components/schemas/UserId"
         app_instance_id:
@@ -782,10 +770,7 @@ components:
                 description: Google `purchaseToken` (Android builds).
               order_id:
                 type: string
-                description: Apple `transactionId` (iOS builds). Alias `transaction_id`.
-              transaction_id:
-                type: string
-                description: Alias of `order_id`.
+                description: Apple `transactionId` (iOS builds).
 
     RestoreResponse:
       type: object

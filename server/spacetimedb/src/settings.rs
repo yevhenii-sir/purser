@@ -17,8 +17,6 @@ pub mod key {
     /// Public `https://<host>/v1/database/<db>/route` base for store notification URLs and clients.
     /// Needed when the admin page is opened through an SSH tunnel (its own origin is localhost).
     pub const PUBLIC_BASE_URL: &str = "public_base_url";
-    /// Version of the revenue aggregates; bumped when they must be rebuilt from the ledger.
-    pub const REVENUE_VERSION: &str = "revenue_version";
     /// Last FX refresh attempt (micros), to retry hourly at most.
     pub const FX_LAST_ATTEMPT: &str = "fx_last_attempt_micros";
     /// Earliest day (days since epoch) FX rates were backfilled to.
@@ -40,6 +38,11 @@ pub mod key {
     pub const FX_LAST_OK: &str = "fx_last_ok_micros";
     /// Next FX history backfill attempt after a failed one (micros).
     pub const FX_BACKFILL_RETRY_AT: &str = "fx_backfill_retry_at_micros";
+    /// Days player profiles, attribution ids and paywall view counts are kept after their last
+    /// change (default `retention::DEFAULT_DAYS`). The ledger and revenue are kept for good.
+    pub const RETENTION_DAYS: &str = "retention_days";
+    /// Day of the last retention step.
+    pub const RETENTION_DAY: &str = "retention_day";
 }
 
 /// Keys `admin_set_setting` may change.
@@ -48,6 +51,7 @@ pub const ADMIN_KEYS: &[&str] = &[
     key::STORE_COMMISSION_PERCENT,
     key::STORE_COMMISSION_BY_APP,
     key::STORE_COMMISSION_AFTER_YEAR_PERCENT,
+    key::RETENTION_DAYS,
 ];
 
 pub fn get(ctx: &ReducerContext, key: &str) -> Option<String> {
@@ -95,6 +99,10 @@ pub fn admin_set_setting(ctx: &ReducerContext, key: String, value: String) -> Re
         key::STORE_COMMISSION_PERCENT | key::STORE_COMMISSION_AFTER_YEAR_PERCENT => {
             purser_core::revenue::parse_percent(&value).map_err(|e| format!("[ERR_BAD_SETTING] {key}: {e}"))?.to_string()
         }
+        key::RETENTION_DAYS => match value.parse::<i64>() {
+            Ok(d) if (crate::retention::MIN_DAYS..=3650).contains(&d) => d.to_string(),
+            _ => return Err(format!("[ERR_BAD_SETTING] {key}: whole days from {} to 3650", crate::retention::MIN_DAYS)),
+        },
         key::STORE_COMMISSION_BY_APP => {
             let by_app = purser_core::revenue::parse_percent_by_app(&value).map_err(|e| format!("[ERR_BAD_SETTING] {key}: {e}"))?;
             serde_json::to_string(&by_app).unwrap_or_default()

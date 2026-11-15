@@ -63,7 +63,7 @@ Only the owner can read private tables, and admin reducers check the identity ag
 
 ## Configuration
 
-Everything is configured through admin reducers. Admins are the identity that published the database (`init`, the **owner**) plus anyone added on the Admins page. If the module was published over a database created in the dashboard, `init` did not run: the owner adds itself with `spacetime sql <db> "INSERT INTO admin (identity, protected, role, name, added_by, added_at_micros) VALUES (0x<your identity>, true, 'admin', '', '', 0)"` (only the owner can write private tables) and starts the worker with `spacetime call <db> admin_ensure_worker`. The admin page does both with one button. All tables are private: only the owner can read them via `spacetime sql`.
+Everything is configured through admin reducers. Admins are the identity that published the database (`init`, the **owner**) plus anyone added on the Admins page. If the module was published over a database created in the dashboard, `init` did not run: the owner adds itself with `spacetime sql <db> "INSERT INTO admin (identity, protected, role, name, added_by, added_at_micros, game_keys) VALUES (0x<your identity>, true, 'admin', '', '', 0, '')"` (only the owner can write private tables) and starts the worker with `spacetime call <db> admin_ensure_worker`. The admin page does both with one button. All tables are private: only the owner can read them via `spacetime sql`.
 
 ### Apps (`game_app`)
 
@@ -77,7 +77,7 @@ One row = one **build**: an app in one store. The builds of the same game (Googl
 | `game_key` | shared game key for `/entitlements` |
 | `account` | secrets profile (developer account), see below |
 | `delivery` | `spacetimedb` \| `webhook` \| `none` (the game needs no server of its own, the client grants the reward, see “Games without a backend”) |
-| `spacetime_url`, `spacetime_db`, `grant_reducer`, `revoke_reducer`, `args_format` | for `spacetimedb`; `args_format` = `legacy` \| `v1` |
+| `spacetime_url`, `spacetime_db`, `grant_reducer`, `revoke_reducer` | for `spacetimedb`: each reducer takes one `BillingEvent` |
 | `webhook_url` | for `webhook` (https only) |
 | `allow_sandbox` | accept sandbox / license-tester purchases (needed for App Review and QA) |
 | `client_consumes` | the client consumes in Google itself (for example, while purchases still go through Adapty). Off (default): a consumable that Google reports as already consumed but that isn't in the ledger is rejected, see “Protection against double grants” |
@@ -129,7 +129,7 @@ A secret key is `{scope}/{name}`, where scope is an app id, an account name or `
 | `steam_publisher_key` | Steamworks publisher Web API key (Users & Permissions → Manage Groups; one per publisher group) |
 | `spacetime_token` | long-lived token of an identity trusted by the game module |
 | `webhook_secret` | HMAC key for webhook delivery |
-| `alert_telegram_bot_token`, `alert_slack_webhook_url`, `alert_discord_webhook_url`, `alert_webhook_secret` | alert channels, always in the `default` scope; see [docs/alerts.md](../docs/alerts.md) |
+| `alert_telegram_bot_token`, `alert_slack_webhook_url`, `alert_discord_webhook_url`, `alert_webhook_secret` | alert channels, in the scope of the channel (`alert-<id>`; set them on the Alerts page); see [docs/alerts.md](../docs/alerts.md) |
 
 ### Loading: `seed.py`
 
@@ -141,7 +141,7 @@ python seed.py
 
 In `secrets/` (the folder is in `.gitignore`) fill in `spacetime_hosts.json`, `apps.json`, `products.json`, `credentials.json`; key files are referenced in the `value_file` field. The script takes the server and database from `spacetime.json` (`--server` / `--database` override them) and calls `admin_add_spacetime_host`, `admin_upsert_game_app`, `admin_upsert_products`, `admin_set_credential`. Hosts are loaded first, because apps are validated against that list. Placeholders like `<…>` are skipped.
 
-After `integrations.json` it loads, when present: `paywalls.json` (`admin_upsert_paywall`), `placements.json` (`admin_upsert_placement`; A/B tests are started in the admin page), `alerts.json` (`{"channels": [{kind, enabled, settings, secret?}], "rules": {...}}` → `admin_upsert_alert_channel`, `admin_set_alert_rules`; a channel without `secret` keeps the stored one) and `settings.json` (`public_base_url`, `store_commission_percent`, `store_commission_by_app`, `store_commission_after_year_percent` → `admin_set_setting`). The format of every file is in the docstring of `seed.py` and in `seed.example/`.
+After `integrations.json` it loads, when present: `paywalls.json` (`admin_upsert_paywall`), `placements.json` (`admin_upsert_placement`; A/B tests are started in the admin page), `alerts.json` (`{"channels": [{name?, kind, enabled, settings, secret?, game_keys?, rules?}], "rules": {...}}` → `admin_upsert_alert_channel`, `admin_set_alert_rules`; channels are found by `name`, which defaults to the kind; a channel without `secret` keeps the stored one) and `settings.json` (`public_base_url`, `store_commission_percent`, `store_commission_by_app`, `store_commission_after_year_percent`, `retention_days` → `admin_set_setting`). The format of every file is in the docstring of `seed.py` and in `seed.example/`.
 
 - `python seed.py --export DIR` writes the configuration of the database to `DIR` in the same format (owner only; it refuses a non-empty `DIR` without `--force`). Secret values are never read: `credentials.json` lists the keys that are set with the value `<set me>`, which `seed.py` skips until you fill it in.
 - `python seed.py --init` is a guided first setup: it asks for the database, the app and its Google Play / App Store / Amazon builds, the delivery and the store keys (the questions come from the store registry), generates the notification secrets, writes the answers to `--dir` (default `secrets/`), uploads them, offers the Google Play catalog import, runs the setup check and prints the notification URLs and the Unity `BillingConfig` JSON.
@@ -189,16 +189,15 @@ Every role reads everything except secret values (the page only learns key names
 
 Managing admins:
 
-- `admin_upsert_admin(json {identity, name, role})` adds an admin or changes one.
+- `admin_upsert_admin(json {identity, name, role, game_keys?})` adds an admin or changes one. `game_keys` limits the admin to those apps: they see and change only their builds, products, paywalls, integrations, purchases, players and revenue, and the secrets of their builds; server settings, developer account and default secrets, alerts, hosts, imports and admins need an admin without `game_keys` (`[ERR_SCOPE]` otherwise).
 - `admin_remove_admin(identity)` removes one. Nobody can remove themselves or change their own role.
-- `admin_add_admin(identity)` is kept for scripts; it adds an Admin and needs the owner.
 - `admin_me()` returns the caller's `{identity, name, role, owner}`.
 
 Admins who are not the owner cannot read private tables with `/sql`. The admin page reads through `admin_select(query_json)` instead (`{"table", "columns"?, "where"?: {"column", "equals": value or [values]}}`): it applies the role check, looks rows up through the table's indexes, returns only the asked columns and never credential values.
 
 Every change is recorded in `admin_audit`: who, the reducer, the target and a short detail with secret-looking fields hidden. Rows are kept 180 days, at most 10 000.
 
-Other admin reducers: `admin_set_setting("public_base_url", url)` (also `store_commission_percent`, `store_commission_after_year_percent`, `store_commission_by_app` for the proceeds estimate, see [docs/analytics.md](../docs/analytics.md)), `admin_delete_game_app`, `admin_delete_product`, `admin_delete_credential`, `admin_add_admin`, `admin_remove_admin`, `admin_requeue_purchase(id)` (retry now), `admin_grant_manual(json)` (manual grant: compensations and promos; goes through the same ledger and delivery, not sent to GA4), `admin_revoke_purchase(purchase_id, reason)` (procedure: revokes a purchase the player owns through the ledger; the game receives `revoke` with `reason = admin`; idempotent).
+Other admin reducers: `admin_set_setting("public_base_url", url)` (also `store_commission_percent`, `store_commission_after_year_percent`, `store_commission_by_app` for the proceeds estimate, see [docs/analytics.md](../docs/analytics.md), and `retention_days`: player profiles, attribution ids of players without an active subscription and paywall view counts are deleted this many days after their last change, default 730; the ledger and revenue are kept), `admin_delete_game_app`, `admin_delete_product`, `admin_delete_credential`, `admin_upsert_admin`, `admin_remove_admin`, `admin_requeue_purchase(id)` (retry now), `admin_grant_manual(json)` (manual grant: compensations and promos; goes through the same ledger and delivery, not sent to GA4), `admin_revoke_purchase(purchase_id, reason)` (procedure: revokes a purchase the player owns through the ledger; the game receives `revoke` with `reason = admin`; idempotent).
 
 **An admin revoke is not a refund.** Revenue and integrations stay as they are, because the store kept the money; the purchase is marked in the `admin_revoke` table. If the store refunds it later, the refund is counted then (and sent to integrations) without a second `revoke` to the game. A store purchase that the store still reports as active comes back when the player restores it: the store stays the source of truth for paid products.
 
@@ -212,7 +211,7 @@ One route per client-receipt store of the registry; a build's purchases go to it
 
 ```json
 {
-  "bundle_id": "com.example.mygame",
+  "app_id": "com.example.mygame",
   "user_id": "<player identity hex>",
   "product_id": "diamonds_150",
   "purchase_token": "<Google purchaseToken>",
@@ -260,7 +259,7 @@ Replaces `adapty_is_purchased` / `adapty_get_subscription_expires_at_ms`.
 
 ### `POST /offers/apple/sign`
 
-`{"bundle_id": "...", "product_id": "...", "offer_id": "...", "user_id": "...", "transaction_id": "<optional>"}` → a signature for an App Store **promotional offer** of a subscription: `{status, key_id, nonce, timestamp, signature, app_account_token, signed_offer_jws, expires_at_ms}`. The signature is bound to the player's `appAccountToken` and made with the build's In-App Purchase key (`apple_key_id`, `apple_private_key_p8`; `apple_issuer_id` for the V2 `signed_offer_jws`). `400` for an unknown/disabled/Android build or a product that is not a subscription, `500 [ERR_OFFER_KEY]` when the key is missing. See [docs/apple-offers.md](../docs/apple-offers.md).
+`{"app_id": "...", "product_id": "...", "offer_id": "...", "user_id": "...", "transaction_id": "<optional>"}` → a signature for an App Store **promotional offer** of a subscription: `{status, key_id, nonce, timestamp, signature, app_account_token, signed_offer_jws, expires_at_ms}`. The signature is bound to the player's `appAccountToken` and made with the build's In-App Purchase key (`apple_key_id`, `apple_private_key_p8`; `apple_issuer_id` for the V2 `signed_offer_jws`). `400` for an unknown/disabled/Android build or a product that is not a subscription, `500 [ERR_OFFER_KEY]` when the key is missing. See [docs/apple-offers.md](../docs/apple-offers.md).
 
 ### `POST /paywall`
 
@@ -327,7 +326,7 @@ Publisher Account → the project → **Project settings → Webhooks**: this UR
 
 ### `POST /verify/stripe`
 
-`{"app_id": "...", "user_id": "...", "session_id": "cs_…"}` (also accepts the `/verify/<store>` body with `bundle_id` and `order_id`). Optional: lets the client get its answer right after the redirect instead of waiting for the webhook. Fetches the session (with its Subscription) and records it like the webhook would; the answer has the shape of `/verify/<store>`: `success` / `pending` once paid, `pending_or_canceled` while the session is open or after it expired, `403 forbidden` for a session of another user. Either path grants once.
+`{"app_id": "...", "user_id": "...", "session_id": "cs_…"}`. Optional: lets the client get its answer right after the redirect instead of waiting for the webhook. Fetches the session (with its Subscription) and records it like the webhook would; the answer has the shape of `/verify/<store>`: `success` / `pending` once paid, `pending_or_canceled` while the session is open or after it expired, `403 forbidden` for a session of another user. Either path grants once.
 
 ### `POST /notify/stripe?app=<app_id>`
 

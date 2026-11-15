@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { useCopy } from "@/lib/hooks"
 import { cn } from "@/lib/utils"
-import { isPurchaseStatus, type Level, type PurchaseStatus } from "@/lib/types"
+import type { Level, PurchaseStatus } from "@/lib/types"
 
 export function PageHeader({ title, description, actions }: { title: string; description?: ReactNode; actions?: ReactNode }) {
   return (
@@ -125,9 +125,8 @@ export function Tone({ tone, children }: { tone: ToneKind; children: ReactNode }
   )
 }
 
-/** `status` may be one a newer server added: shown muted. */
-export function StatusBadge({ status }: { status: string }) {
-  return <Tone tone={isPurchaseStatus(status) ? STATUS_TONE[status] : "muted"}>{status}</Tone>
+export function StatusBadge({ status }: { status: PurchaseStatus }) {
+  return <Tone tone={STATUS_TONE[status]}>{status}</Tone>
 }
 
 export function LevelBadge({ level }: { level: Level }) {

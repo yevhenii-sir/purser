@@ -134,17 +134,13 @@ pub struct OutEvent {
     pub currency: String,
     pub at_ms: i64,
     pub app_instance_id: String,
-    #[serde(default)]
     pub attribution: BTreeMap<String, String>,
     /// Billing country the store reported (ISO 3166-1 alpha-2); empty if unknown. Used for the tax
     /// estimate of [`OutEvent::amounts`].
-    #[serde(default)]
     pub country: String,
     /// Estimated store commission of this payment in percent: the app's rate, reduced after the first
-    /// paid year of a subscription (`revenue::Commission`). Absent in events queued before it
-    /// existed: the default rate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commission_percent: Option<f64>,
+    /// paid year of a subscription (`revenue::Commission`).
+    pub commission_percent: f64,
 }
 
 /// What an integration reports as revenue (`revenue` in its settings).
@@ -186,7 +182,7 @@ impl OutEvent {
     /// ([`crate::tax`]).
     pub fn amounts(&self) -> Amounts {
         let gross = self.price_micros as f64;
-        let keep = 1.0 - self.commission_percent.unwrap_or(crate::revenue::DEFAULT_COMMISSION_PERCENT).clamp(0.0, 100.0) / 100.0;
+        let keep = 1.0 - self.commission_percent.clamp(0.0, 100.0) / 100.0;
         Amounts {
             gross_micros: self.price_micros,
             proceeds_micros: (gross * keep).round() as i64,
@@ -1003,7 +999,7 @@ mod tests {
             app_instance_id: String::new(),
             attribution,
             country: String::new(),
-            commission_percent: None,
+            commission_percent: crate::revenue::DEFAULT_COMMISSION_PERCENT,
         }
     }
 
@@ -1208,15 +1204,15 @@ mod tests {
         let mut ev = event("purchase", "android");
         ev.price_micros = 11_900_000;
         ev.country = "DE".into();
-        ev.commission_percent = Some(30.0);
+        ev.commission_percent = 30.0;
         assert_eq!(ev.amounts(), Amounts { gross_micros: 11_900_000, proceeds_micros: 8_330_000, net_micros: 7_000_000 });
         assert_eq!(ev.with_revenue_mode(revenue_mode::NET).price_micros, 7_000_000);
         assert_eq!(ev.with_revenue_mode(revenue_mode::PROCEEDS).price_micros, 8_330_000);
         assert_eq!(ev.with_revenue_mode(revenue_mode::GROSS).price_micros, 11_900_000);
 
-        // US prices exclude sales tax; an event queued before commission_percent existed uses the default.
+        // US prices exclude sales tax.
         ev.country = "US".into();
-        ev.commission_percent = None;
+        ev.commission_percent = crate::revenue::DEFAULT_COMMISSION_PERCENT;
         assert_eq!(ev.amounts().net_micros, ev.amounts().proceeds_micros);
         assert_eq!(ev.amounts().proceeds_micros, 10_115_000);
     }
@@ -1233,7 +1229,7 @@ mod tests {
         let s = webhook::Settings::parse(r#"{"url":"https://hooks.example.com/billing"}"#).unwrap();
         let mut ev = event("purchase", "android");
         ev.country = "GB".into();
-        ev.commission_percent = Some(15.0);
+        ev.commission_percent = 15.0;
         let body: Value = serde_json::from_str(&send(webhook::build(&ev, &s, "secret").unwrap()).body).unwrap();
         assert_eq!(body["price_micros"], 4_990_000, "the webhook keeps the gross price");
         assert_eq!((body["gross_micros"].as_i64(), body["proceeds_micros"].as_i64()), (Some(4_990_000), Some(4_241_500)));

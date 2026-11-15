@@ -57,4 +57,4 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | [Self-hosting](self-hosting.md) | Your own SpacetimeDB server: Docker Compose, proxy allowlist, admin access |
 | [API reference](api.md) | The public HTTP API (OpenAPI 3.1) |
 | [MCP server](mcp.md) | Ask Claude (or any MCP client) about revenue, players, purchases and the setup |
-| [Migrating from Adapty](migrating-from-adapty.md) | Running next to Adapty, legacy reducers, moving the ledger |
+| [Migrating from Adapty](migrating-from-adapty.md) | Running next to Adapty, moving the ledger |

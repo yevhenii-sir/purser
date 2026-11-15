@@ -14,8 +14,11 @@ pub struct PlayerProfile {
     pub key: String,
     #[index(btree)]
     pub user_id: String,
+    #[index(btree)]
     pub app_id: String,
     pub first_seen_micros: i64,
+    /// Indexed for the retention step (`retention::prune`).
+    #[index(btree)]
     pub last_seen_micros: i64,
     /// `purser_core::player::ClientInfo` as JSON.
     pub client_json: String,

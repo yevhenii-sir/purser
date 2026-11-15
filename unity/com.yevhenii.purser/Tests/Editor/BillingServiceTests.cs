@@ -105,7 +105,7 @@ namespace Purser.Tests
 
             var request = m_Api.VerifyRequests.Single();
             Assert.AreEqual(BillingStores.Google, m_Api.VerifyStores.Single());
-            Assert.AreEqual("com.test.game", request.BundleId);
+            Assert.AreEqual("com.test.game", request.AppId);
             Assert.AreEqual(User, request.UserId);
             Assert.AreEqual("gems_100", request.ProductId);
             Assert.AreEqual("token-1", request.PurchaseToken);
@@ -385,7 +385,7 @@ namespace Purser.Tests
             Buy("premium", FakeStore.AppleOrder("premium_ios"));
             var request = m_Api.VerifyRequests.Single();
             Assert.AreEqual(BillingStores.Apple, m_Api.VerifyStores.Single());
-            Assert.AreEqual("com.test.game.ios", request.BundleId);
+            Assert.AreEqual("com.test.game.ios", request.AppId);
             Assert.AreEqual("2000000001", request.OrderId);
             Assert.IsNull(request.PurchaseToken);
         }
@@ -575,7 +575,7 @@ namespace Purser.Tests
             Assert.AreEqual(BillingStores.Amazon, m_Service.Store);
             Buy("gems_100", new StoreOrder(BillingPlatform.Amazon, "gems_100", "receipt-1", null));
             Assert.AreEqual(BillingStores.Amazon, m_Api.VerifyStores.Single());
-            Assert.AreEqual("com.test.game.amazon", m_Api.VerifyRequests.Single().BundleId);
+            Assert.AreEqual("com.test.game.amazon", m_Api.VerifyRequests.Single().AppId);
         }
 
         [Test]

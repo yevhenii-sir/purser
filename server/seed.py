@@ -28,10 +28,13 @@ Files in --dir (all optional), loaded in this order:
     placements.json   array of {game_key, placement_id, variants: [{variant_id, paywall_id, weight}],
                       enabled}                  -> admin_upsert_placement (A/B tests are started in
                       the admin page; while one runs only `enabled` may change)
-    alerts.json       {"channels": [{kind, enabled, settings, secret?}] -> admin_upsert_alert_channel,
-                       "rules": {...}}                                  -> admin_set_alert_rules
-                      A channel without `secret` keeps the stored one (or takes it from
-                      credentials.json: default/alert_*); an enabled channel without any is skipped.
+    alerts.json       {"channels": [{name?, kind, enabled, settings, secret?, game_keys?, rules?}]
+                                                -> admin_upsert_alert_channel,
+                       "rules": {...}}          -> admin_set_alert_rules
+                      `name` (unique, defaults to the kind) finds the channel to update; several
+                      channels of a kind need names. `game_keys` / `rules` limit a channel to some
+                      apps / rules (empty = all). A channel without `secret` keeps the stored one
+                      (credential alert-<id>/alert_*); an enabled channel without any is skipped.
     settings.json     {public_base_url, store_commission_percent, store_commission_by_app,
                        store_commission_after_year_percent}  -> admin_set_setting
 Values starting with `<` are placeholders and are skipped.
@@ -60,6 +63,9 @@ ALERT_RULES_KEY = "alert_rules"
 PLACEHOLDER = "<set me>"
 # `admin_upsert_alert_channel` in spacetimedb/src/alerts.rs: an enabled channel without a stored secret.
 ALERT_SECRET_MISSING_CODE = "[ERR_ALERT_SECRET_MISSING]"
+# `alerts::secret_for`: the secret of a channel kind, stored as `alert-{id}/<name>` (`alerts::secret_scope`).
+ALERT_SECRETS = {"telegram": "alert_telegram_bot_token", "slack": "alert_slack_webhook_url",
+                 "discord": "alert_discord_webhook_url", "webhook": "alert_webhook_secret"}
 # Store keys that are identifiers, not secrets: --init echoes them while they are typed.
 PLAIN_KEYS = {"apple_issuer_id", "apple_key_id", "apple_connect_key_id", "xsolla_project_id"}
 
@@ -123,12 +129,29 @@ def has_placeholder(v):
     return False
 
 
-def alert_secret_missing(err, kind):
+def alert_secret_missing(err, name):
     """The reducer refused an enabled channel because no secret is stored yet."""
     if ALERT_SECRET_MISSING_CODE in err:
         return True
     text = err.strip()
-    return text.startswith("[ERR_BAD_ALERT]") and f"] {kind}: set " in text and text.endswith(" first")
+    return text.startswith("[ERR_BAD_ALERT]") and f"] {name}: set " in text and text.endswith(" first")
+
+
+def is_alert_scope(scope):
+    """The credential scope of an alert channel's secret (`alert-<id>`)."""
+    return scope.startswith("alert-") and scope[len("alert-"):].isdigit()
+
+
+def alert_channel_label(ch):
+    """The name of a channel of alerts.json (defaults to the kind) and how to print it, with its filters."""
+    name = (ch.get("name") or "").strip() or ch["kind"]
+    label = name if name == ch["kind"] else f"{name} ({ch['kind']})"
+    filters = []
+    if ch.get("game_keys"):
+        filters.append("apps " + ",".join(ch["game_keys"]))
+    if ch.get("rules"):
+        filters.append("rules " + ",".join(ch["rules"]))
+    return name, label + (f" [{'; '.join(filters)}]" if filters else "")
 
 
 def seed(a, d):
@@ -200,18 +223,21 @@ def seed(a, d):
     alerts = load(d / "alerts.json") or {}
     for ch in alerts.get("channels") or []:
         ch = dict(ch)
+        # Channels are found by name: an id of another database means nothing here.
+        ch.pop("id", None)
+        name, label = alert_channel_label(ch)
         if has_placeholder(ch.get("secret", "")):
             ch.pop("secret")
         if has_placeholder(ch.get("settings") or {}):
-            print(f"skip     alert channel {ch['kind']} (placeholder)")
+            print(f"skip     alert channel {label} (placeholder)")
             continue
         err = try_call(a, "admin_upsert_alert_channel", json.dumps(ch))
-        if err and not ch.get("secret") and alert_secret_missing(err, ch["kind"]):
-            print(f"skip     alert channel {ch['kind']} ({err.split('] ', 1)[-1]})")
+        if err and not ch.get("secret") and alert_secret_missing(err, name):
+            print(f"skip     alert channel {label} ({err.split('] ', 1)[-1]})")
             continue
         if err:
             sys.exit(f"admin_upsert_alert_channel failed:\n{err}")
-        print(f"alert    {ch['kind']} enabled={ch.get('enabled', True)}")
+        print(f"alert    {label} enabled={ch.get('enabled', True)}")
     if alerts.get("rules") is not None:
         call(a, "admin_set_alert_rules", json.dumps(alerts["rules"]))
         print("alert    rules")
@@ -230,6 +256,28 @@ def seed(a, d):
 # ---------------------------------------------------------------------------------------------
 # Setup check
 # ---------------------------------------------------------------------------------------------
+
+
+UNITY_TYPE = {"consumable": "Consumable", "non_consumable": "NonConsumable", "subscription": "Subscription"}
+
+
+def unity_config(route, builds, products):
+    """The Unity inspector's config (same shape as the admin page's "Copy Unity config"): every
+    build, and every product once by its catalog id with the store ids that differ and a price."""
+    store_of = {b["app_id"]: b["store"] for b in builds}
+    by_id = {}
+    for p in products:
+        if p["app_id"] not in store_of:
+            continue
+        cid = p.get("catalog_id") or p["product_id"]
+        item = by_id.setdefault(cid, {"id": cid, "type": UNITY_TYPE.get(p["kind"], p["kind"])})
+        if p["product_id"] != cid:
+            item.setdefault("storeIds", {})[store_of[p["app_id"]]] = p["product_id"]
+        if p.get("price_micros") and p.get("currency") and "price" not in item:
+            item.update(price=p["price_micros"] / 1e6, currency=p["currency"])
+    config = {"serverBaseUrl": route, "builds": [{"store": b["store"], "appId": b["app_id"]} for b in builds],
+              "products": list(by_id.values())}
+    return json.dumps(config, indent=2)
 
 def run_check(a, app_ids, quiet=False):
     """Runs admin_check_app for the builds. Returns (ok, reports, route base)."""
@@ -295,7 +343,7 @@ def export(a, d, force):
     base, tok = conn(a)
     try:
         names = {r["game_key"]: r["display_name"] for r in stdb.select_raw(base, a.database, tok, "SELECT * FROM app_profile")}
-    except stdb.StdbError:  # a module older than app_profile
+    except stdb.StdbError:  # not the owner: /sql is the owner's
         names = {}
     if names:
         files["app_names.json"] = dict(sorted(names.items()))
@@ -320,9 +368,11 @@ def export(a, d, force):
 
     # Only the key column: secret values never leave the database.
     keys = sorted(r["key"] for r in sql(a, "SELECT key FROM credential"))
-    if keys:
-        files["credentials.json"] = [{"scope": k.rsplit("/", 1)[0], "name": k.rsplit("/", 1)[1], "value": PLACEHOLDER}
-                                     for k in keys if "/" in k]
+    # Secrets of alert channels (alert-<id>/...) go to alerts.json: channel ids differ between databases.
+    creds = [{"scope": k.rsplit("/", 1)[0], "name": k.rsplit("/", 1)[1], "value": PLACEHOLDER}
+             for k in keys if "/" in k and not is_alert_scope(k.rsplit("/", 1)[0])]
+    if creds:
+        files["credentials.json"] = creds
 
     integrations = [{"app_id": i["app_id"], "kind": i["kind"], "enabled": i["enabled"],
                      "settings": parse_json(i["settings_json"], {})}
@@ -347,8 +397,15 @@ def export(a, d, force):
         files["placements.json"] = placements
 
     state = {r["key"]: r["value"] for r in sql(a, "SELECT key, value FROM server_state")}
-    channels = [{"kind": c["kind"], "enabled": c["enabled"], "settings": parse_json(c["settings_json"], {})}
-                for c in sorted(sql(a, "SELECT * FROM alert_channel"), key=lambda c: c["kind"])]
+    channels = []
+    for c in sorted(sql(a, "SELECT * FROM alert_channel"), key=lambda c: (c["name"], c["kind"])):
+        ch = {"name": c["name"], "kind": c["kind"], "enabled": c["enabled"], "settings": parse_json(c["settings_json"], {}),
+              "game_keys": [k for k in c["game_keys"].split(",") if k.strip()],
+              "rules": [r for r in c["rules"].split(",") if r.strip()]}
+        # A stored secret is listed, never read: fill it in before uploading the file elsewhere.
+        if f"alert-{c['id']}/{ALERT_SECRETS.get(c['kind'], '')}" in keys:
+            ch["secret"] = PLACEHOLDER
+        channels.append(ch)
     alerts = {}
     if channels:
         alerts["channels"] = channels
@@ -371,6 +428,9 @@ def export(a, d, force):
     if "credentials.json" in files:
         print(f"         credentials.json lists the keys only: replace \"{PLACEHOLDER}\" with the value or a "
               "\"value_file\" before uploading it elsewhere")
+    if any(c.get("secret") == PLACEHOLDER for c in files.get("alerts.json", {}).get("channels", [])):
+        print(f"         alerts.json: replace the channels' \"secret\": \"{PLACEHOLDER}\" before uploading it elsewhere "
+              "(or remove it to keep the stored one)")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -472,7 +532,6 @@ def init(a):
             "spacetime_db": ask("Game database name", required=True),
             "grant_reducer": ask("Grant reducer", "billing_grant", required=True),
             "revoke_reducer": ask("Revoke reducer (empty: none)", "billing_revoke"),
-            "args_format": "v1",
         })
         tok = ask_secret("Long-lived token of the identity the game module trusts (empty: set it later)")
         creds.append({"scope": account, "name": "spacetime_token", "value": tok or "<token of the identity trusted by the game module>"})
@@ -585,17 +644,8 @@ def init(a):
         print("  If clients and stores reach the database through another address than this one, set\n"
               "  public_base_url (settings.json or Settings -> Server) and run the check again.")
 
-    unity_type = {"consumable": "Consumable", "non_consumable": "NonConsumable", "subscription": "Subscription"}
-    first = lambda store: next((b["app_id"] for b in builds if b["store"] == store), None)
-    seen, unity_products = set(), []
-    for p in products:
-        if p["product_id"] not in seen:
-            seen.add(p["product_id"])
-            unity_products.append({"id": p["product_id"], "type": unity_type.get(p["kind"], p["kind"])})
-    unity = {"serverBaseUrl": route, "androidAppId": first("google"), "iosAppId": first("apple"),
-             "amazonAppId": first("amazon"), "products": unity_products}
-    print("\nUnity: BillingConfig -> Apply JSON (or set the fields by hand):")
-    print(json.dumps({k: v for k, v in unity.items() if v is not None}, indent=2))
+    print("\nUnity: BillingConfig -> Paste config from admin panel:")
+    print(unity_config(route, builds, products))
     try:
         shown = d.relative_to(ROOT)
     except ValueError:

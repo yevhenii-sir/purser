@@ -32,7 +32,7 @@ player coming back).
 
 ```json
 {
-  "bundle_id": "com.example.mygame",
+  "app_id": "com.example.mygame",
   "product_id": "premium_monthly",
   "offer_id": "winback_50",
   "user_id": "<player id>",
@@ -46,7 +46,7 @@ it and is a subscription. Answer:
 ```json
 {
   "status": "success",
-  "bundle_id": "com.example.mygame",
+  "app_id": "com.example.mygame",
   "product_id": "premium_monthly",
   "offer_id": "winback_50",
   "key_id": "<In-App Purchase key id>",

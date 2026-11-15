@@ -45,8 +45,6 @@ const UNITY_TYPE: Record<Kind, string> = { consumable: "Consumable", non_consuma
 const KIND_OF: Record<string, Kind> = {
   consumable: "consumable", nonconsumable: "non_consumable", non_consumable: "non_consumable", subscription: "subscription",
 }
-/** Keys of the config before it was keyed by store. */
-const OLD_KEYS = ["androidAppId", "iosAppId", "amazonAppId", "googleId", "appleId", "amazonId"]
 const AGAIN = "copy the config again from Unity (Purser config inspector)"
 
 const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v)
@@ -66,8 +64,6 @@ export function parseUnityConfig(text: string): ParsedUnityConfig {
     throw new Error("Not JSON: paste the whole config the Unity inspector copied")
   }
   if (!isObject(json)) throw new Error("Not a Unity config: expected a JSON object")
-  const old = OLD_KEYS.find((k) => k in json) || (Array.isArray(json.products) && json.products.some((p) => isObject(p) && OLD_KEYS.some((k) => k in p)) ? "googleId" : "")
-  if (old && !Array.isArray(json.builds)) throw new Error(`This config is in an old format (${old}): ${AGAIN}`)
   if (json.builds !== undefined && !Array.isArray(json.builds)) throw new Error(`"builds" must be an array: ${AGAIN}`)
   if (json.products !== undefined && !Array.isArray(json.products)) throw new Error(`"products" must be an array: ${AGAIN}`)
 

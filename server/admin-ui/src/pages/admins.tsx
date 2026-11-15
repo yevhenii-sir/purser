@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { CopyIcon, KeyRoundIcon, Trash2Icon, UserPlusIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -6,9 +6,11 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
+import { AppsPicker } from "@/components/apps-picker"
 import { call, createIdentity, select } from "@/lib/api"
 import { ago, errorText } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
+import { useApps } from "@/lib/apps"
 import { ROLES, roleLabel, useRole, type Role } from "@/lib/roles"
 import type { PageProps } from "@/routes"
 
@@ -21,7 +23,11 @@ interface AdminRow {
   name: string
   added_by: string
   added_at_micros: number
+  /** Comma-separated `game_key`s the admin is limited to; empty = every app. */
+  game_keys: string
 }
+
+const keysOf = (a: AdminRow) => a.game_keys.split(",").map((k) => k.trim()).filter(Boolean)
 
 const roleOf = (a: AdminRow): Role => (a.protected ? "owner" : ((ROLES.some((r) => r.id === a.role) ? a.role : "viewer") as Role))
 
@@ -33,15 +39,17 @@ export function AdminsPage({ me }: PageProps) {
   const manageable = (r: Role) => r !== "owner" && (myRole === "owner" || r !== "admin")
   const names = new Map((data || []).map((a) => [hex(a.identity), a.name]))
 
+  const [editingApps, setEditingApps] = useState<AdminRow | null>(null)
+  const appName = useAppNames()
   const setRole = async (a: AdminRow, role: string) => {
-    await tryAct(() => call("admin_upsert_admin", JSON.stringify({ identity: hex(a.identity), name: a.name, role })), "Role changed")
+    await tryAct(() => call("admin_upsert_admin", JSON.stringify({ identity: hex(a.identity), name: a.name, role, game_keys: keysOf(a) })), "Role changed")
     reload()
   }
   return (
     <>
       <PageHeader
         title="Admins"
-        description="Who can open this admin page and what each may do. Give a coworker a token with a role; the server checks the role on every request."
+        description="Who can open this admin page and what each may do. Give a coworker a token with a role, and limit it to some apps if needed; the server checks both on every request."
         actions={<Button onClick={() => setAdding(true)}><UserPlusIcon /> Add admin</Button>}
       />
       <Section>
@@ -77,6 +85,20 @@ export function AdminsPage({ me }: PageProps) {
                 },
               },
               {
+                title: "Apps",
+                className: "whitespace-normal",
+                cell: (a) => {
+                  const keys = keysOf(a)
+                  const text = a.protected || !keys.length ? "Every app" : keys.map(appName).join(", ")
+                  if (a.protected || !manageable(roleOf(a)) || hex(a.identity) === me) return <span className="text-sm text-muted-foreground">{text}</span>
+                  return (
+                    <Button variant="ghost" size="xs" className="h-auto max-w-64 justify-start text-left whitespace-normal" title="Change the apps" onClick={() => setEditingApps(a)}>
+                      {text}
+                    </Button>
+                  )
+                },
+              },
+              {
                 title: "Added",
                 cell: (a) => (
                   <span className="text-xs text-muted-foreground">
@@ -107,6 +129,44 @@ export function AdminsPage({ me }: PageProps) {
         </ul>
       </Section>
       <AddAdminDialog open={adding} onClose={() => setAdding(false)} onAdded={reload} roles={ROLES.filter((r) => manageable(r.id))} />
+      <Dialog open={!!editingApps} onOpenChange={(o) => !o && setEditingApps(null)}>
+        <DialogContent className="sm:max-w-md">
+          {editingApps && <EditApps admin={editingApps} onClose={() => setEditingApps(null)} onSaved={reload} />}
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
+/** Display names of app keys (the key itself for an app that no longer exists). */
+function useAppNames() {
+  const { groups } = useApps()
+  const names = useMemo(() => new Map((groups || []).map((g) => [g.key, g.name])), [groups])
+  return (key: string) => names.get(key) || key
+}
+
+/** The apps an admin is limited to: none ticked = every app (and the server-wide pages). */
+function AdminAppsPicker({ value, onChange }: { value: string[]; onChange: (keys: string[]) => void }) {
+  const summary = value.length
+    ? `Limited to ${value.length} app${value.length === 1 ? "" : "s"}: no server settings, keys of developer accounts, alerts or admins.`
+    : "Every app and the server settings. Tick apps to limit this admin to them."
+  return <AppsPicker value={value} onChange={onChange} summary={summary} />
+}
+
+function EditApps({ admin, onClose, onSaved }: { admin: AdminRow; onClose: () => void; onSaved: () => void }) {
+  const [keys, setKeys] = useState(keysOf(admin))
+  const save = async () => {
+    const ok = await tryAct(() => call("admin_upsert_admin", JSON.stringify({ identity: hex(admin.identity), name: admin.name, role: admin.role, game_keys: keys })), "Saved")
+    if (ok !== undefined) { onSaved(); onClose() }
+  }
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Apps of {admin.name || "this admin"}</DialogTitle>
+        <DialogDescription>Which apps this admin may see and change.</DialogDescription>
+      </DialogHeader>
+      <AdminAppsPicker value={keys} onChange={setKeys} />
+      <DialogFooter><Button onClick={save}>Save</Button></DialogFooter>
     </>
   )
 }
@@ -123,12 +183,13 @@ function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: (
   const [name, setName] = useState("")
   const [role, setRole] = useState<string>(roles.find((r) => r.id === "viewer")?.id || roles[0]?.id || "viewer")
   const [identity, setIdentity] = useState("")
+  const [apps, setApps] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   /** The generated token, shown once. */
   const [token, setToken] = useState<string | null>(null)
 
   const save = async (id: string) => {
-    await call("admin_upsert_admin", JSON.stringify({ identity: hex(id), name: name.trim(), role }))
+    await call("admin_upsert_admin", JSON.stringify({ identity: hex(id), name: name.trim(), role, game_keys: apps }))
     onAdded()
   }
 
@@ -196,6 +257,9 @@ function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: (
             <SelectContent>{roles.map((r) => <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>)}</SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">{roles.find((r) => r.id === role)?.description}</p>
+        </Field>
+        <Field label="Apps">
+          <AdminAppsPicker value={apps} onChange={setApps} />
         </Field>
         <Button className="w-full" onClick={generate} disabled={busy}><KeyRoundIcon /> Generate a token</Button>
         <div className="space-y-2 border-t pt-4">

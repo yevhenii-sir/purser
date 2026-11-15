@@ -31,7 +31,7 @@ namespace Purser
     /// <summary>Body of <c>POST /verify/{store}</c> (<c>google</c>, <c>apple</c>, <c>amazon</c>, ...).</summary>
     public sealed class VerifyRequest
     {
-        [JsonProperty("bundle_id")] public string BundleId;
+        [JsonProperty("app_id")] public string AppId;
         [JsonProperty("user_id")] public string UserId;
         [JsonProperty("product_id")] public string ProductId;
         /// <summary>Google purchase token.</summary>
@@ -90,7 +90,7 @@ namespace Purser
         [JsonProperty("is_sub")] public bool IsSubscription;
         [JsonProperty("expires_date_ms")] public long ExpiresDateMs;
         [JsonProperty("environment")] public string Environment;
-        /// <summary><see cref="VerifyDelivery"/>; treated as <see cref="VerifyDelivery.Server"/> when absent.</summary>
+        /// <summary>Who grants the reward (<see cref="VerifyDelivery"/>); always sent with a verified purchase.</summary>
         [JsonProperty("delivery")] public string Delivery;
     }
 

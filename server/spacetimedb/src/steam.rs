@@ -36,7 +36,6 @@ pub struct SteamBuild {
     pub updated_at_micros: i64,
     /// `/checkout/steam` needs a Web API auth ticket of the `steam_id` (otherwise any client can
     /// start an order for any SteamID).
-    #[default(false)]
     pub require_ticket: bool,
 }
 
@@ -231,9 +230,10 @@ struct BuildInput {
 /// Steam settings of a build: `{"app_id", "steam_app_id"?, "sandbox"?, "require_ticket"?}`.
 #[spacetimedb::reducer]
 pub fn admin_set_steam_build(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_set_steam_build", "", &json);
     let i: BuildInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
+    who.check_app(ctx, &i.app_id)?;
     let app = ctx.db.game_app().app_id().find(&i.app_id).ok_or_else(|| format!("[ERR_BAD_APP] unknown app_id {}", i.app_id))?;
     if !is_steam_build(&app) {
         return Err(format!("[ERR_BAD_APP] {} is not a Steam build", app.app_id));
@@ -278,7 +278,7 @@ struct ItemInput {
 /// "prices"?: {"USD": 199}, "period"?, "frequency"?}`. Replaces the item.
 #[spacetimedb::reducer]
 pub fn admin_upsert_steam_items(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_upsert_steam_items", "", &json);
     let items: Vec<ItemInput> = if json.trim_start().starts_with('[') {
         serde_json::from_str(&json)
@@ -287,6 +287,7 @@ pub fn admin_upsert_steam_items(ctx: &ReducerContext, json: String) -> Result<()
     }
     .map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
     for i in items {
+        who.check_app(ctx, &i.app_id)?;
         let p = ctx
             .db
             .product()
@@ -382,7 +383,6 @@ fn update_order(ctx: &mut impl Ctx, order_id: u64, f: impl Fn(&mut SteamOrder, i
 
 #[derive(Deserialize)]
 pub struct CheckoutRequest {
-    #[serde(alias = "bundle_id")]
     app_id: String,
     product_id: String,
     user_id: String,

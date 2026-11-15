@@ -174,7 +174,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
           <Button
             variant="outline"
             size="sm"
-            onClick={() => confirm("Recompute all revenue totals from the purchase ledger?") && tryAct(() => call("admin_rebuild_revenue"), "Rebuild started").then(reload)}
+            onClick={() => confirm("Recompute all revenue totals from the purchase ledger?") && tryAct(() => call("admin_rebuild_revenue", ""), "Rebuild started").then(reload)}
           >
             <RotateCcwIcon /> Rebuild
           </Button>

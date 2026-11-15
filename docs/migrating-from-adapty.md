@@ -6,14 +6,9 @@ Adapty acknowledges Android purchases itself. The server treats "already consume
 
 If Adapty or the client also **consumes** consumables, enable **Client consumes purchases itself** (`client_consumes`) on the app: otherwise such purchases are rejected with `[ERR_CONSUMED_ELSEWHERE]`, because a consumed purchase unknown to the ledger looks like a replay (see "Protection against double grants" in [server/README.md](../server/README.md#protection-against-double-grants)). Turn it off once the client stops consuming.
 
-## Keeping the game's existing reducers
+## Moving the game to Purser's delivery
 
-Games that already receive purchases through `server_fulfill_purchase` / `adapty_webhook_event` reducers can keep them with `args_format = legacy` (the app's Delivery tab → Arguments format, or *Advanced* in the Add an app wizard):
-
-- grant → `server_fulfill_purchase(user, tx, product, expires_ms)`;
-- subscription revoke → `adapty_webhook_event(user, "subscription_expired", tx, product, expires_ms)`.
-
-Consumable refunds and non-consumable transfers cannot be expressed in this contract: they are only recorded in the ledger. New games should use `v1` ([game-integration.md](game-integration.md)).
+Purser calls one grant and one revoke reducer of the game's database, each taking a `BillingEvent` ([game-integration.md](game-integration.md)). A game that received purchases through Adapty-era reducers adds these two and keeps its old ones until Adapty is off.
 
 ## Moving the ledger to another server
 

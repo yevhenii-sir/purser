@@ -3,7 +3,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Shell } from "@/components/shell"
 import { call, clearToken, getToken, isAuthError, proc, select, SERVED_BY_MODULE, setReadThroughProcedure, whoami } from "@/lib/api"
-import { can, RoleContext, type Role } from "@/lib/roles"
+import { can, RoleContext, type Role, ScopeContext } from "@/lib/roles"
 import { AppsProvider } from "@/lib/apps"
 import { errorText } from "@/lib/format"
 import { ClaimPage, LoginPage, UnreachablePage, WrongPlacePage } from "@/pages/auth"
@@ -16,13 +16,15 @@ type Auth =
   | { state: "login"; error?: string }
   | { state: "unreachable"; error: string }
   | { state: "claim"; me: string }
-  | { state: "ready"; me: string; role: Role }
+  | { state: "ready"; me: string; role: Role; scope: string[] }
 
 interface Me {
   identity: string
   name: string
   role: Role
   owner: boolean
+  /** The apps the admin is limited to; empty = every app. */
+  game_keys: string[]
 }
 
 /** Checks the stored token with the server. Only a rejected token is forgotten: a network or server
@@ -51,7 +53,7 @@ async function signIn(): Promise<Auth> {
   } catch {
     // Pages show errors.
   }
-  return { state: "ready", me: me.identity.replace(/^0x/, "").toLowerCase(), role: me.role }
+  return { state: "ready", me: me.identity.replace(/^0x/, "").toLowerCase(), role: me.role, scope: me.game_keys || [] }
 }
 
 export default function App() {
@@ -97,9 +99,10 @@ export default function App() {
   else if (auth.state === "claim") content = <ClaimPage me={auth.me} onDone={start} onSignOut={signOut} />
   else {
     const def = PAGES[route.page]
-    const Page = def && (!def.need || can(auth.role, def.need)) ? def.component : NotForRole
+    const Page = def && (!def.need || can(auth.role, def.need)) && !(def.everyApp && auth.scope.length) ? def.component : NotForRole
     content = (
       <RoleContext.Provider value={auth.role}>
+      <ScopeContext.Provider value={auth.scope}>
       <AppsProvider>
         <Shell route={route} go={go} me={auth.me} onSignOut={signOut}>
           {"key" in route ? (
@@ -111,6 +114,7 @@ export default function App() {
           )}
         </Shell>
       </AppsProvider>
+      </ScopeContext.Provider>
       </RoleContext.Provider>
     )
   }

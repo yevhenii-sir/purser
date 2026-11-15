@@ -482,7 +482,7 @@ namespace Purser
             m_PaywallContext.TryGetValue(order.StoreProductId, out var paywall);
             return new VerifyRequest
             {
-                BundleId = AppId,
+                AppId = AppId,
                 UserId = user,
                 ProductId = order.StoreProductId,
                 PurchaseToken = NullIfEmpty(order.PurchaseToken),

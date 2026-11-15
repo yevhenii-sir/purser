@@ -1,12 +1,11 @@
 {
-  "sdk": "0.1.0",
-  "note": "Request bodies the Unity SDK of this version sends. Never edit a released version: the server must keep accepting them.",
+  "note": "What the current Unity SDK sends to the server (keep it in step with Runtime/Api/Dto.cs and the store adapters). The contract test parses every body and replays the purchase flow.",
   "requests": [
     {
       "route": "/verify/google",
       "replay": true,
       "body": {
-        "bundle_id": "com.studio.game",
+        "app_id": "com.studio.game",
         "user_id": "player-1",
         "product_id": "gems",
         "purchase_token": "tok-1",
@@ -21,39 +20,63 @@
         "placement": "store",
         "variant_id": "var-a",
         "test_id": "test-1",
-        "paywall_id": "pw-1"
+        "paywall_id": "pw-1",
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.6.0"
+        }
       }
     },
     {
       "route": "/verify/apple",
       "body": {
-        "bundle_id": "com.studio.game.ios",
+        "app_id": "com.studio.game.ios",
         "user_id": "player-1",
         "product_id": "gems",
         "order_id": "2000000123",
-        "price_micros": 0
+        "price_micros": 0,
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.6.0"
+        }
       }
     },
     {
       "route": "/verify/amazon",
       "body": {
-        "bundle_id": "com.studio.game.amazon",
+        "app_id": "com.studio.game.amazon",
         "user_id": "player-1",
         "product_id": "gems",
         "order_id": "receipt-1",
         "store_user_id": "amzn1.account.TEST",
-        "price_micros": 0
+        "price_micros": 0,
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.6.0"
+        }
       }
     },
     {
       "route": "/verify/steam",
       "body": {
-        "bundle_id": "480",
+        "app_id": "480",
         "user_id": "player-1",
         "product_id": "",
         "order_id": "1790000000000000",
         "store_user_id": "76561197960287930",
-        "price_micros": 0
+        "price_micros": 0,
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.6.0"
+        }
       }
     },
     {
@@ -71,7 +94,13 @@
             "purchase_token": "tok-1",
             "order_id": "GPA.1111-2222-3333-44444"
           }
-        ]
+        ],
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.6.0"
+        }
       }
     },
     {
@@ -79,7 +108,13 @@
       "replay": true,
       "body": {
         "app_id": "com.studio.game",
-        "user_id": "player-1"
+        "user_id": "player-1",
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.6.0"
+        }
       }
     },
     {
@@ -87,7 +122,13 @@
       "body": {
         "app_id": "com.studio.game",
         "placement": "store",
-        "user_id": "player-1"
+        "user_id": "player-1",
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.6.0"
+        }
       }
     },
     {
@@ -104,7 +145,7 @@
     {
       "route": "/offers/apple/sign",
       "body": {
-        "bundle_id": "com.studio.game.ios",
+        "app_id": "com.studio.game.ios",
         "product_id": "premium",
         "offer_id": "winback_50",
         "user_id": "player-1"
@@ -117,7 +158,8 @@
         "product_id": "gems",
         "user_id": "player-1",
         "steam_id": "76561197960287930",
-        "language": "english"
+        "language": "english",
+        "ticket": "140000006A7B3C9D1E2F00000000000000000000"
       }
     },
     {
@@ -135,7 +177,16 @@
       "body": {
         "app_id": "com.studio.game.web",
         "user_id": "player-1",
-        "session_id": "cs_test_1"
+        "session_id": "cs_test_1",
+        "app_instance_id": "0123456789abcdef0123456789abcdef",
+        "attribution": {
+          "appsflyer_id": "1700000000000-1234567890123456789",
+          "advertising_id": "9c9a82fb-d5de-4cd1-90c3-527441c11828"
+        },
+        "placement": "store",
+        "variant_id": "var-a",
+        "test_id": "test-1",
+        "paywall_id": "pw-1"
       }
     },
     {
@@ -145,7 +196,11 @@
         "product_id": "gems",
         "user_id": "player-1",
         "sandbox": false,
-        "return_url": "https://game.example/"
+        "return_url": "https://game.example/",
+        "attribution": {
+          "appsflyer_id": "1700000000000-1234567890123456789",
+          "advertising_id": "9c9a82fb-d5de-4cd1-90c3-527441c11828"
+        }
       }
     },
     {
@@ -154,6 +209,25 @@
         "app_id": "com.studio.game.web",
         "user_id": "player-1",
         "order_id": "7001"
+      }
+    },
+    {
+      "route": "/attributes",
+      "replay": true,
+      "body": {
+        "app_id": "com.studio.game",
+        "user_id": "player-1",
+        "attributes": {
+          "email": "player@example.com",
+          "level": 7,
+          "old": null
+        },
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.6.0"
+        }
       }
     }
   ]

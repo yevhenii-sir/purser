@@ -5,7 +5,7 @@ import { proc, route } from "@/lib/api"
 import { fmtTime, usd } from "@/lib/format"
 import { useAsync } from "@/lib/hooks"
 import { revenueSummary } from "@/lib/revenue"
-import { isPurchaseStatus, STATUSES, type Overview, type PurchaseStatus } from "@/lib/types"
+import { STATUSES, type Overview, type PurchaseStatus } from "@/lib/types"
 import type { PageProps } from "@/routes"
 
 /** Listed even when no purchase is in them. */
@@ -19,9 +19,7 @@ export function OverviewPage({ go }: PageProps) {
       proc<Overview>("admin_overview"),
       revenueSummary(fresh).catch(() => null),
     ])
-    const byStatus: { status: string; n: number }[] = STATUSES.map((s) => ({ status: s, n: Number(overview.by_status[s] || 0) }))
-    // Statuses the page does not know yet still show up.
-    for (const [s, n] of Object.entries(overview.by_status)) if (!isPurchaseStatus(s)) byStatus.push({ status: s, n: Number(n) })
+    const byStatus = STATUSES.map((s) => ({ status: s, n: Number(overview.by_status[s] || 0) }))
     return { health, overview, byStatus, stats }
   })
 
@@ -39,13 +37,13 @@ export function OverviewPage({ go }: PageProps) {
           hint={health.json?.version ? `module ${health.json.version}` : undefined}
         />
         <Stat label="Net revenue, 30 days" value={stats ? usd(stats.totals.net_usd_micros) : "—"} hint={stats?.rebuilding ? "USD, totals are being rebuilt" : "USD, without sandbox"} onClick={() => go("revenue")} />
-        <Stat label="Apps / builds" value={`${ov.apps} / ${ov.builds ?? "—"}`} onClick={() => go("apps")} />
+        <Stat label="Apps / builds" value={`${ov.apps} / ${ov.builds}`} onClick={() => go("apps")} />
         <Stat label="Purchases" value={Number(ov.total).toLocaleString()} hint={`${ov.pending_total} waiting · ${ov.outbox} events queued`} onClick={() => go("purchases")} />
       </div>
       <div className="grid gap-6 lg:grid-cols-[1fr_2fr]">
         <Section title="Purchases by status">
           <DataTable
-            rows={data.byStatus.filter((s) => s.n > 0 || (isPurchaseStatus(s.status) && ALWAYS_LISTED.includes(s.status)))}
+            rows={data.byStatus.filter((s) => s.n > 0 || ALWAYS_LISTED.includes(s.status))}
             columns={[
               { title: "Status", cell: (r) => <StatusBadge status={r.status} /> },
               { title: "Count", cell: (r) => r.n.toLocaleString(), num: true },

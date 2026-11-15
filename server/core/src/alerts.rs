@@ -22,6 +22,8 @@ pub mod rule {
     pub const FX_FAILING: &str = "fx_failing";
     /// A test message from the admin page.
     pub const TEST: &str = "test";
+    /// Alerts a channel's flood cap held back, summed up when its window ends.
+    pub const HELD: &str = "alerts_held";
 
     pub const ALL: &[&str] =
         &[DELIVERY_FAILING, STORE_AUTH, INTEGRATION_FAILED, NOTIFICATIONS_SILENT, NOTIFICATION_REJECTED, FX_FAILING];
@@ -239,6 +241,7 @@ pub fn rule_title(rule: &str) -> &'static str {
         rule::NOTIFICATION_REJECTED => "Store notification rejected",
         rule::FX_FAILING => "Exchange rates are not updating",
         rule::TEST => "Test alert",
+        rule::HELD => "More alerts were held back",
         _ => "Billing alert",
     }
 }

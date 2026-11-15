@@ -185,14 +185,14 @@ def t_list_apps(db, args):
     games = {}
     for a in sorted(apps, key=lambda a: (a["game_key"], a["app_id"])):
         games.setdefault(a["game_key"], []).append({
-            "app_id": a["app_id"], "platform": a["platform"], "store": a.get("store") or "(platform default)",
+            "app_id": a["app_id"], "platform": a["platform"], "store": a["store"],
             "account": a["account"], "delivery": a["delivery"], "enabled": a["enabled"],
             "allow_sandbox": a["allow_sandbox"],
             "products": sorted(by_app.get(a["app_id"], []), key=lambda p: p["product_id"]),
         })
     try:
         names = {r["game_key"]: r["display_name"] for r in db.sql("SELECT * FROM app_profile")}
-    except stdb.StdbError:  # a module older than app_profile
+    except stdb.StdbError:  # not the owner: /sql is the owner's
         names = {}
     return {"apps": [{"game_key": k, "name": names.get(k, k), "builds": v} for k, v in games.items()]}
 

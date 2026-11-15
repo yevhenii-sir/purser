@@ -103,7 +103,7 @@ namespace Purser
                 return (null, "the billing API client does not support promotional offers");
             var response = await api.SignApplePromotionalOfferAsync(new ApplePromotionalOfferRequest
             {
-                BundleId = AppId,
+                AppId = AppId,
                 ProductId = storeId,
                 OfferId = offerId,
                 UserId = user,

@@ -67,7 +67,7 @@ function tokenIdentity(token: string): string {
   }
 }
 
-/** A table row as `/sql` and `admin_read` return it. */
+/** A table row as `/sql` and `admin_select` return it. */
 export type Row = Record<string, unknown>
 
 /** A failed HTTP call; `status` tells a rejected token (401 / 403) from an unreachable or failing server. */

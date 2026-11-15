@@ -25,18 +25,6 @@ pub mod delivery {
     }
 }
 
-pub mod args_format {
-    /// Current card game reducers: `server_fulfill_purchase(user, tx, product, expires_ms)` and
-    /// `adapty_webhook_event(user, event_type, tx, product, expires_ms)`.
-    pub const LEGACY: &str = "legacy";
-    /// One `BillingEvent` argument.
-    pub const V1: &str = "v1";
-
-    pub fn is_valid(f: &str) -> bool {
-        matches!(f, LEGACY | V1)
-    }
-}
-
 pub mod event_type {
     pub const GRANT: &str = "grant";
     pub const REVOKE: &str = "revoke";
@@ -53,7 +41,7 @@ pub mod reason {
     pub const ADMIN: &str = "admin";
 }
 
-/// Event sent to games (`v1` reducer argument or webhook body).
+/// Event sent to games (the one reducer argument, or the webhook body).
 /// Only plain types so it maps 1:1 to a SpacetimeType struct in Rust or C#.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct BillingEvent {
@@ -77,39 +65,15 @@ pub struct BillingEvent {
     pub currency: String,
     pub timestamp_ms: i64,
     /// The app's own id of the product, the same in every store (`product_id` is this store's id).
-    /// Only in webhook bodies ([`BillingEvent::to_json`]): the `v1` reducer argument keeps its fields.
+    /// Only in webhook bodies ([`BillingEvent::to_json`]): the reducer argument keeps its fields.
     #[serde(skip)]
     pub catalog_product_id: String,
 }
 
 impl BillingEvent {
-    /// JSON array of reducer arguments for `POST /v1/database/{db}/call/{reducer}`.
-    /// Returns None when the legacy contract has nothing to call (consumable revoke, and the
-    /// transfer of a non-consumable, which the legacy game cannot take back).
-    pub fn reducer_args(&self, format: &str) -> Option<Value> {
-        match format {
-            args_format::LEGACY => {
-                if self.event == event_type::GRANT {
-                    Some(json!([self.user_id, self.transaction_id, self.product_id, self.expires_at_ms]))
-                } else if self.kind == crate::model::kind::CONSUMABLE {
-                    // The legacy game has no way to take back currency.
-                    None
-                } else if self.kind == crate::model::kind::NON_CONSUMABLE && self.reason == reason::TRANSFER {
-                    // `subscription_expired` would not take a non-consumable away either.
-                    None
-                } else {
-                    // `adapty_webhook_event` treats this as "set expiration and recalculate premium".
-                    Some(json!([
-                        self.user_id,
-                        "subscription_expired",
-                        self.transaction_id,
-                        self.product_id,
-                        self.expires_at_ms
-                    ]))
-                }
-            }
-            _ => Some(json!([self])),
-        }
+    /// JSON array of reducer arguments for `POST /v1/database/{db}/call/{reducer}`: the event.
+    pub fn reducer_args(&self) -> Value {
+        json!([self])
     }
 
     /// Webhook body: the event and `catalog_product_id` (the store id when it has none).
@@ -159,7 +123,7 @@ mod tests {
         e.catalog_product_id = "vip".into();
         let body: Value = serde_json::from_str(&e.to_json()).unwrap();
         assert_eq!((body["product_id"].as_str(), body["catalog_product_id"].as_str()), (Some("com.example.vip"), Some("vip")));
-        let args = e.reducer_args(args_format::V1).unwrap();
+        let args = e.reducer_args();
         assert!(args[0].get("catalog_product_id").is_none(), "the v1 reducer argument keeps its fields");
         e.catalog_product_id.clear();
         let body: Value = serde_json::from_str(&e.to_json()).unwrap();
@@ -167,35 +131,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_transfer_revokes_subscriptions_only() {
-        let mut sub = ev(event_type::REVOKE, "subscription");
-        sub.reason = reason::TRANSFER.into();
-        assert_eq!(
-            sub.reducer_args(args_format::LEGACY).unwrap(),
-            json!(["c200", "subscription_expired", "GPA.1", "month_sub", 5])
-        );
-        let mut owned = ev(event_type::REVOKE, "non_consumable");
-        owned.reason = reason::TRANSFER.into();
-        assert_eq!(owned.reducer_args(args_format::LEGACY), None);
-        assert!(owned.reducer_args(args_format::V1).is_some());
-    }
-
-    #[test]
-    fn legacy_args() {
-        assert_eq!(
-            ev(event_type::GRANT, "subscription").reducer_args(args_format::LEGACY).unwrap(),
-            json!(["c200", "GPA.1", "month_sub", 5])
-        );
-        assert_eq!(
-            ev(event_type::REVOKE, "subscription").reducer_args(args_format::LEGACY).unwrap(),
-            json!(["c200", "subscription_expired", "GPA.1", "month_sub", 5])
-        );
-        assert_eq!(ev(event_type::REVOKE, "consumable").reducer_args(args_format::LEGACY), None);
-    }
-
-    #[test]
-    fn v1_args_are_one_object() {
-        let args = ev(event_type::GRANT, "consumable").reducer_args(args_format::V1).unwrap();
+    fn reducer_args_are_the_event() {
+        let args = ev(event_type::GRANT, "consumable").reducer_args();
         assert_eq!(args[0]["transaction_id"], "GPA.1");
         assert_eq!(args.as_array().unwrap().len(), 1);
     }

@@ -40,12 +40,13 @@ pub fn purchase_row(p: &Purchase) -> Value {
 }
 
 /// One row per build for the Apps page: the last setup check, the catalog ids of its products and
-/// the kinds of its enabled integrations.
-pub fn apps_summary(tx: &spacetimedb::ReducerContext) -> Value {
+/// the kinds of its enabled integrations. `only`: the builds the admin may see (`None` = all).
+pub fn apps_summary(tx: &spacetimedb::ReducerContext, only: Option<&std::collections::BTreeSet<String>>) -> Value {
     let mut builds: BTreeMap<String, Value> = tx
         .db
         .game_app()
         .iter()
+        .filter(|a| only.map_or(true, |o| o.contains(&a.app_id)))
         .map(|a| (a.app_id.clone(), json!({ "app_id": a.app_id, "summary": "", "checked_at_micros": 0, "catalog_ids": [], "integrations": [] })))
         .collect();
     for c in tx.db.app_check().iter() {
@@ -71,8 +72,8 @@ pub fn apps_summary(tx: &spacetimedb::ReducerContext) -> Value {
 #[spacetimedb::procedure]
 pub fn admin_apps_summary(ctx: &mut ProcedureContext) -> String {
     let result = ctx.tx(|tx| {
-        crate::access::require(tx, purser_core::roles::Cap::Read)?;
-        Ok::<_, String>(apps_summary(tx))
+        let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read)?;
+        Ok::<_, String>(apps_summary(tx, who.app_ids(tx).as_ref()))
     });
     match result {
         Ok(v) => v.to_string(),
@@ -82,18 +83,22 @@ pub fn admin_apps_summary(ctx: &mut ProcedureContext) -> String {
 
 /// Overview counters: ledger size and counts by status (from `purchase_count`, kept by every
 /// ledger write), the rows the worker still has to process (through the `next_attempt_at_micros`
-/// index, soonest first), apps, builds, products and queued integration events.
-pub fn overview(tx: &spacetimedb::ReducerContext) -> Value {
+/// index, soonest first), apps, builds, products and queued integration events. `only`: the
+/// builds the admin may see (`None` = all).
+pub fn overview(tx: &spacetimedb::ReducerContext, only: Option<&std::collections::BTreeSet<String>>) -> Value {
+    let visible = |app_id: &str| only.map_or(true, |o| o.contains(app_id));
     let mut by_status: BTreeMap<String, u64> = BTreeMap::new();
     let mut total = 0u64;
-    for c in tx.db.purchase_count().iter() {
+    for c in tx.db.purchase_count().iter().filter(|c| visible(&c.app_id)) {
         total += c.count;
         *by_status.entry(c.status).or_default() += c.count;
     }
-    let games: std::collections::BTreeSet<String> = tx.db.game_app().iter().map(|a| a.game_key).collect();
+    let builds: Vec<_> = tx.db.game_app().iter().filter(|a| visible(&a.app_id)).collect();
+    let games: std::collections::BTreeSet<&str> = builds.iter().map(|a| a.game_key.as_str()).collect();
+    let products: usize = builds.iter().map(|a| tx.db.product().app_id().filter(a.app_id.as_str()).count()).sum();
     let mut pending_total = 0u64;
     let mut pending: Vec<Value> = Vec::new();
-    for p in tx.db.purchase().next_attempt_at_micros().filter(1..=i64::MAX) {
+    for p in tx.db.purchase().next_attempt_at_micros().filter(1..=i64::MAX).filter(|p| visible(&p.app_id)) {
         pending_total += 1;
         if pending.len() < OVERVIEW_PENDING_ROWS {
             pending.push(json!({
@@ -109,9 +114,9 @@ pub fn overview(tx: &spacetimedb::ReducerContext) -> Value {
         "pending": pending,
         "pending_total": pending_total,
         "apps": games.len(),
-        "builds": tx.db.game_app().count(),
-        "products": tx.db.product().count(),
-        "outbox": tx.db.integration_outbox().count(),
+        "builds": builds.len(),
+        "products": products,
+        "outbox": if only.is_none() { tx.db.integration_outbox().count() } else { 0 },
     })
 }
 
@@ -120,8 +125,8 @@ pub fn overview(tx: &spacetimedb::ReducerContext) -> Value {
 #[spacetimedb::procedure]
 pub fn admin_overview(ctx: &mut ProcedureContext) -> String {
     let result = ctx.tx(|tx| {
-        crate::access::require(tx, purser_core::roles::Cap::Read)?;
-        Ok::<_, String>(overview(tx))
+        let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read)?;
+        Ok::<_, String>(overview(tx, who.app_ids(tx).as_ref()))
     });
     match result {
         Ok(v) => v.to_string(),
@@ -129,7 +134,7 @@ pub fn admin_overview(ctx: &mut ProcedureContext) -> String {
     }
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Clone, Deserialize, Default)]
 pub struct ListQuery {
     /// Oldest `updated_at_micros` to include.
     #[serde(default)]
@@ -196,7 +201,15 @@ pub fn admin_list_purchases(ctx: &mut ProcedureContext, query_json: String) -> S
         }
     };
     let result = ctx.tx(|tx| {
-        crate::access::require(tx, purser_core::roles::Cap::Read)?;
+        let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read)?;
+        // A limited admin lists their builds: the asked ones they may see, or all of theirs.
+        let mut q = q.clone();
+        if let Some(mine) = who.app_ids(tx) {
+            q.app_ids = if q.app_ids.is_empty() { mine.into_iter().collect() } else { q.app_ids.into_iter().filter(|a| mine.contains(a)).collect() };
+            if q.app_ids.is_empty() {
+                return Ok(json!({ "rows": [], "more": false }));
+            }
+        }
         let (rows, more) = list_purchases(tx, &q);
         Ok::<_, String>(json!({ "rows": rows.iter().map(purchase_row).collect::<Vec<_>>(), "more": more }))
     });

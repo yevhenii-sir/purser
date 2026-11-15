@@ -2,8 +2,21 @@
 
 ## Unreleased
 
+### Breaking
+
+Purser has no production users yet, so compatibility code is removed instead of kept. Publish this version with `--delete-data` and update the Unity package together with the server.
+
+- Client requests name the build `app_id` everywhere: `/verify/*` and `/offers/apple/sign` no longer take `bundle_id` (the value is the same build id), and the promotional offer answer carries `app_id`. Every `#[serde(alias)]` is gone: `/verify/*` takes `order_id` and `store_user_id` only, `/verify/stripe` `app_id` and `session_id`, the paywall and attribution routes `app_id` and `placement`.
+- The `legacy` delivery format (Adapty-era `server_fulfill_purchase` / `adapty_webhook_event` reducers) and the `args_format` column are removed: game reducers take one `BillingEvent`.
+- `admin_add_admin` is removed (use `admin_upsert_admin`).
+- The released-SDK fixtures (`sdk-requests/<version>.json`) are replaced by one contract, `sdk-requests/current.json`, of what the current Unity SDK sends.
+- Upgrade-only code is gone: `#[default]` column attributes, the revenue version gate (aggregates are rebuilt after imports and on request only), the unused `fx_day.fetched_at_micros`, the platform-default store for build rows without one, and optional fields of integration events queued by older versions.
+- The admin page and the scripts no longer handle older modules (no `app_profile`, missing columns) or the pre-0.2.0 Unity config format; `seed.py --init` prints the current Unity config (it printed the old format).
+
 ### Added
 
+- Alert routing: several channels per kind, each with a name and optional app and rule filters (server-wide alerts go to channels without an app filter); a flood cap of 10 messages per 10 minutes per channel, the rest summed up in one message; a rejected store key alerts once per developer account. Channels are keyed by `id` (`admin_delete_alert_channel(id)`, `admin_test_alert(id)`) and keep their secret under `alert-{id}`.
+- Admins limited to some apps: an admin's **Apps** (Admins page, `game_keys` in `admin_upsert_admin`) restricts every read and action to those apps and their builds' secrets; server-wide pages (Server, Developer accounts, Alerts, Admins, Audit log, Logs) are for admins of every app. The `admin` table gains `game_keys`.
 - One-click store setup on the app's Setup tab, once the store's key is stored (store keys themselves can only be created in the stores' consoles):
   - **Set in App Store Connect** (`admin_setup_apple_notifications`): the App Store Server Notifications URLs, production and sandbox, version 2, through the App Store Connect API (Team key). The setup check compares them with this server's (`apple_notification_url`).
   - **Create webhook in Stripe** (`admin_setup_stripe_webhook`): the build's webhook endpoint with every event Purser handles, its signing secret stored as `stripe_webhook_secret`; an existing endpoint gets the missing events. The setup check reports the endpoint (`stripe_webhook_endpoint`).
@@ -16,6 +29,9 @@
 
 ### Changed
 
+- Revenue rebuilds can cover some builds only (`admin_rebuild_revenue(app_ids_json)`); a purchase import rebuilds the imported builds only, the others keep counting live.
+- Retention: once a day the worker deletes player profiles, attribution ids of players without an active subscription and paywall view counts older than `retention_days` (setting, default 730), and expired cached tokens. The ledger and revenue are never deleted. Deleting a build also deletes its players, attribution ids and open alerts.
+- The Create in store preview checks the stores for at most 20 s; builds it did not reach come back as `pending` and the dialog checks them on request.
 - **Breaking: publish with `--delete-data`.** `product.default_price_micros` is now `price_micros` (the build's price; also in `admin_upsert_products`, `seed.py` products and the MCP server), and the module gains tables and indexes. Nobody runs Purser in production yet, so the schema was changed instead of keeping old columns.
 - The Overview reads ledger counts from the new `purchase_count` table (kept by every ledger write) instead of counting the ledger, and shows apps and builds.
 - Revenue reports for one app or game read only its builds, through new `(app_id, day)` indexes of the daily tables and an `(app_id, created_at)` index of the ledger; the purchase list filtered by app uses `(app_id, updated_at)`.

@@ -53,6 +53,8 @@ interface Preview {
   rows: PreviewRow[]
   apple_groups: Record<string, string[]>
   warnings: Record<string, string>
+  /** Builds the server's time budget did not reach: preview them with another call. */
+  pending: string[]
 }
 
 /** What each store needs before products can be created there. */
@@ -123,6 +125,24 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
       setPreview(await proc<Preview>("admin_store_create_preview", request()))
     } catch (e) {
       setError(errorText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  /** Previews the builds the last call did not reach and adds them to the preview. */
+  const checkRest = async () => {
+    if (!preview?.pending.length) return
+    setBusy(true)
+    try {
+      const more = await proc<Preview>("admin_store_create_preview", JSON.stringify({ app_ids: preview.pending, products: inputs() }))
+      setPreview({
+        rows: [...preview.rows, ...more.rows],
+        apple_groups: { ...preview.apple_groups, ...more.apple_groups },
+        warnings: { ...preview.warnings, ...more.warnings },
+        pending: more.pending,
+      })
+    } catch (e) {
+      toast.error(errorText(e))
     } finally {
       setBusy(false)
     }
@@ -254,6 +274,13 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
           </div>
         ) : (
           <div className="space-y-3">
+            {preview.pending.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-xs">
+                <Tone tone="warn">{preview.pending.length} build(s) not checked yet</Tone>
+                <span className="text-muted-foreground">The stores answered slowly; nothing is created for them until they are checked.</span>
+                <Button size="xs" variant="outline" disabled={busy} onClick={checkRest}>Check them</Button>
+              </div>
+            )}
             {Object.entries(preview.warnings).map(([app, w]) => (
               <p key={app} className="rounded-md border px-3 py-2 text-xs break-words">
                 <Tone tone="warn">{appByid(app) ? buildLabel(appByid(app)!) : app}</Tone> {w}, so products it already has are not detected.

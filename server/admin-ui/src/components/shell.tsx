@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/sidebar"
 import { DB_NAME, DEMO, moduleVersion } from "@/lib/api"
 import { useGroups } from "@/lib/apps"
-import { can, roleLabel, useRole } from "@/lib/roles"
+import { can, roleLabel, useRole, useScoped } from "@/lib/roles"
 import { appRoute, PAGES, type PageDef, type Route } from "@/routes"
 
 function ThemeMenu() {
@@ -38,10 +38,11 @@ function ThemeMenu() {
 
 function PageLinks({ group, route, go }: { group: PageDef["group"]; route: Route; go: (r: string) => void }) {
   const role = useRole()
+  const scoped = useScoped()
   return (
     <>
       {Object.entries(PAGES)
-        .filter(([, p]) => p.group === group && (!p.need || can(role, p.need)))
+        .filter(([, p]) => p.group === group && (!p.need || can(role, p.need)) && !(p.everyApp && scoped))
         .map(([key, p]) => (
           <SidebarMenuItem key={key}>
             <SidebarMenuButton isActive={route.page === key} tooltip={p.title} onClick={() => go(key)}>

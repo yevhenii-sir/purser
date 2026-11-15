@@ -123,6 +123,7 @@ function RawSecretsBody() {
   const scopeText = (scope: string) => {
     const b = builds.get(scope)
     if (b) return `${groupOf.get(scope)?.name ?? b.game_key} · ${buildLabel(b)}`
+    if (/^alert-\d+$/.test(scope)) return "alert channel"
     return accounts.has(scope) ? "developer account" : ""
   }
   const words = find.toLowerCase().split(/\s+/).filter(Boolean)

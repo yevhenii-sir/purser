@@ -103,9 +103,12 @@ fn schedule(tx: &ReducerContext, job_id: u64, delay_secs: u64) {
 /// create, and ones already being created, are refused with the reason.
 #[spacetimedb::reducer]
 pub fn admin_store_create(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_store_create", "", &json);
     let r = parse_request(&json)?;
+    for app_id in &r.app_ids {
+        who.check_app(ctx, app_id)?;
+    }
     let mut problems = Vec::new();
     let mut queued = Vec::new();
     for app_id in &r.app_ids {
@@ -162,8 +165,11 @@ pub fn admin_store_create(ctx: &ReducerContext, json: String) -> Result<(), Stri
 /// Removes a job (a pending one stops at its next step).
 #[spacetimedb::reducer]
 pub fn admin_dismiss_store_job(ctx: &ReducerContext, id: u64) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_dismiss_store_job", &id.to_string(), "");
+    if let Some(job) = ctx.db.store_create_job().id().find(id) {
+        who.check_app(ctx, &job.app_id)?;
+    }
     ctx.db.store_create_job().id().delete(id);
     Ok(())
 }
@@ -385,17 +391,32 @@ pub fn run_store_create_job(ctx: &mut ProcedureContext, tick: StoreCreateTick) {
 /// What creating `products` in the builds would do: per build × product `create`, `exists` (the
 /// store has it; `store_product_id` says under which id), `unsupported` or `invalid`, plus the App
 /// Store subscription groups of each iOS build for the group picker.
+/// Seconds of store look-ups one preview starts; the rest of the builds come back as `pending`.
+const PREVIEW_BUDGET_SECS: i64 = 20;
+
+/// The rows a Create in store would make, per build and product, after looking at the stores.
+/// Builds the time budget did not reach are listed in `pending` (preview them again).
 pub fn preview(ctx: &mut impl Ctx, json: &str) -> Result<Value, String> {
     let r = parse_request(json)?;
     let ids = r.app_ids.clone();
     let apps: Vec<GameApp> = ctx.tx(|tx| {
-        crate::access::require(tx, purser_core::roles::Cap::Configure)?;
+        let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Configure)?;
+        for id in &ids {
+            who.check_app(tx, id)?;
+        }
         ids.iter().map(|id| config::find_app(tx, id).ok_or(format!("unknown app {id}"))).collect::<Result<Vec<_>, String>>()
     })?;
     let mut rows = Vec::new();
     let mut groups = serde_json::Map::new();
     let mut warnings = serde_json::Map::new();
+    // Each build is up to a few store listings: builds past the budget are left for another call.
+    let budget = crate::ctx::Budget::new(ctx, PREVIEW_BUDGET_SECS);
+    let mut pending: Vec<String> = Vec::new();
     for app in &apps {
+        if !budget.left() {
+            pending.push(app.app_id.clone());
+            continue;
+        }
         let info = config::app_store(app);
         let checks: Vec<(CreateInput, Result<(), String>)> = r.products.iter().map(|p| (p.clone(), p.validate(info))).collect();
         let wants_lookup = checks.iter().any(|(_, v)| v.is_ok());
@@ -424,7 +445,7 @@ pub fn preview(ctx: &mut impl Ctx, json: &str) -> Result<Value, String> {
             }
         }
     }
-    Ok(json!({ "rows": rows, "apple_groups": groups, "warnings": warnings }))
+    Ok(json!({ "rows": rows, "apple_groups": groups, "warnings": warnings, "pending": pending }))
 }
 
 /// Products the store already has: (our product id, the id in this build).
@@ -482,7 +503,7 @@ fn apple_groups(ctx: &mut impl Ctx, app: &GameApp) -> Result<Vec<String>, String
         .collect())
 }
 
-/// Preview of `admin_store_create`; returns `{"rows", "apple_groups", "warnings"}` or `{"error"}`.
+/// Preview of `admin_store_create`; returns `{"rows", "apple_groups", "warnings", "pending"}` or `{"error"}`.
 #[spacetimedb::procedure]
 pub fn admin_store_create_preview(ctx: &mut ProcedureContext, json: String) -> String {
     match preview(ctx, &json) {

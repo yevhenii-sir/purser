@@ -7,7 +7,7 @@ namespace Purser
     /// <summary>Body of <c>POST /offers/apple/sign</c>.</summary>
     public sealed class ApplePromotionalOfferRequest
     {
-        [JsonProperty("bundle_id")] public string BundleId;
+        [JsonProperty("app_id")] public string AppId;
         [JsonProperty("product_id")] public string ProductId;
         [JsonProperty("offer_id")] public string OfferId;
         [JsonProperty("user_id")] public string UserId;

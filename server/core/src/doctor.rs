@@ -1,7 +1,7 @@
 //! Setup checks ("doctor"): the report format and pure classifiers for the probes the module
 //! makes against the stores and the game. The module only does HTTP; every decision is here.
 
-use crate::event::{args_format, delivery};
+use crate::event::delivery;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -156,17 +156,9 @@ pub fn classify_identity_verify(status: u16) -> Verdict {
     }
 }
 
-/// Number of reducer parameters the billing calls with `format`.
-pub fn expected_reducer_params(format: &str, is_grant: bool) -> usize {
-    match (format, is_grant) {
-        (args_format::LEGACY, true) => 4,
-        (args_format::LEGACY, false) => 5,
-        _ => 1,
-    }
-}
-
-/// Checks a reducer of the game module against the schema (`GET /v1/database/{db}/schema?version=9`).
-pub fn reducer_shape(schema_json: &str, reducer: &str, format: &str, is_grant: bool) -> Result<(), String> {
+/// Checks a reducer of the game module against the schema (`GET /v1/database/{db}/schema?version=9`):
+/// it takes one argument, the `BillingEvent`.
+pub fn reducer_shape(schema_json: &str, reducer: &str) -> Result<(), String> {
     let schema: Value = serde_json::from_str(schema_json).map_err(|_| "the schema is not JSON".to_string())?;
     let reducers = schema["reducers"].as_array().ok_or("the schema has no reducers")?;
     let found = reducers.iter().find(|r| r["name"].as_str() == Some(reducer));
@@ -175,9 +167,8 @@ pub fn reducer_shape(schema_json: &str, reducer: &str, format: &str, is_grant: b
         return Err(format!("reducer {reducer} not found (module has: {})", names.join(", ")));
     };
     let params = found["params"]["elements"].as_array().map(|a| a.len()).unwrap_or(0);
-    let expected = expected_reducer_params(format, is_grant);
-    if params != expected {
-        return Err(format!("reducer {reducer} takes {params} argument(s), {format} delivery sends {expected}"));
+    if params != 1 {
+        return Err(format!("reducer {reducer} takes {params} argument(s), the billing sends 1 (the BillingEvent)"));
     }
     Ok(())
 }
@@ -411,21 +402,20 @@ mod tests {
     /// Trimmed from `GET /v1/database/<db>/schema?version=9` of a SpacetimeDB 2.14.1 module.
     const SCHEMA: &str = r#"{"typespace":{},"tables":[],"reducers":[
         {"name":"billing_grant","params":{"elements":[{"name":{"some":"ev"},"algebraic_type":{"Ref":0}}]},"lifecycle":{"none":[]}},
-        {"name":"server_fulfill_purchase","params":{"elements":[
+        {"name":"fulfill","params":{"elements":[
             {"name":{"some":"user"},"algebraic_type":{"String":[]}},{"name":{"some":"tx"},"algebraic_type":{"String":[]}},
             {"name":{"some":"product"},"algebraic_type":{"String":[]}},{"name":{"some":"exp"},"algebraic_type":{"I64":[]}}]},"lifecycle":{"none":[]}},
         {"name":"init","params":{"elements":[]},"lifecycle":{"some":{"Init":[]}}}
     ],"types":[],"misc_exports":[],"row_level_security":[]}"#;
 
     #[test]
-    fn reducer_shape_matches_args_format() {
-        assert_eq!(reducer_shape(SCHEMA, "billing_grant", "v1", true), Ok(()));
-        assert_eq!(reducer_shape(SCHEMA, "server_fulfill_purchase", "legacy", true), Ok(()));
-        let e = reducer_shape(SCHEMA, "billing_revoke", "v1", false).unwrap_err();
+    fn reducer_shape_takes_one_event() {
+        assert_eq!(reducer_shape(SCHEMA, "billing_grant"), Ok(()));
+        let e = reducer_shape(SCHEMA, "billing_revoke").unwrap_err();
         assert!(e.contains("not found") && e.contains("billing_grant") && !e.contains("init"), "{e}");
-        let e = reducer_shape(SCHEMA, "billing_grant", "legacy", true).unwrap_err();
-        assert!(e.contains("takes 1"), "{e}");
-        assert!(reducer_shape("<html>", "x", "v1", true).is_err());
+        let e = reducer_shape(SCHEMA, "fulfill").unwrap_err();
+        assert!(e.contains("takes 4"), "{e}");
+        assert!(reducer_shape("<html>", "x").is_err());
     }
 
     #[test]

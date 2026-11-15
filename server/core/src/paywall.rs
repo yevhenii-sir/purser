@@ -166,7 +166,7 @@ pub fn serve<'a>(variants: &'a [Variant], running_test: Option<&'a str>, user_id
 /// not a valid id is dropped.
 #[derive(Deserialize, Serialize, Default, Clone, Debug, PartialEq, Eq)]
 pub struct Attribution {
-    #[serde(default, alias = "placement_id")]
+    #[serde(default)]
     pub placement: String,
     #[serde(default)]
     pub variant_id: String,

@@ -23,8 +23,7 @@ pub const NONCE_COUNTER_KEY: &str = "promotional_offer_nonce_counter";
 
 #[derive(Deserialize, Clone)]
 pub struct AppleOfferRequest {
-    #[serde(alias = "app_id")]
-    pub bundle_id: String,
+    pub app_id: String,
     pub product_id: String,
     pub offer_id: String,
     pub user_id: String,
@@ -54,9 +53,9 @@ pub fn sign_apple_offer(ctx: &mut impl Ctx, r: &AppleOfferRequest) -> (u16, Valu
     // One transaction: the build and product checks, then the secrets (build → account →
     // default) and the nonce counter, bumped only for a request that gets a signature.
     let resolved = ctx.tx(|tx| -> Result<_, (u16, Value)> {
-        let app = config::find_app(tx, &r.bundle_id)
+        let app = config::find_app(tx, &r.app_id)
             .filter(|a| a.enabled)
-            .ok_or_else(|| answer(400, "error", format!("unknown app {}", r.bundle_id)))?;
+            .ok_or_else(|| answer(400, "error", format!("unknown app {}", r.app_id)))?;
         if config::app_store(&app).id != purser_core::model::store::APPLE {
             return Err(answer(400, "error", format!("{} is not an App Store app", app.app_id)));
         }
@@ -122,7 +121,7 @@ pub fn sign_apple_offer(ctx: &mut impl Ctx, r: &AppleOfferRequest) -> (u16, Valu
         200,
         json!({
             "status": "success",
-            "bundle_id": app.app_id,
+            "app_id": app.app_id,
             "product_id": product.product_id,
             "offer_id": r.offer_id,
             "key_id": key_id,

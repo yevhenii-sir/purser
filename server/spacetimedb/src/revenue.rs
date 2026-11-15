@@ -2,9 +2,9 @@
 //! country), daily snapshots of active subscriptions, ECB exchange rates and the dashboard report
 //! (`admin_revenue_stats`).
 //!
-//! The rules for what counts are in `purser_core::revenue`. Existing databases get their history
-//! after the upgrade: the worker rebuilds the aggregates from the ledger in batches
-//! (`run_rebuild`), as it does after an import or `admin_rebuild_revenue`.
+//! The rules for what counts are in `purser_core::revenue`. After an import or
+//! `admin_rebuild_revenue` the worker rebuilds the aggregates from the ledger in batches
+//! (`run_rebuild`).
 
 use crate::ctx::Ctx;
 use crate::integrations::grant_kind;
@@ -15,7 +15,7 @@ use purser_core::fx::{self, FxTable, Rates};
 use purser_core::integrations::attribution_key;
 use purser_core::model::{kind, status, store};
 use purser_core::revenue::{
-    self as rv, ChainRow, Commission, CountryRow, Delta, DayRow, LedgerRow, PeriodFacts, Query, Rebuild, ReportInput, SubRow,
+    self as rv, ChainRow, Commission, CountryRow, Delta, DayRow, LedgerRow, PeriodFacts, Phase, Query, Rebuild, ReportInput, SubRow,
 };
 use purser_core::time::{day_of_micros, format_day, parse_day, MICROS_PER_DAY};
 use serde::Deserialize;
@@ -23,9 +23,6 @@ use serde_json::json;
 use spacetimedb::{ProcedureContext, ReducerContext, ScheduleAt, Table};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// Bump to rebuild the aggregates of every database from the ledger on the next worker run.
-/// 2: per-country aggregates, trials, trial conversions, gross after the first paid year.
-pub(crate) const REVENUE_VERSION: i64 = 2;
 /// FX: refresh the latest rates at most this often, and backfill history in chunks of this size.
 const FX_REFRESH_MICROS: i64 = 6 * 3600 * 1_000_000;
 const FX_CHUNK_DAYS: i32 = 60;
@@ -70,15 +67,11 @@ pub struct RevenueDaily {
     pub gross_micros: i64,
     pub refunded_micros: i64,
     /// Free trials started.
-    #[default(0)]
     pub trials: u32,
     /// First paid periods after a free trial.
-    #[default(0)]
     pub trial_conversions: u32,
     /// Part of gross / refunded from subscription periods after the first paid year.
-    #[default(0)]
     pub gross_after_year_micros: i64,
-    #[default(0)]
     pub refunded_after_year_micros: i64,
 }
 
@@ -131,7 +124,6 @@ pub struct FxDay {
     #[primary_key]
     pub day: i32,
     pub rates_json: String,
-    pub fetched_at_micros: i64,
 }
 
 /// Manual rate for currencies the ECB does not publish.
@@ -326,12 +318,12 @@ fn set_rebuild_state(tx: &ReducerContext, r: &Rebuild) {
 
 /// The aggregates are being (or are about to be) rebuilt: the report may be incomplete.
 fn rebuilding(tx: &ReducerContext) -> bool {
-    rebuild_state(tx) != Rebuild::Idle || settings::get_i64(tx, key::REVENUE_VERSION) < REVENUE_VERSION
+    !rebuild_state(tx).is_idle()
 }
 
 /// The live hooks count a change now unless a running rebuild will count the purchase later.
 fn counts_live(tx: &ReducerContext, p: &Purchase) -> bool {
-    rebuild_state(tx).counts_live(p.created_at_micros, &p.id)
+    rebuild_state(tx).counts_live(p.created_at_micros, &p.id, &p.app_id)
 }
 
 // --- Ledger hooks (same transaction as the ledger change) ------------------------------------
@@ -446,39 +438,55 @@ fn count_purchases(tx: &ReducerContext, rows: &[Purchase]) {
     b.save(tx);
 }
 
-/// Deletes a batch of old aggregates; the ledger is counted when none are left.
-fn clear_step(tx: &ReducerContext) {
-    let daily: Vec<String> = tx.db.revenue_daily().iter().take(REBUILD_CLEAR_BATCH).map(|r| r.key).collect();
+/// Deletes a batch of old aggregates (of the rebuilt builds); the ledger is counted when none are left.
+fn clear_step(tx: &ReducerContext, apps: &[String]) {
+    let daily: Vec<String> = if apps.is_empty() {
+        tx.db.revenue_daily().iter().take(REBUILD_CLEAR_BATCH).map(|r| r.key).collect()
+    } else {
+        apps.iter().flat_map(|a| tx.db.revenue_daily().app_day().filter((a.as_str(), i32::MIN..)).map(|r| r.key)).take(REBUILD_CLEAR_BATCH).collect()
+    };
     for k in &daily {
         tx.db.revenue_daily().key().delete(k);
     }
-    let country: Vec<String> =
-        tx.db.revenue_country_daily().iter().take(REBUILD_CLEAR_BATCH - daily.len()).map(|r| r.key).collect();
+    let room = REBUILD_CLEAR_BATCH - daily.len();
+    let country: Vec<String> = if apps.is_empty() {
+        tx.db.revenue_country_daily().iter().take(room).map(|r| r.key).collect()
+    } else {
+        apps.iter().flat_map(|a| tx.db.revenue_country_daily().app_day().filter((a.as_str(), i32::MIN..)).map(|r| r.key)).take(room).collect()
+    };
     for k in &country {
         tx.db.revenue_country_daily().key().delete(k);
     }
-    let next = if daily.len() + country.len() < REBUILD_CLEAR_BATCH { Rebuild::Scanning(None) } else { Rebuild::Clearing };
-    set_rebuild_state(tx, &next);
+    let phase = if daily.len() + country.len() < REBUILD_CLEAR_BATCH { Phase::Scanning(None) } else { Phase::Clearing };
+    set_rebuild_state(tx, &Rebuild::new(phase, apps.to_vec()));
 }
 
-/// Counts the next batch of the ledger after `cursor`. True when the whole ledger is counted.
-fn scan_step(tx: &ReducerContext, cursor: Option<(i64, String)>) -> bool {
+/// Counts the next batch of the ledger (of the rebuilt builds) after `cursor`. True when the
+/// whole ledger is counted.
+fn scan_step(tx: &ReducerContext, cursor: Option<(i64, String)>, apps: &[String]) -> bool {
     let start = cursor.as_ref().map_or(i64::MIN, |(created, _)| *created);
+    let after_cursor = |p: &Purchase| match &cursor {
+        Some((created, last)) => !(p.created_at_micros == *created && p.id.as_str() <= last.as_str()),
+        None => true,
+    };
     let mut rows: Vec<Purchase> = Vec::new();
     let mut complete = true;
-    // In `created_at_micros` order; rows of the same microsecond are ordered by id below, so a
-    // batch always ends after a whole group (read) and the cursor is exact.
-    for p in tx.db.purchase().created_at_micros().filter(start..) {
-        if let Some((created, last)) = &cursor {
-            if p.created_at_micros == *created && p.id.as_str() <= last.as_str() {
-                continue;
+    if apps.is_empty() {
+        // In `created_at_micros` order; rows of the same microsecond are ordered by id below, so a
+        // batch always ends after a whole group (read) and the cursor is exact.
+        for p in tx.db.purchase().created_at_micros().filter(start..).filter(|p| after_cursor(p)) {
+            if rows.len() >= REBUILD_BATCH && rows.last().is_some_and(|r| r.created_at_micros != p.created_at_micros) {
+                complete = false;
+                break;
             }
+            rows.push(p);
         }
-        if rows.len() >= REBUILD_BATCH && rows.last().is_some_and(|r| r.created_at_micros != p.created_at_micros) {
-            complete = false;
-            break;
+    } else {
+        // The first `REBUILD_BATCH + 1` rows of each build after the cursor hold the next batch of
+        // all of them in (created, id) order.
+        for a in apps {
+            rows.extend(tx.db.purchase().app_created().filter((a.as_str(), start..)).filter(|p| after_cursor(p)).take(REBUILD_BATCH + 1));
         }
-        rows.push(p);
     }
     rows.sort_by(|a, b| (a.created_at_micros, a.id.as_str()).cmp(&(b.created_at_micros, b.id.as_str())));
     if rows.len() > REBUILD_BATCH {
@@ -488,13 +496,12 @@ fn scan_step(tx: &ReducerContext, cursor: Option<(i64, String)>) -> bool {
     count_purchases(tx, &rows);
     match rows.last().filter(|_| !complete) {
         Some(last) => {
-            set_rebuild_state(tx, &Rebuild::Scanning(Some((last.created_at_micros, last.id.clone()))));
+            set_rebuild_state(tx, &Rebuild::new(Phase::Scanning(Some((last.created_at_micros, last.id.clone()))), apps.to_vec()));
             false
         }
         None => {
-            set_rebuild_state(tx, &Rebuild::Idle);
-            settings::set(tx, key::REVENUE_VERSION, &REVENUE_VERSION.to_string());
-            log::info!("Revenue aggregates rebuilt from the ledger");
+            set_rebuild_state(tx, &Rebuild::IDLE);
+            log::info!("Revenue aggregates rebuilt from the ledger{}", if apps.is_empty() { String::new() } else { format!(" for {}", apps.join(", ")) });
             true
         }
     }
@@ -506,13 +513,14 @@ fn rebuild_step(tx: &ReducerContext) -> bool {
     if crate::ctx::tx_now_micros(tx) - settings::get_i64(tx, key::LAST_IMPORT_AT) < IMPORT_QUIET_MICROS {
         return true;
     }
-    match rebuild_state(tx) {
-        Rebuild::Idle if settings::get_i64(tx, key::REVENUE_VERSION) >= REVENUE_VERSION => true,
-        Rebuild::Idle | Rebuild::Clearing => {
-            clear_step(tx);
+    let r = rebuild_state(tx);
+    match r.phase {
+        Phase::Idle => true,
+        Phase::Clearing => {
+            clear_step(tx, &r.apps);
             false
         }
-        Rebuild::Scanning(cursor) => scan_step(tx, cursor),
+        Phase::Scanning(cursor) => scan_step(tx, cursor, &r.apps),
     }
 }
 
@@ -590,31 +598,36 @@ pub fn rebuild_at_once(tx: &ReducerContext) {
     }
 }
 
-/// Rebuilds the aggregates from the ledger (after an import or a rule change). Only starts it:
-/// the worker counts the ledger in batches and `admin_revenue_stats` says `"rebuilding": true`
-/// until it is done.
+/// Rebuilds the aggregates from the ledger (after an import or a rule change): of the builds in
+/// `app_ids_json` (a JSON array; empty = every build). Only starts it: the worker counts the
+/// ledger in batches and `admin_revenue_stats` says `"rebuilding": true` until it is done.
 #[spacetimedb::reducer]
-pub fn admin_rebuild_revenue(ctx: &ReducerContext) -> Result<(), String> {
+pub fn admin_rebuild_revenue(ctx: &ReducerContext, app_ids_json: String) -> Result<(), String> {
     let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
-    crate::access::audit(ctx, &who, "admin_rebuild_revenue", "", "");
-    set_rebuild_state(ctx, &Rebuild::Clearing);
+    let apps: Vec<String> = if app_ids_json.trim().is_empty() { Vec::new() } else { serde_json::from_str(&app_ids_json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))? };
+    crate::access::audit(ctx, &who, "admin_rebuild_revenue", "", &apps.join(","));
+    invalidate_apps(ctx, &apps);
     Ok(())
 }
 
-/// Marks the aggregates stale: the worker rebuilds them from the ledger. A rebuild that is already
-/// running starts over, so it counts the new rows too.
+/// Marks every aggregate stale: the worker rebuilds them from the ledger (once imports have
+/// stopped). A rebuild that is already running starts over, so it counts the new rows too.
 pub fn invalidate(tx: &ReducerContext) {
-    settings::set(tx, key::REVENUE_VERSION, "0");
-    if rebuild_state(tx) != Rebuild::Idle {
-        set_rebuild_state(tx, &Rebuild::Clearing);
-    }
+    invalidate_apps(tx, &[]);
 }
 
-/// Ledger rows were imported: rebuilt once imports have stopped for a few minutes, so a large
-/// import in batches is not followed by a rebuild after every batch.
-pub fn imported(tx: &ReducerContext) {
+/// Marks the aggregates of these builds stale (empty: all); merged with a running rebuild.
+pub fn invalidate_apps(tx: &ReducerContext, apps: &[String]) {
+    let next = rebuild_state(tx).merged_with(apps);
+    set_rebuild_state(tx, &next);
+}
+
+/// Ledger rows of these builds were imported: their aggregates are rebuilt once imports have
+/// stopped for a few minutes, so a large import in batches is not followed by a rebuild after
+/// every batch. The other builds keep counting live.
+pub fn imported(tx: &ReducerContext, apps: &[String]) {
     settings::set(tx, key::LAST_IMPORT_AT, &crate::ctx::tx_now_micros(tx).to_string());
-    invalidate(tx);
+    invalidate_apps(tx, apps);
 }
 
 /// Sets the rate of a currency the ECB does not publish (units per 1 USD, e.g. UAH 41.5).
@@ -694,7 +707,7 @@ fn snapshot_subscriptions(tx: &ReducerContext, day: i32) {
 // --- FX --------------------------------------------------------------------------------------
 
 fn store_rates(tx: &ReducerContext, day: i32, rates: &Rates) {
-    let row = FxDay { day, rates_json: serde_json::to_string(rates).unwrap_or_default(), fetched_at_micros: crate::ctx::tx_now_micros(tx) };
+    let row = FxDay { day, rates_json: serde_json::to_string(rates).unwrap_or_default() };
     if tx.db.fx_day().day().find(day).is_some() {
         tx.db.fx_day().day().update(row);
     } else {
@@ -820,8 +833,7 @@ pub struct Upkeep {
     rebuild: bool,
 }
 
-/// One-off migrations and what the worker has to do for revenue, read in the worker's first
-/// transaction. Cheap when there is nothing to do: a few `server_state` lookups.
+/// What the worker has to do for revenue, read in the worker's first transaction. Cheap when there is nothing to do: a few `server_state` lookups.
 pub fn upkeep(tx: &ReducerContext) -> Upkeep {
     let day = today(tx);
     let snapshot = settings::get(tx, key::SUB_SNAPSHOT_DAY).and_then(|d| d.parse::<i32>().ok());
@@ -1021,7 +1033,7 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
         serde_json::from_str(query_json).map_err(|e| format!("bad query: {e}"))?
     };
     ctx.tx(|tx| {
-        crate::access::require(tx, purser_core::roles::Cap::Read)?;
+        let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read)?;
         let today = today(tx);
         let to = if q.to.is_empty() { today } else { parse_day(&q.to).ok_or("bad 'to' date")? };
         let from = if q.from.is_empty() { to - 29 } else { parse_day(&q.from).ok_or("bad 'from' date")? };
@@ -1035,7 +1047,19 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
                 return Err(format!("no apps with game_key {}", q.game_key));
             }
         }
-        let apps: BTreeSet<String> = apps.into_iter().collect();
+        let mut apps: BTreeSet<String> = apps.into_iter().collect();
+        // A limited admin's report covers their builds: the asked ones, or all of theirs.
+        if let Some(mine) = who.app_ids(tx) {
+            if let Some(other) = apps.iter().find(|a| !mine.contains(*a)) {
+                return Err(format!("{} build {other}", crate::access::SCOPE_ERROR));
+            }
+            if apps.is_empty() {
+                apps = mine;
+            }
+            if apps.is_empty() {
+                return Err(format!("{} any app", crate::access::SCOPE_ERROR));
+            }
+        }
         let keep = |app: &str| apps.is_empty() || apps.contains(app);
         // A filter reads each build through its `(app_id, day)` index, the whole server by `day`.
         let daily: Vec<RevenueDaily> = if apps.is_empty() {

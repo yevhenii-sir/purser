@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils"
 const STEPS = ["App", "Delivery", "Store keys", "Products", "Check"]
 
 function reducerSnippet(identity: string) {
-  return `// Rust module of the app database: the billing calls these reducers (args_format v1)
+  return `// Rust module of the app database: the billing calls these reducers
 const BILLING_IDENTITY_HEX: &str = "${identity || "<billing identity>"}";
 
 #[spacetimedb::reducer]
@@ -130,7 +130,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
   const apps = (s = w) => s.builds.filter((b) => b.app_id.trim())
   const known = useApps().apps
   const allAccounts = accountsOf(known || [])
-  const storeOfBuild = (b: Build): StoreInfo => storeById(b.store) || storeOf(b)
+  const storeOfBuild = (b: Build): StoreInfo => storeOf(b)
   const has = (name: string, b: Build) => !!creds && [b.app_id, b.account || "default", "default"].some((s) => creds.has(`${s}/${name}`))
   const setBuild = (i: number, patch: Partial<Build>) => setW((s) => ({ ...s, builds: s.builds.map((b, j) => (j === i ? { ...b, ...patch } : b)) }))
   /** Store keys to ask for: one group per store and developer account. */
@@ -186,7 +186,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         setCreds(new Set(credRows.map((c) => c.key)))
         for (const a of apps(s)) {
           const e = existing.find((x) => x.app_id === a.app_id)
-          if (e) Object.assign(s, { delivery: e.delivery, spacetime_url: e.spacetime_url || s.spacetime_url, spacetime_db: e.spacetime_db, grant_reducer: e.grant_reducer, revoke_reducer: e.revoke_reducer, args_format: e.args_format, webhook_url: e.webhook_url })
+          if (e) Object.assign(s, { delivery: e.delivery, spacetime_url: e.spacetime_url || s.spacetime_url, spacetime_db: e.spacetime_db, grant_reducer: e.grant_reducer, revoke_reducer: e.revoke_reducer, webhook_url: e.webhook_url })
         }
         if (!s.products.length) {
           const firstStore = apps(s)[0]?.store || ""
@@ -208,7 +208,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
           await call("admin_upsert_game_app", JSON.stringify({
             app_id: a.app_id, platform: a.platform, store: a.store, game_key: w.game_key, account: a.account || "default", delivery: w.delivery,
             spacetime_url: w.delivery === "spacetimedb" ? w.spacetime_url : "", spacetime_db: w.spacetime_db,
-            grant_reducer: w.grant_reducer, revoke_reducer: w.revoke_reducer, args_format: w.args_format, webhook_url: w.webhook_url,
+            grant_reducer: w.grant_reducer, revoke_reducer: w.revoke_reducer, webhook_url: w.webhook_url,
           }))
         }
         appsChanged()

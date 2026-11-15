@@ -129,13 +129,13 @@ function storeCreatePreview(json: string) {
     })
   })
   const apple = (S.tables.game_app || []).filter((a: Row) => q.app_ids.includes(a.app_id) && storeOf(a as GameApp).id === "apple")
-  return { rows, apple_groups: Object.fromEntries(apple.map((a: Row) => [a.app_id, ["Premium"]])), warnings: {} }
+  return { rows, apple_groups: Object.fromEntries(apple.map((a: Row) => [a.app_id, ["Premium"]])), warnings: {}, pending: [] }
 }
 
 const PROCS: Record<string, (...args: never[]) => unknown> = {
   admin_store_create_preview: storeCreatePreview,
   whoami: () => "0x" + S.identity,
-  admin_me: () => ({ identity: S.identity, name: S.tables.admin?.find((a: Row) => a.protected)?.name || "", role: "owner", owner: true }),
+  admin_me: () => ({ identity: S.identity, name: S.tables.admin?.find((a: Row) => a.protected)?.name || "", role: "owner", owner: true, game_keys: [] }),
   admin_overview: () => S.procs.admin_overview,
   admin_select: (json: string) => {
     const q = JSON.parse(json)

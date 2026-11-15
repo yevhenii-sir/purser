@@ -368,8 +368,8 @@ pub fn os_of(platform_id: &str) -> Option<&'static str> {
     platform(platform_id).and_then(|p| p.os)
 }
 
-/// Store of a build: its `store` column, or the platform's default when the column is empty
-/// (rows written before the column existed, and every Android / iOS build).
+/// Store of a new or changed build: the store asked for, or the platform's default when it is
+/// empty (every Android / iOS build).
 pub fn build_store(platform_id: &str, store_column: &str) -> Result<&'static StoreInfo, String> {
     let p = platform(platform_id).ok_or_else(|| {
         format!("platform must be one of {}", PLATFORMS.iter().map(|p| p.id).collect::<Vec<_>>().join(", "))

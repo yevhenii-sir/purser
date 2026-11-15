@@ -31,12 +31,6 @@ export function DeliveryFields({ value, onChange }: { value: DeliverySettings; o
           {text("spacetime_db", "Database name")}
           {text("grant_reducer", "Grant reducer")}
           {text("revoke_reducer", "Revoke reducer")}
-          <Field label="Arguments format" hint="legacy: only for apps migrated from Adapty">
-            <Select value={value.args_format} onValueChange={(v) => onChange({ args_format: v })}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent><SelectItem value="v1">v1</SelectItem><SelectItem value="legacy">legacy</SelectItem></SelectContent>
-            </Select>
-          </Field>
         </>
       )}
       {value.delivery === "webhook" && text("webhook_url", "Webhook URL (https)", "sm:col-span-2")}

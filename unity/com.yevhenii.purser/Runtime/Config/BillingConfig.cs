@@ -149,9 +149,6 @@ namespace Purser
             {
                 throw new FormatException("not JSON: " + e.Message);
             }
-            foreach (var legacy in new[] { "androidAppId", "iosAppId", "amazonAppId", "steamAppId", "webAppId" })
-                if (o[legacy] != null)
-                    throw new FormatException($"'{legacy}' is from an older Purser: copy the config again from the admin panel");
 
             // Parse everything first: a bad item must not leave a half-merged config.
             var incomingBuilds = o["builds"] is JArray b ? ParseBuilds(b) : new List<BillingBuild>();

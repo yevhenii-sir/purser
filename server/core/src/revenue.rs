@@ -137,7 +137,7 @@ pub fn chain_period_facts(chain: &[ChainRow]) -> Vec<PeriodFacts> {
 /// Where a rebuild of the aggregates from the ledger stands. The module walks the ledger in
 /// (created, ledger id) order, a batch per transaction, after deleting the old aggregates.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Rebuild {
+pub enum Phase {
     /// Not rebuilding: the live hooks keep the aggregates.
     Idle,
     /// Deleting the old aggregates.
@@ -146,43 +146,108 @@ pub enum Rebuild {
     Scanning(Option<(i64, String)>),
 }
 
-impl Rebuild {
-    /// From the stored value (`None` / empty: idle).
-    pub fn parse(v: Option<&str>) -> Rebuild {
-        match v.unwrap_or("") {
-            "" => Rebuild::Idle,
-            "clear" => Rebuild::Clearing,
-            "scan" => Rebuild::Scanning(None),
+/// A rebuild of the aggregates of some builds (`apps`; empty = every build).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rebuild {
+    pub phase: Phase,
+    pub apps: Vec<String>,
+}
+
+impl Phase {
+    fn parse(s: &str) -> Phase {
+        match s {
+            "" => Phase::Idle,
+            "clear" => Phase::Clearing,
+            "scan" => Phase::Scanning(None),
             s => {
                 let mut parts = s.splitn(3, ' ');
                 match (parts.next(), parts.next().and_then(|c| c.parse::<i64>().ok()), parts.next()) {
-                    (Some("scan"), Some(created), Some(id)) => Rebuild::Scanning(Some((created, id.to_string()))),
+                    (Some("scan"), Some(created), Some(id)) => Phase::Scanning(Some((created, id.to_string()))),
                     // Unreadable: start over.
-                    _ => Rebuild::Clearing,
+                    _ => Phase::Clearing,
                 }
             }
         }
     }
 
+    fn value(&self) -> String {
+        match self {
+            Phase::Idle => String::new(),
+            Phase::Clearing => "clear".into(),
+            Phase::Scanning(None) => "scan".into(),
+            Phase::Scanning(Some((created, id))) => format!("scan {created} {id}"),
+        }
+    }
+}
+
+impl Rebuild {
+    pub const IDLE: Rebuild = Rebuild { phase: Phase::Idle, apps: Vec::new() };
+
+    pub fn new(phase: Phase, apps: Vec<String>) -> Rebuild {
+        Rebuild { phase, apps }
+    }
+
+    pub fn is_idle(&self) -> bool {
+        self.phase == Phase::Idle
+    }
+
+    /// From the stored value (`None` / empty: idle): the phase, or `{"phase", "apps"}` JSON when
+    /// only some builds are rebuilt.
+    pub fn parse(v: Option<&str>) -> Rebuild {
+        let v = v.unwrap_or("");
+        if v.starts_with('{') {
+            let j: serde_json::Value = serde_json::from_str(v).unwrap_or_default();
+            let apps = j["apps"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            let phase = match j["phase"].as_str() {
+                Some(p) => Phase::parse(p),
+                None => Phase::Clearing,
+            };
+            return Rebuild { phase, apps };
+        }
+        Rebuild { phase: Phase::parse(v), apps: Vec::new() }
+    }
+
     /// The value to store (`None`: remove the key).
     pub fn value(&self) -> Option<String> {
-        match self {
-            Rebuild::Idle => None,
-            Rebuild::Clearing => Some("clear".into()),
-            Rebuild::Scanning(None) => Some("scan".into()),
-            Rebuild::Scanning(Some((created, id))) => Some(format!("scan {created} {id}")),
+        if self.phase == Phase::Idle {
+            None
+        } else if self.apps.is_empty() {
+            Some(self.phase.value())
+        } else {
+            Some(serde_json::json!({ "phase": self.phase.value(), "apps": self.apps }).to_string())
         }
     }
 
-    /// Whether a ledger change of the purchase (`created_at_micros`, `id`) is added to the
-    /// aggregates now. False while the rebuild has not counted that purchase yet: it will see the
-    /// change when it gets there, so adding it now would count it twice.
-    pub fn counts_live(&self, created_at_micros: i64, id: &str) -> bool {
-        match self {
-            Rebuild::Idle => true,
-            Rebuild::Clearing | Rebuild::Scanning(None) => false,
-            Rebuild::Scanning(Some((c, last))) => (created_at_micros, id) <= (*c, last.as_str()),
+    /// The rebuild covers this build.
+    pub fn covers(&self, app_id: &str) -> bool {
+        self.phase != Phase::Idle && (self.apps.is_empty() || self.apps.iter().any(|a| a == app_id))
+    }
+
+    /// Whether a ledger change of the purchase (`created_at_micros`, `id`, `app_id`) is added to
+    /// the aggregates now. False while the rebuild has not counted that purchase yet: it will see
+    /// the change when it gets there, so adding it now would count it twice.
+    pub fn counts_live(&self, created_at_micros: i64, id: &str, app_id: &str) -> bool {
+        if !self.covers(app_id) {
+            return true;
         }
+        match &self.phase {
+            Phase::Idle => true,
+            Phase::Clearing | Phase::Scanning(None) => false,
+            Phase::Scanning(Some((c, last))) => (created_at_micros, id) <= (*c, last.as_str()),
+        }
+    }
+
+    /// A rebuild of `apps` (empty: everything) asked for while this one stands: one that covers
+    /// both, starting over.
+    pub fn merged_with(&self, apps: &[String]) -> Rebuild {
+        let all = apps.is_empty() || (!self.is_idle() && self.apps.is_empty());
+        let mut merged: Vec<String> = if all { Vec::new() } else { self.apps.iter().chain(apps).cloned().collect() };
+        if !all && self.is_idle() {
+            merged = apps.to_vec();
+        }
+        merged.sort();
+        merged.dedup();
+        Rebuild { phase: Phase::Clearing, apps: merged }
     }
 }
 
@@ -861,15 +926,29 @@ mod tests {
 
     #[test]
     fn rebuild_state_round_trips_and_decides_what_the_live_hooks_count() {
-        for r in [Rebuild::Idle, Rebuild::Clearing, Rebuild::Scanning(None), Rebuild::Scanning(Some((5, "apple:1 2".into())))] {
+        let all = |p: Phase| Rebuild::new(p, Vec::new());
+        for r in [Rebuild::IDLE, all(Phase::Clearing), all(Phase::Scanning(None)), all(Phase::Scanning(Some((5, "apple:1 2".into())))),
+                  Rebuild::new(Phase::Scanning(Some((5, "apple:1".into()))), vec!["com.a".into(), "com.b".into()])] {
             assert_eq!(Rebuild::parse(r.value().as_deref()), r);
         }
-        assert_eq!(Rebuild::parse(Some("scan x")), Rebuild::Clearing, "unreadable: start over");
-        assert!(Rebuild::Idle.counts_live(9, "x"));
-        assert!(!Rebuild::Clearing.counts_live(9, "x") && !Rebuild::Scanning(None).counts_live(i64::MIN, ""));
-        let at = Rebuild::Scanning(Some((100, "google:b".into())));
-        assert!(at.counts_live(99, "zzz") && at.counts_live(100, "google:a") && at.counts_live(100, "google:b"));
-        assert!(!at.counts_live(100, "google:c") && !at.counts_live(101, "a"));
+        assert_eq!(Rebuild::parse(Some("scan x")), all(Phase::Clearing), "unreadable: start over");
+        assert!(Rebuild::IDLE.counts_live(9, "x", "com.a"));
+        assert!(!all(Phase::Clearing).counts_live(9, "x", "com.a") && !all(Phase::Scanning(None)).counts_live(i64::MIN, "", "com.a"));
+        let at = all(Phase::Scanning(Some((100, "google:b".into()))));
+        assert!(at.counts_live(99, "zzz", "a") && at.counts_live(100, "google:a", "a") && at.counts_live(100, "google:b", "a"));
+        assert!(!at.counts_live(100, "google:c", "a") && !at.counts_live(101, "a", "a"));
+        let one = Rebuild::new(Phase::Clearing, vec!["com.a".into()]);
+        assert!(!one.counts_live(1, "x", "com.a") && one.counts_live(1, "x", "com.b"), "other builds stay live");
+    }
+
+    #[test]
+    fn rebuilds_merge() {
+        let a = vec!["com.a".to_string()];
+        let b = vec!["com.b".to_string()];
+        assert_eq!(Rebuild::IDLE.merged_with(&a), Rebuild::new(Phase::Clearing, a.clone()));
+        assert_eq!(Rebuild::new(Phase::Scanning(None), a.clone()).merged_with(&b).apps, ["com.a", "com.b"]);
+        assert!(Rebuild::new(Phase::Clearing, Vec::new()).merged_with(&b).apps.is_empty(), "a full rebuild stays full");
+        assert!(Rebuild::new(Phase::Clearing, a).merged_with(&[]).apps.is_empty());
     }
 
     #[test]

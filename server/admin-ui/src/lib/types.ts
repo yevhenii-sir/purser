@@ -15,17 +15,16 @@ export interface GameApp {
   spacetime_db: string
   grant_reducer: string
   revoke_reducer: string
-  args_format: string
   webhook_url: string
   allow_sandbox: boolean
   enabled: boolean
   client_consumes: boolean
-  /** Store id; empty = the platform's default (`storeOf` in lib/stores.ts). */
+  /** Store id, resolved by the server (`storeOf` in lib/stores.ts). */
   store: string
   /** App Store builds: how refund requests are answered (`off` / empty, `inform`, `prefer`). */
   apple_refund_mode: string
   /** Amazon builds: the only SNS topic notifications are accepted from (empty: any). */
-  sns_topic_arn?: string
+  sns_topic_arn: string
 }
 
 export interface Product {
@@ -35,14 +34,14 @@ export interface Product {
   kind: Kind
   price_micros: number
   currency: string
-  /** Store listing used by Create in store (absent in rows read before the columns existed). */
-  title?: string
-  description?: string
+  /** Store listing used by Create in store. */
+  title: string
+  description: string
   /** Subscriptions: `P1M` etc. (`lib/periods.ts`), "" if unknown. */
-  period?: string
-  apple_group?: string
+  period: string
+  apple_group: string
   /** The app's own id of the product, the same in every store; empty = `product_id` (`catalogIdOf`). */
-  catalog_id?: string
+  catalog_id: string
 }
 
 /** The app's own id of a product (paywalls and entitlements use it): its catalog id, else its store id. */
@@ -199,14 +198,13 @@ export interface Stats {
   rebuilding?: boolean
 }
 
-/** `admin_revenue_stats` with `{"summary": true}`: only the aggregates, no ledger scans. A server
- * without the summary mode answers with the full report, which has these fields too. */
+/** `admin_revenue_stats` with `{"summary": true}`: only the aggregates, no ledger scans. */
 export interface StatsSummary {
   from: string
   to: string
-  totals: Partial<Money> & { net_usd_micros: number }
-  series: (Partial<Money> & { day: string; net_usd_micros: number })[]
-  by_app: (Partial<Money> & { app_id: string; net_usd_micros: number })[]
+  totals: Money
+  series: (Money & { day: string })[]
+  by_app: (Money & { app_id: string })[]
   rebuilding?: boolean
 }
 
@@ -234,7 +232,7 @@ export interface Overview {
   pending_total: number
   /** Apps (`game_key` groups) and their builds. */
   apps: number
-  builds?: number
+  builds: number
   products: number
   outbox: number
 }
@@ -242,8 +240,6 @@ export interface Overview {
 /** Ledger states (`purser_core::model::status`). */
 export const STATUSES = ["verified", "transfer_pending", "granted", "completed", "revoke_pending", "revoked", "expire_pending", "expired", "rejected"] as const
 export type PurchaseStatus = (typeof STATUSES)[number]
-/** False for a state a newer server added. */
-export const isPurchaseStatus = (s: string): s is PurchaseStatus => (STATUSES as readonly string[]).includes(s)
 export const KINDS: Kind[] = ["consumable", "non_consumable", "subscription"]
 
 /** Every secret name with its description: the stores' (from the registry), then the rest. */
@@ -258,10 +254,10 @@ export const SECRET_NAMES: [string, string][] = [
   ["adjust_s2s_token", "Adjust S2S security token"],
   ["appmetrica_post_api_key", "AppMetrica Post API key"],
   ["gcs_service_account_json", "Cloud Storage export: service account JSON key"],
-  ["alert_telegram_bot_token", "Alerts: Telegram bot token (default scope)"],
-  ["alert_slack_webhook_url", "Alerts: Slack incoming webhook URL (default scope)"],
-  ["alert_discord_webhook_url", "Alerts: Discord webhook URL (default scope)"],
-  ["alert_webhook_secret", "Alerts: signing key of the alert webhook (default scope)"],
+  ["alert_telegram_bot_token", "Alerts: Telegram bot token (scope alert-<channel id>; set it on the Alerts page)"],
+  ["alert_slack_webhook_url", "Alerts: Slack incoming webhook URL (scope alert-<channel id>; set it on the Alerts page)"],
+  ["alert_discord_webhook_url", "Alerts: Discord webhook URL (scope alert-<channel id>; set it on the Alerts page)"],
+  ["alert_webhook_secret", "Alerts: signing key of the alert webhook (scope alert-<channel id>; set it on the Alerts page)"],
 ]
 
 /** A product being created in a build's store (`store_create_job`). */

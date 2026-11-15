@@ -29,7 +29,7 @@ fn public_base(tx: &ReducerContext, from_page: &str) -> Result<String, String> {
 /// An admin with `cap` and a build of `store_id`, in one transaction.
 fn load(ctx: &mut impl Ctx, app_id: &str, from_page: &str, cap: Cap, action: &str, store_id: &str) -> Result<(GameApp, String), String> {
     ctx.tx(|tx| {
-        let who = crate::access::require(tx, cap)?;
+        let who = crate::access::require_app(tx, cap, app_id)?;
         crate::access::audit(tx, &who, action, app_id, "");
         let app = config::find_app(tx, app_id).ok_or(format!("unknown app {app_id}"))?;
         let store = config::app_store(&app);
@@ -192,7 +192,7 @@ pub fn setup_stripe_webhook(ctx: &mut impl Ctx, app_id: &str, from_page: &str, r
     let (id, secret) = st::parse_created_webhook(&res.body)?;
     let scope = app.app_id.clone();
     ctx.tx(|tx| {
-        let who = crate::access::require(tx, Cap::Secrets)?;
+        let who = crate::access::require_app(tx, Cap::Secrets, &scope)?;
         crate::access::audit(tx, &who, "admin_setup_stripe_webhook", &format!("{scope}/{}", st::WEBHOOK_SECRET), "created endpoint");
         crate::put_credential(tx, &scope, st::WEBHOOK_SECRET, secret.clone())
     })?;

@@ -26,6 +26,8 @@ export interface PageDef {
   group: "Monitor" | "Apps" | "Settings"
   /** Hidden from admins whose role lacks it. */
   need?: Cap
+  /** Server-wide: hidden from admins limited to some apps. */
+  everyApp?: boolean
 }
 
 /** Top-level pages. Apps (`#apps`, `#app/<key>/<tab>`) are listed separately in the sidebar. */
@@ -34,12 +36,12 @@ export const PAGES: Record<string, PageDef> = {
   revenue: { title: "Revenue", icon: BadgeDollarSignIcon, component: RevenuePage, group: "Monitor" },
   purchases: { title: "Purchases", icon: ReceiptTextIcon, component: PurchasesPage, group: "Monitor" },
   apps: { title: "All apps", icon: LayoutGridIcon, component: AppsPage, group: "Apps" },
-  accounts: { title: "Developer accounts", icon: BuildingIcon, component: AccountsPage, group: "Settings" },
-  server: { title: "Server", icon: ServerIcon, component: ServerPage, group: "Settings" },
-  logs: { title: "Logs", icon: ScrollTextIcon, component: LogsPage, group: "Settings", need: "owner" },
-  admins: { title: "Admins", icon: ShieldCheckIcon, component: AdminsPage, group: "Settings", need: "admins" },
-  audit: { title: "Audit log", icon: HistoryIcon, component: AuditPage, group: "Settings", need: "admins" },
-  alerts: { title: "Alerts", icon: BellRingIcon, component: AlertsPage, group: "Settings" },
+  accounts: { title: "Developer accounts", icon: BuildingIcon, component: AccountsPage, group: "Settings", everyApp: true },
+  server: { title: "Server", icon: ServerIcon, component: ServerPage, group: "Settings", everyApp: true },
+  logs: { title: "Logs", icon: ScrollTextIcon, component: LogsPage, group: "Settings", need: "owner", everyApp: true },
+  admins: { title: "Admins", icon: ShieldCheckIcon, component: AdminsPage, group: "Settings", need: "admins", everyApp: true },
+  audit: { title: "Audit log", icon: HistoryIcon, component: AuditPage, group: "Settings", need: "admins", everyApp: true },
+  alerts: { title: "Alerts", icon: BellRingIcon, component: AlertsPage, group: "Settings", everyApp: true },
 }
 
 export const APP_TABS = ["setup", "products", "paywalls", "delivery", "integrations", "keys", "purchases", "revenue"] as const

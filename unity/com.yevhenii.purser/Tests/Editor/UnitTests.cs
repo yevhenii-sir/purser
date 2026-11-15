@@ -88,7 +88,7 @@ namespace Purser.Tests
 
             var result = Sync.Run(api.VerifyAsync(BillingStores.Google, new VerifyRequest
             {
-                BundleId = "com.test.game",
+                AppId = "com.test.game",
                 UserId = "u1",
                 ProductId = "gems_100",
                 PurchaseToken = "tok",
@@ -99,7 +99,7 @@ namespace Purser.Tests
             Assert.AreEqual("POST", method);
             Assert.AreEqual("https://billing.example.com/route/verify/google", url);
             var json = JObject.Parse(body);
-            Assert.AreEqual("com.test.game", (string)json["bundle_id"]);
+            Assert.AreEqual("com.test.game", (string)json["app_id"]);
             Assert.AreEqual("tok", (string)json["purchase_token"]);
             Assert.AreEqual(990000, (long)json["price_micros"]);
             Assert.IsFalse(json.ContainsKey("order_id"), "null fields are omitted");
@@ -199,7 +199,6 @@ namespace Purser.Tests
             Assert.IsFalse(config.FindById("gems_100").HasFallbackPeriod);
             CollectionAssert.IsEmpty(config.Validate());
             Assert.Throws<FormatException>(() => config.MergeJson(@"{""products"": [{""id"": ""x"", ""type"": ""gold""}]}"));
-            Assert.Throws<FormatException>(() => config.MergeJson(@"{""androidAppId"": ""com.example.mygame""}"), "the old format");
             Assert.Throws<FormatException>(() => config.MergeJson("not json"));
             Assert.Throws<FormatException>(() => config.MergeJson(@"{""products"": [{""id"": ""x"", ""type"": ""Consumable"", ""price"": ""cheap""}]}"));
             Assert.Throws<FormatException>(() => config.MergeJson(@"{""products"": [{""id"": ""x"", ""type"": ""Subscription"", ""period"": ""monthly""}]}"));

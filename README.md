@@ -41,7 +41,7 @@ spacetime publish --server maincloud --bin-path purser.wasm <your-billing-db>
    ```
    Other engines use plain HTTP + JSON ([OpenAPI spec](docs/openapi.yaml)); the game grants rewards in its own reducers, a webhook or on the client ([game integration](docs/game-integration.md)).
 
-Prefer your own hardware? [deploy/docker](deploy/docker/README.md) runs SpacetimeDB with automatic HTTPS. **Upgrading** is publishing the new `purser.wasm` to the same database; never use `--delete-data`, it deletes the purchase ledger. Step-by-step guide: [Getting started](docs/getting-started.md).
+Prefer your own hardware? [deploy/docker](deploy/docker/README.md) runs SpacetimeDB with automatic HTTPS. **Upgrading** is publishing the new `purser.wasm` to the same database; don't use `--delete-data` (it deletes the purchase ledger) unless the release notes say the release needs it. Step-by-step guide: [Getting started](docs/getting-started.md).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/admin-revenue-dark.png">
@@ -95,7 +95,7 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | [deploy/docker/](deploy/docker/README.md) | Docker Compose: SpacetimeDB, module publishing, Caddy with automatic HTTPS |
 | [docs/openapi.yaml](docs/openapi.yaml) | OpenAPI 3.1 description of the public HTTP API |
 | [docs/mcp.md](docs/mcp.md) | MCP server: ask Claude about revenue, players, purchases and the setup (`server/mcp_server.py`) |
-| [docs/migrating-from-adapty.md](docs/migrating-from-adapty.md) | Running next to Adapty, legacy reducers, moving the ledger between servers |
+| [docs/migrating-from-adapty.md](docs/migrating-from-adapty.md) | Running next to Adapty, moving the ledger between servers |
 | [server/README.md](server/README.md) | Server reference: tables, secrets, HTTP API, admin calls, `seed.py` |
 | [unity/com.yevhenii.purser/README.md](unity/com.yevhenii.purser/README.md) | Unity package |
 

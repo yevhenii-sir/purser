@@ -312,10 +312,9 @@ function DeliveryTab({ data, reload, go }: TabProps) {
     spacetime_url: first.spacetime_url || DELIVERY_DEFAULTS.spacetime_url,
     grant_reducer: first.grant_reducer || DELIVERY_DEFAULTS.grant_reducer,
     revoke_reducer: first.revoke_reducer || DELIVERY_DEFAULTS.revoke_reducer,
-    args_format: first.args_format || DELIVERY_DEFAULTS.args_format,
   })
   const [flags, setFlags] = useState<Record<string, Flags>>(() =>
-    Object.fromEntries(g.apps.map((a) => [a.app_id, { enabled: a.enabled, allow_sandbox: a.allow_sandbox, client_consumes: a.client_consumes, account: a.account || "default", apple_refund_mode: a.apple_refund_mode || "off", sns_topic_arn: a.sns_topic_arn || "" }])))
+    Object.fromEntries(g.apps.map((a) => [a.app_id, { enabled: a.enabled, allow_sandbox: a.allow_sandbox, client_consumes: a.client_consumes, account: a.account || "default", apple_refund_mode: a.apple_refund_mode || "off", sns_topic_arn: a.sns_topic_arn }])))
   const differs = g.apps.some((a) => a.delivery !== first.delivery || a.spacetime_db !== first.spacetime_db || a.webhook_url !== first.webhook_url)
 
   const save = async () => {

@@ -79,14 +79,13 @@ export function usablePlatforms(): PlatformInfo[] {
   return PLATFORMS.filter((p) => storesFor(p.id).length > 0)
 }
 
-/** The store of a build: its `store` column, or the platform's default (rows from before the column). */
-export function storeOf(a: Pick<GameApp, "platform"> & { store?: string }): StoreInfo {
-  const id = a.store || platformById(a.platform)?.default_store || ""
-  return storeById(id) || MANUAL
+/** The store of a build (its `store` column). */
+export function storeOf(a: Pick<GameApp, "store">): StoreInfo {
+  return storeById(a.store) || MANUAL
 }
 
 /** "Android", "iOS", "Amazon", "Web · Stripe": names a build in tables and selects. */
-export function buildLabel(a: Pick<GameApp, "platform"> & { store?: string }): string {
+export function buildLabel(a: Pick<GameApp, "platform" | "store">): string {
   const p = platformById(a.platform)
   if (!p) return a.platform
   return p.stores.length > 1 ? `${p.name} · ${storeOf(a).name}` : p.name

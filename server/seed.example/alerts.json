@@ -1,10 +1,19 @@
 {
   "channels": [
     {
+      "name": "ops",
       "kind": "telegram",
       "enabled": true,
       "settings": {"chat_id": "<numeric chat id, e.g. -1001234567890, or @channel_name>"},
       "secret": "<bot token from @BotFather>"
+    },
+    {
+      "name": "my-game-team",
+      "kind": "slack",
+      "enabled": true,
+      "secret": "<incoming webhook URL, https://hooks.slack.com/services/...>",
+      "game_keys": ["my-game"],
+      "rules": ["delivery_failing", "store_auth", "notifications_silent"]
     }
   ],
   "rules": {

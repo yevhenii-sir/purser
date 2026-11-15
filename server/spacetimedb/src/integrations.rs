@@ -38,9 +38,14 @@ pub struct Integration {
 /// used for events that happen without the client (renewals, refunds). `key` = `{app_id}/{user_id}`.
 #[spacetimedb::table(accessor = user_attribution)]
 pub struct UserAttribution {
+    /// `{app_id}/{user_id}`
     #[primary_key]
     pub key: String,
+    #[index(btree)]
+    pub app_id: String,
     pub attribution_json: String,
+    /// Indexed for the retention step (`retention::prune`).
+    #[index(btree)]
     pub updated_at_micros: i64,
 }
 
@@ -160,6 +165,7 @@ pub fn save_attribution(tx: &ReducerContext, app_id: &str, user_id: &str, attrib
     }
     let row = UserAttribution {
         key,
+        app_id: app_id.to_string(),
         attribution_json: serde_json::to_string(&merged).unwrap_or_default(),
         updated_at_micros: tx.timestamp.to_micros_since_unix_epoch(),
     };
@@ -196,9 +202,7 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         app_instance_id: p.app_instance_id.clone(),
         attribution: load_attribution(tx, &p.app_id, &p.user_id),
         country: p.country.clone(),
-        commission_percent: Some(
-            crate::revenue::commission(tx).percent_for_period(&p.app_id, crate::revenue::period_facts(tx, p).after_first_year),
-        ),
+        commission_percent: crate::revenue::commission(tx).percent_for_period(&p.app_id, crate::revenue::period_facts(tx, p).after_first_year),
     }
 }
 

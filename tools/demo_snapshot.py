@@ -304,7 +304,7 @@ def main():
     for game, d in GAMES.items():
         for app, platform, store, st in d["builds"]:
             delivery = {"delivery": "spacetimedb", "spacetime_url": "https://stdb.example.com", "spacetime_db": game,
-                        "grant_reducer": "grant_purchase", "revoke_reducer": "revoke_purchase", "args_format": "v1"} if game == "galaxy-miner" \
+                        "grant_reducer": "grant_purchase", "revoke_reducer": "revoke_purchase"} if game == "galaxy-miner" \
                 else {"delivery": "webhook", "webhook_url": "https://api.example.com/billing/events"}
             srv.call("admin_upsert_game_app", json.dumps({"app_id": app, "platform": platform, "store": store, "game_key": game,
                                                           "account": "", "allow_sandbox": True, "enabled": True, **delivery}))

@@ -88,7 +88,7 @@ const ALL_SECRETS: &[&str] = &[
 fn snapshot(ctx: &mut impl Ctx, app_id: &str) -> Result<Snapshot, String> {
     let app_id = app_id.to_string();
     ctx.tx(|tx| {
-        crate::access::require(tx, purser_core::roles::Cap::Configure)?;
+        crate::access::require_app(tx, purser_core::roles::Cap::Configure, &app_id)?;
         let app = config::find_app(tx, &app_id).ok_or(format!("unknown app {app_id}"))?;
         let siblings = tx
             .db
@@ -181,13 +181,13 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
             v(
                 Level::Warn,
                 format!(
-                    "{} product(s); without a default price: {}",
+                    "{} product(s); without a price: {}",
                     s.product_count,
                     s.unpriced.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
                 ),
                 format!(
-                    "{} does not report prices: renewals and purchases from old clients are counted as 0 revenue \
-                     unless price_micros and currency are set",
+                    "{} does not report prices: renewals and purchases without a client price are counted as 0 \
+                     revenue unless the product has a price",
                     store.name
                 ),
             )
@@ -592,12 +592,12 @@ fn check_spacetimedb_delivery(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, 
         ),
         Ok(res) => {
             let mut problems = Vec::new();
-            if let Err(e) = d::reducer_shape(&res.body, &app.grant_reducer, &app.args_format, true) {
+            if let Err(e) = d::reducer_shape(&res.body, &app.grant_reducer) {
                 problems.push(e);
             }
             if app.revoke_reducer.is_empty() {
                 problems.push("no revoke reducer: refunds and expirations do not reach the game".into());
-            } else if let Err(e) = d::reducer_shape(&res.body, &app.revoke_reducer, &app.args_format, false) {
+            } else if let Err(e) = d::reducer_shape(&res.body, &app.revoke_reducer) {
                 problems.push(e);
             }
             if problems.is_empty() {
@@ -735,7 +735,7 @@ fn probe_ga4(ctx: &mut impl Ctx, app: &GameApp, firebase_app_id: &str, api_secre
         app_instance_id: String::new(),
         attribution: Default::default(),
         country: String::new(),
-        commission_percent: None,
+        commission_percent: purser_core::revenue::DEFAULT_COMMISSION_PERCENT,
     };
     match ga4::build(&event, firebase_app_id, api_secret, true) {
         Ok(Built::Send(call)) => {
@@ -783,7 +783,7 @@ pub fn admin_check_app(ctx: &mut ProcedureContext, app_id: String, options_json:
 pub fn ping_webhook(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, String> {
     let id = app_id.to_string();
     let (app, secret) = ctx.tx(|tx| {
-        let who = crate::access::require(tx, purser_core::roles::Cap::Configure)?;
+        let who = crate::access::require_app(tx, purser_core::roles::Cap::Configure, &id)?;
         crate::access::audit(tx, &who, "admin_ping_webhook", &id, "");
         let app = config::find_app(tx, &id).ok_or(format!("unknown app {id}"))?;
         let secret = config::require_secret(tx, &app, secret_name::WEBHOOK_SECRET)?.value;

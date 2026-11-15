@@ -131,7 +131,7 @@ namespace Purser.Tests
             Assert.AreEqual(PurchaseStatus.Success, result.Status);
             var request = m_Api.VerifyRequests.Single();
             Assert.AreEqual("amazon", m_Api.VerifyStores.Single());
-            Assert.AreEqual("com.test.game.amazon", request.BundleId);
+            Assert.AreEqual("com.test.game.amazon", request.AppId);
             Assert.AreEqual("receipt-gems_100", request.OrderId);
             Assert.AreEqual("amzn1.account.TEST", request.StoreUserId);
             Assert.IsNull(request.PurchaseToken);

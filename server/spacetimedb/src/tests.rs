@@ -137,12 +137,11 @@ impl World {
                 spacetime_db: "game-db".into(),
                 grant_reducer: "billing_grant".into(),
                 revoke_reducer: "billing_revoke".into(),
-                args_format: "v1".into(),
                 webhook_url: String::new(),
                 allow_sandbox: false,
                 enabled: true,
                 client_consumes: false,
-                store: String::new(),
+                store: purser_core::model::store::GOOGLE.into(),
                 apple_refund_mode: String::new(),
                 sns_topic_arn: String::new(),
             });
@@ -210,6 +209,7 @@ impl World {
                 name: String::new(),
                 added_by: String::new(),
                 added_at_micros: 0,
+            game_keys: String::new(),
             });
         })
     }
@@ -248,7 +248,7 @@ impl World {
 
     fn verify(&self, user: &str, product_id: &str) -> Outcome {
         let r: VerifyRequest = serde_json::from_value(json!({
-            "bundle_id": APP, "user_id": user, "product_id": product_id, "purchase_token": TOKEN,
+            "app_id": APP, "user_id": user, "product_id": product_id, "purchase_token": TOKEN,
         }))
         .unwrap();
         verify(&mut self.ctx(), store::GOOGLE, &r)
@@ -692,6 +692,7 @@ fn admin_reducers_require_an_admin() {
             name: String::new(),
             added_by: String::new(),
             added_at_micros: 0,
+            game_keys: String::new(),
         });
     });
     assert_eq!(upsert(), Ok(()));
@@ -701,7 +702,7 @@ fn admin_reducers_require_an_admin() {
 fn player_profile_shows_the_device_attributes_and_when_the_player_was_seen() {
     let w = World::new();
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
         "client": { "device": "Xiaomi 23117RA68G", "os": "Android OS 16 / API-36", "app_version": "1.2.1", "sdk_version": "0.3.0" },
     }))
     .unwrap();
@@ -845,12 +846,12 @@ fn doctor_checks_the_game_reducers_without_calling_them() {
 
     w.write(|tx| {
         let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
-        app.args_format = "legacy".into();
+        app.grant_reducer = "fulfill".into();
         tx.db.game_app().app_id().update(app);
     });
     let c = w.doctor(true).unwrap();
     assert_eq!(level(&c, "delivery_game"), "fail");
-    assert!(c["delivery_game"].1.contains("legacy delivery sends 4"), "{:?}", c["delivery_game"]);
+    assert!(c["delivery_game"].1.contains("fulfill"), "{:?}", c["delivery_game"]);
 }
 
 #[test]
@@ -1108,7 +1109,7 @@ fn the_worker_rebuilds_existing_history_once_and_fetches_exchange_rates() {
     let w = World::new();
     price_products(&w, "EUR");
     w.verify("player-1", "gems");
-    // An existing database before the upgrade: aggregates were never built.
+    // Aggregates lost: an invalidation rebuilds them.
     w.write(|tx| {
         use crate::revenue::revenue_daily;
         let keys: Vec<String> = tx.db.revenue_daily().iter().map(|r| r.key).collect();
@@ -1154,7 +1155,7 @@ fn the_apps_summary_has_one_row_per_build() {
     let w = apple_offer_world(true);
     w.as_admin(false);
     w.doctor(false).unwrap();
-    let rows = w.read(|tx| crate::admin_views::apps_summary(tx));
+    let rows = w.read(|tx| crate::admin_views::apps_summary(tx, None));
     let row = |id: &str| rows.as_array().unwrap().iter().find(|r| r["app_id"] == id).cloned().unwrap();
     assert_eq!(rows.as_array().unwrap().len(), 2);
     assert!(row(APP)["summary"].is_string() && row(APP)["checked_at_micros"].as_i64().unwrap() > 0);
@@ -1248,7 +1249,7 @@ fn integrations_report_the_revenue_mode_they_are_set_to() {
         tx.db.product().key().update(p);
     });
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
         "attribution": { "adjust_id": "2e9c3b6f8a1d4e7c9b0a1f2e3d4c5b6a" },
     }))
     .unwrap();
@@ -1280,7 +1281,7 @@ fn purchases_are_sent_to_tenjin_with_the_device_ids_from_the_client() {
         tx.db.product().key().update(p);
     });
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
         "attribution": { "tenjin_id": "b1c5d7c4-1c4f-4d6e-9e2a-3a2f1f0a9b10", "os_version": "14", "advertising_id": "gaid-1" },
     }))
     .unwrap();
@@ -1352,7 +1353,7 @@ fn purchases_are_sent_to_adjust_with_the_event_token_of_their_kind() {
         tx.db.product().key().update(p);
     });
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
         "attribution": { "adjust_id": "2e9c3b6f8a1d4e7c9b0a1f2e3d4c5b6a" },
     }))
     .unwrap();
@@ -1377,7 +1378,7 @@ fn integration_health_shows_sent_skipped_and_failed_events_in_the_setup_check() 
         tx.db.product().key().update(p);
     });
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
         "attribution": { "adjust_id": "2e9c3b6f8a1d4e7c9b0a1f2e3d4c5b6a" },
     }))
     .unwrap();
@@ -1545,7 +1546,7 @@ fn the_player_profile_and_search_cover_purchases_entitlements_and_attribution() 
     price_products(&w, "USD");
     w.as_admin(false);
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": APP, "user_id": "player-1", "product_id": "no_ads", "purchase_token": TOKEN,
+        "app_id": APP, "user_id": "player-1", "product_id": "no_ads", "purchase_token": TOKEN,
         "attribution": { "appsflyer_id": "1700000000000-1234567890123456789" },
     }))
     .unwrap();
@@ -1602,6 +1603,7 @@ fn apple_offer_world(with_issuer: bool) -> World {
         let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
         app.app_id = IOS_APP.into();
         app.platform = purser_core::registry::platform::IOS.into();
+        app.store = purser_core::model::store::APPLE.into();
         tx.db.game_app().insert(app);
         let template = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
         for (id, k) in [("premium", kind::SUBSCRIPTION), ("gems", kind::CONSUMABLE)] {
@@ -1627,7 +1629,7 @@ fn sign_offer(w: &World, body: Value) -> (u16, Value) {
 }
 
 fn offer_request(user: &str) -> Value {
-    json!({ "bundle_id": IOS_APP, "product_id": "premium", "offer_id": "winback_50", "user_id": user })
+    json!({ "app_id": IOS_APP, "product_id": "premium", "offer_id": "winback_50", "user_id": user })
 }
 
 #[test]
@@ -1701,7 +1703,7 @@ fn promotional_offers_are_signed_only_for_enabled_ios_subscriptions() {
     req["product_id"] = json!("unknown");
     assert_eq!(status(req), 400, "unknown product");
     let mut req = offer_request("player-1");
-    req["bundle_id"] = json!(APP);
+    req["app_id"] = json!(APP);
     req["product_id"] = json!("no_ads");
     assert_eq!(status(req), 400, "Android build");
     let mut req = offer_request("player-1");
@@ -1749,6 +1751,12 @@ const SLACK_URL: &str = "https://hooks.slack.com/services/T000/B000/XXXX";
 
 fn alert_channel(w: &World, v: Value) -> Result<(), String> {
     w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::alerts::admin_upsert_alert_channel(ctx, v.to_string()))
+}
+
+/// Id of the alert channel named `name`.
+fn channel_id(w: &World, name: &str) -> u64 {
+    use crate::alerts::alert_channel;
+    w.read(|tx| tx.db.alert_channel().name().find(name.to_string()).map(|c| c.id)).expect("channel")
 }
 
 fn alert_outbox(w: &World) -> Vec<crate::alerts::AlertOutbox> {
@@ -1927,11 +1935,95 @@ fn failed_alerts_are_retried_without_leaking_the_token() {
 }
 
 #[test]
+fn channels_take_the_apps_and_rules_they_filter_for() {
+    let w = World::new();
+    w.as_admin(false);
+    w.write(|tx| {
+        let mut other = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        other.app_id = "com.other.game".into();
+        other.game_key = "other".into();
+        tx.db.game_app().insert(other);
+    });
+    let channel = |name: &str, extra: Value| {
+        let mut v = json!({ "name": name, "kind": "slack", "secret": SLACK_URL });
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        alert_channel(&w, v).unwrap();
+    };
+    channel("everything", json!({}));
+    channel("game team", json!({ "game_keys": ["game"] }));
+    channel("money", json!({ "rules": ["store_auth"] }));
+    assert!(alert_channel(&w, json!({ "name": "x", "kind": "slack", "secret": SLACK_URL, "game_keys": ["nope"] })).unwrap_err().contains("no app nope"));
+    assert!(alert_channel(&w, json!({ "name": "x", "kind": "slack", "secret": SLACK_URL, "rules": ["nope"] })).unwrap_err().contains("unknown rule"));
+
+    w.write(|tx| {
+        crate::alerts::raise(tx, "integration_failed", APP, "dropped");
+        crate::alerts::raise(tx, "integration_failed", "com.other.game", "dropped");
+        crate::alerts::begin(tx, "fx_failing", "", "rates");
+    });
+    let mut sent: Vec<(String, String)> = alert_outbox(&w)
+        .iter()
+        .map(|r| {
+            let m: purser_core::alerts::Message = serde_json::from_str(&r.message_json).unwrap();
+            (r.channel.clone(), format!("{} {}", m.rule, m.app_id))
+        })
+        .collect();
+    sent.sort();
+    assert_eq!(
+        sent,
+        [
+            ("everything".to_string(), "fx_failing ".to_string()),
+            ("everything".to_string(), "integration_failed com.other.game".to_string()),
+            ("everything".to_string(), format!("integration_failed {APP}")),
+            ("game team".to_string(), format!("integration_failed {APP}")),
+        ],
+        "server-wide alerts only go to channels without an app filter"
+    );
+}
+
+#[test]
+fn a_rejected_account_key_is_one_alert_for_all_its_builds() {
+    let w = World::new();
+    setup_alerts(&w, false);
+    w.write(|tx| {
+        for id in ["com.studio.game.b", "com.studio.game.c"] {
+            let mut b = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+            b.app_id = id.into();
+            tx.db.game_app().insert(b);
+        }
+        for id in [APP, "com.studio.game.b", "com.studio.game.c"] {
+            crate::alerts::store_credentials_rejected(tx, id, "HTTP 401");
+        }
+    });
+    let msgs = alert_messages(&w);
+    assert_eq!(msgs.len(), 1, "one alert for the developer account");
+    assert!(msgs[0].detail.contains("developer account default: 3 build(s)"), "{}", msgs[0].detail);
+}
+
+#[test]
+fn a_burst_of_alerts_is_capped_and_summed_up() {
+    let w = World::new();
+    setup_alerts(&w, false);
+    w.write(|tx| {
+        for i in 0..15 {
+            crate::alerts::raise(tx, "integration_failed", &format!("com.burst.{i}"), "dropped");
+        }
+    });
+    assert_eq!(alert_outbox(&w).len(), crate::alerts::FLOOD_CAP as usize, "the cap per window");
+    w.advance_clock(crate::alerts::FLOOD_WINDOW_MICROS / 1_000_000 + 1);
+    w.run_worker();
+    let msgs = alert_messages(&w);
+    let held = msgs.iter().find(|m| m.rule == "alerts_held").expect("a summary");
+    assert!(held.detail.starts_with("5 more alert(s)"), "{}", held.detail);
+}
+
+#[test]
 fn test_alert_is_sent_to_one_channel() {
     let w = World::new();
     setup_alerts(&w, true);
     let (mut ctx, seen) = recording_ctx(&w, 200);
-    let r = crate::alerts::admin_test_alert(&mut ctx, "slack".into());
+    let r = crate::alerts::admin_test_alert(&mut ctx, channel_id(&w, "slack"));
     assert_eq!(r, r#"{"ok":true}"#);
     let seen = seen.borrow();
     assert_eq!(seen.len(), 1);
@@ -1946,7 +2038,7 @@ fn alert_settings_need_an_admin_and_valid_input() {
     assert!(alert_channel(&w, telegram.clone()).unwrap_err().contains("ERR_ADMIN_UNAUTHORIZED"));
     let rules = || w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::alerts::admin_set_alert_rules(ctx, "{}".into()));
     assert!(rules().unwrap_err().contains("ERR_ADMIN_UNAUTHORIZED"));
-    let r = crate::alerts::admin_test_alert(&mut w.ctx(), "telegram".into());
+    let r = crate::alerts::admin_test_alert(&mut w.ctx(), 1);
     assert!(r.contains("ERR_ADMIN_UNAUTHORIZED"), "{r}");
     let dismiss = || w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::alerts::admin_dismiss_alert(ctx, "x".into()));
     assert!(dismiss().unwrap_err().contains("ERR_ADMIN_UNAUTHORIZED"));
@@ -2173,30 +2265,11 @@ fn rebuilding_trials_and_countries_gives_the_live_numbers() {
 }
 
 #[test]
-fn the_worker_rebuilds_once_after_the_upgrade_to_country_aggregates() {
-    let w = World::new();
-    price_products(&w, "USD");
-    w.verify("player-1", "gems");
-    // A database on revenue version 1: no country rows yet.
-    w.write(|tx| {
-        use crate::revenue::revenue_country_daily;
-        let keys: Vec<String> = tx.db.revenue_country_daily().iter().map(|r| r.key).collect();
-        for k in keys {
-            tx.db.revenue_country_daily().key().delete(&k);
-        }
-        crate::settings::set(tx, crate::settings::key::REVENUE_VERSION, "1");
-    });
-    w.run_worker();
-    assert_eq!(country_rows(&w).len(), 1, "rebuilt with the per-country rows");
-    assert_eq!(revenue_rows(&w).values().next().unwrap().0, 1, "product rows are rebuilt, not doubled");
-}
-
-#[test]
 fn revenue_by_apple_ads_campaign_and_payer_cohorts() {
     let w = World::new();
     price_products(&w, "USD");
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
         "attribution": { "asa_campaign_id": "1234567890", "asa_ad_group_id": "42" },
     }))
     .unwrap();
@@ -2302,6 +2375,7 @@ fn add_ios_build_with_its_own_store_ids(w: &World) {
         let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
         app.app_id = IOS_APP.into();
         app.platform = purser_core::registry::platform::IOS.into();
+        app.store = purser_core::model::store::APPLE.into();
         tx.db.game_app().insert(app);
     });
     let upsert = json!([
@@ -2431,7 +2505,7 @@ fn verify_stores_the_paywall_variant_and_results_count_views_and_revenue() {
     assert_eq!(paywall_view(&w, "a", "other-test").body["code"], "ERR_UNKNOWN_TEST");
 
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
         "placement": "main_paywall", "variant_id": "a", "test_id": "main-ab-1", "paywall_id": "pw_a",
     }))
     .unwrap();
@@ -2598,7 +2672,7 @@ fn rvs_receipt(product_id: &str, product_type: &str, extra: Value) -> String {
 
 fn amazon_verify(w: &World, user: &str, product_id: &str, store_user_id: &str) -> Outcome {
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": AMAZON_APP, "user_id": user, "product_id": product_id,
+        "app_id": AMAZON_APP, "user_id": user, "product_id": product_id,
         "order_id": AMAZON_RECEIPT, "store_user_id": store_user_id,
     }))
     .unwrap();
@@ -2636,13 +2710,6 @@ fn builds_take_their_store_from_the_registry() {
         .unwrap()
         .unwrap();
     assert_eq!(stored.store, "amazon", "the resolved store is stored");
-    // Rows written before the column (store = "") resolve from the platform.
-    let old = w
-        .test
-        .with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.game_app().app_id().find(APP.to_string())))
-        .unwrap()
-        .unwrap();
-    assert_eq!((old.store.as_str(), config::app_store(&old).id), ("", "google"));
 }
 
 #[test]
@@ -2656,7 +2723,7 @@ fn every_registry_route_has_a_handler() {
         }
         if s.verify_route().is_some() {
             let r: VerifyRequest =
-                serde_json::from_value(json!({ "bundle_id": APP, "user_id": "u", "product_id": "gems" })).unwrap();
+                serde_json::from_value(json!({ "app_id": APP, "user_id": "u", "product_id": "gems" })).unwrap();
             // Wrong build for the store, but never "not verified from client receipts".
             let o = verify(&mut w.ctx(), s.id, &r);
             assert!(!o.body["message"].as_str().unwrap_or("").contains("client receipts"), "{}", s.id);
@@ -2692,14 +2759,14 @@ fn amazon_receipts_are_checked_against_the_build_and_the_catalog() {
     add_amazon_build(&w);
     // The Google route does not take Amazon builds, and the reverse.
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": AMAZON_APP, "user_id": "player-1", "product_id": "gems", "purchase_token": "t",
+        "app_id": AMAZON_APP, "user_id": "player-1", "product_id": "gems", "purchase_token": "t",
     }))
     .unwrap();
     let o = verify(&mut w.ctx(), "google", &r);
     assert_eq!((o.http, o.body["status"].as_str()), (400, Some("error")));
     assert!(o.body["message"].as_str().unwrap().contains("/verify/amazon"));
     assert_eq!(verify(&mut w.ctx(), "amazon", &serde_json::from_value(json!({
-        "bundle_id": APP, "user_id": "player-1", "product_id": "gems", "order_id": "r", "store_user_id": "u",
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "order_id": "r", "store_user_id": "u",
     })).unwrap()).http, 400);
 
     // A missing Amazon user id is a client bug: a retryable error, not "invalid".
@@ -3283,9 +3350,8 @@ fn stripe_webhook(w: &World, body: &str) -> Outcome {
 }
 
 fn stripe_verify(w: &World, user: &str) -> (u16, Value) {
-    // The body the Unity package sends to /verify/<store>.
     let r: crate::stripe::VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": WEB_APP, "user_id": user, "product_id": "gems", "order_id": "cs_test_1", "price_micros": 0,
+        "app_id": WEB_APP, "user_id": user, "session_id": "cs_test_1",
     }))
     .unwrap();
     crate::stripe::verify_session(&mut w.ctx(), &r)
@@ -4158,7 +4224,7 @@ impl World {
 
     /// `/verify` of the Google consumable with extra request fields.
     fn verify_with_fields(&self, user: &str, extra: Value) -> Outcome {
-        let mut body = json!({ "bundle_id": APP, "user_id": user, "product_id": "gems", "purchase_token": TOKEN });
+        let mut body = json!({ "app_id": APP, "user_id": user, "product_id": "gems", "purchase_token": TOKEN });
         body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         let r: VerifyRequest = serde_json::from_value(body).unwrap();
         verify(&mut self.ctx(), store::GOOGLE, &r)
@@ -4341,7 +4407,7 @@ fn apple_asks_the_environment_of_the_ledger_row_first() {
     let w = apple_sandbox_world();
     let verify_apple = |w: &World| {
         let r: VerifyRequest = serde_json::from_value(json!({
-            "bundle_id": IOS_APP, "user_id": "player-1", "product_id": "gems", "order_id": "2000000123",
+            "app_id": IOS_APP, "user_id": "player-1", "product_id": "gems", "order_id": "2000000123",
         }))
         .unwrap();
         verify(&mut w.ctx(), store::APPLE, &r)
@@ -4372,7 +4438,7 @@ fn refund_world(consent: Option<bool>, mode: &str) -> World {
         app.apple_refund_mode = mode.into();
         tx.db.game_app().app_id().update(app);
     });
-    let mut req = json!({ "bundle_id": IOS_APP, "user_id": "player-1", "product_id": "gems", "order_id": "2000000123" });
+    let mut req = json!({ "app_id": IOS_APP, "user_id": "player-1", "product_id": "gems", "order_id": "2000000123" });
     if let Some(c) = consent {
         req["attribution"] = json!({ "refund_data_consent": c.to_string() });
     }
@@ -4469,7 +4535,7 @@ fn refund_request_is_not_answered_without_consent_or_when_off() {
     // Consent withdrawn later: the stored value is replaced.
     let w = refund_world(Some(true), "inform");
     let r: VerifyRequest = serde_json::from_value(json!({
-        "bundle_id": IOS_APP, "user_id": "player-1", "product_id": "gems", "order_id": "2000000123",
+        "app_id": IOS_APP, "user_id": "player-1", "product_id": "gems", "order_id": "2000000123",
         "attribution": { "refund_data_consent": "false" },
     }))
     .unwrap();
@@ -4515,11 +4581,34 @@ fn refund_mode_is_only_for_app_store_builds() {
 
 /// Starts a rebuild (`admin_rebuild_revenue`, as an admin) and runs its batches to the end.
 fn rebuild_revenue(w: &World) {
-    w.test.with_reducer_tx(TestAuth::internal(), crate::revenue::admin_rebuild_revenue).unwrap();
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::revenue::admin_rebuild_revenue(ctx, String::new())).unwrap();
     while !crate::revenue::run_rebuild(&mut w.ctx(), 1) {}
 }
 
 const DAY_MICROS: i64 = 86_400_000_000;
+
+#[test]
+fn a_rebuild_of_one_app_leaves_the_others_alone() {
+    let w = World::new();
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    let before = revenue_rows(&w);
+    // Another app's aggregate that its ledger does not back: a full rebuild would drop it.
+    w.write(|tx| {
+        use crate::revenue::revenue_daily;
+        let mine = tx.db.revenue_daily().iter().next().unwrap();
+        tx.db.revenue_daily().insert(crate::revenue::RevenueDaily { key: mine.key.replace(APP, "com.other.game"), app_id: "com.other.game".into(), ..mine });
+        crate::revenue::invalidate_apps(tx, &[APP.to_string()]);
+    });
+    w.as_admin(false);
+    assert_eq!(stats(&w, json!({ "summary": true }))["rebuilding"], true);
+    while !crate::revenue::run_rebuild(&mut w.ctx(), 1) {}
+    let after = revenue_rows(&w);
+    assert_eq!(after.len(), 2, "the other app's row stays: {after:?}");
+    for (k, v) in &before {
+        assert_eq!(after.get(k), Some(v), "{k} rebuilt to the same numbers");
+    }
+}
 
 /// A completed, granted Google consumable of `APP` recorded `created_at_micros`; `f` changes it.
 fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -> Purchase {
@@ -4734,7 +4823,7 @@ fn the_batched_rebuild_gives_the_same_aggregates_as_the_one_shot_rebuild() {
     assert!(reference.len() > 30, "{reference:?}");
     assert!(reference.iter().any(|r| r.contains("|vip|") && !r.ends_with(", 0, 0)")), "after-year gross is in the reference");
 
-    w.test.with_reducer_tx(TestAuth::internal(), crate::revenue::admin_rebuild_revenue).unwrap();
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::revenue::admin_rebuild_revenue(ctx, String::new())).unwrap();
     assert_eq!(w.aggregates(), reference, "the reducer only starts the rebuild");
     let steps = w.rebuild_steps_until(|_| false);
     assert!(steps > 10, "clears and counts in many small batches: {steps}");
@@ -4761,7 +4850,7 @@ fn ledger_changes_during_a_rebuild_are_counted_once() {
         .collect();
     w.insert_ledger(later, Vec::new());
     w.as_admin(false);
-    w.test.with_reducer_tx(TestAuth::internal(), crate::revenue::admin_rebuild_revenue).unwrap();
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::revenue::admin_rebuild_revenue(ctx, String::new())).unwrap();
 
     // Run batches until the verified purchase is counted (the later ones are not all yet).
     let cursor_after_now = |w: &World| {
@@ -4797,8 +4886,9 @@ fn summary_stats_read_only_the_aggregates_and_say_when_a_rebuild_runs() {
     price_products(&w, "USD");
     w.verify("player-1", "gems");
     w.as_admin(false);
+    w.write(|tx| crate::revenue::invalidate(tx));
     let first = stats(&w, json!({ "summary": true }));
-    assert_eq!(first["rebuilding"], true, "the first worker run has not built the aggregates yet");
+    assert_eq!(first["rebuilding"], true, "the worker has not rebuilt the aggregates yet");
     w.run_worker();
 
     let full = stats(&w, json!({}));
@@ -4817,7 +4907,7 @@ fn summary_stats_read_only_the_aggregates_and_say_when_a_rebuild_runs() {
     let filtered = stats(&w, json!({ "summary": true, "app_ids": ["com.other"], "from": "2026-09-01", "to": "2026-09-30" }));
     assert_eq!((filtered["totals"]["purchases"].as_u64(), filtered["series"].as_array().unwrap().len()), (Some(0), 30));
 
-    w.test.with_reducer_tx(TestAuth::internal(), crate::revenue::admin_rebuild_revenue).unwrap();
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::revenue::admin_rebuild_revenue(ctx, String::new())).unwrap();
     assert_eq!(stats(&w, json!({ "summary": true }))["rebuilding"], true);
     assert_eq!(stats(&w, json!({}))["rebuilding"], true);
     w.run_worker();
@@ -4958,8 +5048,6 @@ fn silent_notification_alerts_follow_the_store_of_each_build() {
     });
     w.write(|tx| {
         crate::store_health::touch(tx, APP, |h, now| h.last_at_micros = now - 3_600_000_000);
-        // Aggregates are current: the worker does not rebuild them (from an empty ledger).
-        crate::settings::set(tx, crate::settings::key::REVENUE_VERSION, &crate::revenue::REVENUE_VERSION.to_string());
     });
     w.run_worker();
 
@@ -5028,6 +5116,7 @@ fn a_failed_fx_backfill_waits_an_hour() {
     let w = World::new();
     w.as_admin(false);
     w.insert_ledger(vec![ledger_row("google:GPA.OLD", NOW_MICROS - 100 * DAY_MICROS, |p| p.currency = "EUR".into())], Vec::new());
+    w.write(|tx| crate::revenue::invalidate(tx));
     w.script("api.frankfurter.dev/v1/latest", 200, r#"{"amount":1.0,"base":"USD","date":"2026-09-21","rates":{"EUR":0.9}}"#);
     w.script("api.frankfurter.dev/v1/20", 503, "");
     let history_calls = |w: &World| w.calls("api.frankfurter.dev/v1/20");
@@ -5095,7 +5184,7 @@ fn steam_reports_of_builds_without_sales_are_polled_less_often() {
 }
 
 // ---------------------------------------------------------------------
-// Released SDKs: the server keeps accepting what every shipped game build sends
+// Contract with the Unity SDK: what it sends (`sdk-requests/current.json`)
 // ---------------------------------------------------------------------
 
 /// Parses a fixture body into the request type of its route.
@@ -5125,56 +5214,36 @@ fn parse_sdk_request(route: &str, body: &Value) -> Result<(), String> {
     }
 }
 
-fn sdk_fixtures() -> Vec<(String, Value)> {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk-requests");
-    let mut files: Vec<_> = std::fs::read_dir(&dir).expect("sdk-requests/").map(|e| e.unwrap().path()).collect();
-    files.sort();
-    files
-        .into_iter()
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .map(|p| {
-            let doc: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
-            (doc["sdk"].as_str().unwrap().to_string(), doc)
-        })
-        .collect()
+fn sdk_contract() -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk-requests/current.json");
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
 #[test]
-fn every_released_sdk_request_is_still_accepted() {
-    let fixtures = sdk_fixtures();
-    let versions: Vec<&str> = fixtures.iter().map(|(v, _)| v.as_str()).collect();
-    assert!(
-        versions.contains(&env!("CARGO_PKG_VERSION")),
-        "add sdk-requests/{}.json with the requests of this release's Unity SDK (see AGENTS.md)",
-        env!("CARGO_PKG_VERSION")
-    );
-    for (version, doc) in &fixtures {
-        for req in doc["requests"].as_array().unwrap() {
-            let route = req["route"].as_str().unwrap();
-            if let Err(e) = parse_sdk_request(route, &req["body"]) {
-                panic!("SDK {version}, {route}: the server no longer accepts this body: {e}");
-            }
+fn every_request_of_the_unity_sdk_is_accepted() {
+    for req in sdk_contract()["requests"].as_array().unwrap() {
+        let route = req["route"].as_str().unwrap();
+        if let Err(e) = parse_sdk_request(route, &req["body"]) {
+            panic!("{route}: the server does not accept what the SDK sends: {e}");
         }
     }
 }
 
 #[test]
-fn released_sdk_purchase_flows_still_work() {
-    for (version, doc) in sdk_fixtures() {
-        let w = World::new();
-        for req in doc["requests"].as_array().unwrap().iter().filter(|r| r["replay"] == true) {
-            let route = req["route"].as_str().unwrap();
-            let body = req["body"].clone();
-            let o = match route {
-                "/verify/google" => verify(&mut w.ctx(), store::GOOGLE, &serde_json::from_value(body).unwrap()),
-                "/entitlements" => get_entitlements(&mut w.ctx(), &serde_json::from_value(body).unwrap()).unwrap_or_else(|o| o),
-                "/attributes" => set_attributes(&mut w.ctx(), &serde_json::from_value(body).unwrap()).unwrap_or_else(|o| o),
-                other => panic!("no replay for {other}"),
-            };
-            assert_eq!(o.http, 200, "SDK {version}, {route}: {}", o.body);
-            if route == "/verify/google" {
-                assert_eq!(o.body["status"], "success", "SDK {version}: {}", o.body);
-            }
+fn the_unity_sdk_purchase_flow_works() {
+    let w = World::new();
+    for req in sdk_contract()["requests"].as_array().unwrap().iter().filter(|r| r["replay"] == true) {
+        let route = req["route"].as_str().unwrap();
+        let body = req["body"].clone();
+        let o = match route {
+            "/verify/google" => verify(&mut w.ctx(), store::GOOGLE, &serde_json::from_value(body).unwrap()),
+            "/entitlements" => get_entitlements(&mut w.ctx(), &serde_json::from_value(body).unwrap()).unwrap_or_else(|o| o),
+            "/attributes" => set_attributes(&mut w.ctx(), &serde_json::from_value(body).unwrap()).unwrap_or_else(|o| o),
+            other => panic!("no replay for {other}"),
+        };
+        assert_eq!(o.http, 200, "{route}: {}", o.body);
+        if route == "/verify/google" {
+            assert_eq!(o.body["status"], "success", "{}", o.body);
         }
     }
 }
@@ -5453,7 +5522,7 @@ mod role_tests {
     const OTHER_ADMIN: &str = "c200aaaa00000000000000000000000000000000000000000000000000000002";
 
     fn row(identity: Identity, protected: bool, role: &str) -> Admin {
-        Admin { identity, protected, role: role.into(), name: String::new(), added_by: String::new(), added_at_micros: 0 }
+        Admin { identity, protected, role: role.into(), name: String::new(), added_by: String::new(), added_at_micros: 0, game_keys: String::new() }
     }
 
     /// The caller (`Identity::ZERO`) becomes an admin with `role` (not the owner).
@@ -5540,7 +5609,8 @@ mod role_tests {
         super::alert_channel(&w, telegram(BOT_TOKEN)).unwrap();
         as_role(&w, "editor");
         super::alert_channel(&w, telegram("")).unwrap();
-        let delete = |w: &World| admin_call(w, |ctx| crate::alerts::admin_delete_alert_channel(ctx, "telegram".into()));
+        let id = super::channel_id(&w, "telegram");
+        let delete = |w: &World| admin_call(w, |ctx| crate::alerts::admin_delete_alert_channel(ctx, id));
         assert!(delete(&w).unwrap_err().contains("ERR_ROLE"), "nor delete it");
         as_role(&w, "admin");
         delete(&w).unwrap();
@@ -5567,7 +5637,6 @@ mod role_tests {
         w.as_admin(true);
         remove_admin(&w, OTHER_ADMIN).unwrap();
         upsert_admin(&w, OTHER, "admin").unwrap();
-        assert!(admin_call(&w, |ctx| crate::access::admin_add_admin(ctx, OTHER_ADMIN.into())).is_ok());
         assert!(remove_admin(&w, &Identity::ZERO.to_hex()).unwrap_err().contains("ERR_ADMIN_SELF_REMOVE"));
     }
 
@@ -5766,7 +5835,7 @@ fn a_worker_run_stops_starting_calls_after_its_budget() {
         let purchase = json!({ "orderId": format!("GPA.{user}"), "purchaseState": 0, "consumptionState": 0, "acknowledgementState": 0 });
         w.script(&format!("{TOKEN}-{user}"), 200, &purchase.to_string());
         let r: VerifyRequest = serde_json::from_value(json!({
-            "bundle_id": APP, "user_id": user, "product_id": "gems", "purchase_token": format!("{TOKEN}-{user}"),
+            "app_id": APP, "user_id": user, "product_id": "gems", "purchase_token": format!("{TOKEN}-{user}"),
         }))
         .unwrap();
         verify(&mut w.ctx(), store::GOOGLE, &r);
@@ -5799,7 +5868,7 @@ fn a_build_whose_calls_time_out_does_not_hold_up_the_others() {
         let purchase = json!({ "orderId": order, "purchaseState": 0, "consumptionState": 0, "acknowledgementState": 0 });
         w.script(&format!("{TOKEN}-{app}-{user}"), 200, &purchase.to_string());
         let r: VerifyRequest = serde_json::from_value(json!({
-            "bundle_id": app, "user_id": user, "product_id": "gems", "purchase_token": format!("{TOKEN}-{app}-{user}"),
+            "app_id": app, "user_id": user, "product_id": "gems", "purchase_token": format!("{TOKEN}-{app}-{user}"),
         }))
         .unwrap();
         verify(&mut w.ctx(), store::GOOGLE, &r);
@@ -5819,6 +5888,68 @@ fn a_build_whose_calls_time_out_does_not_hold_up_the_others() {
     };
     assert_eq!(delivered(APP), 1, "after a call past the timeout the build waits for the next run");
     assert_eq!(delivered(OTHER), 1, "the other build is served in the same run");
+}
+
+#[test]
+fn old_players_attribution_and_paywall_days_are_deleted_but_subscribers_keep_their_ids() {
+    use crate::integrations::user_attribution;
+    use crate::paywalls::paywall_daily;
+    use crate::players::player_profile;
+    let w = World::new();
+    let old = NOW_MICROS - 800 * DAY_MICROS;
+    w.write(|tx| {
+        for (user, at) in [("old", old), ("recent", NOW_MICROS)] {
+            tx.db.player_profile().insert(crate::players::PlayerProfile {
+                key: format!("{APP}/{user}"),
+                user_id: user.into(),
+                app_id: APP.into(),
+                first_seen_micros: at,
+                last_seen_micros: at,
+                client_json: "{}".into(),
+                attributes_json: "{}".into(),
+            });
+        }
+        for user in ["old", "subscriber"] {
+            tx.db.user_attribution().insert(crate::integrations::UserAttribution {
+                key: format!("{APP}/{user}"),
+                app_id: APP.into(),
+                attribution_json: "{}".into(),
+                updated_at_micros: old,
+            });
+        }
+        let mut sub = ledger_row("google:SUB.1", old, |p| {
+            p.user_id = "subscriber".into();
+            p.kind = kind::SUBSCRIPTION.into();
+            p.expires_at_ms = NOW_MICROS / 1000 + 86_400_000;
+        });
+        sub.status = status::COMPLETED.into();
+        crate::ledger::insert_purchase(tx, sub);
+        tx.db.paywall_daily().insert(crate::paywalls::PaywallDaily {
+            key: "old".into(),
+            placement_key: "game/main".into(),
+            day: purser_core::time::day_of_micros(old),
+            test_id: String::new(),
+            variant_id: String::new(),
+            paywall_id: String::new(),
+            views: 1,
+        });
+        tx.db.access_token_cache().insert(AccessTokenCache { key: "google/expired".into(), token: "t".into(), expires_at_micros: NOW_MICROS - 1 });
+        crate::retention::prune(tx, NOW_MICROS);
+    });
+    let (profiles, attribution, days, expired) = w.read(|tx| {
+        (
+            tx.db.player_profile().iter().map(|p| p.user_id).collect::<Vec<_>>(),
+            tx.db.user_attribution().iter().map(|r| r.key).collect::<Vec<_>>(),
+            tx.db.paywall_daily().iter().count(),
+            tx.db.access_token_cache().key().find("google/expired".to_string()).is_some(),
+        )
+    });
+    assert_eq!(profiles, ["recent"]);
+    assert_eq!(attribution, [format!("{APP}/subscriber")], "renewals of an active subscription still need the ids");
+    assert_eq!((days, expired), (0, false));
+    w.as_admin(false);
+    assert!(set_setting(&w, "retention_days", "5").unwrap_err().contains("ERR_BAD_SETTING"));
+    set_setting(&w, "retention_days", "365").unwrap();
 }
 
 #[test]
@@ -5880,7 +6011,7 @@ fn purchase_counters_follow_every_ledger_write() {
     });
     assert!(actual.len() >= 2, "{actual:?}");
     assert_eq!(counted, actual);
-    let overview = w.read(|tx| crate::admin_views::overview(tx));
+    let overview = w.read(|tx| crate::admin_views::overview(tx, None));
     assert_eq!(overview["total"], actual.values().sum::<u64>());
 }
 
@@ -5906,6 +6037,7 @@ mod store_setup_tests {
                 name: String::new(),
                 added_by: String::new(),
                 added_at_micros: 0,
+            game_keys: String::new(),
             });
         });
     }
@@ -6166,5 +6298,115 @@ mod store_setup_tests {
         w.fake.borrow_mut().overrides.insert(0, ("/keys".into(), 400, blocked.into()));
         let e = setup_google(&mut w.ctx(), &google_input(json!({ "new_key": true }))).unwrap_err();
         assert!(e.contains("Organization policies") && !e.contains(GOOGLE_TOKEN), "{e}");
+    }
+}
+
+// ---------------------------------------------------------------------
+// Admins limited to some apps
+// ---------------------------------------------------------------------
+
+mod scope_tests {
+    use super::*;
+
+    const OTHER_APP: &str = "com.other.game";
+
+    /// The world plus a second app (`other`) with one build and a product; the caller becomes an
+    /// admin with `role` limited to the app `game`.
+    fn scoped_world(role: &str) -> World {
+        let w = World::new();
+        w.write(|tx| {
+            let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+            app.app_id = OTHER_APP.into();
+            app.game_key = "other".into();
+            tx.db.game_app().insert(app);
+            tx.db.product().insert(Product::new(OTHER_APP, "gems", kind::CONSUMABLE));
+            tx.db.admin().identity().delete(Identity::ZERO);
+            tx.db.admin().insert(Admin {
+                identity: Identity::ZERO,
+                protected: false,
+                role: role.into(),
+                name: "Studio".into(),
+                added_by: String::new(),
+                added_at_micros: 0,
+                game_keys: "game".into(),
+            });
+        });
+        w
+    }
+
+    fn select(w: &World, query: Value) -> Result<Vec<Value>, String> {
+        let q: crate::access::SelectQuery = serde_json::from_value(query).unwrap();
+        w.read(|tx| crate::access::select(tx, &q))
+    }
+
+    fn products(app: &str) -> String {
+        json!([{ "app_id": app, "product_id": "coins", "kind": "consumable" }]).to_string()
+    }
+
+    #[test]
+    fn a_limited_admin_changes_only_their_apps() {
+        let w = scoped_world("admin");
+        admin_call(&w, |ctx| crate::admin_upsert_products(ctx, products(APP))).unwrap();
+        let e = admin_call(&w, |ctx| crate::admin_upsert_products(ctx, products(OTHER_APP))).unwrap_err();
+        assert!(e.contains("ERR_SCOPE"), "{e}");
+        assert!(admin_call(&w, |ctx| crate::admin_delete_game_app(ctx, OTHER_APP.into())).unwrap_err().contains("ERR_SCOPE"));
+        assert!(admin_call(&w, |ctx| crate::admin_set_app_name(ctx, "other".into(), "Nope".into())).unwrap_err().contains("ERR_SCOPE"));
+        // Moving a build into an app of theirs is changing that build too.
+        let mut moved: Value = json!({ "app_id": OTHER_APP, "platform": "android", "game_key": "game", "delivery": "none" });
+        assert!(admin_call(&w, |ctx| crate::admin_upsert_game_app(ctx, moved.to_string())).unwrap_err().contains("ERR_SCOPE"));
+        moved["app_id"] = json!("com.studio.game.new");
+        admin_call(&w, |ctx| crate::admin_upsert_game_app(ctx, moved.to_string())).unwrap();
+
+        // Secrets of their builds only; account and default secrets are server-wide.
+        admin_call(&w, |ctx| crate::admin_set_credential(ctx, APP.into(), "google_rtdn_secret".into(), "s".into())).unwrap();
+        for scope in [OTHER_APP, "default", "studio-account"] {
+            let e = admin_call(&w, |ctx| crate::admin_set_credential(ctx, scope.into(), "google_rtdn_secret".into(), "s".into())).unwrap_err();
+            assert!(e.contains("ERR_SCOPE"), "{scope}: {e}");
+        }
+        // Server-wide settings, hosts and admins need access to every app.
+        assert!(set_setting(&w, "public_base_url", "https://x.example.com").unwrap_err().contains("ERR_SCOPE"));
+        let admin = json!({ "identity": "c200aaaa00000000000000000000000000000000000000000000000000000001", "role": "viewer" });
+        assert!(admin_call(&w, |ctx| crate::access::admin_upsert_admin(ctx, admin.to_string())).unwrap_err().contains("ERR_SCOPE"));
+    }
+
+    #[test]
+    fn a_limited_admin_reads_only_their_apps() {
+        let w = scoped_world("viewer");
+        w.verify("player-1", "gems");
+        let ids = |rows: Vec<Value>| rows.iter().map(|r| r["app_id"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+        assert_eq!(ids(select(&w, json!({ "table": "game_app" })).unwrap()), [APP]);
+        assert!(ids(select(&w, json!({ "table": "product" })).unwrap()).iter().all(|a| a == APP));
+        assert!(select(&w, json!({ "table": "product", "where": { "column": "app_id", "equals": OTHER_APP } })).unwrap().is_empty());
+        let keys: Vec<String> = select(&w, json!({ "table": "credential" })).unwrap().iter().map(|k| k["key"].as_str().unwrap().to_string()).collect();
+        assert!(keys.is_empty(), "the world's secrets are default-scope: {keys:?}");
+        assert!(select(&w, json!({ "table": "alert_channel" })).unwrap().is_empty());
+        assert!(select(&w, json!({ "table": "admin" })).unwrap_err().contains("ERR_"), "the admin list needs every app");
+
+        let overview = w.read(|tx| {
+            let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read).unwrap();
+            crate::admin_views::overview(tx, who.app_ids(tx).as_ref())
+        });
+        assert_eq!((overview["apps"].as_u64(), overview["builds"].as_u64(), overview["total"].as_u64()), (Some(1), Some(1), Some(1)));
+        let listed: Value = serde_json::from_str(&crate::admin_views::admin_list_purchases(&mut w.ctx(), json!({ "since_micros": 0, "app_ids": [OTHER_APP] }).to_string())).unwrap();
+        assert_eq!(listed["rows"], json!([]));
+        assert!(crate::revenue::stats(&mut w.ctx(), &json!({ "app_ids": [OTHER_APP] }).to_string()).unwrap_err().contains("ERR_SCOPE"));
+        crate::revenue::stats(&mut w.ctx(), "").unwrap();
+
+        let me: Value = serde_json::from_str(&crate::access::admin_me(&mut w.ctx())).unwrap();
+        assert_eq!(me["game_keys"], json!(["game"]));
+    }
+
+    #[test]
+    fn admins_are_limited_to_existing_apps() {
+        let w = World::new();
+        w.as_admin(true);
+        let upsert = |keys: Value| {
+            let admin = json!({ "identity": "c200aaaa00000000000000000000000000000000000000000000000000000001", "role": "editor", "game_keys": keys });
+            admin_call(&w, |ctx| crate::access::admin_upsert_admin(ctx, admin.to_string()))
+        };
+        assert!(upsert(json!(["nope"])).unwrap_err().contains("no app nope"));
+        upsert(json!(["game", " game "])).unwrap();
+        let row = w.read(|tx| tx.db.admin().iter().find(|a| !a.protected).unwrap().game_keys);
+        assert_eq!(row, "game");
     }
 }

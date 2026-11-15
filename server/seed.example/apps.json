@@ -9,7 +9,6 @@
     "spacetime_db": "my-game-db",
     "grant_reducer": "billing_grant",
     "revoke_reducer": "billing_revoke",
-    "args_format": "v1",
     "allow_sandbox": true,
     "enabled": true
   },
@@ -23,7 +22,6 @@
     "spacetime_db": "my-game-db",
     "grant_reducer": "billing_grant",
     "revoke_reducer": "billing_revoke",
-    "args_format": "v1",
     "allow_sandbox": true,
     "enabled": true
   }

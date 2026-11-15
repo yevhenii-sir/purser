@@ -92,4 +92,4 @@ The module cannot call private addresses (`127.0.0.1`, `10.x`, …). Deliveries 
 
 ## Upgrading
 
-Publish the new `purser.wasm` to the same database name. Never pass `--delete-data` / `-c`: it deletes the ledger. New tables are created automatically; the revenue history is rebuilt from the ledger by the worker within a minute.
+Publish the new `purser.wasm` to the same database name. Don't pass `--delete-data` / `-c` (it deletes the ledger) unless the release notes say the release needs it. New tables and indexes are created automatically.

@@ -47,13 +47,8 @@ Unity: add the package to `"testables"` in a project's `manifest.json` and run t
 
 ## Schema changes
 
-Published databases are upgraded in place, so:
-
-- new tables are fine;
-- a new column goes at the end of its table with `#[default(...)]`;
-- never rename, reorder or retype existing columns;
-- one-time data migrations run from the worker (`process_pending`), since `init` does not run on republish.
+Purser has no production users yet, so tables change the clean way: rename, reorder or remove columns instead of keeping legacy ones. A release whose schema SpacetimeDB cannot migrate in place says in both changelogs that it needs a publish with `--delete-data`. New tables and indexes migrate in place.
 
 ## Releases
 
-Bump the version in `server/core/Cargo.toml`, `server/spacetimedb/Cargo.toml`, `unity/.../package.json` and `PurserInfo.Version` (`unity/.../Runtime/Billing.cs`), add `server/spacetimedb/sdk-requests/X.Y.Z.json` with the requests the new Unity SDK sends (copy the previous file; the module tests fail without it), move "Unreleased" in both changelogs, then push a `vX.Y.Z` tag: the release workflow builds `purser.wasm` and attaches it to the GitHub release.
+Bump the version in `server/core/Cargo.toml`, `server/spacetimedb/Cargo.toml`, `unity/.../package.json` and `PurserInfo.Version` (`unity/.../Runtime/Billing.cs`), keep `server/spacetimedb/sdk-requests/current.json` in step with what the Unity SDK sends, move "Unreleased" in both changelogs, then push a `vX.Y.Z` tag: the release workflow builds `purser.wasm` and attaches it to the GitHub release.

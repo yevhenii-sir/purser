@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Breaking
+
+- `/verify/<store>` and `/offers/apple/sign` send the build's id as `app_id` instead of `bundle_id`, like every other
+  request; this needs a server of the same version. The C# fields `VerifyRequest.BundleId` and
+  `ApplePromotionalOfferRequest.BundleId` are renamed to `AppId`.
+- `BillingConfig.MergeJson` no longer detects the pre-0.2.0 config format (`androidAppId`, `iosAppId`, ...): such
+  keys are ignored. Copy the config from the admin panel.
+
 ## [0.6.0] - 2026-11-12
 
 ### Security

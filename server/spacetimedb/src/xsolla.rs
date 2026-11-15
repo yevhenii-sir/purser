@@ -66,7 +66,6 @@ fn rows_by_token(tx: &spacetimedb::TxContext, app_id: &str, token: &str) -> Vec<
 
 #[derive(Deserialize)]
 pub(crate) struct CheckoutRequest {
-    #[serde(alias = "bundle_id")]
     pub app_id: String,
     pub product_id: String,
     pub user_id: String,
@@ -219,7 +218,6 @@ pub(crate) fn checkout_route(ctx: &mut HandlerContext, req: Request) -> Response
 
 #[derive(Deserialize)]
 pub(crate) struct StatusRequest {
-    #[serde(alias = "bundle_id")]
     pub app_id: String,
     pub user_id: String,
     /// `order_id` of the `/checkout/xsolla` answer.

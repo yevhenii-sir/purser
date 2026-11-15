@@ -44,10 +44,7 @@ fn deliver_spacetimedb(ctx: &mut impl Ctx, app: &GameApp, creds: &Creds, ev: &Bi
         log::info!("{}: no {} reducer configured, skipping {}", app.app_id, ev.event, ev.transaction_id);
         return Ok(());
     }
-    let Some(args) = ev.reducer_args(&app.args_format) else {
-        log::info!("{}: {} of {} is not supported by {} reducers", app.app_id, ev.event, ev.kind, app.args_format);
-        return Ok(());
-    };
+    let args = ev.reducer_args();
     // Never send the token anywhere but an allowed SpacetimeDB host (checked again here: rows saved
     // earlier, or a host the owner removed since).
     if !purser_core::is_allowed_spacetime_url(&app.spacetime_url, &creds.hosts) {

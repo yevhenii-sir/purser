@@ -60,7 +60,7 @@ namespace Purser.Tests
 
             Assert.AreEqual(PurchaseStatus.Success, result.Status);
             var request = m_Api.OfferRequests.Single();
-            Assert.AreEqual("com.test.game.ios", request.BundleId);
+            Assert.AreEqual("com.test.game.ios", request.AppId);
             Assert.AreEqual("premium_ios", request.ProductId);
             Assert.AreEqual("winback_50", request.OfferId);
             Assert.AreEqual(User, request.UserId);
@@ -185,12 +185,12 @@ namespace Purser.Tests
 
             var result = Sync.Run(api.SignApplePromotionalOfferAsync(new ApplePromotionalOfferRequest
             {
-                BundleId = "com.test.game.ios", ProductId = "premium_ios", OfferId = "winback_50", UserId = User,
+                AppId = "com.test.game.ios", ProductId = "premium_ios", OfferId = "winback_50", UserId = User,
             }));
 
             Assert.AreEqual("https://b.example.com/route/offers/apple/sign", transport.Requests[0].Url);
             var body = JObject.Parse(transport.Requests[0].Body);
-            Assert.AreEqual("com.test.game.ios", (string)body["bundle_id"]);
+            Assert.AreEqual("com.test.game.ios", (string)body["app_id"]);
             Assert.AreEqual("winback_50", (string)body["offer_id"]);
             Assert.IsNull(body["transaction_id"]);
             var offer = result.Value.ToOffer();

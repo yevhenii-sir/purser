@@ -79,4 +79,4 @@ Enable **Sandbox purchases** on the app's Delivery tab, buy with a license teste
 
 ## Upgrading
 
-Publish the new `purser.wasm` to the same database name (`./publish.sh` again with Docker). Never use `--delete-data`: it deletes the purchase ledger.
+Publish the new `purser.wasm` to the same database name (`./publish.sh` again with Docker). Don't use `--delete-data` (it deletes the purchase ledger) unless the release notes say the release needs it.

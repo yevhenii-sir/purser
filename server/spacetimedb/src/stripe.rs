@@ -105,7 +105,6 @@ fn json_body(res: &HttpResult) -> Result<Value, StoreError> {
 
 #[derive(Deserialize)]
 pub struct CheckoutRequest {
-    #[serde(alias = "bundle_id")]
     pub app_id: String,
     /// Catalog product id = Stripe Price id.
     pub product_id: String,
@@ -263,14 +262,11 @@ fn verify_answer(app: &GameApp, g: &Grant, p: &Purchase) -> Answer {
 // POST /verify/stripe
 // ---------------------------------------------------------------------------------------------
 
-/// `{app_id, user_id, session_id}`; also takes the `/verify/<store>` body the Unity package sends
-/// (`bundle_id`, `order_id` = the session id). `product_id` is not needed: the session names it.
+/// `{app_id, user_id, session_id}`. `product_id` is not needed: the session names it.
 #[derive(Deserialize)]
 pub struct VerifyRequest {
-    #[serde(alias = "bundle_id")]
     pub app_id: String,
     pub user_id: String,
-    #[serde(alias = "order_id", alias = "transaction_id")]
     pub session_id: String,
     #[serde(default)]
     pub app_instance_id: String,

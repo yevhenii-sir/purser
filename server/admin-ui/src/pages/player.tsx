@@ -51,10 +51,10 @@ interface Profile {
   }
   entitlements: Entitlements[]
   attribution: { app_id: string; ids: Record<string, string>; updated_at_micros: number }[]
-  /** Per build: when the server heard from the player, the device and the game's custom attributes (missing on older modules). */
-  players?: PlayerRow[]
-  /** Billing country of the newest purchase that has one. */
-  store_country?: string
+  /** Per build: when the server heard from the player, the device and the game's custom attributes. */
+  players: PlayerRow[]
+  /** Billing country of the newest purchase that has one ("" if none). */
+  store_country: string
   purchases: ProfilePurchase[]
 }
 
@@ -298,9 +298,9 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
       )}
 
       <Section title="Profile" description="Per build: when the server first and last heard from this player, the device the client reported and the custom attributes the game set (SetCustomAttributesAsync).">
-        {data.players?.length ? (
+        {data.players.length ? (
           <div className="grid gap-4 md:grid-cols-2">
-            {data.players.map((p) => <PlayerCard key={p.app_id} row={p} storeCountry={data.store_country || ""} />)}
+            {data.players.map((p) => <PlayerCard key={p.app_id} row={p} storeCountry={data.store_country} />)}
           </div>
         ) : (
           <div className="py-4 text-center text-sm text-muted-foreground">

@@ -117,7 +117,7 @@ namespace Purser.Tests
             Assert.AreEqual(PurchaseStatus.Success, result.Status, result.ToString());
             var verify = m_Api.VerifyRequests.Single();
             Assert.AreEqual(BillingStores.Steam, m_Api.VerifyStores.Single());
-            Assert.AreEqual("480", verify.BundleId);
+            Assert.AreEqual("480", verify.AppId);
             Assert.AreEqual(Order.ToString(), verify.OrderId);
             Assert.AreEqual("gems_100", verify.ProductId);
             Assert.AreEqual(User, verify.UserId);

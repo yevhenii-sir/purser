@@ -9,7 +9,7 @@
 //! All tables are private: the database owner reads them with `spacetime sql`, other admins
 //! through `access::admin_select`.
 
-use purser_core::event::{args_format, delivery};
+use purser_core::event::delivery;
 use purser_core::model::kind;
 use serde::Deserialize;
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
@@ -39,6 +39,7 @@ mod steam;
 mod store_create;
 mod store_health;
 mod store_setup;
+mod retention;
 mod stores;
 mod stripe;
 mod support;
@@ -57,20 +58,18 @@ pub struct Admin {
     #[primary_key]
     pub identity: Identity,
     /// The database owner (inserted by `init`) cannot be removed by other admins.
-    /// Defaults to true for rows that existed before the column (the owner).
-    #[default(true)]
     pub protected: bool,
     /// `admin` | `editor` | `support` | `viewer` (`purser_core::roles`); ignored for the owner.
-    #[default("admin")]
     pub role: String,
     /// Who this is, for the Admins page and the audit log.
-    #[default("")]
     pub name: String,
     /// Identity hex of the admin who added this one.
-    #[default("")]
     pub added_by: String,
-    #[default(0)]
     pub added_at_micros: i64,
+    /// The apps (`game_key`, comma-separated) this admin may see and change; empty = every app and
+    /// the server-wide settings. Ignored for the owner. A plain string so the owner's SQL insert of
+    /// the first admin stays simple.
+    pub game_keys: String,
 }
 
 /// One build: an app in one store (Android package on Google Play, iOS bundle, Amazon Appstore
@@ -94,8 +93,6 @@ pub struct GameApp {
     pub spacetime_db: String,
     pub grant_reducer: String,
     pub revoke_reducer: String,
-    /// `legacy` | `v1`
-    pub args_format: String,
     pub webhook_url: String,
     /// Accept sandbox / license-tester purchases (needed for App Review and QA).
     pub allow_sandbox: bool,
@@ -103,19 +100,15 @@ pub struct GameApp {
     /// The client consumes Google purchases itself (e.g. still through Adapty): a consumed purchase
     /// unknown to the ledger is then granted. Off: such purchases are rejected as granted elsewhere
     /// (see `ledger::consumed_elsewhere`).
-    #[default(false)]
     pub client_consumes: bool,
-    /// Store id (`purser_core::model::store`). Empty = the platform's default store (every row
-    /// written before the column existed). Platforms with several stores (`web`) must set it.
-    #[default("")]
+    /// Store id (`purser_core::model::store`), resolved when the build is saved (an empty input
+    /// takes the platform's default store; platforms with several stores, `web`, must name one).
     pub store: String,
     /// App Store builds: how refund requests (`CONSUMPTION_REQUEST`) are answered
     /// (`purser_core::consumption::mode`: empty / `off`, `inform`, `prefer`).
-    #[default("")]
     pub apple_refund_mode: String,
     /// Amazon builds: the SNS topic notifications must come from (empty: any topic with a valid
     /// AWS signature; the setup check shows the topic last seen).
-    #[default("")]
     pub sns_topic_arn: String,
 }
 
@@ -136,19 +129,14 @@ pub struct Product {
     pub price_micros: i64,
     pub currency: String,
     /// Store listing, used to create the product in the stores (Create in store): English title.
-    #[default("")]
     pub title: String,
-    #[default("")]
     pub description: String,
     /// Subscriptions: billing period, one of `purser_core::store_create::PERIODS` (`P1M`); "" if unknown.
-    #[default("")]
     pub period: String,
     /// Subscriptions: App Store subscription group (reference name).
-    #[default("")]
     pub apple_group: String,
     /// The app's own id of the product, the same in every store (the Unity config's product `id`):
     /// paywalls list it and entitlements are keyed by it. "" = the same as `product_id`.
-    #[default("")]
     pub catalog_id: String,
 }
 
@@ -200,6 +188,7 @@ pub struct AccessTokenCache {
     #[primary_key]
     pub key: String,
     pub token: String,
+    #[index(btree)]
     pub expires_at_micros: i64,
 }
 
@@ -254,25 +243,18 @@ pub struct Purchase {
     pub updated_at_micros: i64,
     /// While `transfer_pending`: the previous owner that still has to receive `revoke`
     /// (reason `transfer`) before the product is granted to `user_id`.
-    #[default("")]
     pub previous_user_id: String,
     /// Billing country reported by the store (ISO 3166-1 alpha-2); empty if unknown.
-    #[default("")]
     pub country: String,
     /// A free-trial period: nothing was paid (`price_micros` is 0).
-    #[default(false)]
     pub trial: bool,
     /// Paywall the client bought from (`/verify` `placement`, `variant_id`, `test_id`, `paywall_id`);
     /// empty when unknown. Renewals inherit it from the purchase that started the subscription.
-    #[default("")]
     pub paywall_placement: String,
-    #[default("")]
     pub paywall_variant_id: String,
     /// Indexed for the results of an A/B test (`paywalls::results`).
-    #[default("")]
     #[index(btree)]
     pub paywall_test_id: String,
-    #[default("")]
     pub paywall_id: String,
 }
 
@@ -376,6 +358,7 @@ pub fn init(ctx: &ReducerContext) {
         name: String::new(),
         added_by: String::new(),
         added_at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+        game_keys: String::new(),
     });
     ensure_worker(ctx);
 }
@@ -401,7 +384,7 @@ pub fn whoami(ctx: &mut spacetimedb::ProcedureContext) -> String {
 
 /// Starts the worker on a database where `init` never ran: the module was published over a
 /// database created in the SpacetimeDB dashboard (an update does not run `init`). The owner first
-/// adds itself with `INSERT INTO admin (identity, protected, role, name, added_by, added_at_micros)
+/// adds itself with `INSERT INTO admin (identity, protected, role, name, added_by, added_at_micros, game_keys)
 /// VALUES (0x<identity>, true, 'admin', '', '', 0)` through
 /// `spacetime sql` (only the owner can write private tables); the admin page does both steps.
 #[spacetimedb::reducer]
@@ -452,10 +435,6 @@ pub(crate) fn default_true() -> bool {
 fn default_account() -> String {
     config::DEFAULT_SCOPE.to_string()
 }
-fn default_args_format() -> String {
-    args_format::V1.to_string()
-}
-
 #[derive(Deserialize)]
 struct GameAppInput {
     app_id: String,
@@ -473,8 +452,6 @@ struct GameAppInput {
     grant_reducer: String,
     #[serde(default)]
     revoke_reducer: String,
-    #[serde(default = "default_args_format")]
-    args_format: String,
     #[serde(default)]
     webhook_url: String,
     #[serde(default = "crate::default_true")]
@@ -497,9 +474,13 @@ struct GameAppInput {
 /// Creates or replaces a store application. `json` is a `GameAppInput` object.
 #[spacetimedb::reducer]
 pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_upsert_game_app", "", &json);
     let i: GameAppInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
+    who.check_game(&i.game_key)?;
+    if let Some(old) = ctx.db.game_app().app_id().find(&i.app_id) {
+        who.check_game(&old.game_key)?;
+    }
 
     if i.app_id.trim().is_empty() {
         return Err("[ERR_BAD_APP] app_id is required".into());
@@ -511,9 +492,6 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
         .map_err(|e| format!("[ERR_BAD_APP] {e}"))?;
     if !delivery::is_valid(&i.delivery) {
         return Err("[ERR_BAD_APP] delivery must be spacetimedb, webhook or none".into());
-    }
-    if !args_format::is_valid(&i.args_format) {
-        return Err("[ERR_BAD_APP] args_format must be legacy or v1".into());
     }
     if i.delivery == delivery::SPACETIMEDB
         && (i.spacetime_url.is_empty() || i.spacetime_db.is_empty() || i.grant_reducer.is_empty())
@@ -560,7 +538,6 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
         spacetime_db: i.spacetime_db,
         grant_reducer: i.grant_reducer,
         revoke_reducer: i.revoke_reducer,
-        args_format: i.args_format,
         webhook_url: i.webhook_url,
         allow_sandbox: i.allow_sandbox,
         enabled: i.enabled,
@@ -579,14 +556,15 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
 
 #[spacetimedb::reducer]
 pub fn admin_delete_game_app(ctx: &ReducerContext, app_id: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_app(ctx, purser_core::roles::Cap::Configure, &app_id)?;
     crate::access::audit(ctx, &who, "admin_delete_game_app", &app_id, "");
     delete_build_rows(ctx, &app_id);
     Ok(())
 }
 
-/// A deleted build takes its configuration and health rows with it; the ledger, revenue and the
-/// audit log stay (history), as do its secrets (shown on the Server page to delete by hand).
+/// A deleted build takes its configuration, health, players, attribution ids and open alerts with
+/// it; the ledger, revenue and the audit log stay (history), as do its secrets (shown on the
+/// Server page to delete by hand).
 fn delete_build_rows(ctx: &ReducerContext, app_id: &str) {
     use crate::health::{app_check, app_health};
     use crate::integrations::{integration, integration_health};
@@ -594,6 +572,7 @@ fn delete_build_rows(ctx: &ReducerContext, app_id: &str) {
     use crate::store_create::store_create_job;
     use crate::store_health::store_notify_health;
     let id = app_id.to_string();
+    let game_key = ctx.db.game_app().app_id().find(&id).map(|a| a.game_key).unwrap_or_default();
     ctx.db.game_app().app_id().delete(&id);
     for p in ctx.db.product().app_id().filter(app_id).collect::<Vec<_>>() {
         ctx.db.product().key().delete(&p.key);
@@ -612,6 +591,7 @@ fn delete_build_rows(ctx: &ReducerContext, app_id: &str) {
     ctx.db.store_notify_health().app_id().delete(&id);
     ctx.db.steam_build().app_id().delete(&id);
     ctx.db.steam_report().app_id().delete(&id);
+    crate::retention::delete_build(ctx, app_id, &game_key);
 }
 
 #[derive(Deserialize)]
@@ -646,7 +626,7 @@ pub fn product_key(app_id: &str, product_id: &str) -> String {
 /// Sets the display name of an app (`game_key`); an empty name removes it.
 #[spacetimedb::reducer]
 pub fn admin_set_app_name(ctx: &ReducerContext, game_key: String, name: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_game(ctx, purser_core::roles::Cap::Configure, &game_key)?;
     crate::access::audit(ctx, &who, "admin_set_app_name", &game_key, &name);
     if !ctx.db.game_app().iter().any(|a| a.game_key == game_key) {
         return Err(format!("[ERR_UNKNOWN_APP] No app {game_key}"));
@@ -662,7 +642,7 @@ pub fn admin_set_app_name(ctx: &ReducerContext, game_key: String, name: String) 
 /// Creates or replaces products. `json` is one `ProductInput` object or an array of them.
 #[spacetimedb::reducer]
 pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_upsert_products", "", &json);
     let items: Vec<ProductInput> = if json.trim_start().starts_with('[') {
         serde_json::from_str(&json)
@@ -672,6 +652,7 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
     .map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
 
     for i in items {
+        who.check_app(ctx, &i.app_id)?;
         if !kind::is_valid(&i.kind) {
             return Err(format!("[ERR_BAD_PRODUCT] {}: kind must be consumable, non_consumable or subscription", i.product_id));
         }
@@ -719,7 +700,7 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
 
 #[spacetimedb::reducer]
 pub fn admin_delete_product(ctx: &ReducerContext, app_id: String, product_id: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_app(ctx, purser_core::roles::Cap::Configure, &app_id)?;
     crate::access::audit(ctx, &who, "admin_delete_product", &app_id, &product_id);
     ctx.db.product().key().delete(&product_key(&app_id, &product_id));
     Ok(())
@@ -729,7 +710,8 @@ pub fn admin_delete_product(ctx: &ReducerContext, app_id: String, product_id: St
 /// Names: see `config::secret_name`.
 #[spacetimedb::reducer]
 pub fn admin_set_credential(ctx: &ReducerContext, scope: String, name: String, value: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Secrets)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Secrets)?;
+    who.check_secret_scope(ctx, &scope)?;
     crate::access::audit(ctx, &who, "admin_set_credential", &format!("{scope}/{name}"), "updated");
     put_credential(ctx, &scope, &name, value)
 }
@@ -755,7 +737,8 @@ pub(crate) fn put_credential(ctx: &ReducerContext, scope: &str, name: &str, valu
 
 #[spacetimedb::reducer]
 pub fn admin_delete_credential(ctx: &ReducerContext, scope: String, name: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Secrets)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Secrets)?;
+    who.check_secret_scope(ctx, &scope)?;
     crate::access::audit(ctx, &who, "admin_delete_credential", &format!("{scope}/{name}"), "deleted");
     ctx.db.credential().key().delete(&config::credential_key(&scope, &name));
     drop_cached_tokens(ctx, &scope, &name);
@@ -785,7 +768,7 @@ fn drop_cached_tokens(ctx: &ReducerContext, scope: &str, name: &str) {
 /// Forces the worker to retry a purchase on its next run.
 #[spacetimedb::reducer]
 pub fn admin_requeue_purchase(ctx: &ReducerContext, purchase_id: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Support)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Support)?;
     crate::access::audit(ctx, &who, "admin_requeue_purchase", &purchase_id, "");
     let mut p = ctx
         .db
@@ -793,6 +776,7 @@ pub fn admin_requeue_purchase(ctx: &ReducerContext, purchase_id: String) -> Resu
         .id()
         .find(&purchase_id)
         .ok_or("[ERR_PURCHASE_NOT_FOUND] Unknown purchase")?;
+    who.check_app(ctx, &p.app_id)?;
     p.next_attempt_at_micros = ctx.timestamp.to_micros_since_unix_epoch();
     p.attempts = 0;
     crate::ledger::save_purchase(ctx, p);
@@ -820,9 +804,10 @@ struct ManualGrantInput {
 pub fn admin_grant_manual(ctx: &ReducerContext, json: String) -> Result<(), String> {
     use purser_core::model::{ledger_id, store};
 
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Support)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Support)?;
     crate::access::audit(ctx, &who, "admin_grant_manual", "", &json);
     let i: ManualGrantInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
+    who.check_app(ctx, &i.app_id)?;
     if !crate::handlers::valid_user_id(&i.user_id) {
         return Err("[ERR_BAD_USER] user_id: 1-128 characters of A-Z a-z 0-9 - _ . :".into());
     }
@@ -942,6 +927,7 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
     let (mut imported, mut skipped) = (0, 0);
     // Apps of the batch already looked up (a batch is usually one or two apps).
     let mut known_apps: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut imported_apps: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for r in rows {
         if !purser_core::registry::is_ledger_store(&r.store)
             || !kind::is_valid(&r.kind)
@@ -961,6 +947,7 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             continue;
         }
         let id = r.id.clone();
+        imported_apps.insert(r.app_id.clone());
         crate::ledger::insert_purchase(ctx, Purchase {
             id: r.id,
             store: r.store,
@@ -1003,7 +990,7 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
         imported += 1;
     }
     if imported > 0 {
-        revenue::imported(ctx);
+        revenue::imported(ctx, &imported_apps.into_iter().collect::<Vec<_>>());
     }
     log::info!("Imported {imported} purchase(s), {skipped} already present");
     Ok(())
@@ -1024,9 +1011,10 @@ struct IntegrationInput {
 /// `kind`: one of `purser_core::integrations::integration_kind::ALL`. Secrets go to `admin_set_credential`.
 #[spacetimedb::reducer]
 pub fn admin_upsert_integration(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_upsert_integration", "", &json);
     let i: IntegrationInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
+    who.check_app(ctx, &i.app_id)?;
     if ctx.db.game_app().app_id().find(&i.app_id).is_none() {
         return Err(format!("[ERR_BAD_INTEGRATION] unknown app_id {}", i.app_id));
     }
@@ -1049,7 +1037,7 @@ pub fn admin_upsert_integration(ctx: &ReducerContext, json: String) -> Result<()
 
 #[spacetimedb::reducer]
 pub fn admin_delete_integration(ctx: &ReducerContext, app_id: String, kind: String) -> Result<(), String> {
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_app(ctx, purser_core::roles::Cap::Configure, &app_id)?;
     crate::access::audit(ctx, &who, "admin_delete_integration", &app_id, &kind);
     ctx.db.integration().key().delete(&integrations::integration_key(&app_id, &kind));
     Ok(())
@@ -1075,9 +1063,10 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
     use purser_core::integrations::{event_kind, sanitize_attribution, OutEvent};
     use purser_core::model::environment;
 
-    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_test_integration", "", &json);
     let i: TestIntegrationInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
+    who.check_app(ctx, &i.app_id)?;
     let app = ctx
         .db
         .game_app()
@@ -1101,7 +1090,7 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
         app_instance_id: String::new(),
         attribution: sanitize_attribution(&i.attribution),
         country: String::new(),
-        commission_percent: None,
+        commission_percent: crate::revenue::commission(ctx).percent_for_period(&app.app_id, false),
     };
     let only = if i.kind.is_empty() { None } else { Some(i.kind.as_str()) };
     let queued = integrations::enqueue_event(ctx, &app, &format!("test:{now}"), &event, only);

@@ -72,10 +72,8 @@ export function AppsProvider({ children }: { children: ReactNode }) {
     const load = () => {
       const mine = ++seq
       loadedAt = Date.now()
-      // A module older than app_profile has no such table: no names then.
       const names = select<{ game_key: string; display_name: string }>({ table: "app_profile" })
         .then((rows) => Object.fromEntries(rows.map((r) => [r.game_key, r.display_name])) as AppNames)
-        .catch(() => ({}) as AppNames)
       Promise.all([select<GameApp>({ table: "game_app" }), names])
         .then(([apps, names]) => {
           if (!alive || mine !== seq) return

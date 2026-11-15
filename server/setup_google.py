@@ -31,7 +31,6 @@ import sys
 import stdb
 
 ROOT = pathlib.Path(__file__).resolve().parent
-REGISTRY = ROOT / "admin-ui" / "src" / "lib" / "registry.json"
 GOOGLE_STORE = "google"
 PROCEDURE = "admin_setup_google"
 MARK = {"created": "do  ", "updated": "do  ", "exists": "ok  ", "skipped": "skip",
@@ -49,11 +48,6 @@ def gcloud_token():
     return tok
 
 
-def store_of(build, platforms):
-    """The store id of a `game_app` row (empty `store` = the platform's default)."""
-    return build.get("store") or (platforms.get(build.get("platform"), {}).get("default_store") or "")
-
-
 def read(base, db, tok, table, column="", value=""):
     """Rows through `admin_select`: works for every admin, not only the database owner."""
     query = {"table": table}
@@ -66,14 +60,13 @@ def read(base, db, tok, table, column="", value=""):
 
 
 def google_builds(base, db, tok, wanted):
-    platforms = {p["id"]: p for p in json.loads(REGISTRY.read_text(encoding="utf-8"))["platforms"]}
     rows = {r["app_id"]: r for r in read(base, db, tok, "game_app")}
     for app_id in wanted:
         if app_id not in rows:
             sys.exit(f"no build {app_id} in the database: add it first (admin page -> Add an app, or seed.py)")
-        if store_of(rows[app_id], platforms) != GOOGLE_STORE:
+        if rows[app_id]["store"] != GOOGLE_STORE:
             sys.exit(f"{app_id} is not a Google Play build")
-    ids = wanted or sorted(a for a, r in rows.items() if store_of(r, platforms) == GOOGLE_STORE)
+    ids = wanted or sorted(a for a, r in rows.items() if r["store"] == GOOGLE_STORE)
     if not ids:
         sys.exit("no Google Play builds in the database: add one first (admin page -> Add an app, or seed.py)")
     return ids
@@ -88,9 +81,8 @@ def route_base(base, db, tok):
 def print_result(r):
     if r.get("service_account"):
         print(f"Service account: {r['service_account']}")
-    topics = r.get("topic") or r.get("topics")
-    if topics:
-        print(f"Topic: {', '.join(topics) if isinstance(topics, list) else topics}")
+    if r.get("topic"):
+        print(f"Topic: {r['topic']}")
     print()
     for s in r.get("steps") or []:
         action = s.get("action", "")

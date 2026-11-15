@@ -101,8 +101,7 @@ fn store_error_outcome(e: StoreError) -> Outcome {
 /// `/verify/*` body: the purchase, the player and optional analytics fields.
 #[derive(Deserialize, Clone)]
 struct VerifyRequest {
-    #[serde(alias = "app_id")]
-    bundle_id: String,
+    app_id: String,
     user_id: String,
     /// Required, except for stores whose orders know their product (Steam).
     #[serde(default)]
@@ -111,11 +110,11 @@ struct VerifyRequest {
     #[serde(default)]
     purchase_token: String,
     /// Apple transactionId and Amazon receiptId (required), Google orderId (optional).
-    #[serde(default, alias = "transaction_id", alias = "receipt_id")]
+    #[serde(default)]
     order_id: String,
     /// The player's id in the store, when the store needs it to look the purchase up
     /// (Amazon userId).
-    #[serde(default, alias = "amazon_user_id")]
+    #[serde(default)]
     store_user_id: String,
     /// Firebase `app_instance_id` of the client, for GA4.
     #[serde(default)]
@@ -129,7 +128,7 @@ struct VerifyRequest {
     #[serde(default)]
     attribution: serde_json::Map<String, Value>,
     /// Paywall the purchase was made from (`/paywall` answer); all optional, see docs/paywalls.md.
-    #[serde(default, alias = "placement_id")]
+    #[serde(default)]
     placement: String,
     #[serde(default)]
     variant_id: String,
@@ -172,7 +171,7 @@ fn verify(ctx: &mut impl Ctx, store_name: &str, r: &VerifyRequest) -> Outcome {
     let now = ctx.now_micros();
     // One transaction: the build, the product, the store credential and where to look first.
     let loaded = ctx.tx(|tx| {
-        let app = config::find_app(tx, &r.bundle_id)?;
+        let app = config::find_app(tx, &r.app_id)?;
         let product_id = if r.product_id.is_empty() {
             stores::implied_product_id(tx, store_name, &app.app_id, &r.order_id).unwrap_or_default()
         } else {
@@ -188,7 +187,7 @@ fn verify(ctx: &mut impl Ctx, store_name: &str, r: &VerifyRequest) -> Outcome {
         Some((app, product, auth, environment))
     });
     let Some((app, product, mut auth, environment)) = loaded.filter(|(a, ..)| a.enabled) else {
-        return Outcome::status(400, "error", format!("unknown app {}", r.bundle_id));
+        return Outcome::status(400, "error", format!("unknown app {}", r.app_id));
     };
     let app_store = config::app_store(&app);
     if app_store.id != store_name {
@@ -365,7 +364,6 @@ fn verify_store(ctx: &mut HandlerContext, req: Request) -> Response {
 
 #[derive(Deserialize)]
 struct EntitlementsRequest {
-    #[serde(alias = "bundle_id")]
     app_id: String,
     user_id: String,
     #[serde(default)]
@@ -403,20 +401,19 @@ struct RestoreItem {
     product_id: String,
     #[serde(default)]
     purchase_token: String,
-    #[serde(default, alias = "transaction_id", alias = "receipt_id")]
+    #[serde(default)]
     order_id: String,
     /// Amazon userId; defaults to the request's `store_user_id`.
-    #[serde(default, alias = "amazon_user_id")]
+    #[serde(default)]
     store_user_id: String,
 }
 
 #[derive(Deserialize)]
 struct RestoreRequest {
-    #[serde(alias = "bundle_id")]
     app_id: String,
     user_id: String,
     /// The player's id in the store for every item (Amazon userId).
-    #[serde(default, alias = "amazon_user_id")]
+    #[serde(default)]
     store_user_id: String,
     #[serde(default)]
     app_instance_id: String,
@@ -464,7 +461,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
     let mut results = Vec::new();
     for (item, (product, environment)) in r.purchases.iter().zip(items) {
         let v = VerifyRequest {
-            bundle_id: app.app_id.clone(),
+            app_id: app.app_id.clone(),
             user_id: r.user_id.clone(),
             product_id: item.product_id.clone(),
             purchase_token: item.purchase_token.clone(),
@@ -506,9 +503,7 @@ fn restore(ctx: &mut HandlerContext, req: Request) -> Response {
 
 #[derive(Deserialize)]
 struct PaywallRequest {
-    #[serde(alias = "bundle_id")]
     app_id: String,
-    #[serde(alias = "placement_id")]
     placement: String,
     /// Assigns the player to a running test; without it the default variant is served.
     #[serde(default)]
@@ -549,7 +544,6 @@ fn paywall(ctx: &mut HandlerContext, req: Request) -> Response {
 /// `/attributes`: custom attributes of a player (email, level, ...), shown on the admin page.
 #[derive(Deserialize)]
 struct AttributesRequest {
-    #[serde(alias = "bundle_id")]
     app_id: String,
     user_id: String,
     /// Key → string / number / boolean; `null` or `""` removes the key.
@@ -584,9 +578,7 @@ fn default_paywall_event() -> String {
 
 #[derive(Deserialize)]
 struct PaywallEventRequest {
-    #[serde(alias = "bundle_id")]
     app_id: String,
-    #[serde(alias = "placement_id")]
     placement: String,
     variant_id: String,
     #[serde(default)]
