@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react"
 import {
-  BellRingIcon, ChartLineIcon, CloudIcon, PencilIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PlugIcon, ReceiptIcon,
+  BellRingIcon, ChartLineIcon, PencilIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PlugIcon, ReceiptIcon,
   RefreshCwIcon, SendIcon, SmartphoneIcon, SparklesIcon, Trash2Icon, WebhookIcon, type LucideIcon,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -17,7 +17,7 @@ import { DeliveryFields } from "@/components/delivery-fields"
 import { KINDS } from "@/components/integration-kinds"
 import { ReportView } from "@/components/report"
 import { SecretDialog, type SecretTarget } from "@/components/secret-dialog"
-import { GoogleSetupDialog, StoreSetupButton } from "@/components/store-setup"
+import { StoreSetupButton } from "@/components/store-setup"
 import { call, proc, publicRoute, select } from "@/lib/api"
 import { accountsOf, appsChanged, useApps, type AppGroup } from "@/lib/apps"
 import { checkBuilds, replaceRtdnSecret, reportUrls } from "@/lib/checks"
@@ -218,11 +218,9 @@ function SetupTab({ data, reload }: TabProps) {
   const [checking, setChecking] = useState<"" | "all" | "apple">("")
   const [wizard, setWizard] = useState(false)
   const [secrets, setSecrets] = useState<Record<string, string>>({})
-  const [googleSetup, setGoogleSetup] = useState(false)
   const base = useAsync(() => publicRoute())
   const can = useCan()
   const appleBuilds = g.apps.filter((a) => storeOf(a).id === "apple")
-  const googleBuilds = g.apps.filter((a) => storeOf(a).id === "google")
   const canSetUp = (a: GameApp) => can(storeOf(a).id === "apple" ? "configure" : "secrets")
   const recheck = async (appId: string) => {
     await checkBuilds([appId])
@@ -252,12 +250,6 @@ function SetupTab({ data, reload }: TabProps) {
           <Button variant="outline" onClick={() => check(true)} disabled={!!checking}
             title="Asks Apple to send a TEST notification to this server; the next check shows whether it arrived">
             <BellRingIcon className={checking === "apple" ? "animate-pulse" : ""} /> {checking === "apple" ? "Asking Apple…" : "Apple test notification"}
-          </Button>
-        )}
-        {googleBuilds.length > 0 && can("secrets") && (
-          <Button variant="outline" onClick={() => setGoogleSetup(true)} disabled={!base.data}
-            title="Creates the service account, its key, the Pub/Sub topic and push subscriptions with a one-time access token">
-            <CloudIcon /> Set up with Google Cloud
           </Button>
         )}
         <Button variant="outline" onClick={() => setWizard(true)}><SparklesIcon /> Add a build or run the setup wizard</Button>
@@ -296,8 +288,6 @@ function SetupTab({ data, reload }: TabProps) {
         )
       })}
       <AddGameWizard open={wizard} existing={g} onClose={(_, changed) => { setWizard(false); if (changed) { appsChanged(); reload() } }} />
-      <GoogleSetupDialog apps={googleBuilds} base={base.data ?? ""} open={googleSetup}
-        onClose={(changed) => { setGoogleSetup(false); if (changed) check(false) }} />
     </>
   )
 }

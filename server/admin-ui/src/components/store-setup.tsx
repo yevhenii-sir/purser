@@ -16,11 +16,23 @@ import type { GameApp } from "@/lib/types"
 
 type Done = { ok: boolean; detail?: string; action?: string; endpoint?: string }
 
-/** One-click store setup of a build whose store key is in place: App Store notification URLs or the
- * Stripe webhook endpoint. Nothing for other stores. */
+/** One-click store setup of a build: the Google Cloud side of Google Play (with a one-time token),
+ * App Store notification URLs or the Stripe webhook endpoint. Nothing for other stores. */
 export function StoreSetupButton({ app, base, onDone }: { app: GameApp; base: string; onDone: () => void }) {
   const [busy, setBusy] = useState(false)
+  const [google, setGoogle] = useState(false)
   const store = storeOf(app).id
+  if (store === "google") {
+    return (
+      <>
+        <Button size="xs" variant="outline" disabled={!base} onClick={() => setGoogle(true)}
+          title="Creates the service account, its key, the Pub/Sub topic and the push subscription of this build with a one-time access token">
+          <CloudIcon /> Set up with Google Cloud
+        </Button>
+        <GoogleSetupDialog apps={[app]} base={base} open={google} onClose={(changed) => { setGoogle(false); if (changed) onDone() }} />
+      </>
+    )
+  }
   if (store !== "apple" && store !== "stripe") return null
   const run = async () => {
     setBusy(true)
@@ -63,7 +75,7 @@ const TONE: Record<string, "ok" | "warn" | "bad" | "muted"> = {
 }
 
 /** Google Cloud side of Google Play, run with a one-time access token of the project's owner. */
-export function GoogleSetupDialog({ apps, base, open, onClose }: { apps: GameApp[]; base: string; open: boolean; onClose: (changed: boolean) => void }) {
+function GoogleSetupDialog({ apps, base, open, onClose }: { apps: GameApp[]; base: string; open: boolean; onClose: (changed: boolean) => void }) {
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose(false)}>
       <DialogContent className="sm:max-w-2xl">{open && <GoogleSetup apps={apps} base={base} onClose={onClose} />}</DialogContent>
@@ -109,11 +121,11 @@ function GoogleSetup({ apps, base, onClose }: { apps: GameApp[]; base: string; o
         </DialogDescription>
       </DialogHeader>
       <DialogBody className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid items-start gap-4 sm:grid-cols-2">
           <Field label="Project id" hint="The Google Cloud project of your Play Console developer account.">
             <Input value={project} placeholder="my-game-123456" spellCheck={false} className="font-mono text-xs" onChange={(e) => setProject(e.target.value)} />
           </Field>
-          <Field label="Pub/Sub topic">
+          <Field label="Pub/Sub topic" hint="Created if missing; one topic serves every app of the account.">
             <Input value={topic} spellCheck={false} className="font-mono text-xs" onChange={(e) => setTopic(e.target.value)} />
           </Field>
         </div>
