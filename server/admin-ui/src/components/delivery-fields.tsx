@@ -14,7 +14,7 @@ export function DeliveryFields({ value, onChange }: { value: DeliverySettings; o
     </Field>
   )
   return (
-    <div className="grid gap-4 sm:grid-cols-2">
+    <div className="grid items-start gap-4 sm:grid-cols-2">
       <Field label="Delivery">
         <Select value={value.delivery} onValueChange={(v) => onChange({ delivery: v as Delivery })}>
           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>

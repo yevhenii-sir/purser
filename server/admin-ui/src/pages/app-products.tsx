@@ -306,7 +306,7 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
         </DialogDescription>
       </DialogHeader>
       <DialogBody>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid items-start gap-4 sm:grid-cols-2">
           <Field label="Product id" className="sm:col-span-2">
             <Input className="font-mono text-xs" value={productId} onChange={(e) => setProductId(e.target.value)} readOnly={!!row} placeholder="e.g. vip_month" />
           </Field>
@@ -354,7 +354,7 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
             <Field label="Title"><Input value={listing.title} maxLength={55} placeholder={productId.trim() ? productId.trim().replace(/[_.-]+/g, " ") : "e.g. 100 gems"} onChange={(e) => setL({ title: e.target.value })} /></Field>
             <Field label="Description"><Textarea className="min-h-16" value={listing.description} maxLength={200} placeholder="Same as the title" onChange={(e) => setL({ description: e.target.value })} /></Field>
             {kind === "subscription" && (
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid items-start gap-4 sm:grid-cols-2">
                 <Field label="Period">
                   <Select value={listing.period || "none"} onValueChange={(v) => setL({ period: v === "none" ? "" : v })}>
                     <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>

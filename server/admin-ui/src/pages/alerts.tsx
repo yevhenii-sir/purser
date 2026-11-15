@@ -440,7 +440,7 @@ function ChannelForm({ channel, hasSecret, taken, onClose, onSaved }: {
       </DialogHeader>
       <DialogBody>
         <div className="grid gap-4">
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid items-start gap-4 sm:grid-cols-2">
             <Field label="Name" hint="Shown in the alert log.">
               <Input value={name} placeholder={kind} maxLength={60} onChange={(e) => setName(e.target.value)} autoFocus={!channel} />
             </Field>

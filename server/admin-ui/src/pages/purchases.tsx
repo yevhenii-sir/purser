@@ -176,7 +176,7 @@ export function GrantDialog({ open, apps, onClose, onDone, userId }: { open: boo
           <DialogTitle>Manual grant</DialogTitle>
           <DialogDescription>Compensation or promo without a purchase: recorded in the ledger and delivered the usual way; not revenue and not sent to analytics.</DialogDescription>
         </DialogHeader>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid items-start gap-4 sm:grid-cols-2">
           <Field label="App"><AppCombobox mode="build" builds={apps} value={app} onChange={(a) => setV({ ...v, app_id: a, product_id: "", expires: "" })} /></Field>
           {input("user_id", "user_id", { readOnly: !!userId })}
           <Field label="Product" hint={products.data?.length === 0 ? "The build has no products: add them on the app's Products tab." : undefined}>
@@ -226,7 +226,7 @@ function EntitlementsDialog({ open, apps, onClose }: { open: boolean; apps: Game
           <DialogTitle>Player entitlements</DialogTitle>
           <DialogDescription>What /entitlements returns for a player across the apps of the same game.</DialogDescription>
         </DialogHeader>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid items-start gap-4 sm:grid-cols-2">
           <Field label="App"><AppCombobox mode="build" builds={apps} value={target} onChange={setApp} /></Field>
           <Field label="user_id"><Input value={user} onChange={(e) => setUser(e.target.value)} /></Field>
         </div>

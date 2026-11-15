@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Admin page: fields of two-column dialogs line up at the top when one of them has a hint or a longer label.
+
 ## 0.7.0 - 2026-11-15
 
 ### Breaking

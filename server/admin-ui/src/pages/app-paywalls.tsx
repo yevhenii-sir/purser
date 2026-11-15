@@ -297,7 +297,7 @@ function PaywallForm({ gameKey, row, catalog, products, apps, onClose, onSaved }
         <DialogDescription>Players see the products in this order. The remote config is any JSON your paywall screen reads (titles, colors, layout, discounts).</DialogDescription>
       </DialogHeader>
       <DialogBody className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid items-start gap-4 sm:grid-cols-2">
           <Field label="Paywall id"><Input className="font-mono text-xs" value={id} onChange={(e) => setId(e.target.value)} readOnly={!!row} placeholder="pw_default" /></Field>
           <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Default paywall" /></Field>
         </div>
@@ -375,7 +375,7 @@ function PlacementForm({ gameKey, row, paywalls, onClose, onSaved }: {
         </DialogDescription>
       </DialogHeader>
       <DialogBody className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid items-start gap-4 sm:grid-cols-2">
           <Field label="Placement id"><Input className="font-mono text-xs" value={id} onChange={(e) => setId(e.target.value)} readOnly={!!row} placeholder="main_paywall" /></Field>
           <div className="flex items-end gap-2 pb-2">
             <Switch id="placement-enabled" checked={enabled} onCheckedChange={setEnabled} />
