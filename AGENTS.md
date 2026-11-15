@@ -107,10 +107,19 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - Maincloud tokens have no `hex_identity` claim; the UI asks the `whoami` procedure.
 - Open transactions through `Ctx::tx` (see `ctx.rs`), not `with_tx` directly: it records the time the
   `Budget` reads, and tests count transactions through it.
+- Write ledger rows only through `ledger::insert_purchase` / `ledger::save_purchase`: they keep the
+  `purchase_count` table (the Overview counters) in step.
+- Admin reads must not scan big tables per request: read through an index (`app_id`, the
+  `(app_id, created_at)` / `(app_id, updated_at)` ledger indexes, `(app_id, day)` of the daily
+  revenue tables) and keep per-request work independent of the number of apps.
 
 ## Schema rules (published databases upgrade in place)
 
-- New tables: fine. New column: **at the end** of the struct with `#[default(...)]`.
+- Until the first public release, breaking schema changes are allowed: rename or remove instead of
+  keeping legacy columns, and say in the changelog that the release needs a publish with
+  `--delete-data`. After that release the rules below apply.
+- New tables and indexes: fine (SpacetimeDB adds indexes in place). New column: **at the end** of the
+  struct with `#[default(...)]`.
 - Never rename, reorder, retype or remove existing columns or tables: SpacetimeDB cannot migrate
   that in place (it needs a publish with `--delete-data`). Leave a deprecated field and stop using it.
 
@@ -273,7 +282,7 @@ capability the action needs (`purser_core::roles`: `Read`, `Support`, `Configure
 `Owner`), then `crate::access::audit(ctx, &who, "<reducer name>", target, detail)` (never pass secret
 values; `roles::audit_summary` hides keys named like secrets). Reads check `Cap::Read`. A new table
 the admin page reads gets an arm in `access::read` (admins who are not the owner read through
-`admin_read`; `/sql` is the owner's). `#[procedure]` when it needs
+`admin_select`; `/sql` is the owner's). `#[procedure]` when it needs
 outbound HTTP or returns data: take `&mut ProcedureContext`, check the admin inside `ctx.tx`, return a
 JSON string. Call it from the UI with `call()` (reducers) or `proc()` (procedures).
 

@@ -49,7 +49,7 @@ export function installClock() {
 
 // --- reads ---------------------------------------------------------------------------------------
 
-/** A table read (`select`), answered from the snapshot the way `admin_read` filters. */
+/** A table read (`select`), answered from the snapshot the way `admin_select` filters. */
 export function select(q: Query): Row[] {
   const rows = S.tables[q.table] || []
   const hits = lookups(q).flatMap(([col, v]) => (col ? rows.filter((r) => String(r[col]) === v) : rows))
@@ -137,6 +137,21 @@ const PROCS: Record<string, (...args: never[]) => unknown> = {
   whoami: () => "0x" + S.identity,
   admin_me: () => ({ identity: S.identity, name: S.tables.admin?.find((a: Row) => a.protected)?.name || "", role: "owner", owner: true }),
   admin_overview: () => S.procs.admin_overview,
+  admin_select: (json: string) => {
+    const q = JSON.parse(json)
+    if (q.table === "admin_audit" && q.where?.column === "since") {
+      return (S.tables.admin_audit || []).filter((r: Row) => Number(r.at_micros) >= Number(q.where.equals))
+    }
+    return select({ table: q.table, columns: q.columns, where: q.where })
+  },
+  admin_apps_summary: () => (S.tables.game_app || []).map((a: Row) => {
+    const check = (S.tables.app_check || []).find((c: Row) => c.app_id === a.app_id)
+    return {
+      app_id: a.app_id, summary: check?.summary || "", checked_at_micros: check?.checked_at_micros || 0,
+      catalog_ids: (S.tables.product || []).filter((p: Row) => p.app_id === a.app_id).map((p: Row) => p.catalog_id || p.product_id),
+      integrations: (S.tables.integration || []).filter((i: Row) => i.app_id === a.app_id && i.enabled).map((i: Row) => i.kind),
+    }
+  }),
   admin_revenue_stats: revenue,
   admin_list_purchases: listPurchases,
   admin_find_player: findPlayer,

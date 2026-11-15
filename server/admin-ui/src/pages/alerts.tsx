@@ -1,14 +1,16 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { SendIcon, Trash2Icon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
+import { ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
 import { RichTable } from "@/components/rich-table"
 import { SecretField } from "@/components/secret-field"
 import { call, getSetting, proc, select } from "@/lib/api"
+import { useAppIndex } from "@/lib/apps"
+import { buildLabel } from "@/lib/stores"
 import { errorText, fmtTime } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { parseJsonOr } from "@/lib/utils"
@@ -173,28 +175,7 @@ export function AlertsPage() {
             ))}
           </div>
           <RulesSection key={JSON.stringify(data.rules)} initial={data.rules} reload={reload} />
-          <Section title="Open problems" description="Problems reported and not resolved yet, and repeats waiting for the next message.">
-            <DataTable
-              rows={data.active}
-              empty="Nothing open."
-              columns={[
-                { title: "Problem", cell: (s) => <span className="flex flex-wrap items-center gap-2"><Mono>{s.rule}</Mono>{s.app_id && <Mono className="text-muted-foreground">{s.app_id}</Mono>}</span> },
-                { title: "Since", cell: (s) => <span className="text-xs whitespace-nowrap">{fmtTime(s.first_at_micros)}</span> },
-                { title: "Last", cell: (s) => <span className="text-xs whitespace-nowrap">{fmtTime(s.last_at_micros)}</span> },
-                { title: "Unreported", num: true, cell: (s) => s.suppressed },
-                { title: "Detail", className: "max-w-md whitespace-normal", cell: (s) => <span className="text-xs break-words">{s.detail}</span> },
-                {
-                  title: "",
-                  className: "text-right",
-                  cell: (s) => (
-                    <Button variant="ghost" size="xs" onClick={async () => { if (await tryAct(() => call("admin_dismiss_alert", s.key), "Dismissed") !== undefined) reload() }}>
-                      Dismiss
-                    </Button>
-                  ),
-                },
-              ]}
-            />
-          </Section>
+          <OpenProblems active={data.active} reload={reload} />
           <Section title="Recent alerts" description="The last 100 messages and what each channel answered.">
             <RichTable
               rows={data.log}
@@ -364,6 +345,62 @@ function RulesSection({ initial, reload }: { initial: Rules; reload: () => void 
           </div>
         </div>
       </div>
+    </Section>
+  )
+}
+
+type OpenProblem = { key: string; rule: string; app_id: string; first_at_micros: number; last_at_micros: number; suppressed: number; detail: string }
+
+/** Open problems of every app: searchable by app or problem, dismissable one by one or all shown at once. */
+function OpenProblems({ active, reload }: { active: OpenProblem[]; reload: () => void }) {
+  const { builds, groupOf } = useAppIndex()
+  const [query, setQuery] = useState("")
+  const appOf = (id: string) => {
+    const a = builds.get(id)
+    const g = groupOf.get(id)
+    return a && g ? `${g.name} · ${buildLabel(a)}` : id
+  }
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return q ? active.filter((s) => `${s.rule} ${s.app_id} ${appOf(s.app_id)} ${s.detail}`.toLowerCase().includes(q)) : active
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, query, builds, groupOf])
+  const dismissAll = async () => {
+    if (!confirm(`Dismiss ${shown.length} problem(s)? They are reported again if they come back.`)) return
+    if (await tryAct(() => call("admin_dismiss_alerts", JSON.stringify(shown.map((s) => s.key))), "Dismissed") !== undefined) reload()
+  }
+  return (
+    <Section title="Open problems" description="Problems reported and not resolved yet, and repeats waiting for the next message.">
+      <RichTable
+        rows={shown}
+        rowKey={(s) => s.key}
+        noun="problems"
+        empty={active.length ? "No problem matches." : "Nothing open."}
+        initialSort={{ id: "Last", desc: true }}
+        toolbar={
+          <div className="flex flex-wrap items-center gap-2">
+            <Input className="h-8 w-64" placeholder="Filter by app or problem" value={query} onChange={(e) => setQuery(e.target.value)} />
+            {shown.length > 1 && <Button variant="outline" size="sm" onClick={dismissAll}>Dismiss all {shown.length}</Button>}
+          </div>
+        }
+        columns={[
+          { title: "Problem", size: 200, sort: (s) => s.rule, cell: (s) => <Mono>{s.rule}</Mono> },
+          { title: "App", size: 220, sort: (s) => appOf(s.app_id), cell: (s) => (s.app_id ? <span className="block truncate" title={s.app_id}>{appOf(s.app_id)}</span> : <span className="text-muted-foreground">server</span>) },
+          { title: "Since", size: 150, sort: (s) => Number(s.first_at_micros), cell: (s) => <span className="text-xs whitespace-nowrap">{fmtTime(s.first_at_micros)}</span> },
+          { title: "Last", size: 150, sort: (s) => Number(s.last_at_micros), cell: (s) => <span className="text-xs whitespace-nowrap">{fmtTime(s.last_at_micros)}</span> },
+          { title: "Unreported", size: 100, num: true, sort: (s) => s.suppressed, cell: (s) => s.suppressed },
+          { title: "Detail", size: 360, className: "whitespace-normal", cell: (s) => <span className="line-clamp-3 text-xs break-words">{s.detail}</span> },
+          {
+            title: "",
+            size: 90,
+            cell: (s) => (
+              <Button variant="ghost" size="xs" onClick={async () => { if (await tryAct(() => call("admin_dismiss_alert", s.key), "Dismissed") !== undefined) reload() }}>
+                Dismiss
+              </Button>
+            ),
+          },
+        ]}
+      />
     </Section>
   )
 }

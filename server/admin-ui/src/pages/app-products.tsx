@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { Fragment, useCallback, useState } from "react"
 import { ChevronDownIcon, ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon, RefreshCwIcon, StoreIcon, UploadIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -81,7 +81,7 @@ export function AppProductsTab({ data, go }: TabProps) {
     const items = rows.filter((r) => r.by[from.app_id] && !r.by[to.app_id]).map((r) => {
       const p = r.by[from.app_id]!
       return {
-        app_id: to.app_id, product_id: p.product_id, catalog_id: r.product_id, kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency,
+        app_id: to.app_id, product_id: p.product_id, catalog_id: r.product_id, kind: p.kind, price_micros: Number(p.price_micros), currency: p.currency,
         ...listingOf(p),
       }
     })
@@ -96,7 +96,7 @@ export function AppProductsTab({ data, go }: TabProps) {
       const p = r.by[a.app_id]
       return p ? [{
         app_id: a.app_id, product_id: p.product_id, ...(p.product_id !== r.product_id ? { catalog_id: r.product_id } : {}), kind: p.kind,
-        default_price_micros: Number(p.default_price_micros), currency: p.currency, ...listingOf(p),
+        price_micros: Number(p.price_micros), currency: p.currency, ...listingOf(p),
       }] : []
     }))
     downloadBlob(`products-${g.key}.json`, JSON.stringify(items, null, 2) + "\n", "application/json")
@@ -105,10 +105,10 @@ export function AppProductsTab({ data, go }: TabProps) {
   /** The app's builds and products as the Unity config (inspector: Paste config from admin panel). */
   const copyUnityConfig = async () => {
     const products = rows.map((r) => {
-      const priced = g.apps.map((a) => r.by[a.app_id]).find((p) => p && Number(p.default_price_micros) > 0)
+      const priced = g.apps.map((a) => r.by[a.app_id]).find((p) => p && Number(p.price_micros) > 0)
       return {
         product_id: r.product_id, kind: r.kind, store_ids: storeIdsOf(r, g.apps),
-        default_price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "", period: listingOfRow(r).period,
+        price_micros: priced ? Number(priced.price_micros) : 0, currency: priced?.currency || "", period: listingOfRow(r).period,
       }
     })
     const text = toUnityConfig(await publicRoute(), g.apps.map((a) => ({ store: storeOf(a).id, app_id: a.app_id })), products)
@@ -119,7 +119,7 @@ export function AppProductsTab({ data, go }: TabProps) {
     <>
       <Section
         title="Products"
-        description="The app's products and their ids in each build's store. The default price is used for revenue when the store does not report one (Google one-time products); the title, description and period are used by Create in store."
+        description="The app's products and their ids in each build's store. Each build has its own price (the App Store often sells higher): revenue uses it when the store does not report one (Google Play, Amazon), Create in store sets it in the store. The title, description and period are used by Create in store."
         actions={
           <>
             {configure && (
@@ -181,7 +181,7 @@ export function AppProductsTab({ data, go }: TabProps) {
                 cell: (r: Row) => {
                   const p = r.by[a.app_id]
                   if (!p) return <Tone tone="warn">missing</Tone>
-                  const price = money(p.default_price_micros, p.currency)
+                  const price = money(p.price_micros, p.currency)
                   const per = r.kind === "subscription" ? perPeriod(p.period) : ""
                   const shown = price === "—" ? <Tone tone="ok">{per ? `yes · per ${per}` : "yes"}</Tone> : <span className="tabular-nums">{price}{per && <span className="text-muted-foreground"> / {per}</span>}</span>
                   if (p.product_id === r.product_id) return shown
@@ -201,8 +201,12 @@ export function AppProductsTab({ data, go }: TabProps) {
       <ProductDialog editing={editing} apps={g.apps} onClose={() => setEditing(null)} onSaved={products.reload} />
       <StoreCreateDialog open={dialog === "create"} apps={g.apps} listed={(app, id) => !!rows.find((r) => r.product_id === id)?.by[app]} onClose={() => setDialog(null)} onStarted={() => { products.reload(); setJobsKey((k) => k + 1) }}
         products={rows.map((r) => {
-          const priced = g.apps.map((a) => r.by[a.app_id]).find((p) => p && Number(p.default_price_micros) > 0)
-          return { product_id: r.product_id, kind: r.kind, price_micros: priced ? Number(priced.default_price_micros) : 0, currency: priced?.currency || "USD", ...listingOfRow(r) }
+          const common = commonPrice(r, g.apps)
+          const prices = Object.fromEntries(g.apps.flatMap((a) => {
+            const p = r.by[a.app_id]
+            return p && Number(p.price_micros) > 0 ? [[a.app_id, { price_micros: Number(p.price_micros), currency: p.currency }]] : []
+          }))
+          return { product_id: r.product_id, kind: r.kind, price_micros: common.price_micros, currency: common.currency || "USD", prices, ...listingOfRow(r) }
         })} />
       {importers.map((a) => (
         <StoreImportDialog key={a.app_id} open={dialog === `import:${a.app_id}`} app={a} others={g.apps.filter((o) => o !== a)} onClose={() => setDialog(null)} onSaved={products.reload} />
@@ -214,10 +218,28 @@ export function AppProductsTab({ data, go }: TabProps) {
   )
 }
 
+/** The price most builds of a product share (the first one on a tie); 0 when none is set. */
+function commonPrice(r: Row, apps: GameApp[]): { price_micros: number; currency: string } {
+  const counts = new Map<string, number>()
+  for (const a of apps) {
+    const p = r.by[a.app_id]
+    if (p && Number(p.price_micros) > 0) {
+      const k = `${Number(p.price_micros)}|${p.currency}`
+      counts.set(k, (counts.get(k) || 0) + 1)
+    }
+  }
+  const best = [...counts.entries()].reduce<[string, number] | null>((b, e) => (!b || e[1] > b[1] ? e : b), null)
+  if (!best) return { price_micros: 0, currency: "" }
+  const [price, currency] = best[0].split("|")
+  return { price_micros: Number(price), currency }
+}
+
+const priceText = (micros?: number | string) => (Number(micros) > 0 ? String(Number(micros) / 1e6) : "")
+
 function ProductDialog({ editing, apps, onClose, onSaved }: { editing: Row | "new" | null; apps: GameApp[]; onClose: () => void; onSaved: () => void }) {
   return (
     <Dialog open={!!editing} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-2xl">
         {editing && <ProductForm key={editing === "new" ? "new" : editing.product_id} row={editing === "new" ? null : editing} apps={apps} onClose={onClose} onSaved={onSaved} />}
       </DialogContent>
     </Dialog>
@@ -225,11 +247,19 @@ function ProductDialog({ editing, apps, onClose, onSaved }: { editing: Row | "ne
 }
 
 function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: GameApp[]; onClose: () => void; onSaved: () => void }) {
-  const some = row ? Object.values(row.by).find(Boolean) : undefined
+  const common = row ? commonPrice(row, apps) : { price_micros: 0, currency: "" }
   const [productId, setProductId] = useState(row?.product_id || "")
   const [kind, setKind] = useState<Kind>(row?.kind || "consumable")
-  const [price, setPrice] = useState(some?.default_price_micros ? String(Number(some.default_price_micros) / 1e6) : "")
-  const [currency, setCurrency] = useState(some?.currency || "USD")
+  const [price, setPrice] = useState(priceText(common.price_micros))
+  const [currency, setCurrency] = useState(common.currency || "USD")
+  /** A build's own price where it differs from the shared one (empty: the shared price). */
+  const [own, setOwn] = useState<Record<string, { price: string; currency: string }>>(() =>
+    Object.fromEntries(apps.map((a) => {
+      const p = row?.by[a.app_id]
+      const differs = p && Number(p.price_micros) > 0 && (Number(p.price_micros) !== common.price_micros || p.currency !== common.currency)
+      return [a.app_id, differs ? { price: priceText(p.price_micros), currency: p.currency } : { price: "", currency: "" }]
+    })))
+  const setOwnOf = (appId: string, patch: Partial<{ price: string; currency: string }>) => setOwn((o) => ({ ...o, [appId]: { ...o[appId], ...patch } }))
   const [listing, setListing] = useState<Listing>(() => (row ? listingOfRow(row) : { title: "", description: "", period: "", apple_group: "" }))
   const setL = (patch: Partial<Listing>) => setListing((l) => ({ ...l, ...patch }))
   const [on, setOn] = useState<Record<string, boolean>>(() => Object.fromEntries(apps.map((a) => [a.app_id, row ? !!row.by[a.app_id] : true])))
@@ -248,9 +278,13 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
     if (removed.length && !confirm(`Remove ${id} from ${removed.map((a) => buildLabel(a)).join(" and ")}?`)) return
     // A build whose store id changed: its old row goes (the catalog id moves to the new one).
     const renamed = apps.filter((a) => on[a.app_id] && row?.by[a.app_id] && row.by[a.app_id]!.product_id !== storeIdOf(a))
+    const priceOf = (a: GameApp) => {
+      const o = own[a.app_id]
+      const p = o?.price.trim() ? o.price : price
+      return { price_micros: Math.round(Number(p || 0) * 1e6), currency: ((o?.price.trim() && o.currency.trim()) || currency).trim().toUpperCase() }
+    }
     const items = apps.filter((a) => on[a.app_id]).map((a) => ({
-      app_id: a.app_id, product_id: storeIdOf(a), catalog_id: id, kind,
-      default_price_micros: Math.round(Number(price || 0) * 1e6), currency: currency.trim().toUpperCase(),
+      app_id: a.app_id, product_id: storeIdOf(a), catalog_id: id, kind, ...priceOf(a),
       // Sent even when empty: clearing a field here clears it on every build.
       title: listing.title.trim(), description: listing.description.trim(),
       ...(kind === "subscription" ? { period: listing.period, apple_group: listing.apple_group.trim() } : {}),
@@ -282,23 +316,35 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
               <SelectContent>{KINDS.map((k) => <SelectItem key={k} value={k}>{k}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
-          <Field label="Default price"><Input type="number" step="0.01" min="0" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
-          <Field label="Currency (ISO)"><Input value={currency} onChange={(e) => setCurrency(e.target.value)} /></Field>
+          <Field label="Price" hint="For every build without its own price below."><Input type="number" step="0.01" min="0" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
+          <Field label="Currency (ISO)" hint="USD, EUR, …"><Input value={currency} maxLength={3} onChange={(e) => setCurrency(e.target.value)} /></Field>
           <div className="space-y-2 border-t pt-4 sm:col-span-2">
             <div>
-              <p className="text-sm font-medium">Builds and store ids</p>
-              <p className="text-xs text-muted-foreground">Leave the store id empty when the store uses the product id.</p>
+              <p className="text-sm font-medium">Builds</p>
+              <p className="text-xs text-muted-foreground">
+                Empty fields use the product id and the price above. Give a build its own price when its store sells higher, e.g. the App Store.
+              </p>
             </div>
-            {apps.map((a) => (
-              <div key={a.app_id} className="flex items-center gap-3">
-                <div className="flex w-36 shrink-0 items-center gap-2">
-                  <Checkbox id={`on-${a.app_id}`} checked={!!on[a.app_id]} onCheckedChange={(v) => setOn((o) => ({ ...o, [a.app_id]: v === true }))} />
-                  <Label htmlFor={`on-${a.app_id}`} className="min-w-0 truncate font-normal">{buildLabel(a)}</Label>
-                </div>
-                <Input className="h-8 min-w-0 font-mono text-xs" disabled={!on[a.app_id]} value={storeIds[a.app_id] || ""} placeholder={productId.trim() || "same as the product id"}
-                  onChange={(e) => setStoreIds((s) => ({ ...s, [a.app_id]: e.target.value }))} aria-label={`Store id in ${buildLabel(a)}`} />
-              </div>
-            ))}
+            <div className="grid grid-cols-[9rem_minmax(0,1fr)_6rem_4.5rem] items-center gap-x-3 gap-y-2">
+              <span />
+              <span className="text-xs text-muted-foreground">Store id</span>
+              <span className="text-xs text-muted-foreground">Own price</span>
+              <span className="text-xs text-muted-foreground">Currency</span>
+              {apps.map((a) => (
+                <Fragment key={a.app_id}>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Checkbox id={`on-${a.app_id}`} checked={!!on[a.app_id]} onCheckedChange={(v) => setOn((o) => ({ ...o, [a.app_id]: v === true }))} />
+                    <Label htmlFor={`on-${a.app_id}`} className="min-w-0 truncate font-normal">{buildLabel(a)}</Label>
+                  </div>
+                  <Input className="h-8 min-w-0 font-mono text-xs" disabled={!on[a.app_id]} value={storeIds[a.app_id] || ""} placeholder={productId.trim() || "same as the product id"}
+                    onChange={(e) => setStoreIds((s) => ({ ...s, [a.app_id]: e.target.value }))} aria-label={`Store id in ${buildLabel(a)}`} />
+                  <Input className="h-8 tabular-nums" type="number" step="0.01" min="0" disabled={!on[a.app_id]} value={own[a.app_id]?.price || ""} placeholder={price || "—"}
+                    onChange={(e) => setOwnOf(a.app_id, { price: e.target.value })} aria-label={`Price in ${buildLabel(a)}`} />
+                  <Input className="h-8" maxLength={3} disabled={!on[a.app_id] || !own[a.app_id]?.price.trim()} value={own[a.app_id]?.currency || ""} placeholder={currency || "USD"}
+                    onChange={(e) => setOwnOf(a.app_id, { currency: e.target.value })} aria-label={`Currency in ${buildLabel(a)}`} />
+                </Fragment>
+              ))}
+            </div>
           </div>
           <div className="space-y-3 border-t pt-4 sm:col-span-2">
             <div>
@@ -393,7 +439,7 @@ function StoreImportDialog({ open, app, others, onClose, onSaved }: { open: bool
 
 function JsonDialog({ open, appId, onClose, onSaved }: { open: boolean; appId: string; onClose: () => void; onSaved: () => void }) {
   const [text, setText] = useState<string | null>(null)
-  const value = text ?? `[\n  {"app_id": "${appId}", "product_id": "gems_100", "kind": "consumable", "default_price_micros": 990000, "currency": "USD"}\n]`
+  const value = text ?? `[\n  {"app_id": "${appId}", "product_id": "gems_100", "kind": "consumable", "price_micros": 990000, "currency": "USD"}\n]`
   const save = async () => {
     try { JSON.parse(value) } catch (e) { return toast.error("Invalid JSON: " + errorText(e)) }
     const ok = await tryAct(() => call("admin_upsert_products", value), "Imported")
@@ -405,7 +451,7 @@ function JsonDialog({ open, appId, onClose, onSaved }: { open: boolean; appId: s
         <DialogHeader>
           <DialogTitle>Import products as JSON</DialogTitle>
           <DialogDescription>
-            An array of <code>{"{app_id, product_id, kind, default_price_micros, currency}"}</code> objects, optionally with <code>title</code>, <code>description</code>,{" "}
+            An array of <code>{"{app_id, product_id, kind, price_micros, currency}"}</code> objects, optionally with <code>title</code>, <code>description</code>,{" "}
             <code>period</code> (<code>P1M</code>) and <code>apple_group</code>; existing products are updated, fields left out keep their values.
           </DialogDescription>
         </DialogHeader>
@@ -453,10 +499,10 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
         const have = apps.map((a) => find(a, u.product_id, productIdIn(u, storeOf(a).id)))
         const some = have.find(Boolean)
         const status = !some ? "new" : have.every((p) => p && p.kind === u.kind) ? "same" : "changed"
-        const serverPrice = some && Number(some.default_price_micros) > 0
+        const serverPrice = some && Number(some.price_micros) > 0
         return {
           product_id: u.product_id, kind: u.kind,
-          price_micros: serverPrice ? Number(some.default_price_micros) : u.price_micros, currency: serverPrice ? some.currency : u.currency,
+          price_micros: serverPrice ? Number(some.price_micros) : u.price_micros, currency: serverPrice ? some.currency : u.currency,
           billing_period_days: 0, period: u.period, status, local_kind: some?.kind || "",
         }
       })
@@ -475,9 +521,9 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
       return {
         app_id: a.app_id, product_id, catalog_id: p.product_id, kind: p.kind,
         // The server's price wins; the Unity fallback price is used where there is none.
-        ...(had && Number(had.default_price_micros) > 0
-          ? { default_price_micros: Number(had.default_price_micros), currency: had.currency }
-          : { default_price_micros: p.default_price_micros, currency: p.currency }),
+        ...(had && Number(had.price_micros) > 0
+          ? { price_micros: Number(had.price_micros), currency: had.currency }
+          : { price_micros: p.price_micros, currency: p.currency }),
         // Same for the period: the Unity fallback period only where the server has none.
         ...(p.period && !had?.period ? { period: p.period } : {}),
       }

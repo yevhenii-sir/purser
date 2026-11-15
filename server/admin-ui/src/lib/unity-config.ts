@@ -133,7 +133,7 @@ export function productIdIn(p: { product_id: string; store_ids?: Record<string, 
 export function toUnityConfig(
   base: string,
   builds: { store: string; app_id: string }[],
-  products: { product_id: string; kind: Kind; store_ids?: Record<string, string>; default_price_micros?: number; currency?: string; period?: string }[],
+  products: { product_id: string; kind: Kind; store_ids?: Record<string, string>; price_micros?: number; currency?: string; period?: string }[],
 ): string {
   const stores = [...new Set(builds.map((b) => b.store))]
   return JSON.stringify(
@@ -145,7 +145,7 @@ export function toUnityConfig(
         .map((p) => {
           const id = p.product_id.trim()
           const storeIds = Object.fromEntries(stores.map((s) => [s, productIdIn(p, s).trim()]).filter(([, v]) => v && v !== id))
-          const price = Number(p.default_price_micros || 0) > 0 && p.currency ? { price: Number(p.default_price_micros) / 1e6, currency: p.currency } : {}
+          const price = Number(p.price_micros || 0) > 0 && p.currency ? { price: Number(p.price_micros) / 1e6, currency: p.currency } : {}
           const period = p.kind === "subscription" && p.period ? { period: p.period } : {}
           return { id, type: UNITY_TYPE[p.kind], ...(Object.keys(storeIds).length ? { storeIds } : {}), ...price, ...period }
         }),

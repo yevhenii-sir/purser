@@ -95,6 +95,21 @@ pub const LISTING_DESCRIPTION_MAX: usize = 200;
 /// Longest Apple subscription group name.
 pub const LISTING_GROUP_MAX: usize = 64;
 
+/// A build's product price: not negative, and a set price needs an ISO 4217 currency (`USD`).
+pub fn check_price(price_micros: i64, currency: &str) -> Result<(), String> {
+    if price_micros < 0 {
+        return Err("the price cannot be negative".into());
+    }
+    let iso = currency.len() == 3 && currency.bytes().all(|b| b.is_ascii_uppercase());
+    if price_micros > 0 && !iso {
+        return Err(format!("a price needs a 3-letter currency code, not '{currency}'"));
+    }
+    if !currency.is_empty() && !iso {
+        return Err(format!("'{currency}' is not a 3-letter currency code"));
+    }
+    Ok(())
+}
+
 /// Checks the store listing fields of a product row (title, description, subscription period and
 /// Apple subscription group, all optional: they prefill Create in store).
 pub fn check_listing(title: &str, description: &str, period: &str, apple_group: &str) -> Result<(), String> {
@@ -414,7 +429,7 @@ pub mod apple {
 pub struct LocalProduct {
     pub product_id: String,
     pub kind: String,
-    pub default_price_micros: i64,
+    pub price_micros: i64,
     pub currency: String,
 }
 
@@ -444,10 +459,10 @@ pub fn diff(remote: &[RemoteProduct], local: &[LocalProduct], kinds_known: bool)
                 product.kind = l.kind.clone();
             }
             let same = product.kind == l.kind
-                && (r.price_micros == 0 || (r.price_micros == l.default_price_micros && r.currency == l.currency));
+                && (r.price_micros == 0 || (r.price_micros == l.price_micros && r.currency == l.currency));
             if r.price_micros == 0 {
                 // The store did not say: saving the row keeps the configured price.
-                product.price_micros = l.default_price_micros;
+                product.price_micros = l.price_micros;
                 product.currency = l.currency.clone();
             }
             DiffRow { product, status: if same { "same" } else { "changed" }.into(), local_kind: l.kind.clone() }
@@ -535,9 +550,9 @@ mod tests {
         let (mut remote, _) = parse_one_time_products(ONE_TIME).unwrap();
         remote.extend(parse_subscriptions(SUBS).unwrap().0);
         let local = vec![
-            LocalProduct { product_id: "gems_100".into(), kind: "consumable".into(), default_price_micros: 990_000, currency: "USD".into() },
-            LocalProduct { product_id: "no_ads".into(), kind: "non_consumable".into(), default_price_micros: 0, currency: String::new() },
-            LocalProduct { product_id: "old_pack".into(), kind: "consumable".into(), default_price_micros: 0, currency: String::new() },
+            LocalProduct { product_id: "gems_100".into(), kind: "consumable".into(), price_micros: 990_000, currency: "USD".into() },
+            LocalProduct { product_id: "no_ads".into(), kind: "non_consumable".into(), price_micros: 0, currency: String::new() },
+            LocalProduct { product_id: "old_pack".into(), kind: "consumable".into(), price_micros: 0, currency: String::new() },
         ];
         let (rows, missing) = diff(&remote, &local, false);
         let status = |id: &str| rows.iter().find(|r| r.product.product_id == id).unwrap();
@@ -616,9 +631,19 @@ mod tests {
     }
 
     #[test]
+    fn prices_need_a_currency() {
+        assert!(check_price(0, "").is_ok());
+        assert!(check_price(4_990_000, "USD").is_ok());
+        assert!(check_price(0, "EUR").is_ok());
+        assert!(check_price(-1, "USD").unwrap_err().contains("negative"));
+        assert!(check_price(990_000, "").unwrap_err().contains("currency"));
+        assert!(check_price(990_000, "usd").is_err() && check_price(0, "EURO").is_err());
+    }
+
+    #[test]
     fn diff_takes_the_kind_from_a_store_that_knows_it() {
         let remote = vec![RemoteProduct { product_id: "no_ads".into(), kind: "non_consumable".into(), price_micros: 0, currency: String::new(), billing_period_days: 0 }];
-        let local = vec![LocalProduct { product_id: "no_ads".into(), kind: "consumable".into(), default_price_micros: 0, currency: String::new() }];
+        let local = vec![LocalProduct { product_id: "no_ads".into(), kind: "consumable".into(), price_micros: 0, currency: String::new() }];
         assert_eq!(diff(&remote, &local, false).0[0].status, "same");
         let (rows, _) = diff(&remote, &local, true);
         assert_eq!((rows[0].status.as_str(), rows[0].product.kind.as_str()), ("changed", "non_consumable"));

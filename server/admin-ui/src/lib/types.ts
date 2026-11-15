@@ -33,7 +33,7 @@ export interface Product {
   app_id: string
   product_id: string
   kind: Kind
-  default_price_micros: number
+  price_micros: number
   currency: string
   /** Store listing used by Create in store (absent in rows read before the columns existed). */
   title?: string
@@ -232,7 +232,9 @@ export interface Overview {
   /** Rows the worker still has to process, soonest retry first (at most 200). */
   pending: Pick<Purchase, "id" | "app_id" | "product_id" | "user_id" | "status" | "attempts" | "next_attempt_at_micros" | "last_error" | "updated_at_micros">[]
   pending_total: number
+  /** Apps (`game_key` groups) and their builds. */
   apps: number
+  builds?: number
   products: number
   outbox: number
 }

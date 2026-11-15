@@ -322,6 +322,7 @@ pub fn check_tx(tx: &ReducerContext) {
 
     // Resolutions of event rules.
     let active: Vec<AlertState> = tx.db.alert_state().iter().filter(|s| s.active).collect();
+    let mut stuck: Option<std::collections::BTreeSet<String>> = None;
     for s in &active {
         if !rules.enabled(&s.rule) {
             // Rule switched off: forget the problem quietly.
@@ -333,7 +334,7 @@ pub fn check_tx(tx: &ReducerContext) {
         }
         let health = || crate::health::get(tx, &s.app_id);
         let gone = match s.rule.as_str() {
-            rule::DELIVERY_FAILING => !has_stuck_purchases(tx, &s.app_id, rules.delivery_attempts),
+            rule::DELIVERY_FAILING => !stuck.get_or_insert_with(|| builds_with_stuck_purchases(tx, rules.delivery_attempts)).contains(&s.app_id),
             rule::STORE_AUTH => health().last_verify_ok_at_micros > s.last_at_micros,
             rule::NOTIFICATION_REJECTED => store_health::get(tx, &s.app_id).last_at_micros > s.last_at_micros,
             _ => false,
@@ -417,12 +418,16 @@ fn last_fx_success(tx: &ReducerContext) -> i64 {
 }
 
 /// Purchases of the app still pending after `attempts` failed attempts.
-fn has_stuck_purchases(tx: &ReducerContext, app_id: &str, attempts: u32) -> bool {
+/// Builds with rows the worker keeps retrying: one pass over the pending rows per check, however
+/// many alerts are open.
+fn builds_with_stuck_purchases(tx: &ReducerContext, attempts: u32) -> std::collections::BTreeSet<String> {
     tx.db
         .purchase()
         .next_attempt_at_micros()
         .filter(1i64..=i64::MAX)
-        .any(|p| p.app_id == app_id && p.attempts >= attempts)
+        .filter(|p| p.attempts >= attempts)
+        .map(|p| p.app_id)
+        .collect()
 }
 
 /// Keeps the newest `LOG_KEEP` messages (called when one is added).
@@ -648,10 +653,26 @@ pub fn admin_test_alert(ctx: &mut ProcedureContext, channel: String) -> String {
 pub fn admin_dismiss_alert(ctx: &ReducerContext, key: String) -> Result<(), String> {
     let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_dismiss_alert", &key, "");
-    if let Some(mut s) = ctx.db.alert_state().key().find(&key) {
+    dismiss(ctx, &key);
+    Ok(())
+}
+
+/// Dismisses several open problems at once; `keys_json` is a JSON array of `alert_state` keys.
+#[spacetimedb::reducer]
+pub fn admin_dismiss_alerts(ctx: &ReducerContext, keys_json: String) -> Result<(), String> {
+    let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
+    let keys: Vec<String> = serde_json::from_str(&keys_json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
+    crate::access::audit(ctx, &who, "admin_dismiss_alerts", "", &format!("{} problem(s)", keys.len()));
+    for key in &keys {
+        dismiss(ctx, key);
+    }
+    Ok(())
+}
+
+fn dismiss(ctx: &ReducerContext, key: &str) {
+    if let Some(mut s) = ctx.db.alert_state().key().find(&key.to_string()) {
         s.active = false;
         s.suppressed = 0;
         ctx.db.alert_state().key().update(s);
     }
-    Ok(())
 }

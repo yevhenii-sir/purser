@@ -9,6 +9,19 @@
   - **Create webhook in Stripe** (`admin_setup_stripe_webhook`): the build's webhook endpoint with every event Purser handles, its signing secret stored as `stripe_webhook_secret`; an existing endpoint gets the missing events. The setup check reports the endpoint (`stripe_webhook_endpoint`).
   - **Set up with Google Cloud** (`admin_setup_google`): with a one-time access token (`gcloud auth print-access-token`) the server enables the APIs, creates the service account and its key (stored, never shown), the RTDN topic with Google Play's publisher grant, a `google_rtdn_secret` and a push subscription per build. The token is not stored; steps already done are skipped. Inviting the service account in Play Console and naming the topic there stay manual (no API).
 - `server/setup_google.py`: the Google Cloud setup (`admin_setup_google`) from the terminal, with the access token of your own `gcloud` login (`--dry-run`, `--new-key`, `--rotate-rtdn-secret`).
+- Each build can have its own product price (the App Store often sells higher): the product dialog has a price for all builds and an optional price per build; Create in store uses each build's price. `admin_upsert_products` checks prices (not negative) and currencies (3 letters, normalized to upper case).
+- `admin_select(query_json)` replaces `admin_read` for admins who are not the owner: one call for many values (`"where": {"column", "equals": [..]}`), only the asked columns, looked up through the tables' indexes.
+- `admin_apps_summary`: one small row per build for the Apps page instead of three whole tables; `admin_dismiss_alerts` dismisses several open problems at once.
+- Admin page for many apps: a searchable app picker (Purchases filter, Manual grant, Entitlements, Revenue), revenue by app with names, paging and CSV, paged Apps cards, the secrets list with search and paging, the audit log by period, open alert problems with an app filter and "Dismiss all", a command menu that stays fast with hundreds of apps, and the app list refreshed when the window gets focus.
+
+### Changed
+
+- **Breaking: publish with `--delete-data`.** `product.default_price_micros` is now `price_micros` (the build's price; also in `admin_upsert_products`, `seed.py` products and the MCP server), and the module gains tables and indexes. Nobody runs Purser in production yet, so the schema was changed instead of keeping old columns.
+- The Overview reads ledger counts from the new `purchase_count` table (kept by every ledger write) instead of counting the ledger, and shows apps and builds.
+- Revenue reports for one app or game read only its builds, through new `(app_id, day)` indexes of the daily tables and an `(app_id, created_at)` index of the ledger; the purchase list filtered by app uses `(app_id, updated_at)`.
+- The worker serves builds fairly: at most 5 rows of one build per run, a build whose call ran into the timeout waits for the next run, and purchases use at most 25 s of the 40 s run so subscription re-checks and Steam keep their turn. Steam refund reports are polled oldest first, up to 10 builds per run.
+- Changing a secret drops only the tokens built from it (a Google key: that scope's OAuth token; an App Store key: its JWTs); other secrets and the cached SNS certificates stay.
+- Deleting a build also deletes its products, integrations, checks, health and Steam rows (the ledger and revenue stay).
 
 ## 0.6.0 - 2026-11-12
 

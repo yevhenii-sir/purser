@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ErrorBox, Loading, Mono, PageHeader, Section } from "@/components/common"
 import { RichTable } from "@/components/rich-table"
-import { select } from "@/lib/api"
+import { proc } from "@/lib/api"
 import { useAsync } from "@/lib/hooks"
 
 interface AuditRow {
@@ -18,10 +18,16 @@ interface AuditRow {
 
 const when = (micros: number) => new Date(Number(micros) / 1000).toLocaleString()
 const ALL = "__all__"
+const PERIODS = [["1", "Last 24 hours"], ["7", "Last 7 days"], ["30", "Last 30 days"], ["180", "Last 180 days"]] as const
 
 /** Who changed what: one row per admin action (kept 180 days). */
 export function AuditPage() {
-  const { data, error, loading } = useAsync(() => select<AuditRow>({ table: "admin_audit" }))
+  const [days, setDays] = useState("7")
+  // The period is read through the `at_micros` index on the server; the filters below run here.
+  const { data, error, loading } = useAsync(
+    () => proc<AuditRow[]>("admin_select", JSON.stringify({ table: "admin_audit", where: { column: "since", equals: String((Date.now() - Number(days) * 86_400_000) * 1000) } })),
+    [days],
+  )
   const [who, setWho] = useState(ALL)
   const [text, setText] = useState("")
   const rows = data || []
@@ -41,9 +47,13 @@ export function AuditPage() {
             rowKey={(r) => String(r.id)}
             noun="actions"
             initialSort={{ id: "When", desc: true }}
-            empty="No admin actions recorded yet."
+            empty="No admin actions in this period."
             toolbar={
               <div className="flex flex-wrap gap-2">
+                <Select value={days} onValueChange={setDays}>
+                  <SelectTrigger className="h-8 w-40"><SelectValue /></SelectTrigger>
+                  <SelectContent>{PERIODS.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent>
+                </Select>
                 <Select value={who} onValueChange={setWho}>
                   <SelectTrigger className="h-8 w-44"><SelectValue /></SelectTrigger>
                   <SelectContent>

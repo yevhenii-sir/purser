@@ -241,7 +241,7 @@ fn finish(tx: &TxContext, job: &StoreCreateJob, input: &CreateInput, state: &Job
     let price = if state.price_point_micros > 0 { state.price_point_micros } else { input.price_micros };
     // The listing that was used, so the next Create in store starts from it.
     let p = Product {
-        default_price_micros: price,
+        price_micros: price,
         currency: input.currency.clone(),
         title: input.title.trim().to_string(),
         description: input.description.trim().to_string(),

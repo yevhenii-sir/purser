@@ -88,7 +88,7 @@ pub fn list_store_products(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, St
             .map(|p| LocalProduct {
                 product_id: p.product_id,
                 kind: p.kind,
-                default_price_micros: p.default_price_micros,
+                price_micros: p.price_micros,
                 currency: p.currency,
             })
             .collect();

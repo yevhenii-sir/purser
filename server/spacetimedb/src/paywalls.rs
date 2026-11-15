@@ -87,6 +87,7 @@ pub struct PaywallDaily {
     pub key: String,
     #[index(btree)]
     pub placement_key: String,
+    #[index(btree)]
     pub day: i32,
     pub test_id: String,
     pub variant_id: String,

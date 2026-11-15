@@ -198,7 +198,7 @@ Every product of the build is sold as one Steam item (quantity 1):
 
 - **Item id**: Steam needs a 32-bit number per item. By default it is a stable hash of the product id; set `item_id` to use your own (e.g. the ids your Steam store packages use).
 - **Description**: shown in the Steam overlay, up to 128 characters; by default the product id. Set a readable one with `description`.
-- **Price**: Steam charges in the player's wallet currency, reported by `GetUserInfo` at checkout. The server uses the item's price in that currency if you set one (`prices`, in hundredths of the currency unit for every currency: `{"USD": 199, "EUR": 179, "JPY": 30000}`); otherwise the product's catalog price (`default_price_micros` + `currency`), which Steam converts at the current rate and shows converted. Some currencies only accept whole units (Steam rejects e.g. a UAH price of 10.50): give those an explicit price.
+- **Price**: Steam charges in the player's wallet currency, reported by `GetUserInfo` at checkout. The server uses the item's price in that currency if you set one (`prices`, in hundredths of the currency unit for every currency: `{"USD": 199, "EUR": 179, "JPY": 30000}`); otherwise the product's catalog price (`price_micros` + `currency`), which Steam converts at the current rate and shows converted. Some currencies only accept whole units (Steam rejects e.g. a UAH price of 10.50): give those an explicit price.
 
 Set them with `admin_upsert_steam_items` (or `steam.json` for `seed.py`):
 

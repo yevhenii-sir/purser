@@ -179,7 +179,7 @@ def t_list_apps(db, args):
     for p in products:
         by_app.setdefault(p["app_id"], []).append({
             "product_id": p["product_id"], "kind": p["kind"],
-            "default_price": p["default_price_micros"] / 1_000_000 if p["default_price_micros"] else None,
+            "price": p["price_micros"] / 1_000_000 if p["price_micros"] else None,
             "currency": p["currency"] or None,
         })
     games = {}

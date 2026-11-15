@@ -49,7 +49,7 @@ const REBUILD_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 /// The rebuild waits until no purchases were imported for this long.
 const IMPORT_QUIET_MICROS: i64 = 5 * 60 * 1_000_000;
 
-#[spacetimedb::table(accessor = revenue_daily)]
+#[spacetimedb::table(accessor = revenue_daily, index(accessor = app_day, btree(columns = [app_id, day])))]
 pub struct RevenueDaily {
     /// `{day}|{app_id}|{product_id}|{environment}|{currency}`
     #[primary_key]
@@ -84,7 +84,7 @@ pub struct RevenueDaily {
 
 /// The same aggregates per billing country instead of product (`country`: ISO 3166-1 alpha-2,
 /// empty when the store did not report it).
-#[spacetimedb::table(accessor = revenue_country_daily)]
+#[spacetimedb::table(accessor = revenue_country_daily, index(accessor = app_day, btree(columns = [app_id, day])))]
 pub struct RevenueCountryDaily {
     /// `{day}|{app_id}|{country}|{environment}|{currency}`
     #[primary_key]
@@ -110,7 +110,7 @@ pub struct RevenueCountryDaily {
 }
 
 /// Active subscriptions per day (taken once a day: this history cannot be rebuilt later).
-#[spacetimedb::table(accessor = subscription_daily)]
+#[spacetimedb::table(accessor = subscription_daily, index(accessor = app_day, btree(columns = [app_id, day])))]
 pub struct SubscriptionDaily {
     #[primary_key]
     pub key: String,
@@ -905,11 +905,11 @@ fn month_start(month: i32) -> i32 {
 /// - the earlier periods of the subscriptions whose trial started in the range.
 ///
 /// The Apple Ads campaign is looked up (once per user) only for purchases in the range.
-fn ledger_rows(tx: &ReducerContext, keep: &dyn Fn(&str) -> bool, from: i32, to: i32) -> Vec<LedgerRow> {
+fn ledger_rows(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32) -> Vec<LedgerRow> {
     let window_start = month_start(rv::month_index(from));
     let window_end = month_start(rv::month_index(to) + 1) - 1;
     let start_micros = window_start as i64 * MICROS_PER_DAY;
-    let wanted = |p: &Purchase| p.store != store::MANUAL && keep(&p.app_id);
+    let wanted = |p: &Purchase| p.store != store::MANUAL && (apps.is_empty() || apps.contains(&p.app_id));
 
     let mut campaigns: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut row_of = |p: Purchase| {
@@ -942,7 +942,12 @@ fn ledger_rows(tx: &ReducerContext, keep: &dyn Fn(&str) -> bool, from: i32, to: 
         }
     };
 
-    let recent: Vec<Purchase> = tx.db.purchase().created_at_micros().filter(start_micros..).filter(|p| wanted(p)).collect();
+    // Selected builds through `(app_id, created_at)`; the whole server through `created_at`.
+    let recent: Vec<Purchase> = if apps.is_empty() {
+        tx.db.purchase().created_at_micros().filter(start_micros..).filter(|p| wanted(p)).collect()
+    } else {
+        apps.iter().flat_map(|a| tx.db.purchase().app_created().filter((a.as_str(), start_micros..)).filter(|p| wanted(p)).collect::<Vec<_>>()).collect()
+    };
     let mut payers: BTreeSet<String> = BTreeSet::new();
     let mut trial_chains: BTreeSet<String> = BTreeSet::new();
     for p in &recent {
@@ -1002,8 +1007,8 @@ fn summary_of(tx: &ReducerContext, mut report: serde_json::Value, paywall_views:
 fn paywall_views(tx: &ReducerContext, games: Option<&BTreeSet<String>>, from: i32, to: i32) -> u64 {
     tx.db
         .paywall_daily()
-        .iter()
-        .filter(|r| r.day >= from && r.day <= to)
+        .day()
+        .filter(from..=to)
         .filter(|r| games.map_or(true, |g| r.placement_key.split_once('/').is_some_and(|(game, _)| g.contains(game))))
         .map(|r| r.views)
         .sum()
@@ -1030,14 +1035,16 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
                 return Err(format!("no apps with game_key {}", q.game_key));
             }
         }
-        let keep = |app: &str| apps.is_empty() || apps.iter().any(|a| a == app);
-
-        let rows: Vec<DayRow> = tx
-            .db
-            .revenue_daily()
-            .day()
-            .filter(from..=to)
-            .filter(|r| keep(&r.app_id))
+        let apps: BTreeSet<String> = apps.into_iter().collect();
+        let keep = |app: &str| apps.is_empty() || apps.contains(app);
+        // A filter reads each build through its `(app_id, day)` index, the whole server by `day`.
+        let daily: Vec<RevenueDaily> = if apps.is_empty() {
+            tx.db.revenue_daily().day().filter(from..=to).collect()
+        } else {
+            apps.iter().flat_map(|a| tx.db.revenue_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
+        };
+        let rows: Vec<DayRow> = daily
+            .into_iter()
             .map(|r| DayRow {
                 day: r.day,
                 delta: delta_of!(r),
@@ -1050,12 +1057,13 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
         let table = load_fx(tx, from, to);
         let commission = commission(tx);
         let query = Query { from, to, include_sandbox: q.include_sandbox };
-        let subs: Vec<SubRow> = tx
-            .db
-            .subscription_daily()
-            .day()
-            .filter(from..=to)
-            .filter(|s| keep(&s.app_id))
+        let sub_rows: Vec<SubscriptionDaily> = if apps.is_empty() {
+            tx.db.subscription_daily().day().filter(from..=to).collect()
+        } else {
+            apps.iter().flat_map(|a| tx.db.subscription_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
+        };
+        let subs: Vec<SubRow> = sub_rows
+            .into_iter()
             .map(|s| SubRow {
                 day: s.day,
                 app_id: s.app_id,
@@ -1087,12 +1095,13 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
             return Ok(summary_of(tx, report, paywall_views(tx, games.as_ref(), from, to)));
         }
 
-        let countries: Vec<CountryRow> = tx
-            .db
-            .revenue_country_daily()
-            .day()
-            .filter(from..=to)
-            .filter(|r| keep(&r.app_id))
+        let country_rows: Vec<RevenueCountryDaily> = if apps.is_empty() {
+            tx.db.revenue_country_daily().day().filter(from..=to).collect()
+        } else {
+            apps.iter().flat_map(|a| tx.db.revenue_country_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
+        };
+        let countries: Vec<CountryRow> = country_rows
+            .into_iter()
             .map(|r| CountryRow {
                 day: r.day,
                 delta: delta_of!(r),
@@ -1122,7 +1131,7 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
 
         // Cohorts reach up to today: they need the rates after `to` too.
         let ledger_fx = if to >= today { table } else { load_fx(tx, from, today) };
-        let ledger = rv::ledger_metrics(&ledger_rows(tx, &keep, from, to), &ledger_fx, &query, crate::ctx::tx_now_micros(tx));
+        let ledger = rv::ledger_metrics(&ledger_rows(tx, &apps, from, to), &ledger_fx, &query, crate::ctx::tx_now_micros(tx));
         if let (Some(r), Some(l)) = (report.as_object_mut(), ledger.as_object()) {
             r.extend(l.clone());
         }

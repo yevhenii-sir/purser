@@ -312,7 +312,7 @@ def main():
             if st == "google":
                 srv.call("admin_set_credential", app, "google_rtdn_secret", "%032x" % rnd.getrandbits(128))
             srv.call("admin_upsert_products", json.dumps([
-                {"app_id": app, "product_id": store_pid(st, p), "catalog_id": p, "kind": k, "default_price_micros": int(usd * 1e6), "currency": "USD",
+                {"app_id": app, "product_id": store_pid(st, p), "catalog_id": p, "kind": k, "price_micros": int(usd * 1e6), "currency": "USD",
                  **LISTING.get(p, {})}
                 for p, k, usd, _ in d["products"]]))
     for app in ("com.example.galaxyminer", "com.example.galaxyminer.ios"):

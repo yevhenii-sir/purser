@@ -637,9 +637,9 @@ fn product_listing_fields_are_kept_by_upserts_without_them() {
     assert_eq!((p.title.as_str(), p.description.as_str(), p.period.as_str(), p.apple_group.as_str()), ("VIP", "All levels", "P1M", "Premium"));
 
     // A caller that does not know the fields (Unity config import, seed.py) keeps them.
-    upsert(json!({ "app_id": APP, "product_id": "vip", "kind": "subscription", "default_price_micros": 4_990_000, "currency": "USD" })).unwrap();
+    upsert(json!({ "app_id": APP, "product_id": "vip", "kind": "subscription", "price_micros": 4_990_000, "currency": "USD" })).unwrap();
     let p = row();
-    assert_eq!((p.title.as_str(), p.period.as_str(), p.default_price_micros), ("VIP", "P1M", 4_990_000));
+    assert_eq!((p.title.as_str(), p.period.as_str(), p.price_micros), ("VIP", "P1M", 4_990_000));
 
     // An empty value clears one; a bad period is refused.
     upsert(json!({ "app_id": APP, "product_id": "vip", "kind": "subscription", "description": "" })).unwrap();
@@ -651,6 +651,27 @@ fn product_listing_fields_are_kept_by_upserts_without_them() {
     upsert(json!({ "app_id": APP, "product_id": "vip", "kind": "non_consumable", "period": "P1M" })).unwrap();
     let p = row();
     assert_eq!((p.title.as_str(), p.period.as_str(), p.apple_group.as_str()), ("VIP", "", ""));
+}
+
+#[test]
+fn each_build_keeps_its_own_price() {
+    let w = apple_offer_world(true);
+    w.as_admin(false);
+    let upsert = |p: Value| w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_products(ctx, p.to_string()));
+    let price = |app: &str| w.read(|tx| tx.db.product().key().find(crate::product_key(app, "gems")).map(|p| (p.price_micros, p.currency))).unwrap();
+    upsert(json!([
+        { "app_id": APP, "product_id": "gems", "kind": "consumable", "price_micros": 990_000, "currency": "usd" },
+        { "app_id": IOS_APP, "product_id": "gems", "kind": "consumable", "price_micros": 1_290_000, "currency": "EUR" },
+    ]))
+    .unwrap();
+    assert_eq!(price(APP), (990_000, "USD".to_string()), "the currency is normalized");
+    assert_eq!(price(IOS_APP), (1_290_000, "EUR".to_string()));
+
+    let bad = |p: i64, c: &str| upsert(json!({ "app_id": APP, "product_id": "gems", "kind": "consumable", "price_micros": p, "currency": c })).unwrap_err();
+    assert!(bad(-1, "USD").contains("negative"));
+    assert!(bad(990_000, "").contains("currency"));
+    assert!(bad(990_000, "DOLLAR").contains("currency"));
+    assert_eq!(price(APP), (990_000, "USD".to_string()), "a refused upsert changes nothing");
 }
 
 #[test]
@@ -978,7 +999,7 @@ fn price_products(w: &World, currency: &str) {
     w.write(|tx| {
         for id in ["gems", "no_ads"] {
             let mut p = tx.db.product().key().find(crate::product_key(APP, id)).unwrap();
-            p.default_price_micros = 990_000;
+            p.price_micros = 990_000;
             p.currency = currency.into();
             tx.db.product().key().update(p);
         }
@@ -1129,6 +1150,50 @@ fn currencies_without_a_rate_are_reported_until_overridden() {
 }
 
 #[test]
+fn the_apps_summary_has_one_row_per_build() {
+    let w = apple_offer_world(true);
+    w.as_admin(false);
+    w.doctor(false).unwrap();
+    let rows = w.read(|tx| crate::admin_views::apps_summary(tx));
+    let row = |id: &str| rows.as_array().unwrap().iter().find(|r| r["app_id"] == id).cloned().unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 2);
+    assert!(row(APP)["summary"].is_string() && row(APP)["checked_at_micros"].as_i64().unwrap() > 0);
+    assert_eq!(row(IOS_APP)["summary"], "", "not checked");
+    let mut ids: Vec<String> = serde_json::from_value(row(IOS_APP)["catalog_ids"].clone()).unwrap();
+    ids.sort();
+    assert_eq!(ids, ["gems", "premium"]);
+}
+
+#[test]
+fn a_revenue_report_of_one_app_reads_only_its_builds() {
+    let w = World::new();
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    // Another app with its own aggregates on the same day.
+    w.write(|tx| {
+        use crate::revenue::revenue_daily;
+        let mine = tx.db.revenue_daily().iter().next().unwrap();
+        let mut other = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        other.app_id = "com.other.game".into();
+        other.game_key = "other".into();
+        tx.db.game_app().insert(other);
+        tx.db.revenue_daily().insert(crate::revenue::RevenueDaily {
+            key: mine.key.replace(APP, "com.other.game"),
+            app_id: "com.other.game".into(),
+            gross_micros: 5_000_000,
+            ..mine
+        });
+    });
+    w.as_admin(false);
+    let gross = |q: Value| stats(&w, q)["totals"]["gross_usd_micros"].as_i64().unwrap();
+    assert_eq!(gross(json!({})), 5_990_000);
+    assert_eq!(gross(json!({ "app_ids": [APP] })), 990_000);
+    assert_eq!(gross(json!({ "game_key": "game" })), 990_000);
+    assert_eq!(gross(json!({ "game_key": "other" })), 5_000_000);
+    assert_eq!(gross(json!({ "game_key": "other", "summary": true })), 5_000_000);
+}
+
+#[test]
 fn revenue_stats_need_an_admin() {
     let w = World::new();
     assert!(crate::revenue::stats(&mut w.ctx(), "").unwrap_err().contains("ERR_ADMIN_UNAUTHORIZED"));
@@ -1178,7 +1243,7 @@ fn integrations_report_the_revenue_mode_they_are_set_to() {
     w.set_secret(secret_name::ADJUST_S2S_TOKEN, "adjust-token");
     w.write(|tx| {
         let mut p = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
-        p.default_price_micros = 1_000_000;
+        p.price_micros = 1_000_000;
         p.currency = "USD".into();
         tx.db.product().key().update(p);
     });
@@ -1210,7 +1275,7 @@ fn purchases_are_sent_to_tenjin_with_the_device_ids_from_the_client() {
     w.set_secret(secret_name::TENJIN_SDK_KEY, "tenjin-key");
     w.write(|tx| {
         let mut p = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
-        p.default_price_micros = 990_000;
+        p.price_micros = 990_000;
         p.currency = "USD".into();
         tx.db.product().key().update(p);
     });
@@ -1282,7 +1347,7 @@ fn purchases_are_sent_to_adjust_with_the_event_token_of_their_kind() {
     w.set_secret(secret_name::ADJUST_S2S_TOKEN, "adjust-token");
     w.write(|tx| {
         let mut p = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
-        p.default_price_micros = 990_000;
+        p.price_micros = 990_000;
         p.currency = "USD".into();
         tx.db.product().key().update(p);
     });
@@ -1307,7 +1372,7 @@ fn integration_health_shows_sent_skipped_and_failed_events_in_the_setup_check() 
     w.set_secret(secret_name::ADJUST_S2S_TOKEN, "adjust-token");
     w.write(|tx| {
         let mut p = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
-        p.default_price_micros = 990_000;
+        p.price_micros = 990_000;
         p.currency = "USD".into();
         tx.db.product().key().update(p);
     });
@@ -1451,7 +1516,7 @@ fn admin_revoke_is_retried_by_the_worker_and_refused_for_products_the_player_doe
     w.write(|tx| {
         let mut p = tx.db.purchase().id().find(&LEDGER_ID.to_string()).unwrap();
         p.status = status::EXPIRED.into();
-        tx.db.purchase().id().update(p);
+        crate::ledger::save_purchase(tx, p);
     });
     assert!(admin_revoke(&w, LEDGER_ID)["error"].as_str().unwrap().contains("ERR_NOT_REVOCABLE"));
 }
@@ -1971,7 +2036,7 @@ fn keep_google_token_valid(w: &World, days: i64) {
 fn add_subscription_product(w: &World) {
     w.write(|tx| {
         tx.db.product().insert(Product {
-            default_price_micros: 4_990_000,
+            price_micros: 4_990_000,
             currency: "USD".into(),
             ..Product::new(APP, "vip", kind::SUBSCRIPTION)
         });
@@ -2273,7 +2338,7 @@ fn paywalls_list_catalog_ids_and_each_build_gets_its_store_ids() {
     let dup = json!({ "app_id": IOS_APP, "product_id": "com.studio.noads2", "kind": "non_consumable", "catalog_id": "no_ads" });
     assert!(admin_call(&w, |ctx| crate::admin_upsert_products(ctx, dup.to_string())).unwrap_err().contains("already has the product com.studio.noads"));
     let row = || w.read(|tx| tx.db.product().key().find(crate::product_key(IOS_APP, "com.studio.noads"))).unwrap();
-    let again = json!({ "app_id": IOS_APP, "product_id": "com.studio.noads", "kind": "non_consumable", "default_price_micros": 2_990_000 });
+    let again = json!({ "app_id": IOS_APP, "product_id": "com.studio.noads", "kind": "non_consumable", "price_micros": 2_990_000, "currency": "USD" });
     admin_call(&w, |ctx| crate::admin_upsert_products(ctx, again.to_string())).unwrap();
     assert_eq!(row().catalog_id(), "no_ads");
     let clear = json!({ "app_id": IOS_APP, "product_id": "com.studio.noads", "kind": "non_consumable", "catalog_id": "" });
@@ -2479,10 +2544,10 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
         ..first.clone()
     };
     w.write(|tx| {
-        tx.db.purchase().insert(first.clone());
+        crate::ledger::insert_purchase(tx, first.clone());
         let mut renewal = renewal.clone();
         crate::paywalls::inherit(tx, &mut renewal);
-        tx.db.purchase().insert(renewal);
+        crate::ledger::insert_purchase(tx, renewal);
     });
     let got = w
         .test
@@ -3552,9 +3617,9 @@ fn add_steam_build(w: &World, sandbox: bool) {
     });
     w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_game_app(ctx, app.to_string())).unwrap();
     let products = json!([
-        { "app_id": STEAM_APP, "product_id": "gems", "kind": "consumable", "default_price_micros": 1_990_000, "currency": "USD" },
+        { "app_id": STEAM_APP, "product_id": "gems", "kind": "consumable", "price_micros": 1_990_000, "currency": "USD" },
         { "app_id": STEAM_APP, "product_id": "no_ads", "kind": "non_consumable" },
-        { "app_id": STEAM_APP, "product_id": "vip_sub", "kind": "subscription", "default_price_micros": 4_990_000, "currency": "USD" },
+        { "app_id": STEAM_APP, "product_id": "vip_sub", "kind": "subscription", "price_micros": 4_990_000, "currency": "USD" },
     ]);
     w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_products(ctx, products.to_string())).unwrap();
     let items = json!([{ "app_id": STEAM_APP, "product_id": "no_ads", "item_id": 1, "description": "Remove ads",
@@ -3948,7 +4013,7 @@ impl World {
             paywall_id: String::new(),
         };
         self.write(|tx| {
-            tx.db.purchase().insert(row.clone());
+            crate::ledger::insert_purchase(tx, row.clone());
         });
     }
 
@@ -3990,7 +4055,7 @@ fn overview_counts_the_ledger_in_one_pass() {
             p.next_attempt_at_micros = at;
             p.attempts = 2;
             p.last_error = "game db 503".into();
-            tx.db.purchase().id().update(p);
+            crate::ledger::save_purchase(tx, p);
         }
     });
     let o = w.overview();
@@ -4501,7 +4566,7 @@ impl World {
         use crate::purchase_log;
         self.write(|tx| {
             for p in rows {
-                tx.db.purchase().insert(p);
+                crate::ledger::insert_purchase(tx, p);
             }
             for (purchase_id, event, at_micros) in logs {
                 tx.db.purchase_log().insert(crate::PurchaseLog {
@@ -4715,7 +4780,7 @@ fn ledger_changes_during_a_rebuild_are_counted_once() {
         let mut p = tx.db.purchase().id().find("google:GPA.F-8".to_string()).unwrap();
         p.status = status::COMPLETED.into();
         p.was_granted = true;
-        tx.db.purchase().id().update(p.clone());
+        crate::ledger::save_purchase(tx, p.clone());
         crate::revenue::on_first_grant(tx, &p);
     });
     w.rebuild_steps_until(|_| false);
@@ -5188,7 +5253,7 @@ mod store_create_tests {
         let j = &jobs(&w)[0];
         assert_eq!((j.status.as_str(), j.store_product_id.as_str(), j.error.as_str()), ("done", "gems_new", ""));
         let p = local(&w, APP, "gems_new").expect("the build has the product now");
-        assert_eq!((p.kind.as_str(), p.default_price_micros, p.currency.as_str()), ("consumable", 4_990_000, "USD"));
+        assert_eq!((p.kind.as_str(), p.price_micros, p.currency.as_str()), ("consumable", 4_990_000, "USD"));
         let patch = w.fake.borrow().calls.iter().find(|c| c.starts_with("PATCH ")).cloned().unwrap();
         assert!(patch.contains("regionsVersion.version=2022%2F02") && patch.contains("\"title\":\"100 gems\""), "{patch}");
         assert_eq!(w.calls("batchUpdateStates"), 1);
@@ -5423,8 +5488,14 @@ mod role_tests {
         admin_call(w, |ctx| crate::access::admin_remove_admin(ctx, hex.into()))
     }
 
+    fn select(w: &World, query: Value) -> Result<Vec<Value>, String> {
+        let q: crate::access::SelectQuery = serde_json::from_value(query).unwrap();
+        w.read(|tx| crate::access::select(tx, &q))
+    }
+
     fn read(w: &World, table: &str, column: &str, value: &str) -> Result<Vec<Value>, String> {
-        w.read(|tx| crate::access::read(tx, table, column, value))
+        let filter = (!column.is_empty()).then(|| json!({ "column": column, "equals": value }));
+        select(w, json!({ "table": table, "where": filter }))
     }
 
     #[test]
@@ -5544,6 +5615,21 @@ mod role_tests {
     }
 
     #[test]
+    fn one_select_reads_many_values_and_only_the_asked_columns() {
+        let w = apple_offer_world(true);
+        as_role(&w, "viewer");
+        let rows = select(&w, json!({ "table": "product", "columns": ["app_id", "product_id"], "where": { "column": "app_id", "equals": [APP, IOS_APP, APP] } })).unwrap();
+        assert_eq!(rows.len(), 4, "gems and no_ads of the Android build, premium and gems of the iOS build: {rows:?}");
+        assert!(rows.iter().all(|r| r.as_object().unwrap().len() == 2));
+        let builds = select(&w, json!({ "table": "game_app", "where": { "column": "game_key", "equals": "game" } })).unwrap();
+        assert_eq!(builds.len(), 2);
+        let check = select(&w, json!({ "table": "app_check", "where": { "column": "app_id", "equals": APP } })).unwrap();
+        assert!(check.is_empty());
+        let many: Vec<String> = (0..=crate::access::SELECT_MAX_VALUES).map(|i| format!("a{i}")).collect();
+        assert!(select(&w, json!({ "table": "product", "where": { "column": "app_id", "equals": many } })).unwrap_err().contains("at most"));
+    }
+
+    #[test]
     fn reads_never_give_secret_values() {
         let w = World::new();
         as_role(&w, "viewer");
@@ -5554,6 +5640,8 @@ mod role_tests {
         assert!(read(&w, "access_token_cache", "", "").unwrap_err().contains("unknown table"));
         let schedule = read(&w, "retry_schedule", "", "").unwrap();
         assert!(schedule.len() <= 1);
+        let projected = select(&w, json!({ "table": "credential", "columns": ["key", "value"] })).unwrap();
+        assert!(projected.iter().all(|k| k.get("value").is_none()), "asking for a column does not add it");
 
         w.write(|tx| {
             tx.db.admin().identity().delete(Identity::ZERO);
@@ -5688,11 +5776,112 @@ fn a_worker_run_stops_starting_calls_after_its_budget() {
     w.fake.borrow_mut().call_secs = 25;
     let before = w.calls("/call/billing_grant");
     w.run_worker();
-    assert_eq!(w.calls("/call/billing_grant") - before, 2, "two 25 s deliveries use up the 40 s budget");
+    assert_eq!(w.calls("/call/billing_grant") - before, 1, "one 25 s delivery uses up the purchases' part of the run");
     w.fake.borrow_mut().call_secs = 0;
     w.advance_clock(60);
     w.run_worker();
     assert_eq!(w.calls("/call/billing_grant") - before, 3, "the next run delivers the others");
+}
+
+#[test]
+fn a_build_whose_calls_time_out_does_not_hold_up_the_others() {
+    const OTHER: &str = "com.studio.other";
+    let w = World::new();
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(&APP.to_string()).unwrap();
+        app.app_id = OTHER.into();
+        tx.db.game_app().insert(app);
+        tx.db.product().insert(Product::new(OTHER, "gems", kind::CONSUMABLE));
+    });
+    w.fake.borrow_mut().game_status = 503;
+    let buy = |app: &str, user: &str| {
+        let order = format!("GPA.{app}.{user}");
+        let purchase = json!({ "orderId": order, "purchaseState": 0, "consumptionState": 0, "acknowledgementState": 0 });
+        w.script(&format!("{TOKEN}-{app}-{user}"), 200, &purchase.to_string());
+        let r: VerifyRequest = serde_json::from_value(json!({
+            "bundle_id": app, "user_id": user, "product_id": "gems", "purchase_token": format!("{TOKEN}-{app}-{user}"),
+        }))
+        .unwrap();
+        verify(&mut w.ctx(), store::GOOGLE, &r);
+        w.advance_clock(1);
+    };
+    // The first build's rows are older: without fairness they would take the whole run.
+    for user in ["p1", "p2", "p3", "p4"] {
+        buy(APP, user);
+    }
+    buy(OTHER, "p5");
+    w.fake.borrow_mut().game_status = 200;
+    w.advance_clock(3600);
+    w.fake.borrow_mut().call_secs = 11;
+    w.run_worker();
+    let delivered = |app: &str| {
+        w.read(|tx| tx.db.purchase().app_id().filter(app).filter(|p| p.status != status::VERIFIED).count())
+    };
+    assert_eq!(delivered(APP), 1, "after a call past the timeout the build waits for the next run");
+    assert_eq!(delivered(OTHER), 1, "the other build is served in the same run");
+}
+
+#[test]
+fn deleting_a_build_removes_its_rows_but_keeps_the_ledger() {
+    let w = World::new();
+    w.verify("player-1", "gems");
+    w.as_admin(false);
+    w.doctor(false).unwrap();
+    admin_call(&w, |ctx| crate::admin_delete_game_app(ctx, APP.into())).unwrap();
+    let (products, check, ledger) = w.read(|tx| {
+        use crate::health::app_check;
+        (tx.db.product().app_id().filter(APP).count(), tx.db.app_check().app_id().find(APP.to_string()).is_some(), tx.db.purchase().app_id().filter(APP).count())
+    });
+    assert_eq!((products, check, ledger), (0, false, 1));
+}
+
+#[test]
+fn a_new_secret_drops_only_the_tokens_built_from_it() {
+    let w = World::new();
+    w.as_admin(false);
+    w.write(|tx| {
+        for key in ["apple/default/com.studio.ios", "sns-cert/https://sns.example.com/cert.pem"] {
+            tx.db.access_token_cache().insert(AccessTokenCache { key: key.into(), token: "t".into(), expires_at_micros: NOW_MICROS + 3_600_000_000 });
+        }
+    });
+    let keys = |w: &World| w.read(|tx| tx.db.access_token_cache().iter().map(|c| c.key).collect::<std::collections::BTreeSet<_>>());
+    let set = |name: &str| admin_call(&w, |ctx| crate::admin_set_credential(ctx, "default".into(), name.into(), "v".into())).unwrap();
+    set(secret_name::GA4_API_SECRET);
+    assert_eq!(keys(&w).len(), 3, "an analytics key drops nothing");
+    set(secret_name::APPLE_PRIVATE_KEY_P8);
+    assert!(!keys(&w).contains("apple/default/com.studio.ios"));
+    set(secret_name::GOOGLE_SERVICE_ACCOUNT_JSON);
+    assert_eq!(keys(&w).into_iter().collect::<Vec<_>>(), ["sns-cert/https://sns.example.com/cert.pem"], "SNS certificates stay");
+}
+
+#[test]
+fn purchase_counters_follow_every_ledger_write() {
+    let w = World::new();
+    price_products(&w, "USD");
+    w.verify("player-1", "no_ads");
+    w.restore("player-2", "no_ads");
+    let voided = json!({
+        "packageName": APP,
+        "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 1 },
+    });
+    w.google_notification(RTDN_SECRET, voided);
+    w.as_admin(false);
+    admin_call(&w, |ctx| crate::admin_grant_manual(ctx, json!({ "app_id": APP, "user_id": "player-3", "product_id": "gems" }).to_string())).unwrap();
+    w.advance_clock(61);
+    w.run_worker();
+    let (counted, actual) = w.read(|tx| {
+        use crate::ledger::purchase_count;
+        let counted: std::collections::BTreeMap<String, u64> = tx.db.purchase_count().iter().map(|c| (c.key, c.count)).collect();
+        let mut actual: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+        for p in tx.db.purchase().iter() {
+            *actual.entry(format!("{}|{}", p.app_id, p.status)).or_default() += 1;
+        }
+        (counted, actual)
+    });
+    assert!(actual.len() >= 2, "{actual:?}");
+    assert_eq!(counted, actual);
+    let overview = w.read(|tx| crate::admin_views::overview(tx));
+    assert_eq!(overview["total"], actual.values().sum::<u64>());
 }
 
 // ---------------------------------------------------------------------

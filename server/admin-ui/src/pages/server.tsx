@@ -1,16 +1,18 @@
-import { useState } from "react"
-import { Trash2Icon } from "lucide-react"
+import { useMemo, useState } from "react"
+import { SearchIcon, Trash2Icon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
+import { RichTable, type RichColumn } from "@/components/rich-table"
 import { SecretField } from "@/components/secret-field"
 import { call, getSetting, ROUTE, select } from "@/lib/api"
 import { BUILTIN_SPACETIME_HOST } from "@/lib/delivery"
 import { tryAct, useAsync } from "@/lib/hooks"
-import { useApps } from "@/lib/apps"
+import { useAppIndex, useApps } from "@/lib/apps"
 import { isFileSecret } from "@/lib/secrets"
+import { buildLabel } from "@/lib/stores"
 import { SECRET_NAMES } from "@/lib/types"
 
 export function ServerPage() {
@@ -96,14 +98,69 @@ function RawSecretsBody() {
   const [scope, setScope] = useState("default")
   const [name, setName] = useState(SECRET_NAMES[0][0])
   const [value, setValue] = useState("")
+  const [find, setFind] = useState("")
   const apps = useApps().apps
+  const { groupOf, builds } = useAppIndex()
   const { data, error, loading, reload } = useAsync(async () => {
     const keys = await select<{ key: string }>({ table: "credential", columns: ["key"] })
     return keys
       .map((k) => { const i = k.key.indexOf("/"); return { scope: k.key.slice(0, i), name: k.key.slice(i + 1) } })
       .sort((a, b) => (a.scope + a.name).localeCompare(b.scope + b.name))
   })
-  const scopes = [...new Set(["default", ...(apps || []).map((a) => a.account), ...(apps || []).map((a) => a.app_id)])]
+  // Scope suggestions: default, the developer accounts, then every build with its app's name.
+  const { scopes, accounts } = useMemo(() => {
+    const out = new Map<string, string>([["default", "fallback for every build"]])
+    const accounts = new Set<string>()
+    for (const a of apps || []) {
+      if (!a.account || a.account === "default") continue
+      accounts.add(a.account)
+      out.set(a.account, "developer account")
+    }
+    for (const a of apps || []) if (!out.has(a.app_id)) out.set(a.app_id, `${groupOf.get(a.app_id)?.name ?? a.game_key} · ${buildLabel(a)}`)
+    return { scopes: [...out], accounts }
+  }, [apps, groupOf])
+  // What a scope is: a build of an app or a developer account.
+  const scopeText = (scope: string) => {
+    const b = builds.get(scope)
+    if (b) return `${groupOf.get(scope)?.name ?? b.game_key} · ${buildLabel(b)}`
+    return accounts.has(scope) ? "developer account" : ""
+  }
+  const words = find.toLowerCase().split(/\s+/).filter(Boolean)
+  const rows = (data || []).filter((r) => {
+    if (!words.length) return true
+    const hay = `${r.scope}/${r.name} ${scopeText(r.scope)}`.toLowerCase()
+    return words.every((w) => hay.includes(w))
+  })
+  const columns: RichColumn<{ scope: string; name: string }>[] = [
+    {
+      title: "Scope",
+      size: 220,
+      sort: (r) => r.scope,
+      cell: (r) => {
+        const what = scopeText(r.scope)
+        return (
+          <span className="flex min-w-0 flex-col">
+            <Mono className="truncate">{r.scope}</Mono>
+            {what && <span className="truncate text-xs text-muted-foreground">{what}</span>}
+          </span>
+        )
+      },
+    },
+    { title: "Name", size: 180, sort: (r) => r.name, cell: (r) => <Mono>{r.name}</Mono> },
+    {
+      id: "actions",
+      title: "",
+      size: 52,
+      className: "text-right",
+      cell: (r) => (
+        <Button variant="ghost" size="icon-sm" className="text-destructive" aria-label="Delete" onClick={async (e) => {
+          e.stopPropagation()
+          if (!confirm(`Delete secret ${r.scope}/${r.name}?`)) return
+          if (await tryAct(() => call("admin_delete_credential", r.scope, r.name), "Deleted") !== undefined) reload()
+        }}><Trash2Icon /></Button>
+      ),
+    },
+  ]
   const save = async () => {
     if (!scope.trim() || !value.trim()) return toast.error("Scope and value are required")
     const ok = await tryAct(() => call("admin_set_credential", scope.trim(), name, value), `Secret ${scope}/${name} saved`)
@@ -113,31 +170,30 @@ function RawSecretsBody() {
     <div className="mt-4 grid gap-6 lg:grid-cols-[3fr_2fr]">
       <Section title="Stored secrets" description={<>Lookup order: store app → developer account → <code>default</code>. Values are never shown.</>}>
         {error ? <ErrorBox error={error} /> : loading || !data ? <Loading /> : (
-          <DataTable
-            rows={data}
-            empty="No secrets yet."
-            columns={[
-              { title: "Scope", cell: (r) => <Mono>{r.scope}</Mono> },
-              { title: "Name", cell: (r) => <Mono>{r.name}</Mono> },
-              {
-                title: "",
-                className: "text-right",
-                cell: (r) => (
-                  <Button variant="ghost" size="icon-sm" className="text-destructive" aria-label="Delete" onClick={async () => {
-                    if (!confirm(`Delete secret ${r.scope}/${r.name}?`)) return
-                    if (await tryAct(() => call("admin_delete_credential", r.scope, r.name), "Deleted") !== undefined) reload()
-                  }}><Trash2Icon /></Button>
-                ),
-              },
-            ]}
-          />
+          <div className="space-y-3">
+            {data.length > 0 && (
+              <div className="relative">
+                <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input className="pl-8" placeholder="Filter by scope, app name or secret name" value={find} onChange={(e) => setFind(e.target.value)} aria-label="Filter secrets" />
+              </div>
+            )}
+            <RichTable
+              rows={rows}
+              columns={columns}
+              rowKey={(r) => `${r.scope}/${r.name}`}
+              noun="secrets"
+              pageSize={25}
+              initialSort={{ id: "Scope" }}
+              empty={data.length ? "No secret matches." : "No secrets yet."}
+            />
+          </div>
         )}
       </Section>
       <Section title="Set or replace a secret">
         <div className="grid gap-4">
           <Field label="Scope (store app id, account or default)">
             <Input list="scopes" value={scope} onChange={(e) => setScope(e.target.value)} />
-            <datalist id="scopes">{scopes.map((s) => <option key={s} value={s} />)}</datalist>
+            <datalist id="scopes">{scopes.map(([s, label]) => <option key={s} value={s} label={label} />)}</datalist>
           </Field>
           <Field label="Name" hint={SECRET_NAMES.find(([n]) => n === name)?.[1]}>
             <Select value={name} onValueChange={setName}>

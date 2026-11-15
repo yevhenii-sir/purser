@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { CornerDownLeftIcon, UserSearchIcon } from "lucide-react"
 import { Command, CommandDialog, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut } from "@/components/ui/command"
-import type { AppGroup } from "@/lib/apps"
+import { appSearchText, matchWords, type AppGroup } from "@/lib/apps"
 import { openPlayer } from "@/lib/player"
 import { APP_TABS, appRoute, PAGES } from "@/routes"
 
@@ -9,15 +9,9 @@ const TAB_TITLES: Record<string, string> = {
   setup: "Setup", products: "Products", delivery: "Delivery", integrations: "Integrations", keys: "Keys", purchases: "Purchases", revenue: "Revenue",
 }
 
-/** Every word of the query appears in the item, in any order ("rings17 keys" finds "puzzle-17 → Keys"). */
-function matchWords(value: string, search: string): number {
-  const hay = value.toLowerCase()
-  const words = search.toLowerCase().split(/\s+/).filter(Boolean)
-  if (!words.length) return 1
-  if (!words.every((w) => hay.includes(w))) return 0
-  // Prefer matches at the start of the app name.
-  return hay.startsWith(words[0]) ? 1 : 0.5
-}
+/** Apps whose tabs are offered for a query: the best matches only, not every app × every tab. */
+const TAB_APPS = 8
+const TAB_WORDS = Object.values(TAB_TITLES).map((t) => t.toLowerCase())
 
 /** Ctrl/⌘ K: jump to any app (and any of its tabs) or page. */
 export function CommandMenu({ open, setOpen, groups, go }: {
@@ -38,6 +32,24 @@ export function CommandMenu({ open, setOpen, groups, go }: {
   }, [open, setOpen])
 
   const [query, setQuery] = useState("")
+  // Search text of every app, once per app list.
+  const indexed = useMemo(() => groups.map((g) => ({ g, text: appSearchText(g) })), [groups])
+  // Tab entries for the top apps by name / key / bundle id; a word that starts a tab's name
+  // ("key", "purch") does not have to match the app.
+  const tabApps = useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+    if (!words.length) return []
+    const tabWord = (w: string) => TAB_WORDS.some((t) => t.startsWith(w))
+    // Only tab words ("keys"): the first apps by name.
+    if (words.every(tabWord)) return indexed.slice(0, TAB_APPS).map((x) => x.g)
+    const scored = indexed.flatMap(({ g, text }) => {
+      if (!words.every((w) => text.includes(w) || tabWord(w))) return []
+      const first = words.find((w) => text.includes(w))
+      return first ? [{ g, score: text.startsWith(first) ? 1 : 0.5 }] : []
+    })
+    // A stable sort keeps name order among equal scores.
+    return scored.sort((a, b) => b.score - a.score).slice(0, TAB_APPS).map((x) => x.g)
+  }, [indexed, query])
   const run = (route: string) => {
     setOpen(false)
     setQuery("")
@@ -51,8 +63,8 @@ export function CommandMenu({ open, setOpen, groups, go }: {
       <CommandList>
         <CommandEmpty>Nothing found.</CommandEmpty>
         <CommandGroup heading="Apps">
-          {groups.map((g) => (
-            <CommandItem key={g.key} value={`${g.name} ${g.key} ${g.apps.map((a) => a.app_id).join(" ")}`} onSelect={() => run(appRoute(g.key))}>
+          {indexed.map(({ g, text }) => (
+            <CommandItem key={g.key} value={text} onSelect={() => run(appRoute(g.key))}>
               <span className="truncate">{g.name}</span>
               <span className="ml-2 truncate font-mono text-xs text-muted-foreground">{g.apps.map((a) => a.app_id).join(" · ")}</span>
               <CommandShortcut><CornerDownLeftIcon className="size-3" /></CommandShortcut>
@@ -60,7 +72,7 @@ export function CommandMenu({ open, setOpen, groups, go }: {
           ))}
         </CommandGroup>
         {query.trim() && <CommandGroup heading="App tabs">
-          {groups.flatMap((g) =>
+          {tabApps.flatMap((g) =>
             APP_TABS.filter((t) => t !== "setup").map((t) => (
               <CommandItem key={`${g.key}/${t}`} value={`${g.name} ${g.key} ${TAB_TITLES[t]} ${g.apps.map((a) => a.app_id).join(" ")}`} onSelect={() => run(appRoute(g.key, t))}>
                 <span className="truncate">{g.name}</span>

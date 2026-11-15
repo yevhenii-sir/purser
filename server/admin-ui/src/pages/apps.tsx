@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { LayoutGridIcon, ListIcon, PlusIcon, SearchIcon, SmartphoneIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -8,7 +8,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { RichTable } from "@/components/rich-table"
 import { AddGameWizard } from "@/components/add-game-wizard"
 import { ErrorBox, LevelBadge, Loading, Mono, PageHeader, Tone } from "@/components/common"
-import { select } from "@/lib/api"
+import { proc } from "@/lib/api"
 import { useApps } from "@/lib/apps"
 import { buildLabel, PLATFORM_ICON, platformById } from "@/lib/stores"
 import { usd } from "@/lib/format"
@@ -24,6 +24,17 @@ type Sort = "name" | "revenue" | "attention"
 type View = "cards" | "table"
 
 const VIEW_KEY = "purserAppsView"
+/** Cards shown at first and added by "Show more". */
+const CARDS_PAGE = 30
+
+/** `admin_apps_summary`: one row per build. */
+interface BuildSummary {
+  app_id: string
+  summary: Level | ""
+  checked_at_micros: number
+  catalog_ids: string[]
+  integrations: string[]
+}
 
 function loadView(): View {
   try {
@@ -36,6 +47,7 @@ function loadView(): View {
 export function AppsPage({ go }: PageProps) {
   const [wizard, setWizard] = useState(() => location.hash.endsWith("?new"))
   const [query, setQuery] = useState("")
+  const [shown, setShown] = useState(CARDS_PAGE)
   const [sort, setSort] = useState<Sort>("name")
   const [view, setViewState] = useState<View>(loadView)
   const setView = (v: View) => {
@@ -48,19 +60,33 @@ export function AppsPage({ go }: PageProps) {
 
   const { groups, error: appsError } = useApps()
   const loaded = useAsync(async ({ fresh }) => {
-    const [health, products, integrations, stats] = await Promise.all([
-      select<{ app_id: string; summary: Level }>({ table: "app_check", columns: ["app_id", "summary"] }),
-      select<{ app_id: string; product_id: string }>({ table: "product", columns: ["app_id", "product_id"] }),
-      select<{ app_id: string; kind: string; enabled: boolean }>({ table: "integration", columns: ["app_id", "kind", "enabled"] }),
+    const [builds, stats] = await Promise.all([
+      proc<BuildSummary[]>("admin_apps_summary"),
       revenueSummary(fresh).catch(() => null),
     ])
-    const summary: Record<string, Level> = {}
-    for (const h of health) if (h.summary) summary[h.app_id] = h.summary
-    return { summary, products, integrations, stats }
+    return { builds: new Map(builds.map((b) => [b.app_id, b])), stats }
   })
-  const data = groups && loaded.data ? { groups, ...loaded.data } : undefined
+  const data = useMemo(() => (groups && loaded.data ? { groups, ...loaded.data } : undefined), [groups, loaded.data])
   const error = appsError || loaded.error
   const loading = !data
+  /** Per app: worst check, revenue, products and integrations; built once per load, not per keystroke. */
+  const facts = useMemo(() => {
+    if (!data) return []
+    const net = new Map<string, number>()
+    for (const x of data.stats?.by_app || []) net.set(x.app_id, (net.get(x.app_id) || 0) + x.net_usd_micros)
+    return data.groups.map((g) => {
+      const ids = g.apps.map((a) => a.app_id)
+      const builds = ids.map((id) => data.builds.get(id)).filter((b): b is BuildSummary => !!b)
+      const worst = builds.map((b) => b.summary).filter((s): s is Level => !!s).sort((a, b) => RANK[b] - RANK[a])[0]
+      return {
+        g, ids, worst,
+        net: ids.reduce((s, id) => s + (net.get(id) || 0), 0),
+        productCount: new Set(builds.flatMap((b) => b.catalog_ids)).size,
+        kinds: [...new Set(builds.flatMap((b) => b.integrations))],
+        search: [g.name, g.key, ...ids].join(" ").toLowerCase(),
+      }
+    })
+  }, [data])
 
   return (
     <>
@@ -81,7 +107,7 @@ export function AppsPage({ go }: PageProps) {
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative min-w-56 flex-1 sm:max-w-sm">
             <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input className="pl-8" placeholder="Search by name, package or bundle id" value={query} onChange={(e) => setQuery(e.target.value)} />
+            <Input className="pl-8" placeholder="Search by name, package or bundle id" value={query} onChange={(e) => { setQuery(e.target.value); setShown(CARDS_PAGE) }} />
           </div>
           {view === "cards" && <Select value={sort} onValueChange={(v) => setSort(v as Sort)}>
             <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
@@ -101,19 +127,9 @@ export function AppsPage({ go }: PageProps) {
           </Tabs>
         </div>
         {(() => {
-          const rows = data.groups
-            .map((g) => {
-              const ids = g.apps.map((a) => a.app_id)
-              const worst = ids.map((id) => data.summary[id]).filter(Boolean).sort((a, b) => RANK[b] - RANK[a])[0]
-              const net = (data.stats?.by_app || []).filter((x) => ids.includes(x.app_id)).reduce((s, x) => s + x.net_usd_micros, 0)
-              const productCount = new Set(data.products.filter((p) => ids.includes(p.app_id)).map((p) => p.product_id)).size
-              const kinds = [...new Set(data.integrations.filter((i) => i.enabled && ids.includes(i.app_id)).map((i) => i.kind))]
-              return { g, ids, worst, net, productCount, kinds }
-            })
-            .filter(({ g }) => {
-              const q = query.trim().toLowerCase()
-              return !q || g.name.toLowerCase().includes(q) || g.key.toLowerCase().includes(q) || g.apps.some((a) => a.app_id.toLowerCase().includes(q))
-            })
+          const q = query.trim().toLowerCase()
+          const rows = facts
+            .filter((f) => !q || f.search.includes(q))
             .sort((x, y) =>
               sort === "revenue" ? y.net - x.net
               : sort === "attention" ? (RANK[y.worst] ?? 2.5) - (RANK[x.worst] ?? 2.5) || x.g.name.localeCompare(y.g.name)
@@ -167,8 +183,9 @@ export function AppsPage({ go }: PageProps) {
             )
           }
           return (
+        <>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {rows.map(({ g, worst, net, productCount, kinds }) => {
+          {rows.slice(0, shown).map(({ g, worst, net, productCount, kinds }) => {
             return (
               <Card key={g.key} className="cursor-pointer gap-3 transition-colors hover:bg-muted/40" onClick={() => go(appRoute(g.key))}>
                 <CardHeader>
@@ -197,6 +214,12 @@ export function AppsPage({ go }: PageProps) {
             )
           })}
         </div>
+        {rows.length > shown && (
+          <div className="flex justify-center">
+            <Button variant="outline" onClick={() => setShown((n) => n + CARDS_PAGE)}>Show more ({rows.length - shown} left)</Button>
+          </div>
+        )}
+        </>
           )
         })()}
         </>

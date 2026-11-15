@@ -1,11 +1,13 @@
 //! Read models of the admin page that `/sql` cannot serve cheaply: the Overview counters
-//! (`admin_overview`, one pass over the ledger instead of a `COUNT(*)` per status) and the purchase
-//! list (`admin_list_purchases`, newest first through the `updated_at_micros` index, with the
-//! filters applied before the limit). Both are admin procedures that return a JSON string
-//! (`{"error": "..."}` on failure).
+//! (`admin_overview`), the per-build facts of the Apps page (`admin_apps_summary`, one small row per
+//! build instead of three whole tables) and the purchase list (`admin_list_purchases`, newest first
+//! through the `updated_at` indexes, with the filters applied before the limit). All are admin
+//! procedures that return a JSON string (`{"error": "..."}` on failure).
 
 use crate::ctx::{tx_now_micros, Ctx};
-use crate::integrations::integration_outbox;
+use crate::health::app_check;
+use crate::integrations::{integration, integration_outbox};
+use crate::ledger::purchase_count;
 use crate::{game_app, product, purchase, Purchase};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -37,16 +39,58 @@ pub fn purchase_row(p: &Purchase) -> Value {
     })
 }
 
-/// Overview counters: ledger size and counts by status (one pass), the rows the worker still has
-/// to process (through the `next_attempt_at_micros` index, soonest first), apps, products and
-/// queued integration events.
-pub fn overview(tx: &TxContext) -> Value {
+/// One row per build for the Apps page: the last setup check, the catalog ids of its products and
+/// the kinds of its enabled integrations.
+pub fn apps_summary(tx: &spacetimedb::ReducerContext) -> Value {
+    let mut builds: BTreeMap<String, Value> = tx
+        .db
+        .game_app()
+        .iter()
+        .map(|a| (a.app_id.clone(), json!({ "app_id": a.app_id, "summary": "", "checked_at_micros": 0, "catalog_ids": [], "integrations": [] })))
+        .collect();
+    for c in tx.db.app_check().iter() {
+        if let Some(b) = builds.get_mut(&c.app_id) {
+            b["summary"] = json!(c.summary);
+            b["checked_at_micros"] = json!(c.checked_at_micros);
+        }
+    }
+    for p in tx.db.product().iter() {
+        if let Some(Value::Array(ids)) = builds.get_mut(&p.app_id).map(|b| &mut b["catalog_ids"]) {
+            ids.push(json!(p.catalog_id()));
+        }
+    }
+    for i in tx.db.integration().iter().filter(|i| i.enabled) {
+        if let Some(Value::Array(kinds)) = builds.get_mut(&i.app_id).map(|b| &mut b["integrations"]) {
+            kinds.push(json!(i.kind));
+        }
+    }
+    Value::Array(builds.into_values().collect())
+}
+
+/// `[{"app_id", "summary", "checked_at_micros", "catalog_ids", "integrations"}]` for the Apps page.
+#[spacetimedb::procedure]
+pub fn admin_apps_summary(ctx: &mut ProcedureContext) -> String {
+    let result = ctx.tx(|tx| {
+        crate::access::require(tx, purser_core::roles::Cap::Read)?;
+        Ok::<_, String>(apps_summary(tx))
+    });
+    match result {
+        Ok(v) => v.to_string(),
+        Err(e) => json!({ "error": e }).to_string(),
+    }
+}
+
+/// Overview counters: ledger size and counts by status (from `purchase_count`, kept by every
+/// ledger write), the rows the worker still has to process (through the `next_attempt_at_micros`
+/// index, soonest first), apps, builds, products and queued integration events.
+pub fn overview(tx: &spacetimedb::ReducerContext) -> Value {
     let mut by_status: BTreeMap<String, u64> = BTreeMap::new();
     let mut total = 0u64;
-    for p in tx.db.purchase().iter() {
-        total += 1;
-        *by_status.entry(p.status).or_default() += 1;
+    for c in tx.db.purchase_count().iter() {
+        total += c.count;
+        *by_status.entry(c.status).or_default() += c.count;
     }
+    let games: std::collections::BTreeSet<String> = tx.db.game_app().iter().map(|a| a.game_key).collect();
     let mut pending_total = 0u64;
     let mut pending: Vec<Value> = Vec::new();
     for p in tx.db.purchase().next_attempt_at_micros().filter(1..=i64::MAX) {
@@ -64,7 +108,8 @@ pub fn overview(tx: &TxContext) -> Value {
         "by_status": by_status,
         "pending": pending,
         "pending_total": pending_total,
-        "apps": tx.db.game_app().count(),
+        "apps": games.len(),
+        "builds": tx.db.game_app().count(),
         "products": tx.db.product().count(),
         "outbox": tx.db.integration_outbox().count(),
     })
@@ -111,14 +156,19 @@ pub fn list_purchases(tx: &TxContext, q: &ListQuery) -> (Vec<Purchase>, bool) {
     let limit = if q.limit == 0 { LIST_DEFAULT_LIMIT } else { q.limit.min(LIST_MAX_LIMIT) };
     let since = q.since_micros.max(0);
     let mut hi = q.until_micros.unwrap_or(i64::MAX);
-    let keep = |p: &Purchase| (q.app_ids.is_empty() || q.app_ids.contains(&p.app_id)) && (q.status.is_empty() || p.status == q.status);
+    let keep = |p: &Purchase| q.status.is_empty() || p.status == q.status;
     // The first window ends at `until`, or now when `until` is open (rows are stamped with tx time).
     let now = tx_now_micros(tx);
     let mut window = FIRST_WINDOW_MICROS;
     let mut lo = hi.min(now).saturating_sub(window).max(since);
     let mut out: Vec<Purchase> = Vec::new();
     while hi >= since && out.len() <= limit {
-        let mut rows: Vec<Purchase> = tx.db.purchase().updated_at_micros().filter(lo..=hi).filter(|p| keep(p)).collect();
+        // Selected builds through `(app_id, updated_at)`, the whole server through `updated_at`.
+        let mut rows: Vec<Purchase> = if q.app_ids.is_empty() {
+            tx.db.purchase().updated_at_micros().filter(lo..=hi).filter(|p| keep(p)).collect()
+        } else {
+            q.app_ids.iter().flat_map(|a| tx.db.purchase().app_updated().filter((a.as_str(), lo..=hi)).filter(|p| keep(p)).collect::<Vec<_>>()).collect()
+        };
         rows.sort_by(|a, b| b.updated_at_micros.cmp(&a.updated_at_micros).then_with(|| b.id.cmp(&a.id)));
         out.extend(rows);
         if lo <= since {

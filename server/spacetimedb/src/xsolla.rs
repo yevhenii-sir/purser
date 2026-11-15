@@ -453,7 +453,7 @@ fn subscription_canceled(ctx: &mut impl Ctx, app: &GameApp, subscription_id: &st
                 ledger::log_event(tx, &id, "canceled", &format!("{source_c}: ends {} instead of {}", ends_ms, row.expires_at_ms));
                 row.expires_at_ms = ends_ms;
                 row.updated_at_micros = tx_now_micros(tx);
-                tx.db.purchase().id().update(row);
+                crate::ledger::save_purchase(tx, row);
             }
             return Some(None);
         }

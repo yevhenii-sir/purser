@@ -193,7 +193,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
           s.products = products
             .filter((p) => p.app_id === firstApp)
             .map((p) => ({
-              product_id: catalogIdOf(p), kind: p.kind, default_price_micros: Number(p.default_price_micros), currency: p.currency,
+              product_id: catalogIdOf(p), kind: p.kind, price_micros: Number(p.price_micros), currency: p.currency,
               ...(p.product_id !== catalogIdOf(p) ? { store_ids: { [firstStore]: p.product_id } } : {}),
               ...(p.period ? { period: p.period } : {}),
             }))
@@ -245,7 +245,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         const items = apps()
           .filter((a) => a.products)
           .flatMap((a) => valid.map((p) => ({
-            app_id: a.app_id, product_id: productIdIn(p, a.store).trim(), catalog_id: p.product_id.trim(), kind: p.kind, default_price_micros: p.default_price_micros || 0, currency: p.currency || "",
+            app_id: a.app_id, product_id: productIdIn(p, a.store).trim(), catalog_id: p.product_id.trim(), kind: p.kind, price_micros: p.price_micros || 0, currency: p.currency || "",
             ...(p.period && p.kind === "subscription" ? { period: p.period } : {}),
           })))
         if (items.length) {
@@ -325,10 +325,10 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
       for (const u of c.products) {
         const i = products.findIndex((p) => p.product_id === u.product_id)
         // A price already entered here wins; the Unity fallback price fills the gaps.
-        const priced = (p: PickedProduct) => (p.default_price_micros ? p : { ...p, default_price_micros: u.price_micros, currency: u.currency })
+        const priced = (p: PickedProduct) => (p.price_micros ? p : { ...p, price_micros: u.price_micros, currency: u.currency })
         const period = u.period ? { period: u.period } : {}
         if (i >= 0) products[i] = priced({ ...period, ...products[i], kind: u.kind, store_ids: u.store_ids })
-        else products.push({ product_id: u.product_id, kind: u.kind, store_ids: u.store_ids, default_price_micros: u.price_micros, currency: u.currency, ...period })
+        else products.push({ product_id: u.product_id, kind: u.kind, store_ids: u.store_ids, price_micros: u.price_micros, currency: u.currency, ...period })
       }
       const game_key = s.game_key || suggestGameKey(builds.map((b) => b.app_id))
       return { ...s, builds, products, game_key }
@@ -465,8 +465,8 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                       <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                       <SelectContent>{KINDS.map((k) => <SelectItem key={k} value={k}>{k}</SelectItem>)}</SelectContent>
                     </Select>
-                    <Input type="number" step="0.01" min="0" placeholder="price" value={p.default_price_micros ? p.default_price_micros / 1e6 : ""}
-                      onChange={(e) => updateProduct(i, { default_price_micros: Math.round(Number(e.target.value || 0) * 1e6) })} />
+                    <Input type="number" step="0.01" min="0" placeholder="price" value={p.price_micros ? p.price_micros / 1e6 : ""}
+                      onChange={(e) => updateProduct(i, { price_micros: Math.round(Number(e.target.value || 0) * 1e6) })} />
                     <Input placeholder="USD" value={p.currency} onChange={(e) => updateProduct(i, { currency: e.target.value.toUpperCase() })} />
                     <Button variant="ghost" size="icon" aria-label="Remove" onClick={() => setW((s) => ({ ...s, products: s.products.filter((_, j) => j !== i) }))}>
                       <Trash2Icon />
@@ -481,7 +481,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                 {!w.products.length && <p className="py-4 text-center text-sm text-muted-foreground">No products yet.</p>}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => set("products", [...w.products, { product_id: "", kind: "consumable", default_price_micros: 0, currency: "USD" }])}>
+                <Button variant="outline" size="sm" onClick={() => set("products", [...w.products, { product_id: "", kind: "consumable", price_micros: 0, currency: "USD" }])}>
                   <PlusIcon /> Add product
                 </Button>
                 {importers.map((b) => (

@@ -14,7 +14,7 @@ The admin panel's **Revenue** page shows what the stores paid, in USD: net reven
 | Active subscriptions, MRR | subscriptions paid until a future date, renewals counted once | snapshot taken daily |
 
 - Manual grants are not revenue. Sandbox purchases are excluded unless *Include sandbox* is on.
-- Amounts are store prices before the store's commission and taxes: the App Store reports the price; Google reports the price of subscriptions; for Google one-time products the price comes from the client (`price_micros` in `/verify`) or the product's default price. Set default prices on Android products (the setup check warns about missing ones).
+- Amounts are store prices before the store's commission and taxes: the App Store reports the price; Google reports the price of subscriptions; for Google one-time products the price comes from the client (`price_micros` in `/verify`) or the build's product price. Set prices on Android products (the setup check warns about missing ones); each build has its own.
 - A free-trial period is recorded with price 0 (Google reports the price of the next renewal, which is not what the buyer paid), so integrations get no revenue for it either. Trials are detected from Google's `lineItems[].offerPhase.freeTrial` (subscriptionsv2) and Apple's `offerDiscountType` = `FREE_TRIAL` (older Apple payloads: introductory offer with price 0).
 - MRR divides each subscription's price by its billing period, guessed from the paid period (weekly, monthly, quarterly, half-yearly, yearly).
 - Days are UTC.

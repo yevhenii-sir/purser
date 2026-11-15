@@ -103,7 +103,7 @@ fn snapshot(ctx: &mut impl Ctx, app_id: &str) -> Result<Snapshot, String> {
         let unpriced = if store.reports_price {
             Vec::new()
         } else {
-            products.iter().filter(|p| p.default_price_micros <= 0).map(|p| p.product_id.clone()).collect()
+            products.iter().filter(|p| p.price_micros <= 0).map(|p| p.product_id.clone()).collect()
         };
         let mut names: Vec<&'static str> = ALL_SECRETS.to_vec();
         names.extend(registry::STORES.iter().flat_map(|s| s.secrets.iter().map(|x| x.name)));
@@ -187,7 +187,7 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
                 ),
                 format!(
                     "{} does not report prices: renewals and purchases from old clients are counted as 0 revenue \
-                     unless default_price_micros and currency are set",
+                     unless price_micros and currency are set",
                     store.name
                 ),
             )

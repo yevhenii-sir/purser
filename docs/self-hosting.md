@@ -82,7 +82,7 @@ spacetime logs -s myserver <db>
 Admins → **Add admin** → name, role (Admin, Editor, Support or Viewer) → **Generate a token**. Send the token and the admin page link privately: the token is shown once, and if it is lost you remove that admin and add a new one. Removing an admin stops their token at once.
 
 - The server checks the role on every request. Admin-page actions are recorded in the Audit log (Settings → Audit log).
-- A coworker's token reads through `/call` (the `admin_read` procedure), not `/sql`. So their admin page works through the same tunnel as yours, or at the public address if you allow `/v1/database/<db>/route/admin` and `/call` there.
+- A coworker's token reads through `/call` (the `admin_select` procedure), not `/sql`. So their admin page works through the same tunnel as yours, or at the public address if you allow `/v1/database/<db>/route/admin` and `/call` there.
 - Logs need the owner.
 - Someone with their own SpacetimeDB login can send you their identity (`spacetime login show --identity`) instead; add it in the same dialog.
 

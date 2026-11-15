@@ -7,7 +7,7 @@
 //!
 //! HTTP API: `https://<host>/v1/database/<db>/route/...` (see `handlers.rs`).
 //! All tables are private: the database owner reads them with `spacetime sql`, other admins
-//! through `access::admin_read`.
+//! through `access::admin_select`.
 
 use purser_core::event::{args_format, delivery};
 use purser_core::model::kind;
@@ -130,8 +130,10 @@ pub struct Product {
     pub product_id: String,
     /// `consumable` | `non_consumable` | `subscription`
     pub kind: String,
-    /// Used for GA4 revenue when the store does not report a price (Google).
-    pub default_price_micros: i64,
+    /// The build's own price (builds of one product may differ, e.g. iOS higher): revenue and
+    /// analytics when the store does not report a price (Google, Amazon), Create in store, Steam
+    /// without per-currency prices. 0 = not set.
+    pub price_micros: i64,
     pub currency: String,
     /// Store listing, used to create the product in the stores (Create in store): English title.
     #[default("")]
@@ -158,7 +160,7 @@ impl Product {
             app_id: app_id.to_string(),
             product_id: product_id.to_string(),
             kind: kind.to_string(),
-            default_price_micros: 0,
+            price_micros: 0,
             currency: String::new(),
             title: String::new(),
             description: String::new(),
@@ -203,7 +205,11 @@ pub struct AccessTokenCache {
 
 /// Billing ledger: one row per store transaction (each subscription renewal is its own row).
 #[derive(Clone)]
-#[spacetimedb::table(accessor = purchase)]
+#[spacetimedb::table(
+    accessor = purchase,
+    index(accessor = app_created, btree(columns = [app_id, created_at_micros])),
+    index(accessor = app_updated, btree(columns = [app_id, updated_at_micros]))
+)]
 pub struct Purchase {
     /// `{store}:{transaction_id}`
     #[primary_key]
@@ -575,9 +581,37 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
 pub fn admin_delete_game_app(ctx: &ReducerContext, app_id: String) -> Result<(), String> {
     let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_delete_game_app", &app_id, "");
-    ctx.db.game_app().app_id().delete(&app_id);
-    crate::health::delete_check(ctx, &app_id);
+    delete_build_rows(ctx, &app_id);
     Ok(())
+}
+
+/// A deleted build takes its configuration and health rows with it; the ledger, revenue and the
+/// audit log stay (history), as do its secrets (shown on the Server page to delete by hand).
+fn delete_build_rows(ctx: &ReducerContext, app_id: &str) {
+    use crate::health::{app_check, app_health};
+    use crate::integrations::{integration, integration_health};
+    use crate::steam::{steam_build, steam_report};
+    use crate::store_create::store_create_job;
+    use crate::store_health::store_notify_health;
+    let id = app_id.to_string();
+    ctx.db.game_app().app_id().delete(&id);
+    for p in ctx.db.product().app_id().filter(app_id).collect::<Vec<_>>() {
+        ctx.db.product().key().delete(&p.key);
+    }
+    for i in ctx.db.integration().app_id().filter(app_id).collect::<Vec<_>>() {
+        ctx.db.integration().key().delete(&i.key);
+    }
+    for h in ctx.db.integration_health().app_id().filter(app_id).collect::<Vec<_>>() {
+        ctx.db.integration_health().key().delete(&h.key);
+    }
+    for j in ctx.db.store_create_job().app_id().filter(app_id).collect::<Vec<_>>() {
+        ctx.db.store_create_job().id().delete(j.id);
+    }
+    ctx.db.app_check().app_id().delete(&id);
+    ctx.db.app_health().app_id().delete(&id);
+    ctx.db.store_notify_health().app_id().delete(&id);
+    ctx.db.steam_build().app_id().delete(&id);
+    ctx.db.steam_report().app_id().delete(&id);
 }
 
 #[derive(Deserialize)]
@@ -585,11 +619,12 @@ struct ProductInput {
     app_id: String,
     product_id: String,
     kind: String,
+    /// The build's price; 0 / missing = not set.
     #[serde(default)]
-    default_price_micros: i64,
+    price_micros: i64,
     #[serde(default)]
     currency: String,
-    /// Store listing fields: a missing field keeps the stored value (older callers do not send them).
+    /// Store listing fields: a missing field keeps the stored value.
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -645,6 +680,8 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
         }
         let old = ctx.db.product().key().find(product_key(&i.app_id, &i.product_id));
         let keep = |new: Option<String>, old: Option<&String>| new.map(|s| s.trim().to_string()).unwrap_or_else(|| old.cloned().unwrap_or_default());
+        let currency = i.currency.trim().to_ascii_uppercase();
+        purser_core::catalog::check_price(i.price_micros, &currency).map_err(|e| format!("[ERR_BAD_PRODUCT] {}: {e}", i.product_id))?;
         let subscription = i.kind == kind::SUBSCRIPTION;
         let catalog_id = match i.catalog_id {
             Some(c) => purser_core::catalog::normalize_catalog_id(&c, &i.product_id).map_err(|e| format!("[ERR_BAD_PRODUCT] {}: {e}", i.product_id))?,
@@ -656,8 +693,8 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
             description: keep(i.description, old.as_ref().map(|o| &o.description)),
             period: if subscription { keep(i.period, old.as_ref().map(|o| &o.period)).to_ascii_uppercase() } else { String::new() },
             apple_group: if subscription { keep(i.apple_group, old.as_ref().map(|o| &o.apple_group)) } else { String::new() },
-            default_price_micros: i.default_price_micros,
-            currency: i.currency,
+            price_micros: i.price_micros,
+            currency,
             ..Product::new(&i.app_id, &i.product_id, &i.kind)
         };
         purser_core::catalog::check_listing(&p.title, &p.description, &p.period, &p.apple_group)
@@ -711,7 +748,7 @@ pub(crate) fn put_credential(ctx: &ReducerContext, scope: &str, name: &str, valu
     } else {
         ctx.db.credential().insert(Credential { key: key.clone(), value });
     }
-    drop_cached_tokens(ctx);
+    drop_cached_tokens(ctx, scope, name);
     log::info!("Credential {key} updated");
     Ok(())
 }
@@ -721,14 +758,26 @@ pub fn admin_delete_credential(ctx: &ReducerContext, scope: String, name: String
     let who = crate::access::require(ctx, purser_core::roles::Cap::Secrets)?;
     crate::access::audit(ctx, &who, "admin_delete_credential", &format!("{scope}/{name}"), "deleted");
     ctx.db.credential().key().delete(&config::credential_key(&scope, &name));
-    drop_cached_tokens(ctx);
+    drop_cached_tokens(ctx, &scope, &name);
     Ok(())
 }
 
-/// Credentials changed: tokens built from the old ones must not outlive them.
-fn drop_cached_tokens(ctx: &ReducerContext) {
-    let stale: Vec<String> = ctx.db.access_token_cache().iter().map(|c| c.key).collect();
-    for k in stale {
+/// A credential changed: the tokens built from it must not outlive it. Only those go: a Google
+/// key drops the OAuth token of its scope (fetching one is a network call per scope), an App Store
+/// key the JWTs signed with it (any scope: they are signed locally); other secrets and the cached
+/// SNS certificates stay.
+fn drop_cached_tokens(ctx: &ReducerContext, scope: &str, name: &str) {
+    use config::secret_name as n;
+    let stale = |key: &str| match name {
+        n::GOOGLE_SERVICE_ACCOUNT_JSON => key == format!("google/{scope}"),
+        n::GCS_SERVICE_ACCOUNT_JSON => key == format!("gcs/{scope}"),
+        n::APPLE_ISSUER_ID => key.starts_with("apple/") || key.starts_with("apple-connect/"),
+        n::APPLE_KEY_ID | n::APPLE_PRIVATE_KEY_P8 => key.starts_with("apple/"),
+        n::APPLE_CONNECT_KEY_ID | n::APPLE_CONNECT_PRIVATE_KEY_P8 => key.starts_with("apple-connect/"),
+        _ => false,
+    };
+    let keys: Vec<String> = ctx.db.access_token_cache().iter().map(|c| c.key).filter(|k| stale(k)).collect();
+    for k in keys {
         ctx.db.access_token_cache().key().delete(&k);
     }
 }
@@ -746,7 +795,7 @@ pub fn admin_requeue_purchase(ctx: &ReducerContext, purchase_id: String) -> Resu
         .ok_or("[ERR_PURCHASE_NOT_FOUND] Unknown purchase")?;
     p.next_attempt_at_micros = ctx.timestamp.to_micros_since_unix_epoch();
     p.attempts = 0;
-    ctx.db.purchase().id().update(p);
+    crate::ledger::save_purchase(ctx, p);
     Ok(())
 }
 
@@ -795,7 +844,7 @@ pub fn admin_grant_manual(ctx: &ReducerContext, json: String) -> Result<(), Stri
     if ctx.db.purchase().id().find(&id).is_some() {
         return Err("[ERR_TX_EXISTS] Transaction already exists".into());
     }
-    ctx.db.purchase().insert(Purchase {
+    crate::ledger::insert_purchase(ctx, Purchase {
         expires_at_ms: i.expires_at_ms,
         // Not revenue: keep it out of GA4.
         was_granted: true,
@@ -912,7 +961,7 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             continue;
         }
         let id = r.id.clone();
-        ctx.db.purchase().insert(Purchase {
+        crate::ledger::insert_purchase(ctx, Purchase {
             id: r.id,
             store: r.store,
             app_id: r.app_id,

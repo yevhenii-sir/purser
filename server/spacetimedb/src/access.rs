@@ -235,23 +235,31 @@ fn matches(row: &Value, column: &str, value: &str) -> bool {
     }
 }
 
-/// Rows of an admin table, for admins whose token cannot read private tables (`/sql` is the
-/// owner's). `column` / `value` filter (empty: every row; the purchase tables need one). Credentials
-/// only give their keys; server settings only the ones the admin page reads.
-pub fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<Vec<Value>, String> {
+/// Rows of an admin table whose `column` equals `value` (empty column: every row; the purchase
+/// tables need one), through the table's index when the column has one. Credentials only give
+/// their keys; server settings only the ones the admin page reads.
+fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<Vec<Value>, String> {
     let cap = if matches!(table, "admin" | "admin_audit") { Cap::Admins } else { Cap::Read };
     require(ctx, cap)?;
     let db = &ctx.db;
     let all = match table {
+        "game_app" if column == "app_id" => rows(db.game_app().app_id().find(value.to_string()).into_iter()),
+        "game_app" if column == "game_key" => rows(db.game_app().game_key().filter(value)),
         "game_app" => rows(db.game_app().iter()),
         "app_profile" => rows(db.app_profile().iter()),
         "product" if column == "app_id" => rows(db.product().app_id().filter(value)),
         "product" => rows(db.product().iter()),
+        "integration" if column == "app_id" => rows(db.integration().app_id().filter(value)),
         "integration" => rows(db.integration().iter()),
+        "integration_health" if column == "app_id" => rows(db.integration_health().app_id().filter(value)),
         "integration_health" => rows(db.integration_health().iter()),
+        "app_check" if column == "app_id" => rows(db.app_check().app_id().find(value.to_string()).into_iter()),
         "app_check" => rows(db.app_check().iter()),
+        "paywall" if column == "game_key" => rows(db.paywall().game_key().filter(value)),
         "paywall" => rows(db.paywall().iter()),
+        "placement" if column == "game_key" => rows(db.placement().game_key().filter(value)),
         "placement" => rows(db.placement().iter()),
+        "paywall_test" if column == "placement_key" => rows(db.paywall_test().placement_key().filter(value)),
         "paywall_test" => rows(db.paywall_test().iter()),
         "store_create_job" if column == "app_id" => rows(db.store_create_job().app_id().filter(value)),
         "store_create_job" => rows(db.store_create_job().iter()),
@@ -261,6 +269,11 @@ pub fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Res
         "spacetime_host" => rows(db.spacetime_host().iter()),
         "retry_schedule" => rows(db.retry_schedule().iter()),
         "admin" => rows(db.admin().iter()),
+        // `since`: the actions from this time (micros) on, through the `at_micros` index.
+        "admin_audit" if column == "since" => {
+            let since: i64 = value.parse().map_err(|_| "[ERR_BAD_QUERY] since must be micros")?;
+            return Ok(rows(db.admin_audit().at_micros().filter(since..)));
+        }
         "admin_audit" => rows(db.admin_audit().iter()),
         "credential" => db.credential().iter().map(|c| json!({ "key": c.key })).collect(),
         "server_state" => db
@@ -284,10 +297,73 @@ pub fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Res
     Ok(if column.is_empty() { all } else { all.into_iter().filter(|r| matches(r, column, value)).collect() })
 }
 
-/// [`read`] as a procedure: a JSON array, or `{"error"}`.
+/// Values one [`select`] may look up at once.
+pub const SELECT_MAX_VALUES: usize = 500;
+
+/// `admin_select` input: `{"table", "columns"?, "where"?: {"column", "equals": value | [values]}}`.
+#[derive(Deserialize)]
+pub struct SelectQuery {
+    table: String,
+    #[serde(default)]
+    columns: Vec<String>,
+    #[serde(default, rename = "where")]
+    filter: Option<Where>,
+}
+
+#[derive(Deserialize)]
+struct Where {
+    column: String,
+    equals: Equals,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Equals {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// Rows of an admin table for admins whose token cannot read private tables (`/sql` is the
+/// owner's): every value of the filter looked up through the index where the column has one, and
+/// only the asked `columns` of each row (all when empty).
+pub fn select(ctx: &ReducerContext, q: &SelectQuery) -> Result<Vec<Value>, String> {
+    let mut out = match &q.filter {
+        None => read(ctx, &q.table, "", "")?,
+        Some(w) => {
+            let mut values = match &w.equals {
+                Equals::One(v) => vec![v.clone()],
+                Equals::Many(v) => v.clone(),
+            };
+            values.sort_unstable();
+            values.dedup();
+            if values.len() > SELECT_MAX_VALUES {
+                return Err(format!("[ERR_BAD_QUERY] at most {SELECT_MAX_VALUES} values"));
+            }
+            let mut rows = Vec::new();
+            for v in &values {
+                rows.extend(read(ctx, &q.table, &w.column, v)?);
+            }
+            rows
+        }
+    };
+    if !q.columns.is_empty() {
+        for row in &mut out {
+            if let Value::Object(m) = row {
+                m.retain(|k, _| q.columns.iter().any(|c| c == k));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// [`select`] as a procedure: a JSON array, or `{"error"}`.
 #[spacetimedb::procedure]
-pub fn admin_read(ctx: &mut ProcedureContext, table: String, column: String, value: String) -> String {
-    match crate::ctx::Ctx::tx(ctx, |tx| read(tx, &table, &column, &value)) {
+pub fn admin_select(ctx: &mut ProcedureContext, query_json: String) -> String {
+    let q: SelectQuery = match serde_json::from_str(&query_json) {
+        Ok(q) => q,
+        Err(e) => return json!({ "error": format!("[ERR_BAD_JSON] {e}") }).to_string(),
+    };
+    match crate::ctx::Ctx::tx(ctx, |tx| select(tx, &q)) {
         Ok(rows) => Value::Array(rows).to_string(),
         Err(e) => json!({ "error": e }).to_string(),
     }

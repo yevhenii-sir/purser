@@ -44,7 +44,7 @@ async function signIn(): Promise<Auth> {
     clearToken()
     return { state: "login", error: "Token rejected: " + errorText(e) }
   }
-  // Only the owner can read private tables over /sql; everyone else reads through `admin_read`.
+  // Only the owner can read private tables over /sql; everyone else reads through `admin_select`.
   setReadThroughProcedure(!me.owner)
   try {
     if (can(me.role, "configure") && (await select({ table: "retry_schedule" })).length === 0) await call("admin_ensure_worker")

@@ -23,6 +23,59 @@ use std::collections::{BTreeMap, BTreeSet};
 const LEASE_MICROS: i64 = 2 * 60 * 1_000_000;
 /// Rows handled per worker run.
 const WORKER_BATCH: usize = 25;
+/// Rows of one build per worker run, so one build's backlog cannot hold up the others.
+const WORKER_PER_APP: usize = 5;
+/// Due rows the worker looks at (oldest first) to pick its batch.
+const WORKER_CANDIDATES: usize = 2000;
+/// Part of the worker budget the purchases may use; the rest is for re-checks and Steam.
+const PURCHASE_BUDGET_SECS: i64 = 25;
+
+/// Ledger rows by build and status, kept in step with every write ([`insert_purchase`],
+/// [`save_purchase`]), so the Overview never counts the ledger.
+#[spacetimedb::table(accessor = purchase_count)]
+pub struct PurchaseCount {
+    /// `{app_id}|{status}`
+    #[primary_key]
+    pub key: String,
+    pub app_id: String,
+    pub status: String,
+    pub count: u64,
+}
+
+fn bump(tx: &ReducerContext, app_id: &str, status: &str, up: bool) {
+    let key = format!("{app_id}|{status}");
+    let count = tx.db.purchase_count().key().find(&key).map_or(0, |c| c.count);
+    let count = if up { count + 1 } else { count.saturating_sub(1) };
+    let row = PurchaseCount { key: key.clone(), app_id: app_id.to_string(), status: status.to_string(), count };
+    match (tx.db.purchase_count().key().find(&key).is_some(), count) {
+        (true, 0) => {
+            tx.db.purchase_count().key().delete(&key);
+        }
+        (true, _) => {
+            tx.db.purchase_count().key().update(row);
+        }
+        (false, _) => {
+            tx.db.purchase_count().insert(row);
+        }
+    }
+}
+
+/// Every new ledger row goes through here (and [`save_purchase`] for changes).
+pub fn insert_purchase(tx: &ReducerContext, p: Purchase) -> Purchase {
+    bump(tx, &p.app_id, &p.status, true);
+    tx.db.purchase().insert(p)
+}
+
+/// Every change of a ledger row goes through here: it keeps [`PurchaseCount`] in step.
+pub fn save_purchase(tx: &ReducerContext, p: Purchase) -> Purchase {
+    if let Some(old) = tx.db.purchase().id().find(&p.id) {
+        if old.status != p.status || old.app_id != p.app_id {
+            bump(tx, &old.app_id, &old.status, false);
+            bump(tx, &p.app_id, &p.status, true);
+        }
+    }
+    tx.db.purchase().id().update(p)
+}
 
 pub fn log_event(ctx: &ReducerContext, purchase_id: &str, event: &str, details: &str) {
     ctx.db.purchase_log().insert(PurchaseLog {
@@ -49,7 +102,7 @@ fn pick_price(st: &StoreTx, product: &Product, client_price_micros: i64, client_
     } else if client_price_micros > 0 && !client_currency.is_empty() {
         (client_price_micros, client_currency.to_string())
     } else {
-        (product.default_price_micros, product.currency.clone())
+        (product.price_micros, product.currency.clone())
     }
 }
 
@@ -148,13 +201,13 @@ fn record(
             p.attempts = 0;
             p.next_attempt_at_micros = next_attempt;
             p.updated_at_micros = now;
-            tx.db.purchase().id().update(p.clone());
+            crate::ledger::save_purchase(tx, p.clone());
             log_event(tx, &id, "reverified", &changes.join("; "));
             return Ok((id, Some(p)));
         }
         if filled {
             // Only the client's details: the row keeps its state and schedule.
-            tx.db.purchase().id().update(p);
+            crate::ledger::save_purchase(tx, p);
         }
         return Ok((id, None));
     }
@@ -178,7 +231,7 @@ fn record(
     // A renewal keeps the paywall of the subscription's first purchase; else the client's.
     crate::paywalls::inherit(tx, &mut row);
     crate::paywalls::attribute(&mut row, &claim.paywall);
-    tx.db.purchase().insert(row.clone());
+    crate::ledger::insert_purchase(tx, row.clone());
     log_event(
         tx,
         &id,
@@ -280,7 +333,7 @@ fn set_inactive(tx: &TxContext, mut p: Purchase, new_status: &str, expires_at_ms
     p.next_attempt_at_micros = now;
     p.updated_at_micros = now;
     let id = p.id.clone();
-    tx.db.purchase().id().update(p);
+    crate::ledger::save_purchase(tx, p);
     log_event(tx, &id, new_status, &details);
     Some(id)
 }
@@ -344,11 +397,11 @@ pub fn lease(tx: &TxContext, id: &str, app: Option<&GameApp>) -> Lease {
     }
     if is_terminal(&p.status) {
         p.next_attempt_at_micros = 0;
-        tx.db.purchase().id().update(p.clone());
+        crate::ledger::save_purchase(tx, p.clone());
         return Lease::Idle(Some(p));
     }
     p.next_attempt_at_micros = now + LEASE_MICROS;
-    tx.db.purchase().id().update(p.clone());
+    crate::ledger::save_purchase(tx, p.clone());
     let app = match app {
         Some(a) if a.app_id == p.app_id => Some(a.clone()),
         _ => config::find_app(tx, &p.app_id),
@@ -401,7 +454,7 @@ fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event:
     if lease_app.is_some() {
         p.next_attempt_at_micros = now + LEASE_MICROS;
     }
-    tx.db.purchase().id().update(p.clone());
+    crate::ledger::save_purchase(tx, p.clone());
     log_event(tx, id, to, "");
     match lease_app {
         Some(app) => prepare(tx, app.clone(), p),
@@ -419,7 +472,7 @@ fn fail(tx: &TxContext, id: &str, error: &str) -> Option<Purchase> {
     p.updated_at_micros = now;
     log::warn!("Purchase {id} step failed (attempt {}), retry in {delay}s: {error}", p.attempts);
     crate::alerts::on_purchase_failed(tx, &p);
-    tx.db.purchase().id().update(p.clone());
+    crate::ledger::save_purchase(tx, p.clone());
     crate::support::log_error(tx, id, error);
     Some(p)
 }
@@ -527,25 +580,44 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
-    let (ids, upkeep): (Vec<String>, _) = ctx.tx(|tx| {
+    let (picked, upkeep): (Vec<(String, String)>, _) = ctx.tx(|tx| {
         let now = tx_now_micros(tx);
-        let ids = tx
+        // Oldest first, at most `WORKER_PER_APP` rows of one build: a build whose calls keep
+        // failing cannot take the whole run.
+        let mut per_app: BTreeMap<String, usize> = BTreeMap::new();
+        let picked = tx
             .db
             .purchase()
             .next_attempt_at_micros()
             .filter(1i64..=now)
+            .take(WORKER_CANDIDATES)
+            .filter(|p| {
+                let n = per_app.entry(p.app_id.clone()).or_default();
+                *n += 1;
+                *n <= WORKER_PER_APP
+            })
             .take(WORKER_BATCH)
-            .map(|p| p.id)
+            .map(|p| (p.id, p.app_id))
             .collect();
         crate::access::prune_audit(tx);
-        (ids, crate::revenue::upkeep(tx))
+        (picked, crate::revenue::upkeep(tx))
     });
     let budget = Budget::new(ctx, crate::ctx::WORKER_BUDGET_SECS);
-    for id in ids {
-        if !budget.left() {
+    let purchases = Budget::new(ctx, PURCHASE_BUDGET_SECS);
+    // A build whose step ran into the call timeout is left for the next run.
+    let mut slow: BTreeSet<String> = BTreeSet::new();
+    for (id, app_id) in picked {
+        if !purchases.left() {
             break;
         }
-        advance(ctx, &id, budget);
+        if slow.contains(&app_id) {
+            continue;
+        }
+        let started = crate::ctx::last_tx_micros();
+        advance(ctx, &id, purchases);
+        if crate::ctx::last_tx_micros() - started >= crate::net::TIMEOUT_SECS as i64 * 1_000_000 {
+            slow.insert(app_id);
+        }
     }
     crate::revenue::refresh_rates(ctx, &upkeep);
     let due = ctx.tx(|tx| {

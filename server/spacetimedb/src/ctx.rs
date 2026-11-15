@@ -95,6 +95,11 @@ pub const REQUEST_BUDGET_SECS: i64 = 5;
 /// Seconds one worker run may spend starting outbound calls; the next run (a minute later) goes on.
 pub const WORKER_BUDGET_SECS: i64 = 40;
 
+/// Time of the latest transaction of this thread (what a [`Budget`] is judged by).
+pub fn last_tx_micros() -> i64 {
+    LAST_TX_MICROS.with(|c| c.get())
+}
+
 /// A deadline for starting outbound calls in one request or worker run. With each call allowed
 /// `net::TIMEOUT_SECS`, a slow store must not hold a run for minutes: work past the deadline is
 /// left to the next worker run. Time is read from the transactions the run opens anyway.
@@ -110,7 +115,7 @@ impl Budget {
 
     /// Time is left, judged by the latest transaction of this thread.
     pub fn left(&self) -> bool {
-        self.allows(LAST_TX_MICROS.with(|c| c.get()))
+        self.allows(last_tx_micros())
     }
 
     /// Time is left at `at_micros` (a transaction's time).

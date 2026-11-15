@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
 import { call, proc, select } from "@/lib/api"
 import { buildLabel, creatorBuilds, storeOf } from "@/lib/stores"
-import { errorText } from "@/lib/format"
+import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { PERIODS } from "@/lib/periods"
 import { listingOf, type GameApp, type Kind, type StoreCreateJob } from "@/lib/types"
@@ -19,8 +19,11 @@ import { listingOf, type GameApp, type Kind, type StoreCreateJob } from "@/lib/t
 export interface CreateSource {
   product_id: string
   kind: Kind
+  /** The price most builds share; builds with their own price use `prices`. */
   price_micros: number
   currency: string
+  /** Each build's saved price (builds with a price only). */
+  prices: Record<string, { price_micros: number; currency: string }>
   title: string
   description: string
   period: string
@@ -106,6 +109,12 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
     }
   })
   const request = () => JSON.stringify({ app_ids: pickedBuilds.map((a) => a.app_id), products: inputs() })
+  /** A build's own saved price when it differs from the product's shared one, else the draft price. */
+  const forBuild = <T extends { product_id: string; price_micros: number; currency: string }>(appId: string, item: T): T => {
+    const p = products.find((x) => x.product_id === item.product_id)
+    const own = p?.prices[appId]
+    return own && (own.price_micros !== p!.price_micros || own.currency !== p!.currency) ? { ...item, ...own } : item
+  }
 
   const check = async () => {
     setBusy(true)
@@ -127,7 +136,7 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
     try {
       for (const a of pickedBuilds) {
         const ids = new Set(preview.rows.filter((r) => r.app_id === a.app_id && r.status === "create").map((r) => r.product_id))
-        const items = all.filter((p) => ids.has(p.product_id))
+        const items = all.filter((p) => ids.has(p.product_id)).map((p) => forBuild(a.app_id, p))
         if (!items.length) continue
         await call("admin_store_create", JSON.stringify({ app_ids: [a.app_id], products: items }))
         started += items.length
@@ -148,8 +157,9 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
     const byId = new Map(inputs().map((p) => [p.product_id, p]))
     const items = existing.map((r) => {
       const p = byId.get(r.product_id)
+      const price = p ? forBuild(r.app_id, p) : { price_micros: 0, currency: "" }
       return {
-        app_id: r.app_id, product_id: r.store_product_id, catalog_id: r.product_id, kind: r.kind, default_price_micros: p?.price_micros || 0, currency: p?.currency || "",
+        app_id: r.app_id, product_id: r.store_product_id, catalog_id: r.product_id, kind: r.kind, price_micros: price.price_micros, currency: price.currency,
         ...listingOf(p),
       }
     })
@@ -208,9 +218,14 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
                 {
                   title: "Price",
                   cell: (p) => (
-                    <div className="flex gap-1">
-                      <Input className="h-8 w-20" type="number" step="0.01" min="0" value={drafts[p.product_id].price} onChange={(e) => set(p.product_id, { price: e.target.value })} />
-                      <Input className="h-8 w-16" value={drafts[p.product_id].currency} onChange={(e) => set(p.product_id, { currency: e.target.value })} />
+                    <div className="space-y-1">
+                      <div className="flex gap-1">
+                        <Input className="h-8 w-20" type="number" step="0.01" min="0" value={drafts[p.product_id].price} onChange={(e) => set(p.product_id, { price: e.target.value })} />
+                        <Input className="h-8 w-16" value={drafts[p.product_id].currency} onChange={(e) => set(p.product_id, { currency: e.target.value })} />
+                      </div>
+                      {pickedBuilds.filter((a) => { const own = p.prices[a.app_id]; return own && (own.price_micros !== p.price_micros || own.currency !== p.currency) }).map((a) => (
+                        <div key={a.app_id} className="text-xs whitespace-nowrap text-muted-foreground">{buildLabel(a)}: {money(p.prices[a.app_id].price_micros, p.prices[a.app_id].currency)}</div>
+                      ))}
                     </div>
                   ),
                 },

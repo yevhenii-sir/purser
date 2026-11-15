@@ -225,11 +225,11 @@ pub fn parse_prices(json: &str) -> Result<BTreeMap<String, i64>, String> {
 }
 
 /// Price charged for a product, in the player's wallet currency when the product has a price in it,
-/// otherwise in the catalog currency (`default_price_micros` + `currency`), which Steam converts at
+/// otherwise in the catalog currency (`price_micros` + `currency`), which Steam converts at
 /// the current rate. Returns `(currency, hundredths)`.
 pub fn pick_price(
     prices: &BTreeMap<String, i64>,
-    default_price_micros: i64,
+    price_micros: i64,
     default_currency: &str,
     wallet_currency: &str,
 ) -> Result<(String, i64), String> {
@@ -237,12 +237,12 @@ pub fn pick_price(
         return Ok((wallet_currency.to_ascii_uppercase(), *cents));
     }
     let currency = default_currency.trim().to_ascii_uppercase();
-    let cents = default_price_micros / 10_000;
+    let cents = price_micros / 10_000;
     if valid_currency(&currency) && cents > 0 {
         return Ok((currency, cents));
     }
     Err(format!(
-        "no Steam price in {wallet_currency} and no catalog price (default_price_micros + currency) to convert from"
+        "no Steam price in {wallet_currency} and no catalog price (price_micros + currency) to convert from"
     ))
 }
 

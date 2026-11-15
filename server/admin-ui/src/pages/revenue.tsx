@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, XAxis, YAxis } from "recharts"
-import { DownloadIcon, PercentIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, TriangleAlertIcon, XIcon } from "lucide-react"
+import { DownloadIcon, PercentIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
@@ -9,14 +9,16 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
+import { AppCombobox } from "@/components/app-combobox"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Section, Stat } from "@/components/common"
 import { RevenueTree } from "@/components/revenue-tree"
 import { RichTable, type RichColumn } from "@/components/rich-table"
 import { call, proc } from "@/lib/api"
-import { useAppName, useApps } from "@/lib/apps"
+import { useAppIndex, type AppGroup } from "@/lib/apps"
 import { money, pct, shortDay, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { revenueStats } from "@/lib/revenue"
+import { buildLabel } from "@/lib/stores"
 import type { Cohort, Money, Stats } from "@/lib/types"
 import { downloadBlob } from "@/lib/utils"
 import type { PageProps } from "@/routes"
@@ -78,6 +80,43 @@ function moneyColumns<T extends Money>(): RichColumn<T>[] {
 
 const payments = (m: Money) => m.purchases + m.new_subscriptions + m.renewals
 
+const MONEY_KEYS = [
+  "gross_usd_micros", "refunded_usd_micros", "net_usd_micros", "purchases", "new_subscriptions", "renewals", "refunds", "transfers",
+  "expirations", "trials", "trial_conversions", "store_fee_usd_micros", "proceeds_usd_micros",
+] as const satisfies readonly (keyof Money)[]
+
+type BuildRow = Stats["by_app"][number]
+
+/** One app of the "By app" breakdown: its builds' rows added up. */
+interface AppRevenue extends Money {
+  key: string
+  name: string
+  builds: BuildRow[]
+  /** Lowest and highest store fee of its builds. */
+  fee: [number, number]
+}
+
+/** Build rows grouped by app (`game_key`); builds the app list does not know are an app of their own. */
+function revenueByApp(rows: BuildRow[], groupOf: Map<string, AppGroup>): AppRevenue[] {
+  const out = new Map<string, AppRevenue>()
+  for (const row of rows) {
+    const g = groupOf.get(row.app_id)
+    const key = g?.key ?? row.app_id
+    let a = out.get(key)
+    if (!a) {
+      const zero = Object.fromEntries(MONEY_KEYS.map((k) => [k, 0])) as unknown as Money
+      a = { ...zero, key, name: g?.name ?? row.app_id, builds: [], fee: [row.commission_percent, row.commission_percent] }
+      out.set(key, a)
+    }
+    a.builds.push(row)
+    for (const k of MONEY_KEYS) a[k] += row[k] || 0
+    a.fee = [Math.min(a.fee[0], row.commission_percent), Math.max(a.fee[1], row.commission_percent)]
+  }
+  return [...out.values()]
+}
+
+const feeText = ([lo, hi]: [number, number]) => (lo === hi ? `${lo}%` : `${lo}–${hi}%`)
+
 /** `fixedGame`: only this app (the app page); `embedded`: no page header. */
 export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: string; embedded?: boolean }) {
   const [days, setDays] = useState("30")
@@ -86,10 +125,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
   const [fxDialog, setFxDialog] = useState<string | null>(null)
   const [feeDialog, setFeeDialog] = useState(false)
 
-  // The game filter of the Revenue page; the app page passes its app instead.
-  const apps = useApps().apps
-  const appName = useAppName()
-  const games = useMemo(() => (fixedGame ? [] : [...new Set((apps || []).map((a) => a.game_key))].filter(Boolean).sort()), [fixedGame, apps])
+  const { groupOf, builds } = useAppIndex()
   const { data: r, error, loading, reload } = useAsync(async ({ fresh }) => {
     const to = new Date()
     const from = new Date(to.getTime() - (Number(days) - 1) * 86_400_000)
@@ -104,6 +140,11 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
   }
 
   const subs = r?.subscriptions
+  // "Android", "iOS", "Web · Stripe": the store of a build the app list knows.
+  const buildText = useCallback((appId: string) => {
+    const b = builds.get(appId)
+    return b ? buildLabel(b) : ""
+  }, [builds])
   const hasSubs = !!subs && (subs.active_now > 0 || subs.new_subscriptions + subs.trials_started + subs.renewals + subs.expirations > 0)
 
   return (
@@ -120,13 +161,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
           <SelectContent>{RANGES.map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}</SelectContent>
         </Select>
         {!fixedGame && (
-          <Select value={game} onValueChange={setGame}>
-            <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL}>All apps</SelectItem>
-              {games.map((g) => <SelectItem key={g} value={g}>{appName(g)}</SelectItem>)}
-            </SelectContent>
-          </Select>
+          <AppCombobox mode="app" allowAll value={game === ALL ? "" : game} onChange={(g) => setGame(g || ALL)} className="w-56" />
         )}
         <div className="flex items-center gap-2">
           <Switch id="sandbox" checked={sandbox} onCheckedChange={setSandbox} />
@@ -281,59 +316,53 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
               initialSort={{ id: "Net", desc: true }}
               empty="No sales in this period."
               columns={[
-                { title: "App", sort: (x) => x.app_id, cell: (x) => x.app_id },
+                {
+                  title: "App",
+                  size: 220,
+                  sort: (x) => `${groupOf.get(x.app_id)?.name ?? x.app_id} ${x.app_id}`,
+                  cell: (x) => <AppCell name={groupOf.get(x.app_id)?.name} build={x.app_id} label={buildText(x.app_id)} />,
+                },
                 { title: "Product", sort: (x) => x.product_id, cell: (x) => <Mono>{x.product_id}</Mono> },
                 ...moneyColumns<(typeof r.by_product)[number]>(),
               ]}
             />
           </Section>
-          <div className="grid gap-6 xl:grid-cols-2">
-            <Section title="By app">
-              <DataTable
-                rows={r.by_app}
-                empty="No sales in this period."
-                columns={[
-                  { title: "App", cell: (x) => x.app_id },
-                  ...moneyColumns().slice(0, 4),
-                  { title: "Fee", cell: (x) => `${x.commission_percent}%`, num: true },
-                ]}
-              />
-            </Section>
-            <Section
-              title="By currency"
-              description={`ECB rates as of ${r.fx.as_of || "—"}.`}
-              actions={<Button size="sm" variant="outline" onClick={() => setFxDialog("")}><PlusIcon /> Manual rate</Button>}
-            >
-              <DataTable
-                rows={r.by_currency}
-                empty="No sales in this period."
-                columns={[
-                  { title: "Currency", cell: (x) => x.currency || "(no price)" },
-                  { title: "Gross", cell: (x) => money(x.gross_micros, x.currency), num: true },
-                  { title: "Refunds", cell: (x) => money(x.refunded_micros, x.currency), num: true },
-                  {
-                    title: "Gross, USD",
-                    num: true,
-                    cell: (x) => (x.converted ? usd(x.gross_usd_micros) : <Button size="xs" variant="outline" onClick={() => setFxDialog(x.currency)}>Set rate</Button>),
-                  },
-                ]}
-              />
-              {Object.keys(r.fx.overrides).length > 0 && (
-                <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
-                  <span className="text-muted-foreground">Manual rates:</span>
-                  {Object.entries(r.fx.overrides).map(([c, v]) => (
-                    <span key={c} className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-xs">
-                      1 USD = {v} {c}
-                      <button className="text-muted-foreground hover:text-foreground" aria-label={`Remove ${c}`}
-                        onClick={() => tryAct(() => call("admin_delete_fx_override", c), "Removed").then(reload)}>
-                        <XIcon className="size-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </Section>
-          </div>
+          {/* Full width: with many apps the table needs its columns. */}
+          <ByAppSection stats={r} groupOf={groupOf} buildText={buildText} />
+          <Section
+            title="By currency"
+            description={`ECB rates as of ${r.fx.as_of || "—"}.`}
+            actions={<Button size="sm" variant="outline" onClick={() => setFxDialog("")}><PlusIcon /> Manual rate</Button>}
+          >
+            <DataTable
+              rows={r.by_currency}
+              empty="No sales in this period."
+              columns={[
+                { title: "Currency", cell: (x) => x.currency || "(no price)" },
+                { title: "Gross", cell: (x) => money(x.gross_micros, x.currency), num: true },
+                { title: "Refunds", cell: (x) => money(x.refunded_micros, x.currency), num: true },
+                {
+                  title: "Gross, USD",
+                  num: true,
+                  cell: (x) => (x.converted ? usd(x.gross_usd_micros) : <Button size="xs" variant="outline" onClick={() => setFxDialog(x.currency)}>Set rate</Button>),
+                },
+              ]}
+            />
+            {Object.keys(r.fx.overrides).length > 0 && (
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">
+                <span className="text-muted-foreground">Manual rates:</span>
+                {Object.entries(r.fx.overrides).map(([c, v]) => (
+                  <span key={c} className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-xs">
+                    1 USD = {v} {c}
+                    <button className="text-muted-foreground hover:text-foreground" aria-label={`Remove ${c}`}
+                      onClick={() => tryAct(() => call("admin_delete_fx_override", c), "Removed").then(reload)}>
+                      <XIcon className="size-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </Section>
 
           <Section
             title="By country"
@@ -408,6 +437,59 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
   )
 }
 
+/** App name with the build (store and app id) on a second line. */
+function AppCell({ name, build, label }: { name?: string; build: string; label: string }) {
+  return (
+    <span className="flex min-w-0 flex-col" title={build}>
+      <span className="truncate">{name ?? build}</span>
+      {name !== undefined && (
+        <span className="truncate text-xs text-muted-foreground">
+          {label && `${label} · `}<span className="font-mono">{build}</span>
+        </span>
+      )}
+    </span>
+  )
+}
+
+/** Revenue per app (its builds added up), the builds listed under the name. */
+function ByAppSection({ stats, groupOf, buildText }: { stats: Stats; groupOf: Map<string, AppGroup>; buildText: (appId: string) => string }) {
+  const rows = useMemo(() => revenueByApp(stats.by_app, groupOf), [stats.by_app, groupOf])
+  const columns = useMemo<RichColumn<AppRevenue>[]>(
+    () => [
+      {
+        title: "App",
+        size: 240,
+        sort: (x) => x.name,
+        cell: (x) => (
+          <span className="flex min-w-0 flex-col">
+            <span className="truncate">{x.name}</span>
+            <span className="truncate text-xs text-muted-foreground" title={x.builds.map((b) => `${b.app_id}: ${usd(b.net_usd_micros)} net`).join("\n")}>
+              {x.builds.map((b) => buildText(b.app_id) || b.app_id).join(" · ")}
+            </span>
+          </span>
+        ),
+      },
+      ...moneyColumns<AppRevenue>().slice(0, 4),
+      { title: "Payments", sort: (x) => payments(x), cell: (x) => payments(x), num: true },
+      { title: "Fee", sort: (x) => x.fee[1], cell: (x) => feeText(x.fee), num: true },
+    ],
+    [buildText],
+  )
+  const exportCsv = () =>
+    downloadCsv(`revenue_by_app_${stats.from}_${stats.to}.csv`, [
+      ["app_key", "app_name", "app_id", "gross_usd_micros", "refunded_usd_micros", "net_usd_micros", "store_fee_usd_micros", "proceeds_usd_micros", "payments", "refunds", "commission_percent"],
+      // One line per build, so the file can be summed by app or by build.
+      ...rows.flatMap((x) =>
+        x.builds.map((b) => [x.key, x.name, b.app_id, b.gross_usd_micros, b.refunded_usd_micros, b.net_usd_micros, b.store_fee_usd_micros, b.proceeds_usd_micros, payments(b), b.refunds, b.commission_percent]),
+      ),
+    ])
+  return (
+    <Section title="By app" actions={rows.length > 0 && <CsvButton onClick={exportCsv} />}>
+      <RichTable rows={rows} columns={columns} rowKey={(x) => x.key} noun="apps" pageSize={10} initialSort={{ id: "Net", desc: true }} empty="No sales in this period." />
+    </Section>
+  )
+}
+
 /** Cohort table: cumulative net revenue per payer by month since the first payment. */
 function CohortSection({ cohorts, from, to }: { cohorts: Cohort[]; from: string; to: string }) {
   const months = Math.max(0, ...cohorts.map((c) => c.per_payer_usd_micros.length))
@@ -479,7 +561,23 @@ function FeeDialog({ stats, onClose, onSaved }: { stats: Stats; onClose: () => v
   const [byApp, setByApp] = useState<Record<string, string>>(() =>
     Object.fromEntries(Object.entries(stats.proceeds.by_app).map(([a, v]) => [a, String(v)])),
   )
-  const apps = [...new Set([...stats.by_app.map((a) => a.app_id), ...Object.keys(stats.proceeds.by_app)])].sort()
+  const { groupOf, builds } = useAppIndex()
+  const [find, setFind] = useState("")
+  // Builds with sales or an own rate, app by app.
+  const apps = useMemo(
+    () =>
+      [...new Set([...stats.by_app.map((a) => a.app_id), ...Object.keys(stats.proceeds.by_app)])]
+        .map((id) => {
+          const g = groupOf.get(id)
+          const b = builds.get(id)
+          const name = g ? `${g.name}${b ? ` · ${buildLabel(b)}` : ""}` : ""
+          return { id, name, text: `${id} ${name} ${g?.key ?? ""}`.toLowerCase() }
+        })
+        .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id)),
+    [stats, groupOf, builds],
+  )
+  const words = find.toLowerCase().split(/\s+/).filter(Boolean)
+  const shown = apps.filter((a) => words.every((w) => a.text.includes(w)))
 
   const save = async () => {
     const num = (s: string) => Number(s.replace(",", "."))
@@ -522,9 +620,19 @@ function FeeDialog({ stats, onClose, onSaved }: { stats: Stats; onClose: () => v
             {apps.length > 0 && (
               <div className="grid gap-2">
                 <Label className="text-xs text-muted-foreground">Per build (empty: default)</Label>
-                {apps.map((a) => (
+                {apps.length > 5 && (
+                  <div className="relative">
+                    <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input className="pl-8" placeholder="Filter by app name or app id" value={find} onChange={(e) => setFind(e.target.value)} aria-label="Filter builds" />
+                  </div>
+                )}
+                {shown.length === 0 && <p className="py-2 text-center text-sm text-muted-foreground">No build matches.</p>}
+                {shown.map(({ id: a, name }) => (
                   <div key={a} className="flex items-center gap-2">
-                    <Mono className="min-w-0 flex-1 truncate">{a}</Mono>
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      {name && <span className="truncate text-sm">{name}</span>}
+                      <Mono className="truncate">{a}</Mono>
+                    </span>
                     <Input
                       value={byApp[a] ?? ""}
                       onChange={(e) => setByApp({ ...byApp, [a]: e.target.value })}

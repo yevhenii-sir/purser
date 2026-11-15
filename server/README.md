@@ -44,7 +44,7 @@ Google RTDN / App Store Notifications V2 / Amazon RTN ──▶ /notify/<store> 
 Features:
 - **Overview:** server status, counters (`admin_overview`), net revenue for 30 days, purchases by status, “stuck” purchases with errors.
 - **Revenue:** net revenue, refunds, purchases, subscriptions and MRR in USD, charts and breakdowns by app, product and currency; see [docs/analytics.md](../docs/analytics.md).
-- **Apps:** one page per app (its Android and iOS builds share a `game_key`) with the tabs **Setup** (setup check, URLs to paste into the stores), **Products** (one table for both builds, **Import from Google Play**, copy to iOS), **Delivery**, **Integrations**, **Keys** (every secret the builds need and where it comes from), **Purchases** and **Revenue**. The **Add an app** wizard creates an app end to end.
+- **Apps:** one page per app (its Android and iOS builds share a `game_key`) with the tabs **Setup** (setup check, URLs to paste into the stores), **Products** (one table for both builds, **Import from Google Play**, copy to iOS), **Delivery**, **Integrations**, **Keys** (every secret the builds need and where it comes from), **Purchases** and **Revenue**. The **Add an app** wizard creates an app end to end. The apps list reads one row per build from `admin_apps_summary`; each build keeps its own product price (e.g. a higher App Store price).
 - **Developer accounts:** keys shared by every app of an account. **Server:** allowed SpacetimeDB hosts, the public address, all secrets by scope.
 - **Secrets:** list of names and writing new values (a `.json` / `.p8` file can be uploaded). The page never reads or displays values.
 - **Integrations:** connecting AppsFlyer, event names, “Send test event”.
@@ -106,7 +106,7 @@ Every per-store fact lives in one registry, [`core/src/registry.rs`](core/src/re
 
 ### Products (`product`)
 
-`kind`: `consumable` (Google consume), `non_consumable` (acknowledge), `subscription` (acknowledge). Amazon `CONSUMABLE` / `ENTITLED` / `SUBSCRIPTION` receipts must match the kind. `default_price_micros` + `currency` are used for GA4 revenue when neither the store nor the client sent a price.
+`kind`: `consumable` (Google consume), `non_consumable` (acknowledge), `subscription` (acknowledge). Amazon `CONSUMABLE` / `ENTITLED` / `SUBSCRIPTION` receipts must match the kind. `price_micros` + `currency` are used for GA4 revenue when neither the store nor the client sent a price.
 
 `catalog_id` is the app's own id of the product, the same in every store (the Unity config's product `id`): paywalls list it, `/entitlements` and webhook events (`catalog_product_id`) carry it, and the admin page shows one row per catalog id with each build's store id. Empty means the same as `product_id`, which is what a product needs while every store uses one id; set it when a store has its own id (a Stripe Price id, a reverse-domain App Store id, an Amazon term SKU). One catalog id per build; in `admin_upsert_products` a missing `catalog_id` keeps the stored one and an empty one clears it. Create in store sets it when the store's id differs. The ledger, store calls and revenue keep the store ids.
 
@@ -150,7 +150,7 @@ After `integrations.json` it loads, when present: `paywalls.json` (`admin_upsert
 
 `admin_check_app(app_id, options_json)` (a procedure; the app's **Setup** tab in the admin panel, `python seed.py --check-only`) checks one app and returns a report with a level (`ok` / `warn` / `fail`) and a fix for every item:
 
-- the app and its products (Android products without a default price are counted as 0 revenue);
+- the app and its products (Android products without a price are counted as 0 revenue);
 - which secrets are set and from which scope; the service account's `client_email` (the account to invite in Play Console), the `.p8` key;
 - Google Play API access with the app's permissions; App Store Server API access and, on the next run, whether Apple delivered the test notification to the server; whether Amazon RVS accepts the shared secret; whether Xsolla accepts the API key and lists the products as enabled virtual items; whether Stripe accepts the key (and its mode fits the build's sandbox setting) and every product is an active Stripe Price of the right type;
 - whether store notifications arrive, and whether they arrive with a wrong secret or signature; for Amazon the endpoint confirmation token to paste into the Developer Console;
@@ -194,7 +194,7 @@ Managing admins:
 - `admin_add_admin(identity)` is kept for scripts; it adds an Admin and needs the owner.
 - `admin_me()` returns the caller's `{identity, name, role, owner}`.
 
-Admins who are not the owner cannot read private tables with `/sql`. The admin page reads through `admin_read(table, column, value)` instead, which applies the role check and never returns credential values.
+Admins who are not the owner cannot read private tables with `/sql`. The admin page reads through `admin_select(query_json)` instead (`{"table", "columns"?, "where"?: {"column", "equals": value or [values]}}`): it applies the role check, looks rows up through the table's indexes, returns only the asked columns and never credential values.
 
 Every change is recorded in `admin_audit`: who, the reducer, the target and a short detail with secret-looking fields hidden. Rows are kept 180 days, at most 10 000.
 
@@ -240,7 +240,7 @@ The response also contains `transaction_id`, `product_id`, `is_sub`, `expires_da
 
 ### `POST /checkout/steam`
 
-`{"app_id": "480", "product_id": "gems_100", "user_id": "...", "steam_id": "<SteamID64>", "language": "<ISteamApps::GetCurrentGameLanguage(), e.g. english>", "ticket": "<hex Web API auth ticket>"}`. `ticket` (optional) comes from `ISteamUser::GetAuthTicketForWebApi("purser")`: the server checks with `AuthenticateUserTicket` that it belongs to `steam_id` and answers 403 otherwise; a build with `require_ticket` refuses checkouts without one. The server asks `GetUserInfo` for the player's wallet currency and country, picks the price (the item's price in that currency, else the catalog `default_price_micros` + `currency`, which Steam converts), generates the order id and calls `InitTxn`; Steam shows the overlay. Answer: `{"status": "ok", "order_id": "<u64 as a string>", "trans_id": "...", "currency": "EUR", "amount": 179, "environment": "production" | "sandbox"}` (`amount` in hundredths). Errors: 400 `error` (bad request, e.g. not logged in to Steam), 403 `forbidden` (locked account, restricted country), 500 / 502 `error` (configuration / Steam unavailable).
+`{"app_id": "480", "product_id": "gems_100", "user_id": "...", "steam_id": "<SteamID64>", "language": "<ISteamApps::GetCurrentGameLanguage(), e.g. english>", "ticket": "<hex Web API auth ticket>"}`. `ticket` (optional) comes from `ISteamUser::GetAuthTicketForWebApi("purser")`: the server checks with `AuthenticateUserTicket` that it belongs to `steam_id` and answers 403 otherwise; a build with `require_ticket` refuses checkouts without one. The server asks `GetUserInfo` for the player's wallet currency and country, picks the price (the item's price in that currency, else the catalog `price_micros` + `currency`, which Steam converts), generates the order id and calls `InitTxn`; Steam shows the overlay. Answer: `{"status": "ok", "order_id": "<u64 as a string>", "trans_id": "...", "currency": "EUR", "amount": 179, "environment": "production" | "sandbox"}` (`amount` in hundredths). Errors: 400 `error` (bad request, e.g. not logged in to Steam), 403 `forbidden` (locked account, restricted country), 500 / 502 `error` (configuration / Steam unavailable).
 
 Orders live in `steam_order` (`initiated` → `authorized` → `finalized`, or `denied` / `failed` / `refunded`). The worker re-queries orders the client never verified (10 min after the checkout, backoff to 24 h, then given up), finalizes ones the player authorized, and every 5 minutes per build polls `GetReport` (`GAMESALES`, cursor in `steam_report`) to revoke refunded and charged-back purchases. Steam settings per build: `admin_set_steam_build` (`{"app_id", "steam_app_id"?, "sandbox"?, "require_ticket"?}`; a missing `require_ticket` keeps its value) and per product `admin_upsert_steam_items` (`{"app_id", "product_id", "item_id"?, "description"?, "prices"?: {"USD": 199}, "period"?, "frequency"?}`), or `steam.json` for `seed.py`. See [docs/store-setup.md](../docs/store-setup.md#steam).
 

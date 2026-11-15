@@ -1,4 +1,4 @@
-import { createContext, createElement, useContext, useEffect, useState, type ReactNode } from "react"
+import { createContext, createElement, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
 import { select } from "./api"
 import { errorText } from "./format"
 import { PLATFORMS } from "./stores"
@@ -56,27 +56,46 @@ export interface AppsState {
 
 const AppsContext = createContext<AppsState>({ apps: null, groups: null, names: {}, error: "" })
 
-/** Loads `game_app` once for every page and again whenever `appsChanged()` is called. */
+/** Reloads on window focus at most this often (another admin may have added an app). */
+const FOCUS_RELOAD_MS = 60_000
+
+/** Loads `game_app` once for every page, again whenever `appsChanged()` is called, and on window
+ * focus at most once a minute. A reload that finds nothing new keeps the previous state, so pages
+ * keyed on the app list do not reload. */
 export function AppsProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppsState>({ apps: null, groups: null, names: {}, error: "" })
   useEffect(() => {
     let alive = true
     let seq = 0
+    let loadedAt = 0
+    let last = ""
     const load = () => {
       const mine = ++seq
+      loadedAt = Date.now()
       // A module older than app_profile has no such table: no names then.
       const names = select<{ game_key: string; display_name: string }>({ table: "app_profile" })
         .then((rows) => Object.fromEntries(rows.map((r) => [r.game_key, r.display_name])) as AppNames)
         .catch(() => ({}) as AppNames)
       Promise.all([select<GameApp>({ table: "game_app" }), names])
-        .then(([apps, names]) => alive && mine === seq && setState({ apps, groups: groupApps(apps, names), names, error: "" }))
+        .then(([apps, names]) => {
+          if (!alive || mine !== seq) return
+          const snapshot = JSON.stringify([apps, names])
+          if (snapshot === last) return setState((s) => (s.error ? { ...s, error: "" } : s))
+          last = snapshot
+          setState({ apps, groups: groupApps(apps, names), names, error: "" })
+        })
         .catch((e) => alive && mine === seq && setState((s) => ({ ...s, error: errorText(e) })))
+    }
+    const onFocus = () => {
+      if (Date.now() - loadedAt >= FOCUS_RELOAD_MS) load()
     }
     load()
     window.addEventListener(CHANGED, load)
+    window.addEventListener("focus", onFocus)
     return () => {
       alive = false
       window.removeEventListener(CHANGED, load)
+      window.removeEventListener("focus", onFocus)
     }
   }, [])
   return createElement(AppsContext.Provider, { value: state }, children)
@@ -102,4 +121,35 @@ export function useGroups() {
 /** Accounts named by the apps, without "default". */
 export function accountsOf(apps: { account: string }[]): string[] {
   return [...new Set(apps.map((a) => a.account).filter((a) => a && a !== "default"))].sort()
+}
+
+/** Lower-case text an app is found by: display name, key and every build's app id. */
+export function appSearchText(g: AppGroup): string {
+  return `${g.name} ${g.key} ${g.apps.map((a) => a.app_id).join(" ")}`.toLowerCase()
+}
+
+/**
+ * How well `text` matches `query`: every word of the query appears in it, in any order
+ * ("rings17 keys" finds "puzzle-17 → Keys"). 0: no match; 1: the text starts with the first word;
+ * 0.5: any other match. An empty query matches everything (1).
+ */
+export function matchWords(text: string, query: string): number {
+  const hay = text.toLowerCase()
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  if (!words.length) return 1
+  if (!words.every((w) => hay.includes(w))) return 0
+  return hay.startsWith(words[0]) ? 1 : 0.5
+}
+
+/** Builds by app id, and the app (group) of each build, indexed once per app list. */
+export function useAppIndex() {
+  const { apps, groups } = useApps()
+  return useMemo(() => {
+    const builds = new Map<string, GameApp>()
+    const groupOf = new Map<string, AppGroup>()
+    for (const a of apps || []) builds.set(a.app_id, a)
+    for (const g of groups || []) for (const a of g.apps) groupOf.set(a.app_id, g)
+    const byKey = new Map((groups || []).map((g) => [g.key, g]))
+    return { builds, groupOf, byKey }
+  }, [apps, groups])
 }

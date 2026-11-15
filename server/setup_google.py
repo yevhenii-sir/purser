@@ -55,10 +55,13 @@ def store_of(build, platforms):
 
 
 def read(base, db, tok, table, column="", value=""):
-    """Rows through `admin_read`: works for every admin, not only the database owner."""
-    v = stdb.call(base, db, tok, "admin_read", table, column, value)
+    """Rows through `admin_select`: works for every admin, not only the database owner."""
+    query = {"table": table}
+    if column:
+        query["where"] = {"column": column, "equals": value}
+    v = stdb.call(base, db, tok, "admin_select", json.dumps(query))
     if isinstance(v, dict) and "error" in v:
-        sys.exit(f"admin_read {table} failed: {v['error']}")
+        sys.exit(f"admin_select {table} failed: {v['error']}")
     return v or []
 
 

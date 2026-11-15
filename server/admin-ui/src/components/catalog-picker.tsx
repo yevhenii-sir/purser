@@ -9,7 +9,7 @@ import type { CatalogRow, Kind } from "@/lib/types"
 export interface PickedProduct {
   product_id: string
   kind: Kind
-  default_price_micros: number
+  price_micros: number
   currency: string
   /** Subscription period when the source knows it (store catalog, Unity config). */
   period?: string
@@ -35,7 +35,7 @@ export function CatalogPicker({ rows, onChange, empty = "The store has no produc
         .filter((r) => picked[r.product_id])
         .map((r) => {
           const period = kinds[r.product_id] === "subscription" ? r.period || periodOfDays(r.billing_period_days) : ""
-          return { product_id: r.product_id, kind: kinds[r.product_id], default_price_micros: r.price_micros, currency: r.currency, ...(period ? { period } : {}) }
+          return { product_id: r.product_id, kind: kinds[r.product_id], price_micros: r.price_micros, currency: r.currency, ...(period ? { period } : {}) }
         }),
     )
   }, [rows, picked, kinds, onChange])

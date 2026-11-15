@@ -300,7 +300,7 @@ def export(a, d, force):
     if names:
         files["app_names.json"] = dict(sorted(names.items()))
 
-    products = [{k: p[k] for k in ("app_id", "product_id", "kind", "default_price_micros", "currency")}
+    products = [{k: p[k] for k in ("app_id", "product_id", "kind", "price_micros", "currency")}
                 for p in sorted(sql(a, "SELECT * FROM product"), key=lambda p: (p["app_id"], p["product_id"]))]
     if products:
         files["products.json"] = products
@@ -555,7 +555,7 @@ def init(a):
             non_cons = {x.strip() for x in v.split(",") if x.strip()}
         rows = [{"app_id": b["app_id"], "product_id": r["product_id"],
                  "kind": "non_consumable" if r["product_id"] in non_cons else r["kind"],
-                 "default_price_micros": r.get("price_micros", 0), "currency": r.get("currency", "")} for r in new]
+                 "price_micros": r.get("price_micros", 0), "currency": r.get("currency", "")} for r in new]
         targets = [b["app_id"]] + [o["app_id"] for o in builds if o is not b and not stores[o["store"]].get("product_import")
                                    and ask_yes(f"  Add the same products to {o['app_id']}?")]
         rows = [dict(r, app_id=t) for t in targets for r in rows]

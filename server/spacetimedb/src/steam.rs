@@ -41,7 +41,7 @@ pub struct SteamBuild {
 }
 
 /// How a product is sold on Steam. No row: item id from the product id, description = product id,
-/// price from the catalog (`default_price_micros` + `currency`, converted by Steam), monthly.
+/// price from the catalog (`price_micros` + `currency`, converted by Steam), monthly.
 #[derive(Clone)]
 #[spacetimedb::table(accessor = steam_item)]
 pub struct SteamItem {
@@ -111,9 +111,10 @@ pub struct SteamReport {
 
 /// `server_state` key of the last order id handed out.
 const LAST_ORDER_KEY: &str = "steam_last_order_id";
-/// Orders and builds handled per worker run (each a few calls).
-const ORDER_BATCH: usize = 5;
-const REPORT_BATCH: usize = 2;
+/// Orders and builds handled per worker run at most (each a few calls; the worker budget
+/// usually stops earlier).
+const ORDER_BATCH: usize = 20;
+const REPORT_BATCH: usize = 10;
 /// First look at an order the client never verified.
 const FIRST_CHECK_MICROS: i64 = 10 * 60 * 1_000_000;
 /// Retry of a verify whose call failed.
@@ -483,7 +484,7 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> (u16, Value) {
         return answer(403, "forbidden", "this Steam account cannot make purchases (locked)");
     }
     let prices = s::parse_prices(&item.prices_json).unwrap_or_default();
-    let (currency, amount) = match s::pick_price(&prices, product.default_price_micros, &product.currency, &user.currency) {
+    let (currency, amount) = match s::pick_price(&prices, product.price_micros, &product.currency, &user.currency) {
         Ok(p) => p,
         Err(e) => {
             log::error!("Steam checkout for {}:{}: {e}", app.app_id, product.product_id);
@@ -818,7 +819,8 @@ pub struct Due {
 pub fn due(tx: &TxContext) -> Due {
     let now = tx_now_micros(tx);
     let orders = tx.db.steam_order().next_check_at_micros().filter(1i64..=now).take(ORDER_BATCH).map(|o| o.order_id).collect();
-    let reports = tx
+    // The builds waiting longest first, so none waits behind the others.
+    let mut reports: Vec<(GameApp, SteamReport)> = tx
         .db
         .game_app()
         .iter()
@@ -828,8 +830,9 @@ pub fn due(tx: &TxContext) -> Due {
             (a, row)
         })
         .filter(|(_, r)| r.next_poll_at_micros <= now)
-        .take(REPORT_BATCH)
         .collect();
+    reports.sort_by_key(|(_, r)| r.next_poll_at_micros);
+    reports.truncate(REPORT_BATCH);
     let prune = settings::get(tx, PRUNED_DAY_KEY).and_then(|d| d.parse::<i32>().ok()) != Some(day_of_micros(now));
     Due { orders, reports, prune }
 }
@@ -1149,10 +1152,10 @@ pub fn doctor_check(ctx: &mut impl Ctx, app: &GameApp, key: Option<&str>, online
     for (p, i) in products.iter().zip(&items) {
         let prices = s::parse_prices(&i.prices_json).unwrap_or_default();
         currencies.extend(prices.keys().cloned());
-        if prices.is_empty() && (p.default_price_micros < 10_000 || p.currency.len() != 3) {
+        if prices.is_empty() && (p.price_micros < 10_000 || p.currency.len() != 3) {
             unpriced.push(p.product_id.clone());
         }
-        if p.currency.len() == 3 && p.default_price_micros >= 10_000 {
+        if p.currency.len() == 3 && p.price_micros >= 10_000 {
             currencies.insert(format!("{} (converted)", p.currency.to_ascii_uppercase()));
         }
     }
@@ -1163,7 +1166,7 @@ pub fn doctor_check(ctx: &mut impl Ctx, app: &GameApp, key: Option<&str>, online
             verdict(
                 Level::Fail,
                 format!("no price: {}", unpriced.iter().take(5).cloned().collect::<Vec<_>>().join(", ")),
-                "Set default_price_micros and currency on the product, or per-currency prices with admin_upsert_steam_items",
+                "Set price_micros and currency on the product, or per-currency prices with admin_upsert_steam_items",
             )
         } else if products.is_empty() {
             verdict(Level::Skip, "no products", "")

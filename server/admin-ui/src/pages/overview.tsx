@@ -39,7 +39,7 @@ export function OverviewPage({ go }: PageProps) {
           hint={health.json?.version ? `module ${health.json.version}` : undefined}
         />
         <Stat label="Net revenue, 30 days" value={stats ? usd(stats.totals.net_usd_micros) : "—"} hint={stats?.rebuilding ? "USD, totals are being rebuilt" : "USD, without sandbox"} onClick={() => go("revenue")} />
-        <Stat label="Apps / products" value={`${ov.apps} / ${ov.products}`} onClick={() => go("apps")} />
+        <Stat label="Apps / builds" value={`${ov.apps} / ${ov.builds ?? "—"}`} onClick={() => go("apps")} />
         <Stat label="Purchases" value={Number(ov.total).toLocaleString()} hint={`${ov.pending_total} waiting · ${ov.outbox} events queued`} onClick={() => go("purchases")} />
       </div>
       <div className="grid gap-6 lg:grid-cols-[1fr_2fr]">

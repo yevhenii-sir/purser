@@ -91,17 +91,17 @@ function unwrap(v: unknown): unknown {
   return v
 }
 
-/** A read of one table: `/sql` for the owner, the `admin_read` procedure for other admins. */
+/** A read of one table: `/sql` for the owner, the `admin_select` procedure for other admins. */
 export interface Query {
   table: string
   /** Columns to return; every column when absent. */
   columns?: readonly string[]
-  /** Only rows whose `column` equals `equals` (or one of them): one indexed look-up per value. */
+  /** Only rows whose `column` equals `equals` (or one of them): an indexed look-up per value. */
   where?: { column: string; equals: string | readonly string[] }
 }
 
 /** Admins who are not the database owner cannot read private tables with /sql: their reads go
- * through the `admin_read` procedure, which checks their role. Set at sign-in (`admin_me`). */
+ * through the `admin_select` procedure, which checks their role. Set at sign-in (`admin_me`). */
 let readThroughProcedure = false
 export function setReadThroughProcedure(on: boolean) {
   readThroughProcedure = on
@@ -109,7 +109,7 @@ export function setReadThroughProcedure(on: boolean) {
 
 const sqlStr = (v: string) => "'" + v.replace(/'/g, "''") + "'"
 
-/** The (column, value) filters of a query; one without a filter is ("", ""), as `admin_read` takes it. */
+/** The (column, value) filters of a query; one without a filter is ("", ""). */
 export function lookups(q: Query): [column: string, value: string][] {
   if (!q.where) return [["", ""]]
   const values = typeof q.where.equals === "string" ? [q.where.equals] : [...new Set(q.where.equals)]
@@ -122,14 +122,18 @@ export function project(rows: Row[], columns?: readonly string[]): Row[] {
 }
 
 async function lookup(q: Query, column: string, value: string): Promise<Row[]> {
-  if (readThroughProcedure) return project(await proc<Row[]>("admin_read", q.table, column, value), q.columns)
   const cols = q.columns?.length ? q.columns.join(", ") : "*"
   return sql(`SELECT ${cols} FROM ${q.table}${column ? ` WHERE ${column} = ${sqlStr(value)}` : ""}`)
 }
 
-/** Rows of a table, as the signed-in admin may read them. */
+/** Rows of a table, as the signed-in admin may read them: one `admin_select` call for every
+ * value of the filter, or an indexed `/sql` query per value for the owner. */
 export async function select<T = Row>(q: Query): Promise<T[]> {
   if (__DEMO__) return (await import("./demo")).select(q) as T[]
+  if (readThroughProcedure) {
+    const where = q.where && { column: q.where.column, equals: typeof q.where.equals === "string" ? q.where.equals : [...new Set(q.where.equals)] }
+    return proc<T[]>("admin_select", JSON.stringify({ table: q.table, columns: q.columns ?? [], where }))
+  }
   const lists = await Promise.all(lookups(q).map(([column, value]) => lookup(q, column, value)))
   return lists.flat() as T[]
 }

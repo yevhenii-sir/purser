@@ -40,10 +40,6 @@ pub fn save_check(ctx: &ReducerContext, app_id: &str, summary: &str, report_json
     }
 }
 
-pub fn delete_check(ctx: &ReducerContext, app_id: &str) {
-    ctx.db.app_check().app_id().delete(&app_id.to_string());
-}
-
 pub fn get(ctx: &ReducerContext, app_id: &str) -> AppHealth {
     ctx.db
         .app_health()
