@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.1 - 2026-11-20
+
 ### Changed
 
 - Needs SpacetimeDB 2.16.1 or newer (the module is built with 2.16.1; the Docker setup uses `v2.16.1`). Publish in place: no `--delete-data`.

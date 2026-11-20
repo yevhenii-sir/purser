@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-20
+
+No package changes: the version follows the server (SpacetimeDB 2.16.1, table cache policies), which works with this package as before.
+
 ## [0.8.0] - 2026-11-16
 
 ### Breaking
