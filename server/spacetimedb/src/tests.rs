@@ -6931,3 +6931,40 @@ fn every_route_is_in_the_openapi_description() {
     let missing: Vec<&String> = routes.iter().filter(|r| !openapi.contains(&format!("\n  {r}:\n"))).collect();
     assert!(missing.is_empty(), "routes missing from docs/openapi.yaml: {missing:?}");
 }
+
+/// Every table says where its rows may live (SpacetimeDB tiered storage): the default changes to
+/// `no_requirement` in SpacetimeDB 3.0, which must not move a hot table out of memory unnoticed.
+/// Ledger history goes to disk or further; what requests and the worker read every time stays in memory.
+#[test]
+fn every_table_declares_a_cache_policy() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut policies = std::collections::BTreeMap::new();
+    let mut missing = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs") || path.ends_with("tests.rs") {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap();
+        for (at, _) in src.match_indices("#[spacetimedb::table(") {
+            let attr = &src[at..at + src[at..].find("pub struct").unwrap()];
+            let name = attr.split("accessor = ").nth(1).unwrap().split(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap();
+            match attr.split("cache_policy = ").nth(1) {
+                Some(p) => {
+                    policies.insert(name.to_string(), p.split(|c: char| !c.is_alphanumeric() && c != '_').next().unwrap().to_string());
+                }
+                None => missing.push(name.to_string()),
+            }
+        }
+    }
+    assert!(missing.is_empty(), "tables without cache_policy: {missing:?}");
+    assert!(policies.len() > 40, "found only {} tables", policies.len());
+    for (table, want) in [
+        ("purchase", "required_on_disk"),
+        ("purchase_log", "no_requirement"),
+        ("game_app", "required_in_memory"),
+        ("retry_schedule", "required_in_memory"),
+    ] {
+        assert_eq!(policies.get(table).map(String::as_str), Some(want), "{table}");
+    }
+}

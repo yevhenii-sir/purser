@@ -22,7 +22,7 @@ const MAX_RANGE_DAYS: i32 = 400;
 
 /// What the game shows at a placement: ordered catalog products and a free-form remote config.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = paywall)]
+#[spacetimedb::table(accessor = paywall, cache_policy = required_in_memory)]
 pub struct Paywall {
     /// `{game_key}/{paywall_id}`
     #[primary_key]
@@ -40,7 +40,7 @@ pub struct Paywall {
 
 /// A place in the game that shows a paywall (`main_paywall`, `shop`).
 #[derive(Clone)]
-#[spacetimedb::table(accessor = placement)]
+#[spacetimedb::table(accessor = placement, cache_policy = required_in_memory)]
 pub struct Placement {
     /// `{game_key}/{placement_id}`
     #[primary_key]
@@ -67,7 +67,7 @@ impl Placement {
 
 /// History of A/B tests: the variants as they were when the test started.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = paywall_test)]
+#[spacetimedb::table(accessor = paywall_test, cache_policy = required_in_memory)]
 pub struct PaywallTest {
     #[primary_key]
     pub test_id: String,
@@ -80,7 +80,7 @@ pub struct PaywallTest {
 }
 
 /// Paywall views reported by clients: one row per day × placement × test × variant.
-#[spacetimedb::table(accessor = paywall_daily)]
+#[spacetimedb::table(accessor = paywall_daily, cache_policy = no_requirement)]
 pub struct PaywallDaily {
     /// `{day}|{placement_key}|{test_id}|{variant_id}`
     #[primary_key]

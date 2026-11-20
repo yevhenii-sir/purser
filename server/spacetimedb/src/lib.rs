@@ -55,7 +55,7 @@ pub use integrations::{integration, send_integration_event, Integration, Integra
 // 1. TABLES
 // =====================================================================
 
-#[spacetimedb::table(accessor = admin)]
+#[spacetimedb::table(accessor = admin, cache_policy = required_in_memory)]
 pub struct Admin {
     #[primary_key]
     pub identity: Identity,
@@ -78,7 +78,7 @@ pub struct Admin {
 /// app, ...). Builds of the same game share `game_key`, so entitlements are shared between them.
 /// The store is `store`, or the platform's default when empty (`purser_core::registry::build_store`).
 #[derive(Clone)]
-#[spacetimedb::table(accessor = game_app)]
+#[spacetimedb::table(accessor = game_app, cache_policy = required_in_memory)]
 pub struct GameApp {
     #[primary_key]
     pub app_id: String,
@@ -118,7 +118,7 @@ pub struct GameApp {
 }
 
 #[derive(Clone)]
-#[spacetimedb::table(accessor = product)]
+#[spacetimedb::table(accessor = product, cache_policy = required_in_memory)]
 pub struct Product {
     /// `{app_id}:{product_id}`
     #[primary_key]
@@ -184,7 +184,7 @@ pub fn product_by_catalog_id(ctx: &ReducerContext, app_id: &str, catalog_id: &st
 }
 
 /// Secrets. `key` = `{scope}/{name}` where scope is an app id, an account name or `default`.
-#[spacetimedb::table(accessor = credential)]
+#[spacetimedb::table(accessor = credential, cache_policy = required_in_memory)]
 pub struct Credential {
     #[primary_key]
     pub key: String,
@@ -192,7 +192,7 @@ pub struct Credential {
 }
 
 /// Cached store access tokens (Google OAuth token: 1 h, Apple JWT: 50 min).
-#[spacetimedb::table(accessor = access_token_cache)]
+#[spacetimedb::table(accessor = access_token_cache, cache_policy = required_in_memory)]
 pub struct AccessTokenCache {
     #[primary_key]
     pub key: String,
@@ -205,6 +205,7 @@ pub struct AccessTokenCache {
 #[derive(Clone)]
 #[spacetimedb::table(
     accessor = purchase,
+    cache_policy = required_on_disk,
     index(accessor = app_created, btree(columns = [app_id, created_at_micros])),
     index(accessor = app_updated, btree(columns = [app_id, updated_at_micros]))
 )]
@@ -336,7 +337,7 @@ impl Purchase {
 }
 
 /// Append-only history of everything that happened to a purchase.
-#[spacetimedb::table(accessor = purchase_log)]
+#[spacetimedb::table(accessor = purchase_log, cache_policy = no_requirement)]
 pub struct PurchaseLog {
     #[primary_key]
     #[auto_inc]
@@ -350,7 +351,7 @@ pub struct PurchaseLog {
 
 /// Self-hosted SpacetimeDB servers deliveries may go to, on top of
 /// `purser_core::DEFAULT_SPACETIME_HOSTS`. Only the database owner can change it.
-#[spacetimedb::table(accessor = spacetime_host)]
+#[spacetimedb::table(accessor = spacetime_host, cache_policy = required_in_memory)]
 pub struct SpacetimeHost {
     /// Lowercase host name, e.g. `stdb.example.com`.
     #[primary_key]
@@ -361,7 +362,7 @@ pub struct SpacetimeHost {
 
 /// What people call an app (a `game_key` group of builds) in the admin page. The key itself never
 /// changes: paywalls, placements, revenue and shared entitlements are keyed by it.
-#[spacetimedb::table(accessor = app_profile)]
+#[spacetimedb::table(accessor = app_profile, cache_policy = required_in_memory)]
 pub struct AppProfile {
     #[primary_key]
     pub game_key: String,
@@ -370,7 +371,7 @@ pub struct AppProfile {
 }
 
 /// Repeating schedule for the ledger worker (`ledger::process_pending`).
-#[spacetimedb::table(accessor = retry_schedule, scheduled(process_pending))]
+#[spacetimedb::table(accessor = retry_schedule, cache_policy = required_in_memory, scheduled(process_pending))]
 pub struct RetrySchedule {
     #[primary_key]
     #[auto_inc]

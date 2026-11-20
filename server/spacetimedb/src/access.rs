@@ -118,7 +118,7 @@ pub fn require_game(ctx: &ReducerContext, cap: Cap, game_key: &str) -> Result<Wh
 // ---------------------------------------------------------------------------------------------
 
 /// One admin action. Never holds secret values (`roles::audit_summary`).
-#[spacetimedb::table(accessor = admin_audit)]
+#[spacetimedb::table(accessor = admin_audit, cache_policy = no_requirement)]
 pub struct AdminAudit {
     #[primary_key]
     #[auto_inc]

@@ -5,7 +5,7 @@
 
 use spacetimedb::{ReducerContext, Table};
 
-#[spacetimedb::table(accessor = server_state)]
+#[spacetimedb::table(accessor = server_state, cache_policy = required_in_memory)]
 pub struct ServerState {
     #[primary_key]
     pub key: String,

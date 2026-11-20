@@ -24,7 +24,7 @@ use spacetimedb::{ReducerContext, Table, TxContext};
 
 /// Steam settings of a build. No row: the build's `app_id` is the Steam App ID, production API.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = steam_build)]
+#[spacetimedb::table(accessor = steam_build, cache_policy = required_in_memory)]
 pub struct SteamBuild {
     #[primary_key]
     pub app_id: String,
@@ -42,7 +42,7 @@ pub struct SteamBuild {
 /// How a product is sold on Steam. No row: item id from the product id, description = product id,
 /// price from the catalog (`price_micros` + `currency`, converted by Steam), monthly.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = steam_item)]
+#[spacetimedb::table(accessor = steam_item, cache_policy = required_in_memory)]
 pub struct SteamItem {
     /// `{app_id}:{product_id}`
     #[primary_key]
@@ -63,7 +63,7 @@ pub struct SteamItem {
 
 /// One `InitTxn` order.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = steam_order)]
+#[spacetimedb::table(accessor = steam_order, cache_policy = required_on_disk)]
 pub struct SteamOrder {
     #[primary_key]
     pub order_id: u64,
@@ -96,7 +96,7 @@ pub struct SteamOrder {
 
 /// `GetReport` polling state of a build.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = steam_report)]
+#[spacetimedb::table(accessor = steam_report, cache_policy = required_in_memory)]
 pub struct SteamReport {
     #[primary_key]
     pub app_id: String,

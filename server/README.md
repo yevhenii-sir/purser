@@ -6,7 +6,7 @@ This is the server reference: tables, secrets, the HTTP API and admin calls. To 
 
 - Your database name goes into `spacetime.json` (copy `spacetime.example.json`) for `seed.py`, `migrate.py` and `mcp_server.py`. The scripts use the token of `spacetime login`, or `PURSER_TOKEN` when it is set.
 - `mcp_server.py` — an MCP server for Claude and other MCP clients; see [docs/mcp.md](../docs/mcp.md).
-- SpacetimeDB **2.14.1**, HTTP handlers (`features = ["unstable"]`, beta).
+- SpacetimeDB **2.16.1**, HTTP handlers (`features = ["unstable"]`, beta).
 - `core/` — pure logic without SpacetimeDB (JWT, parsing store responses and notifications, delivery contract), covered by tests.
 - `spacetimedb/` — the module: tables, admin reducers, HTTP routes, ledger and worker.
 
@@ -431,7 +431,7 @@ The test build pulls in `spacetimedb-core`, which builds OpenSSL from source. On
 OPENSSL_SRC_PERL=C:/Strawberry/perl/bin/perl.exe cargo test -p purser
 ```
 
-Dependency versions in `Cargo.lock` come from SpacetimeDB 2.12.0's own lockfile; the upgrade to 2.14.1 only updated the `spacetimedb*` crates (`cargo update -p spacetimedb --precise <version>`). Don't run a full `cargo update`: newer `icu_*` crates are incompatible with `temporal_rs`, which `spacetimedb-core` depends on.
+Dependency versions in `Cargo.lock` come from SpacetimeDB 2.12.0's own lockfile; the upgrades to 2.14.1 and 2.16.1 only updated the `spacetimedb*` crates (`cargo update -p spacetimedb --precise <version>`). Don't run a full `cargo update`: newer `icu_*` crates are incompatible with `temporal_rs`, which `spacetimedb-core` depends on.
 
 Locally: `spacetime start`, then `spacetime publish --server local … billing-local`. Note that a local server can't deliver to private addresses.
 

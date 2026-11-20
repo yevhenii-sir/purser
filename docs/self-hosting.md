@@ -1,6 +1,6 @@
 # Self-hosting
 
-The billing module runs on any SpacetimeDB **2.14.1+** server: maincloud or your own. This page covers your own server.
+The billing module runs on any SpacetimeDB **2.16.1+** server: maincloud or your own. This page covers your own server.
 
 **Quickest path: Docker.** [`deploy/docker`](../deploy/docker/README.md) runs SpacetimeDB with `docker compose`, publishes the module with `publish.sh` (the release download or your own build) and adds an optional Caddy proxy with automatic HTTPS that applies the allowlist below. Its README covers the owner token, backups and upgrades. The rest of this page explains the same setup by hand.
 
@@ -103,6 +103,10 @@ python backup.py restore --server maincloud --database <your-billing-db> --dir b
 ```
 
 `backup.py` reads every table through the owner's `/sql` (no caches, queued integration events or worker schedules) and writes it back into the new database. The backup must come from the same purser version as the database it is restored into; when a release changes a table, its notes say how to carry the data over.
+
+## Memory
+
+Tables whose rows pile up keep only what is used in memory (SpacetimeDB tiered storage): the purchase log, the admin audit and the daily revenue aggregates may leave memory, purchases and player data stay at least on the server's disk, and settings, queues and worker state stay in memory. Maincloud limits a database to 24 GiB of resident memory; the ledger stays far below it, even with millions of purchases.
 
 ## Backups and monitoring
 

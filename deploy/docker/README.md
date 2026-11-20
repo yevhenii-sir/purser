@@ -4,7 +4,7 @@ A SpacetimeDB server with the billing module on one machine, plus an optional [C
 
 | File | What |
 |---|---|
-| `docker-compose.yml` | `spacetimedb` (the server, `clockworklabs/spacetime:v2.14.1`), `cli` (one-shot SpacetimeDB CLI used by `publish.sh`), `caddy` (optional proxy, profile `proxy`) |
+| `docker-compose.yml` | `spacetimedb` (the server, `clockworklabs/spacetime:v2.16.1`), `cli` (one-shot SpacetimeDB CLI used by `publish.sh`), `caddy` (optional proxy, profile `proxy`) |
 | `publish.sh` | Downloads `purser.wasm` from GitHub Releases (or takes a local build) and publishes it |
 | `Caddyfile` | HTTPS for `BILLING_DOMAIN`, only the public paths are proxied |
 | `.env.example` | Settings: database name, domain, versions |

@@ -47,7 +47,7 @@ pub const FLOOD_WINDOW_MICROS: i64 = 10 * 60 * 1_000_000;
 /// One alert channel. `kind` = `telegram` | `slack` | `discord` | `webhook`; several channels of a
 /// kind can send different apps or rules to different chats.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = alert_channel)]
+#[spacetimedb::table(accessor = alert_channel, cache_policy = required_in_memory)]
 pub struct AlertChannel {
     #[primary_key]
     #[auto_inc]
@@ -84,7 +84,7 @@ impl AlertChannel {
 
 /// Throttle state of one (rule, app). `key` = `{rule}/{app_id}` (`app_id` empty for server-wide rules).
 #[derive(Clone, Default)]
-#[spacetimedb::table(accessor = alert_state)]
+#[spacetimedb::table(accessor = alert_state, cache_policy = required_in_memory)]
 pub struct AlertState {
     #[primary_key]
     pub key: String,
@@ -106,7 +106,7 @@ pub struct AlertState {
 }
 
 /// Messages sent (or attempted), newest last; the admin page shows them. Pruned to `LOG_KEEP` rows.
-#[spacetimedb::table(accessor = alert_log)]
+#[spacetimedb::table(accessor = alert_log, cache_policy = required_in_memory)]
 pub struct AlertLog {
     #[primary_key]
     #[auto_inc]
@@ -124,7 +124,7 @@ pub struct AlertLog {
 }
 
 /// Outbox: one row = one message for one channel.
-#[spacetimedb::table(accessor = alert_outbox, scheduled(send_alert))]
+#[spacetimedb::table(accessor = alert_outbox, cache_policy = required_in_memory, scheduled(send_alert))]
 pub struct AlertOutbox {
     #[primary_key]
     #[auto_inc]

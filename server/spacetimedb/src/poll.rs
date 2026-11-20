@@ -18,7 +18,7 @@ use crate::{purchase, Product};
 use purser_core::model::{kind, status, StoreTx, TxState};
 use spacetimedb::{Table, TxContext};
 
-#[spacetimedb::table(accessor = store_poll)]
+#[spacetimedb::table(accessor = store_poll, cache_policy = required_in_memory)]
 pub struct StorePoll {
     /// Ledger id of the subscription row.
     #[primary_key]

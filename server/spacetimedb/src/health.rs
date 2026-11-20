@@ -4,7 +4,7 @@
 use spacetimedb::{ReducerContext, Table};
 
 #[derive(Clone, Default)]
-#[spacetimedb::table(accessor = app_health)]
+#[spacetimedb::table(accessor = app_health, cache_policy = required_in_memory)]
 pub struct AppHealth {
     #[primary_key]
     pub app_id: String,
@@ -16,7 +16,7 @@ pub struct AppHealth {
 /// Last setup check report of a build, apart from `app_health` so the frequent health writes
 /// do not copy it. `summary` (`ok` | `warn` | `fail`) lets lists skip the report.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = app_check)]
+#[spacetimedb::table(accessor = app_check, cache_policy = required_in_memory)]
 pub struct AppCheck {
     #[primary_key]
     pub app_id: String,

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 /// One refund request to answer.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = apple_consumption_outbox, scheduled(send_apple_consumption))]
+#[spacetimedb::table(accessor = apple_consumption_outbox, cache_policy = required_in_memory, scheduled(send_apple_consumption))]
 pub struct AppleConsumptionOutbox {
     #[primary_key]
     #[auto_inc]

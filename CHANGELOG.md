@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Needs SpacetimeDB 2.16.1 or newer (the module is built with 2.16.1; the Docker setup uses `v2.16.1`). Publish in place: no `--delete-data`.
+- Tables say where their rows may live (tiered storage): the purchase log, admin audit and daily revenue aggregates may leave memory, purchases, player profiles, attribution ids and Steam orders stay at least on disk, everything else stays in memory, also after SpacetimeDB 3.0 changes the default.
+
 ## 0.8.0 - 2026-11-16
 
 ### Breaking

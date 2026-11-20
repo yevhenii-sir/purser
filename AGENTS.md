@@ -83,7 +83,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   snapshots, ECB rates (`fx_day`, `fx_override`). Rules in `purser_core::revenue` are used both live
   and by `admin_rebuild_revenue`, so both give the same numbers.
 
-## SpacetimeDB facts that bite (version 2.14.1, `features = ["unstable"]`)
+## SpacetimeDB facts that bite (version 2.16.1, `features = ["unstable"]`)
 
 - All tables are **private**. Only the database owner can read them with `/sql`, and owner-only DML
   (`INSERT INTO admin ...`) is how the first admin is added when `init` did not run (database created
@@ -111,6 +111,11 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - Admin reads must not scan big tables per request: read through an index (`app_id`, the
   `(app_id, created_at)` / `(app_id, updated_at)` ledger indexes, `(app_id, day)` of the daily
   revenue tables) and keep per-request work independent of the number of apps.
+- Tiered storage: a table's `cache_policy` says where its rows may live. Ledger history (`purchase_log`,
+  `admin_audit`, the daily aggregates) is `no_requirement`, `purchase` and player data `required_on_disk`,
+  everything requests and the worker read every time `required_in_memory`. Reading a row that is not
+  in memory can fail and roll the transaction back; the ledger retries, but don't add full scans of
+  the cold tables outside the revenue rebuild and backups (they pull every row back into memory).
 
 ## Schema rules (no users yet: no legacy)
 
@@ -118,6 +123,8 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   instead of keeping legacy columns, `#[default]` attributes or upgrade code. A release whose schema
   cannot be migrated in place says in both changelogs that it needs a publish with `--delete-data`.
 - New tables and indexes migrate in place (SpacetimeDB adds indexes automatically).
+- Every table sets `cache_policy` explicitly (`every_table_declares_a_cache_policy`): the default
+  becomes `no_requirement` in SpacetimeDB 3.0. Changing a policy migrates in place.
 
 ## Client API rules (the server and the Unity SDK ship together)
 

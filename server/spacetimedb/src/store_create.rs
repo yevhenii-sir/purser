@@ -31,7 +31,7 @@ const MAX_RETRIES: u32 = 6;
 /// One product being created in the store of one build. Kept after it finishes so the admin page
 /// can show the result; `admin_dismiss_store_job` removes it.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = store_create_job)]
+#[spacetimedb::table(accessor = store_create_job, cache_policy = required_in_memory)]
 pub struct StoreCreateJob {
     #[primary_key]
     #[auto_inc]
@@ -61,7 +61,7 @@ pub struct StoreCreateJob {
 }
 
 /// Wakes the worker for one job.
-#[spacetimedb::table(accessor = store_create_tick, scheduled(run_store_create_job))]
+#[spacetimedb::table(accessor = store_create_tick, cache_policy = required_in_memory, scheduled(run_store_create_job))]
 pub struct StoreCreateTick {
     #[primary_key]
     #[auto_inc]

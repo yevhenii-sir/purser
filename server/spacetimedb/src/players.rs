@@ -8,7 +8,7 @@ use spacetimedb::{ReducerContext, Table};
 use std::collections::BTreeMap;
 
 /// `key` = `{app_id}/{user_id}`.
-#[spacetimedb::table(accessor = player_profile)]
+#[spacetimedb::table(accessor = player_profile, cache_policy = required_on_disk)]
 pub struct PlayerProfile {
     #[primary_key]
     pub key: String,

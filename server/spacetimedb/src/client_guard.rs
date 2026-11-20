@@ -12,7 +12,7 @@ use spacetimedb::http::{Body, Request, Response};
 use spacetimedb::{Table, TxContext};
 
 /// Token buckets of the rate limits (`{route}/{app_id}/{user_id}` and `{route}/{app_id}`).
-#[spacetimedb::table(accessor = rate_bucket)]
+#[spacetimedb::table(accessor = rate_bucket, cache_policy = required_in_memory)]
 pub struct RateBucket {
     #[primary_key]
     pub key: String,

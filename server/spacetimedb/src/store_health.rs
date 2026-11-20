@@ -6,7 +6,7 @@
 use spacetimedb::{ReducerContext, Table};
 
 #[derive(Clone, Default)]
-#[spacetimedb::table(accessor = store_notify_health)]
+#[spacetimedb::table(accessor = store_notify_health, cache_policy = required_in_memory)]
 pub struct StoreNotifyHealth {
     #[primary_key]
     pub app_id: String,

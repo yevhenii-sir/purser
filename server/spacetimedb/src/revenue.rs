@@ -46,7 +46,7 @@ const REBUILD_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 /// The rebuild waits until no purchases were imported for this long.
 const IMPORT_QUIET_MICROS: i64 = 5 * 60 * 1_000_000;
 
-#[spacetimedb::table(accessor = revenue_daily, index(accessor = app_day, btree(columns = [app_id, day])))]
+#[spacetimedb::table(accessor = revenue_daily, cache_policy = no_requirement, index(accessor = app_day, btree(columns = [app_id, day])))]
 pub struct RevenueDaily {
     /// `{day}|{app_id}|{product_id}|{environment}|{currency}`
     #[primary_key]
@@ -77,7 +77,7 @@ pub struct RevenueDaily {
 
 /// The same aggregates per billing country instead of product (`country`: ISO 3166-1 alpha-2,
 /// empty when the store did not report it).
-#[spacetimedb::table(accessor = revenue_country_daily, index(accessor = app_day, btree(columns = [app_id, day])))]
+#[spacetimedb::table(accessor = revenue_country_daily, cache_policy = no_requirement, index(accessor = app_day, btree(columns = [app_id, day])))]
 pub struct RevenueCountryDaily {
     /// `{day}|{app_id}|{country}|{environment}|{currency}`
     #[primary_key]
@@ -103,7 +103,7 @@ pub struct RevenueCountryDaily {
 }
 
 /// Active subscriptions per day (taken once a day: this history cannot be rebuilt later).
-#[spacetimedb::table(accessor = subscription_daily, index(accessor = app_day, btree(columns = [app_id, day])))]
+#[spacetimedb::table(accessor = subscription_daily, cache_policy = no_requirement, index(accessor = app_day, btree(columns = [app_id, day])))]
 pub struct SubscriptionDaily {
     #[primary_key]
     pub key: String,
@@ -119,7 +119,7 @@ pub struct SubscriptionDaily {
 }
 
 /// ECB reference rates of one day: units per 1 USD, JSON object.
-#[spacetimedb::table(accessor = fx_day)]
+#[spacetimedb::table(accessor = fx_day, cache_policy = required_in_memory)]
 pub struct FxDay {
     #[primary_key]
     pub day: i32,
@@ -127,7 +127,7 @@ pub struct FxDay {
 }
 
 /// Manual rate for currencies the ECB does not publish.
-#[spacetimedb::table(accessor = fx_override)]
+#[spacetimedb::table(accessor = fx_override, cache_policy = required_in_memory)]
 pub struct FxOverride {
     #[primary_key]
     pub currency: String,
@@ -588,7 +588,7 @@ pub fn run_rebuild(ctx: &mut impl Ctx, steps: usize) -> bool {
 }
 
 /// Ticks of a running rebuild (one row while it runs).
-#[spacetimedb::table(accessor = revenue_rebuild_tick, scheduled(revenue_rebuild_step))]
+#[spacetimedb::table(accessor = revenue_rebuild_tick, cache_policy = required_in_memory, scheduled(revenue_rebuild_step))]
 pub struct RevenueRebuildTick {
     #[primary_key]
     #[auto_inc]

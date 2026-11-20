@@ -21,7 +21,7 @@ const MAX_ATTEMPTS: u32 = 6;
 
 /// Integration enabled for one app. `key` = `{app_id}/{kind}`.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = integration)]
+#[spacetimedb::table(accessor = integration, cache_policy = required_in_memory)]
 pub struct Integration {
     #[primary_key]
     pub key: String,
@@ -36,7 +36,7 @@ pub struct Integration {
 
 /// Last attribution identifiers a player's device reported (appsflyer_id, GAID, IDFV, ...),
 /// used for events that happen without the client (renewals, refunds). `key` = `{app_id}/{user_id}`.
-#[spacetimedb::table(accessor = user_attribution)]
+#[spacetimedb::table(accessor = user_attribution, cache_policy = required_on_disk)]
 pub struct UserAttribution {
     /// `{app_id}/{user_id}`
     #[primary_key]
@@ -51,7 +51,7 @@ pub struct UserAttribution {
 
 /// Outbox: one row = one event for one integration.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = integration_outbox, scheduled(send_integration_event))]
+#[spacetimedb::table(accessor = integration_outbox, cache_policy = required_in_memory, scheduled(send_integration_event))]
 pub struct IntegrationOutbox {
     #[primary_key]
     #[auto_inc]
@@ -73,7 +73,7 @@ pub fn integration_key(app_id: &str, kind: &str) -> String {
 /// failure and the last one skipped because the client did not send the device id the
 /// integration needs. Shown by the setup check and on the Integrations tab.
 #[derive(Clone, Default)]
-#[spacetimedb::table(accessor = integration_health)]
+#[spacetimedb::table(accessor = integration_health, cache_policy = required_in_memory)]
 pub struct IntegrationHealth {
     /// `{app_id}/{kind}` ([`integration_key`]).
     #[primary_key]

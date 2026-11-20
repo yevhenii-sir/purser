@@ -23,7 +23,7 @@ use spacetimedb::{Identity, ProcedureContext, ReducerContext, Table, TxContext};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A purchase revoked by an admin (not a store refund). Removed when the store refunds it.
-#[spacetimedb::table(accessor = admin_revoke)]
+#[spacetimedb::table(accessor = admin_revoke, cache_policy = required_in_memory)]
 pub struct AdminRevoke {
     #[primary_key]
     pub purchase_id: String,

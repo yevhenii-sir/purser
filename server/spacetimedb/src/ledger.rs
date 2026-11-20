@@ -32,7 +32,7 @@ const PURCHASE_BUDGET_SECS: i64 = 25;
 
 /// Ledger rows by build and status, kept in step with every write ([`insert_purchase`],
 /// [`save_purchase`]), so the Overview never counts the ledger.
-#[spacetimedb::table(accessor = purchase_count)]
+#[spacetimedb::table(accessor = purchase_count, cache_policy = required_in_memory)]
 pub struct PurchaseCount {
     /// `{app_id}|{status}`
     #[primary_key]
