@@ -64,6 +64,10 @@ impl Fake {
             // Reducer calls (and Xsolla / Stripe API calls, store catalog writes, Apple consumption answers, Adjust
             // events) are recorded with their bodies.
             call = format!("{call} {}", req.into_body().into_string_lossy());
+        } else if call.contains("amplitude.com") || call.contains("mixpanel.com") || call.contains("graph.facebook.com") {
+            // Analytics events with the Authorization header and the JSON body.
+            let auth = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            call = format!("{call} [auth={auth}] {}", req.into_body().into_string_lossy());
         } else if call.contains("steam-api.com") {
             // Steam calls with the key header and the form body.
             let key = req.headers().get("x-webapi-key").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
@@ -1230,7 +1234,10 @@ fn integration_settings_are_validated() {
     w.as_admin(false);
     let upsert = |v: Value| w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_integration(ctx, v.to_string()));
     assert!(upsert(json!({ "app_id": APP, "kind": "webhook", "settings": { "url": "http://insecure.example" } })).unwrap_err().contains("https"));
-    assert!(upsert(json!({ "app_id": APP, "kind": "mixpanel", "settings": {} })).unwrap_err().contains("unknown"));
+    assert!(upsert(json!({ "app_id": APP, "kind": "segment", "settings": {} })).unwrap_err().contains("unknown"));
+    assert!(upsert(json!({ "app_id": APP, "kind": "mixpanel", "settings": {} })).unwrap_err().contains("project_id"));
+    assert!(upsert(json!({ "app_id": APP, "kind": "meta", "settings": { "dataset_id": "1", "graph_version": "latest" } })).unwrap_err().contains("graph_version"));
+    assert!(upsert(json!({ "app_id": APP, "kind": "amplitude", "settings": { "region": "mars" } })).unwrap_err().contains("region"));
     assert_eq!(upsert(json!({ "app_id": APP, "kind": "tenjin", "settings": {} })), Ok(()));
     assert_eq!(upsert(json!({ "app_id": APP, "kind": "ga4", "settings": { "firebase_app_id": "1:1:android:x" } })), Ok(()));
     assert!(upsert(json!({ "app_id": APP, "kind": "tenjin", "settings": { "revenue": "profit" } })).unwrap_err().contains("gross, proceeds or net"));
@@ -1364,6 +1371,85 @@ fn purchases_are_sent_to_adjust_with_the_event_token_of_their_kind() {
     crate::integrations::send_integration_event(&mut w.ctx(), rows.into_iter().next().unwrap());
     let call = w.fake.borrow().calls.iter().find(|c| c.contains("s2s.adjust.com")).cloned().expect("Adjust call");
     assert!(call.starts_with("POST https://s2s.adjust.com/event"), "{call}");
+}
+
+/// A verified purchase of `gems` (0.99 USD) by `player-1`, with the device ids its client sent; the
+/// one integration connected gets it in the outbox and sends it. Returns (url, auth header, body).
+fn send_gems_purchase(w: &World, kind: &str, host: &str, attribution: Value) -> (String, String, Value) {
+    w.write(|tx| {
+        let mut p = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
+        p.price_micros = 990_000;
+        p.currency = "USD".into();
+        tx.db.product().key().update(p);
+    });
+    let r: VerifyRequest = serde_json::from_value(json!({
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN, "attribution": attribution,
+    }))
+    .unwrap();
+    assert_eq!(verify(&mut w.ctx(), store::GOOGLE, &r).body["status"], "success");
+    let rows = outbox(w);
+    assert_eq!(rows.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), [kind]);
+    w.script(host, 200, "{}");
+    crate::integrations::send_integration_event(&mut w.ctx(), rows.into_iter().next().unwrap());
+    let call = w.fake.borrow().calls.iter().find(|c| c.contains(host)).cloned().unwrap_or_else(|| panic!("{kind} call"));
+    let (head, body) = call.split_once("] ").expect("auth and body recorded");
+    let (request, auth) = head.split_once(" [auth=").unwrap();
+    let url = request.strip_prefix("POST ").unwrap_or_else(|| panic!("a POST: {call}"));
+    (url.to_string(), auth.to_string(), serde_json::from_str(body).unwrap())
+}
+
+#[test]
+fn purchases_are_sent_to_amplitude_with_the_key_in_the_body() {
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "amplitude", json!({}));
+    w.set_secret(secret_name::AMPLITUDE_API_KEY, "amp-key-123");
+    let (url, auth, body) = send_gems_purchase(&w, "amplitude", "api2.amplitude.com", json!({ "amplitude_device_id": "device-42" }));
+    assert_eq!(url, "https://api2.amplitude.com/2/httpapi");
+    assert!(auth.is_empty() && !url.contains("amp-key-123"));
+    assert_eq!(body["api_key"], "amp-key-123");
+    let e = &body["events"][0];
+    assert_eq!((e["event_type"].as_str(), e["user_id"].as_str(), e["device_id"].as_str()), (Some("purser_purchase"), Some("player-1"), Some("device-42")));
+    assert_eq!((e["revenue"].as_f64(), e["currency"].as_str(), e["productId"].as_str()), (Some(0.99), Some("USD"), Some("gems")));
+    assert_eq!(e["insert_id"], format!("{ORDER}:purchase"));
+    assert_eq!(e["time"].as_i64(), Some(NOW_MICROS / 1000));
+}
+
+#[test]
+fn purchases_are_sent_to_mixpanel_with_the_service_account() {
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "mixpanel", json!({ "project_id": "3456789", "region": "eu" }));
+    w.set_secret(secret_name::MIXPANEL_SERVICE_ACCOUNT, "sa-user.mp-service-account:sa-secret");
+    let (url, auth, body) = send_gems_purchase(&w, "mixpanel", "mixpanel.com", json!({}));
+    assert_eq!(url, "https://api-eu.mixpanel.com/import?strict=1&project_id=3456789");
+    assert_eq!(auth, purser_core::encoding::basic_auth("sa-user.mp-service-account", "sa-secret"));
+    assert!(!url.contains("sa-secret"));
+    let p = &body[0]["properties"];
+    assert_eq!((body[0]["event"].as_str(), p["distinct_id"].as_str()), (Some("purser_purchase"), Some("player-1")));
+    assert_eq!((p["revenue"].as_f64(), p["currency"].as_str(), p["transaction_id"].as_str()), (Some(0.99), Some("USD"), Some(ORDER)));
+    assert_eq!(p["$insert_id"].as_str().map(str::len), Some(32));
+}
+
+#[test]
+fn purchases_are_sent_to_meta_with_the_token_in_the_header() {
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "meta", json!({ "dataset_id": "123456789012345" }));
+    w.set_secret(secret_name::META_ACCESS_TOKEN, "EAAmeta-token");
+    let ids = json!({ "advertising_id": "gaid-1", "meta_anon_id": "XZanon-1", "os_version": "14", "app_version": "1.2.3" });
+    let (url, auth, body) = send_gems_purchase(&w, "meta", "graph.facebook.com", ids);
+    assert_eq!(url, "https://graph.facebook.com/v23.0/123456789012345/events");
+    assert_eq!(auth, "Bearer EAAmeta-token");
+    assert!(!url.contains("EAAmeta-token") && !body.to_string().contains("EAAmeta-token"));
+    let e = &body["data"][0];
+    assert_eq!((e["event_name"].as_str(), e["action_source"].as_str()), (Some("Purchase"), Some("app")));
+    assert_eq!((e["user_data"]["madid"].as_str(), e["user_data"]["anon_id"].as_str()), (Some("gaid-1"), Some("XZanon-1")));
+    assert_eq!((e["custom_data"]["value"].as_f64(), e["custom_data"]["currency"].as_str()), (Some(0.99), Some("USD")));
+    assert_eq!(e["app_data"]["extinfo"].as_array().map(|a| a.len()), Some(16));
+    assert_eq!(e["app_data"]["extinfo"][1], APP);
+    assert_eq!(e["event_time"].as_i64(), Some(NOW_MICROS / 1_000_000));
+    assert_eq!(w.doctor(false).unwrap()["integration:meta"].0, "ok");
 }
 
 #[test]

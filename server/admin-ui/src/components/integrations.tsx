@@ -33,7 +33,7 @@ export function TestEvent({ apps }: { apps: GameApp[] }) {
   const [app, setApp] = useState("")
   const [kind, setKind] = useState(ANY)
   const [user, setUser] = useState("")
-  const [ids, setIds] = useState<Record<string, string>>({ appsflyer_id: "", tenjin_id: "", adjust_id: "", appmetrica_device_id: "" })
+  const [ids, setIds] = useState<Record<string, string>>({ appsflyer_id: "", tenjin_id: "", adjust_id: "", appmetrica_device_id: "", amplitude_device_id: "", meta_anon_id: "" })
   const target = app || apps[0]?.app_id || ""
   const send = () => {
     const attribution = Object.fromEntries(Object.entries(ids).filter(([, v]) => v.trim()))
@@ -209,6 +209,53 @@ function IntegrationForm({ kind, row, apps, onClose, onSaved }: {
                 <Input value={s.application_id || ""} onChange={(e) => set("application_id", e.target.value.trim())} className="font-mono text-xs" />
               </Field>
               {check("use_profile_id", "Match players by profile id: the game calls SetUserProfileID with the billing user id")}
+            </>
+          )}
+          {kind === "amplitude" && (
+            <Field label="Region" hint="EU: a project in Amplitude's EU data center (api.eu.amplitude.com).">
+              <Select value={s.region || "us"} onValueChange={(v) => set("region", v)}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="us">US (default)</SelectItem>
+                  <SelectItem value="eu">EU</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+          )}
+          {kind === "mixpanel" && (
+            <div className="grid items-start gap-4 sm:grid-cols-2">
+              <Field label="Project id" hint="Mixpanel → Project settings → Overview: the numeric id.">
+                <Input value={s.project_id || ""} onChange={(e) => set("project_id", e.target.value.trim())} className="font-mono text-xs" />
+              </Field>
+              <Field label="Data residency">
+                <Select value={s.region || "us"} onValueChange={(v) => set("region", v)}>
+                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="us">US (default)</SelectItem>
+                    <SelectItem value="eu">EU</SelectItem>
+                    <SelectItem value="in">India</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+          )}
+          {kind === "meta" && (
+            <>
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <Field label="Dataset id" hint="Events Manager → the app's dataset (pixel): the numeric id.">
+                  <Input value={s.dataset_id || ""} onChange={(e) => set("dataset_id", e.target.value.trim())} className="font-mono text-xs" />
+                </Field>
+                <Field label="Graph API version">
+                  <Input value={s.graph_version || ""} onChange={(e) => set("graph_version", e.target.value.trim())} placeholder="v23.0" className="font-mono text-xs" />
+                </Field>
+              </div>
+              <Field label="Test event code" hint="Events Manager → Test events. While set, every event goes to Test events only; clear it for production.">
+                <Input value={s.test_event_code || ""} onChange={(e) => set("test_event_code", e.target.value.trim())} placeholder="TEST12345" className="font-mono text-xs" />
+              </Field>
+              <p className="text-xs text-muted-foreground">
+                Sent: <code>Purchase</code> (purchases and renewals), <code>Subscribe</code> (paid subscription starts), <code>StartTrial</code> (free trials).
+                Meta has no refund event; events older than 7 days are not sent.
+              </p>
             </>
           )}
           {kind === "gcs" && (

@@ -12,7 +12,7 @@ import type { GameApp, IntegrationHealth } from "@/lib/types"
 import type { TabProps } from "@/pages/app"
 
 /** Integrations keyed by mobile device ids: the server skips builds without a mobile OS. */
-const MOBILE_ONLY: Kind[] = ["ga4", "appsflyer", "adjust", "tenjin", "appmetrica"]
+const MOBILE_ONLY: Kind[] = ["ga4", "appsflyer", "adjust", "tenjin", "appmetrica", "meta"]
 
 type BuildState = "off" | "enabled" | "disabled" | "no_key" | "not_mobile"
 type ShownState = Exclude<BuildState, "not_mobile">
