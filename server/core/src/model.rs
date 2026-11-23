@@ -122,6 +122,17 @@ pub struct StoreTx {
     /// Subscriptions: the product the next renewal switches to (a downgrade waiting for the end of
     /// the period, Apple `autoRenewProductId`); empty when it renews the same product or unknown.
     pub renew_product_id: String,
+    /// Subscriptions: paused by the player (Google); access comes back by itself then. 0 = not
+    /// paused. A paused subscription is `Expired` meanwhile.
+    pub paused_until_ms: i64,
+    /// Bought by a family member and shared with this player (Apple Family Sharing): it gives
+    /// access but this player paid nothing.
+    pub family_shared: bool,
+    /// The store offer of this period (Apple `offerIdentifier`, Google offer or base plan id);
+    /// empty when none or unknown.
+    pub offer_id: String,
+    /// Kind of that offer: `intro` | `promo` | `code` | `winback`; empty when none or unknown.
+    pub offer_type: String,
 }
 
 impl StoreTx {

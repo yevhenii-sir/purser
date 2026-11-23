@@ -55,6 +55,10 @@ pub struct Owned {
     pub purchased_at_ms: i64,
     /// Access levels of the product.
     pub access: Vec<String>,
+    /// Paused by the player until then (no access meanwhile); 0 = not paused.
+    pub paused_until_ms: i64,
+    /// Shared by a family member (Apple Family Sharing).
+    pub family_shared: bool,
 }
 
 impl Owned {
@@ -65,7 +69,7 @@ impl Owned {
 
     fn gives_access(&self, now_ms: i64) -> bool {
         let until = self.access_until_ms();
-        until == 0 || until > now_ms
+        self.paused_until_ms == 0 && (until == 0 || until > now_ms)
     }
 
     /// Better for the player: access that lasts longer (0 = forever wins).
@@ -90,6 +94,7 @@ impl Owned {
             "in_grace": self.grace_until_ms > now_ms && self.expires_at_ms <= now_ms,
             "billing_issue": self.billing_issue,
             "trial": self.trial,
+            "family_shared": self.family_shared,
         });
         if !self.renews_to.is_empty() {
             v["renews_to"] = json!(self.renews_to);
@@ -124,9 +129,16 @@ pub fn customer_info(owned: &[Owned], now_ms: i64) -> Value {
     }
     let access: Map<String, Value> = best_by_level.into_iter().map(|(l, o)| (l.to_string(), o.state(now_ms))).collect();
     let subscriptions: Map<String, Value> = best_by_product.into_iter().map(|(p, o)| (p.to_string(), o.state(now_ms))).collect();
+    // Paused subscriptions (no access now) of products nothing else gives.
+    let paused: Map<String, Value> = owned
+        .iter()
+        .filter(|o| o.paused_until_ms > 0 && !subscriptions.contains_key(&o.catalog_id))
+        .map(|o| (o.catalog_id.clone(), json!({ "product_id": o.catalog_id, "store": o.store, "resumes_at_ms": o.paused_until_ms })))
+        .collect();
     json!({
         "access": access,
         "subscriptions": subscriptions,
+        "paused": paused,
         "non_consumables": non_consumables,
         "server_time_ms": now_ms,
     })

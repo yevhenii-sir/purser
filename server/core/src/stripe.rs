@@ -393,6 +393,10 @@ fn store_tx(m: &Meta, transaction_id: &str, original: &str, token: &str, livemod
         billing_issue: false,
         auto_renew_off: false,
         renew_product_id: String::new(),
+        paused_until_ms: 0,
+        family_shared: false,
+        offer_id: String::new(),
+        offer_type: String::new(),
     }
 }
 

@@ -220,7 +220,9 @@ in `registry::STORES`; builds cannot use it.
    parsers to `StoreTx` (`store: store::<ID>`, `transaction_id` unique per store, `purchase_token` =
    whatever a later look-up needs, `environment` sandbox for test purchases, `state`,
    `expires_at_ms`, price when the store reports one). Webhook stores: signature verification and
-   event parsing here too (see `sns.rs`). Unit tests next to it. Do not add fields to `StoreTx`.
+   event parsing here too (see `sns.rs`). Unit tests next to it. A new store fills the existing
+   `StoreTx` fields; add one only for a fact the ledger keeps for every store (as `paused_until_ms`,
+   `family_shared`, `offer_type` were).
 2. **Registry**: add `&crate::<store>::STORE` to `registry::STORES` (or replace its `planned(...)` line)
    (one line; the blank lines around it keep parallel additions mergeable). A new store id also
    needs a `model::store` constant and the platform's `stores` list in `PLATFORMS`.

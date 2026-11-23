@@ -930,7 +930,7 @@ components:
     EntitlementState:
       type: object
       description: A purchase that gives access now.
-      required: [product_id, store, expires_at_ms, purchased_at_ms, will_renew, in_grace, billing_issue, trial]
+      required: [product_id, store, expires_at_ms, purchased_at_ms, will_renew, in_grace, billing_issue, trial, family_shared]
       properties:
         product_id:
           type: string
@@ -951,13 +951,28 @@ components:
           type: boolean
           description: The store could not charge the renewal.
         trial: { type: boolean }
+        family_shared:
+          type: boolean
+          description: Shared by a family member (Apple Family Sharing); this player paid nothing.
         renews_to:
           type: string
           description: Catalog id of the product the next renewal switches to (a pending downgrade).
 
+    PausedSubscription:
+      type: object
+      description: A subscription the player paused (Google Play); it gives no access until it resumes.
+      required: [product_id, store, resumes_at_ms]
+      properties:
+        product_id: { type: string }
+        store: { type: string, examples: [google] }
+        resumes_at_ms:
+          type: integer
+          format: int64
+          description: When it resumes by itself (Unix ms).
+
     Entitlements:
       type: object
-      required: [user_id, game_key, access, subscriptions, non_consumables, server_time_ms]
+      required: [user_id, game_key, access, subscriptions, paused, non_consumables, server_time_ms]
       properties:
         user_id:
           type: string
@@ -974,6 +989,11 @@ components:
           description: Subscriptions that give access now, by catalog product id.
           additionalProperties:
             $ref: "#/components/schemas/EntitlementState"
+        paused:
+          type: object
+          description: Subscriptions the player paused, by catalog product id (no access meanwhile).
+          additionalProperties:
+            $ref: "#/components/schemas/PausedSubscription"
         non_consumables:
           type: array
           description: Owned non-consumable product ids.

@@ -43,11 +43,15 @@ pub fn schedule(tx: &TxContext, ledger_id: &str, st: &StoreTx, product_kind: &st
         return;
     }
     let id = ledger_id.to_string();
-    if st.state != TxState::Active || st.access_until_ms() <= 0 {
+    let next = if st.paused_until_ms > 0 {
+        // Paused: it should resume by itself then.
+        st.paused_until_ms * 1000 + AFTER_EXPIRY_MICROS
+    } else if st.state != TxState::Active || st.access_until_ms() <= 0 {
         tx.db.store_poll().purchase_id().delete(&id);
         return;
-    }
-    let next = st.access_until_ms() * 1000 + AFTER_EXPIRY_MICROS;
+    } else {
+        st.access_until_ms() * 1000 + AFTER_EXPIRY_MICROS
+    };
     match tx.db.store_poll().purchase_id().find(&id) {
         // Same expiry, no re-checks counted: nothing to write (a repeated verify or notification).
         Some(r) if r.next_poll_at_micros == next && r.attempts == 0 => {}

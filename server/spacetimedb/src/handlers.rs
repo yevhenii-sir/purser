@@ -925,6 +925,18 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         return Outcome::status(200, "ignored", "transaction belongs to another app");
     }
     let source = format!("apple {} {}", n.notification_type, n.subtype);
+    // A refund Apple took back: the revoked row is granted again and its money counts again.
+    if n.notification_type == "REFUND_REVERSED" {
+        let (id, details) = (st.ledger_id(), source.trim().to_string());
+        let lease = ctx.tx(|tx| {
+            let p = tx.db.purchase().id().find(&id).filter(|p| p.app_id == app.app_id)?;
+            ledger::reinstate(tx, p, &details).map(|id| ledger::lease(tx, &id, Some(&app)))
+        });
+        if let Some(lease) = lease {
+            ledger::run(ctx, lease);
+        }
+        return Outcome::status(200, "ok", "");
+    }
     // A refund request: answer with consumption information (the ledger row is synced first).
     let refund_request = n.notification_type == "CONSUMPTION_REQUEST" && consumption::mode::is_on(&app.apple_refund_mode);
     let related = refund_request.then(|| st.clone());

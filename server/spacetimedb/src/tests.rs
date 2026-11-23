@@ -2618,6 +2618,9 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
         replaced_by: String::new(),
         refunded_micros: 0,
         offer_id: String::new(),
+        offer_type: String::new(),
+        paused_until_ms: 0,
+        family_shared: false,
     };
     let renewal = Purchase {
         id: "apple:1001".into(),
@@ -4145,6 +4148,9 @@ impl World {
             replaced_by: String::new(),
             refunded_micros: 0,
             offer_id: String::new(),
+            offer_type: String::new(),
+            paused_until_ms: 0,
+            family_shared: false,
             paywall_placement: String::new(),
             paywall_variant_id: String::new(),
             paywall_test_id: String::new(),
@@ -4730,6 +4736,9 @@ fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -
         replaced_by: String::new(),
         refunded_micros: 0,
         offer_id: String::new(),
+        offer_type: String::new(),
+        paused_until_ms: 0,
+        family_shared: false,
         paywall_placement: String::new(),
         paywall_variant_id: String::new(),
         paywall_test_id: String::new(),
@@ -6995,7 +7004,7 @@ fn derived_from_ledger(w: &World) -> DerivedRows {
             .db
             .purchase()
             .iter()
-            .filter(|p| p.kind != kind::CONSUMABLE && status::is_owned(&p.status))
+            .filter(crate::ledger_index::is_listed)
             .map(|p| (p.id, p.user_id, p.app_id))
             .collect();
         pending.sort();
@@ -7276,4 +7285,73 @@ fn a_selective_purchase_filter_reads_a_bounded_part_of_the_ledger_per_call() {
     let second = w.list_purchases(q);
     assert_eq!(listed_ids(&second), ["google:old-revoked"]);
     assert_eq!(second["more"], false);
+}
+
+#[test]
+fn a_reversed_app_store_refund_grants_the_purchase_again() {
+    let w = refund_world(None, "off");
+    let id = "apple:2000000123";
+    // The refund: revoked in the game.
+    w.ctx().tx(|tx| {
+        let p = tx.db.purchase().id().find(id.to_string()).unwrap();
+        ledger::mark_inactive(tx, p, status::REVOKE_PENDING, 0, "apple REFUND");
+    });
+    w.advance_clock(60);
+    w.run_worker();
+    assert_eq!(w.read(|tx| tx.db.purchase().id().find(id.to_string()).unwrap().status), status::REVOKED);
+    assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_revoke player-1 refund"));
+
+    let o = apple_notification(&w, "REFUND_REVERSED", purser_core::apple::testing::sign);
+    assert_eq!(o.http, 200, "{}", o.body);
+    assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_grant player-1 reinstated"));
+    assert!(status::is_owned(&w.read(|tx| tx.db.purchase().id().find(id.to_string()).unwrap().status)));
+    // Apple may send it again: nothing more happens.
+    let calls = w.reducer_calls().len();
+    apple_notification(&w, "REFUND_REVERSED", purser_core::apple::testing::sign);
+    assert_eq!(w.reducer_calls().len(), calls);
+}
+
+#[test]
+fn a_paused_google_subscription_is_revoked_until_it_resumes() {
+    let w = World::new();
+    add_subscription_product(&w);
+    keep_google_token_valid(&w, 400);
+    w.fake.borrow_mut().account_id = "player-1".into();
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_ACTIVE", "vip", ORDER, "2026-12-20T00:00:00Z", "");
+    w.verify("player-1", "vip");
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip"]["product_id"], "vip");
+
+    // Paused until 2027-01-20.
+    let paused = json!({
+        "subscriptionState": "SUBSCRIPTION_STATE_PAUSED", "latestOrderId": ORDER,
+        "pausedStateContext": { "autoResumeTime": "2027-01-20T00:00:00Z" },
+        "lineItems": [{ "productId": "vip", "expiryTime": "2026-09-20T00:00:00Z" }],
+    });
+    w.fake.borrow_mut().overrides.retain(|(n, ..)| !n.contains("subscriptionsv2"));
+    w.script("subscriptionsv2", 200, &paused.to_string());
+    subscription_notification(&w, 10);
+    w.advance_clock(60);
+    w.run_worker();
+    let p = w.purchase();
+    assert_eq!((p.status.as_str(), p.paused_until_ms), (status::EXPIRED, 1_800_403_200_000));
+    assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_revoke player-1 paused"));
+    let info = w.entitlements("player-1");
+    assert!(info["subscriptions"].as_object().unwrap().is_empty(), "{info}");
+    assert_eq!(info["paused"]["vip"]["resumes_at_ms"], 1_800_403_200_000i64);
+    // The worker looks again when it should resume.
+    use crate::poll::store_poll;
+    let poll = w.read(|tx| tx.db.store_poll().purchase_id().find(p.id.clone()).map(|r| r.next_poll_at_micros));
+    assert!(poll.is_some_and(|at| at > 1_800_403_200_000 * 1000), "{poll:?}");
+
+    // Running again.
+    w.fake.borrow_mut().overrides.retain(|(n, ..)| !n.contains("subscriptionsv2"));
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_ACTIVE", "vip", ORDER, "2027-02-20T00:00:00Z", "");
+    subscription_notification(&w, 7);
+    w.advance_clock(60);
+    w.run_worker();
+    let p = w.purchase();
+    assert_eq!(p.paused_until_ms, 0);
+    assert!(status::is_owned(&p.status));
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip"]["product_id"], "vip");
+    assert!(w.entitlements("player-1")["paused"].as_object().unwrap().is_empty());
 }

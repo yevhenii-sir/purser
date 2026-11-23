@@ -4,7 +4,7 @@
 
 ### Breaking
 
-- Publish with `--delete-data`: the `purchase` table loses its `app_id`, `transaction_id` and `next_attempt_at_micros` indexes and gains `trial_conversion` and `after_first_year`. `admin_select` still finds a purchase by `transaction_id` (through the ledger id).
+- Publish with `--delete-data`: the `purchase` table loses its `app_id`, `transaction_id` and `next_attempt_at_micros` indexes and gains `trial_conversion`, `after_first_year`, `offer_type`, `paused_until_ms` and `family_shared`. `/entitlements` gains `paused`, and every state `family_shared`; game events gain the reason `paused`. `admin_select` still finds a purchase by `transaction_id` (through the ledger id).
 
 ### Fixed
 
@@ -17,6 +17,11 @@
 
 - `/entitlements`, `/restore` and the player profile read the purchases a player owns now (`owned_purchase`, in memory) instead of everything the player ever bought.
 - Alerts, the setup check and the Overview read the worker's queue instead of every pending ledger row.
+- Google Play subscription pause: a paused subscription is revoked in the game with reason `paused` (integration event `pause`, not churn), `/entitlements` lists it under `paused` with `resumes_at_ms`, the worker looks at it again when it should resume, and a resumed one is granted again (event `resume`).
+- Apple Family Sharing: a shared purchase gives access (`family_shared` in `/entitlements`) and counts as no revenue.
+- The store's offer wins over the client's: Apple `offerIdentifier` and `offerType` (`offer_type`: `intro`, `promo`, `code`, `winback`), Google offer or base plan id.
+- Apple `REFUND_REVERSED` grants the purchase again (reason `reinstated`) and returns its revenue; a subscription period that ended meanwhile only gets its revenue back. The same applies to a won Stripe dispute.
+- Xsolla partial refunds take the refunded amount out of revenue (they were ignored).
 - `admin_reindex_ledger` (owner) rebuilds the two derived tables from the ledger; `backup.py restore` runs it, and the worker continues an unfinished rebuild.
 - `/entitlements`, `/paywall`, `/paywall/event` and `/attributes` are one transaction each (the rate limit is checked in the route's own transaction); `/attributes` writes the player row only when something changed.
 - A subscription's trial-conversion and paid-year facts are written with its ledger row (`trial_conversion`, `after_first_year`), so renewals, refunds and integration events no longer re-read the subscription's history. Integration events are not built for builds without integrations.

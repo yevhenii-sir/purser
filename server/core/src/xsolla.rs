@@ -312,8 +312,10 @@ pub enum Event {
     /// Does this user exist? Answered from the user id format only (see docs/store-setup.md#xsolla).
     UserValidation { user_id: String },
     Paid(Paid),
-    /// `refund`, `order_canceled`, `partial_refund` (`partial`).
-    Refunded { transaction_id: String, order_id: String, partial: bool, reason: String },
+    /// `refund`, `order_canceled`, `partial_refund` (`partial`). A partial refund carries the
+    /// refunded amount (`purchase.total`, "partial refund payment amount") and the refund's date;
+    /// the purchase stays granted.
+    Refunded { transaction_id: String, order_id: String, partial: bool, reason: String, refunded_micros: i64, currency: String, refunded_at: String },
     /// `cancel_subscription`: the subscription ended (`ends_ms`, 0 = now).
     SubscriptionCanceled { subscription_id: String, ends_ms: i64 },
     /// Anything else (`create_subscription`, `update_subscription`, `non_renewal_subscription`,
@@ -459,12 +461,18 @@ pub fn parse_webhook(body: &str) -> Result<Webhook, String> {
                 country,
             })
         }
-        "refund" | "order_canceled" | "partial_refund" => Event::Refunded {
-            transaction_id,
-            order_id: order_id(&v),
-            partial: notification_type == "partial_refund",
-            reason: b["refund_details"]["reason"].as_str().unwrap_or("").chars().take(200).collect(),
-        },
+        "refund" | "order_canceled" | "partial_refund" => {
+            let partial = notification_type == "partial_refund";
+            Event::Refunded {
+                transaction_id,
+                order_id: order_id(&v),
+                partial,
+                reason: b["refund_details"]["reason"].as_str().unwrap_or("").chars().take(200).collect(),
+                refunded_micros: if partial { amount_micros(&b["purchase"]["total"]["amount"]) } else { 0 },
+                currency: if partial { b["purchase"]["total"]["currency"].as_str().unwrap_or("").to_string() } else { String::new() },
+                refunded_at: b["refund_details"]["date"].as_str().unwrap_or("").chars().take(64).collect(),
+            }
+        }
         "cancel_subscription" => Event::SubscriptionCanceled {
             subscription_id: id_str(&v["subscription"]["subscription_id"]),
             ends_ms: ms(&v["subscription"]["date_end"]),
@@ -512,6 +520,10 @@ pub fn store_tx(app_id: &str, product_id: &str, p: &Paid, original: &str) -> Sto
         billing_issue: false,
         auto_renew_off: false,
         renew_product_id: String::new(),
+        paused_until_ms: 0,
+        family_shared: false,
+        offer_id: String::new(),
+        offer_type: String::new(),
     }
 }
 
@@ -733,14 +745,20 @@ mod tests {
                 transaction_id: "900001".into(),
                 order_id: String::new(),
                 partial: false,
-                reason: "Cancellation by the user request".into()
+                reason: "Cancellation by the user request".into(),
+                refunded_micros: 0,
+                currency: String::new(),
+                refunded_at: String::new(),
             }
         );
         let canceled = ORDER_PAID.replace("order_paid", "order_canceled");
         let Event::Refunded { transaction_id, order_id, partial, .. } = parse_webhook(&canceled).unwrap().event else { panic!() };
         assert_eq!((transaction_id.as_str(), order_id.as_str(), partial), ("900001", "7001", false));
-        let partial = refund.replace(r#""refund""#, r#""partial_refund""#);
-        assert!(matches!(parse_webhook(&partial).unwrap().event, Event::Refunded { partial: true, .. }));
+        let partial = refund
+            .replace(r#""refund""#, r#""partial_refund""#)
+            .replace(r#""refund_details":{"#, r#""purchase":{"total":{"currency":"USD","amount":"2.50"}},"refund_details":{"date":"2026-11-20T10:00:00+03:00","#);
+        let Event::Refunded { partial, refunded_micros, currency, refunded_at, .. } = parse_webhook(&partial).unwrap().event else { panic!() };
+        assert_eq!((partial, refunded_micros, currency.as_str(), refunded_at.as_str()), (true, 2_500_000, "USD", "2026-11-20T10:00:00+03:00"));
     }
 
     #[test]

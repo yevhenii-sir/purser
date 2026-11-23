@@ -127,7 +127,8 @@ fn is_terminal(s: &str) -> bool {
 
 /// Price for analytics: store price (Apple) → price reported by the client → catalog default.
 fn pick_price(st: &StoreTx, product: &Product, client_price_micros: i64, client_currency: &str) -> (i64, String) {
-    if st.trial {
+    if st.trial || st.family_shared {
+        // A free trial, or a family member's purchase shared with this player: nothing was paid.
         // A free trial: nothing was paid (Google reports the price of the next renewal).
         return (0, if st.currency.is_empty() { product.currency.clone() } else { st.currency.clone() });
     }
@@ -301,6 +302,11 @@ fn record_row(
         if !status::is_owned(&p.status) {
             changes.push(format!("status {} -> active", p.status));
         }
+        let resumed = p.paused_until_ms > 0;
+        if resumed {
+            changes.push("resumed".into());
+            p.paused_until_ms = 0;
+        }
         // Filled in later: the first client that knows them (a notification may record the row first).
         let mut filled = false;
         if p.app_instance_id.is_empty() && !claim.app_instance_id.is_empty() {
@@ -314,7 +320,10 @@ fn record_row(
         filled |= crate::paywalls::attribute(&mut p, &claim.paywall);
         // Renewal details (billing issue, auto-renew, pending downgrade) change no access.
         let renewal = (st.billing_issue, st.auto_renew_off, st.renew_product_id.as_str());
-        let lifecycle = lifecycle_events(&p, st.billing_issue, st.auto_renew_off);
+        let mut lifecycle = lifecycle_events(&p, st.billing_issue, st.auto_renew_off);
+        if resumed {
+            lifecycle.push(event_kind::RESUME);
+        }
         if (p.billing_issue, p.auto_renew_off, p.renew_product_id.as_str()) != renewal {
             log_event(
                 tx,
@@ -368,7 +377,10 @@ fn record_row(
         billing_issue: st.billing_issue,
         auto_renew_off: st.auto_renew_off,
         renew_product_id: st.renew_product_id.clone(),
-        offer_id: claim.offer_id.clone(),
+        // What the store says the offer was wins over the client's word.
+        offer_id: if st.offer_id.is_empty() { claim.offer_id.clone() } else { st.offer_id.clone() },
+        offer_type: st.offer_type.clone(),
+        family_shared: st.family_shared,
         ..Purchase::new(st.store, &st.transaction_id, &st.app_id, product, user_id, now)
     };
     // A renewal keeps the paywall of the subscription's first purchase; else the client's.
@@ -471,8 +483,10 @@ pub fn partial_refund(tx: &TxContext, mut p: Purchase, total_micros: i64, detail
     true
 }
 
-/// A purchase the store took back for a dispute is valid again (Stripe: the merchant won it): it
-/// is granted again (reason `reinstated`) and its money counts again. Not for admin revokes.
+/// A purchase the store took back is valid again (Stripe: the merchant won the dispute; App Store:
+/// `REFUND_REVERSED`): its money counts again and it is granted again (reason `reinstated`),
+/// unless it is a subscription period that has ended meanwhile, which only gets its money back.
+/// Not for admin revokes.
 pub fn reinstate(tx: &TxContext, mut p: Purchase, details: &str) -> Option<String> {
     let revoked = matches!(p.status.as_str(), status::REVOKE_PENDING | status::REVOKED);
     if !revoked || crate::support::revoked_by_admin(tx, &p.id) {
@@ -492,6 +506,17 @@ pub fn reinstate(tx: &TxContext, mut p: Purchase, details: &str) -> Option<Strin
         if let Some(until) = before {
             p.expires_at_ms = until;
         }
+    }
+    let ended = p.kind == kind::SUBSCRIPTION && p.access_until_ms() > 0 && p.access_until_ms() <= now / 1000;
+    if ended {
+        // Nothing to give back in the game: the period is over.
+        p.status = status::EXPIRED.to_string();
+        p.next_attempt_at_micros = 0;
+        p.updated_at_micros = now;
+        let id = p.id.clone();
+        crate::ledger::save_purchase(tx, p);
+        log_event(tx, &id, "reinstated", &format!("{details} (period over: revenue only)"));
+        return None;
     }
     p.status = status::VERIFIED.to_string();
     p.attempts = 0;
@@ -591,6 +616,8 @@ pub fn record_inactive(tx: &TxContext, st: &StoreTx, details: &str) -> Option<St
     p.billing_issue = st.billing_issue;
     p.auto_renew_off = st.auto_renew_off;
     p.grace_until_ms = 0;
+    p.paused_until_ms = st.paused_until_ms;
+    crate::poll::schedule(tx, &p.id, st, &p.kind);
     let now_ms = tx_now_micros(tx) / 1000;
     match st.state {
         purser_core::model::TxState::Revoked => mark_inactive(tx, p, status::REVOKE_PENDING, now_ms, details),
@@ -817,6 +844,11 @@ fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease 
             delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, reason::REPLACED, now_ms))
                 .map(|_| (status::EXPIRED, None))
         }
+        // Paused by the player: not churn, it comes back.
+        status::EXPIRE_PENDING if p.paused_until_ms > 0 => {
+            delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, reason::PAUSED, now_ms))
+                .map(|_| (status::EXPIRED, Some(event_kind::PAUSE)))
+        }
         status::EXPIRE_PENDING => {
             delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, reason::EXPIRE, now_ms))
                 .map(|_| (status::EXPIRED, Some(event_kind::EXPIRE)))
@@ -904,7 +936,7 @@ pub fn entitlements(tx: &TxContext, app: &GameApp, user_id: &str) -> Value {
             .clone()
     };
     let mut owned = Vec::new();
-    for p in crate::ledger_index::owned_by(tx, user_id) {
+    for p in crate::ledger_index::owned_or_paused_by(tx, user_id) {
         if !apps.contains(&p.app_id) {
             continue;
         }
@@ -926,6 +958,8 @@ pub fn entitlements(tx: &TxContext, app: &GameApp, user_id: &str) -> Value {
             renews_to,
             trial: p.trial,
             purchased_at_ms: p.created_at_micros / 1000,
+            paused_until_ms: p.paused_until_ms,
+            family_shared: p.family_shared,
         });
     }
     let mut info = customer_info(&owned, now_ms);

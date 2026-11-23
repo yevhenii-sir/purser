@@ -31,11 +31,15 @@ pub mod event_kind {
     /// Another subscription replaced this one (upgrade / downgrade / crossgrade):
     /// `product_id` is the new product, `previous_product_id` the old one.
     pub const PRODUCT_CHANGE: &str = "product_change";
+    /// The player paused the subscription (Google): no access until it resumes.
+    pub const PAUSE: &str = "pause";
+    /// A paused subscription runs again.
+    pub const RESUME: &str = "resume";
     /// Sent from `admin_test_integration`; carries no revenue.
     pub const TEST: &str = "test";
 
     /// Subscription changes without money: only the webhook and the Cloud Storage export get them.
-    pub const LIFECYCLE: &[&str] = &[CANCEL, UNCANCEL, BILLING_ISSUE, BILLING_RECOVERED, PRODUCT_CHANGE];
+    pub const LIFECYCLE: &[&str] = &[CANCEL, UNCANCEL, BILLING_ISSUE, BILLING_RECOVERED, PRODUCT_CHANGE, PAUSE, RESUME];
 }
 
 pub mod integration_kind {

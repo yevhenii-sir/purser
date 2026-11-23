@@ -151,6 +151,10 @@ fn tx(app_id: &str, user_id: &str, receipt_id: &str, product_id: &str, state: Tx
         billing_issue: false,
         auto_renew_off: false,
         renew_product_id: String::new(),
+        paused_until_ms: 0,
+        family_shared: false,
+        offer_id: String::new(),
+        offer_type: String::new(),
     }
 }
 

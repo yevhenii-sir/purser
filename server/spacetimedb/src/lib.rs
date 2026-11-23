@@ -275,9 +275,15 @@ pub struct Purchase {
     pub replaced_by: String,
     /// Part of `price_micros` refunded while the purchase stays granted (Stripe partial refunds).
     pub refunded_micros: i64,
-    /// The store offer the client said the player bought (Google offer / base plan id, Apple
-    /// promotional offer id); empty when none.
+    /// The store offer of the purchase: what the store reports (Google offer / base plan id, Apple
+    /// `offerIdentifier`), else what the client said; empty when none.
     pub offer_id: String,
+    /// Kind of that offer when the store says (`intro` | `promo` | `code` | `winback`); empty otherwise.
+    pub offer_type: String,
+    /// Subscriptions: paused by the player until then (Google); 0 = not paused.
+    pub paused_until_ms: i64,
+    /// Shared by a family member (Apple Family Sharing): access without payment (no revenue).
+    pub family_shared: bool,
     /// Paywall the client bought from (`/verify` `placement`, `variant_id`, `test_id`, `paywall_id`);
     /// empty when unknown. Renewals inherit it from the purchase that started the subscription.
     pub paywall_placement: String,
@@ -329,6 +335,9 @@ impl Purchase {
             replaced_by: String::new(),
             refunded_micros: 0,
             offer_id: String::new(),
+            offer_type: String::new(),
+            paused_until_ms: 0,
+            family_shared: false,
             paywall_placement: String::new(),
             paywall_variant_id: String::new(),
             paywall_test_id: String::new(),
@@ -1084,6 +1093,9 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             replaced_by: r.replaced_by,
             refunded_micros: r.refunded_micros,
             offer_id: r.offer_id,
+            offer_type: String::new(),
+            paused_until_ms: 0,
+            family_shared: false,
             paywall_placement: r.paywall_placement,
             paywall_variant_id: r.paywall_variant_id,
             paywall_test_id: r.paywall_test_id,

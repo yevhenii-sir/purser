@@ -40,7 +40,7 @@ pub fn purchase_row(p: &Purchase) -> Value {
         "paywall_placement": p.paywall_placement, "paywall_variant_id": p.paywall_variant_id,
         "paywall_test_id": p.paywall_test_id, "paywall_id": p.paywall_id,
         "grace_until_ms": p.grace_until_ms, "billing_issue": p.billing_issue, "auto_renew_off": p.auto_renew_off,
-        "renew_product_id": p.renew_product_id, "replaced_by": p.replaced_by, "refunded_micros": p.refunded_micros, "offer_id": p.offer_id,
+        "renew_product_id": p.renew_product_id, "replaced_by": p.replaced_by, "refunded_micros": p.refunded_micros, "offer_id": p.offer_id, "offer_type": p.offer_type, "paused_until_ms": p.paused_until_ms, "family_shared": p.family_shared,
     })
 }
 

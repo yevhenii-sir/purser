@@ -121,6 +121,10 @@ pub fn parse_product_purchase(
         billing_issue: false,
         auto_renew_off: false,
         renew_product_id: String::new(),
+        paused_until_ms: 0,
+        family_shared: false,
+        offer_id: String::new(),
+        offer_type: String::new(),
     })
 }
 
@@ -147,6 +151,7 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
     let mut trial = false;
     let mut auto_renew_off = false;
     let mut renew_product_id = String::new();
+    let mut offer_id = String::new();
     for item in &line_items {
         let exp = item["expiryTime"].as_str().and_then(parse_rfc3339_ms).unwrap_or(0);
         if exp >= expires_at_ms {
@@ -158,10 +163,20 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
             auto_renew_off = item["autoRenewingPlan"]["autoRenewEnabled"].as_bool() == Some(false);
             // A downgrade waiting for the end of the period.
             renew_product_id = item["deferredItemReplacement"]["productId"].as_str().unwrap_or("").to_string();
+            // The offer of this period, else its base plan.
+            let offer = &item["offerDetails"];
+            offer_id = offer["offerId"].as_str().filter(|o| !o.is_empty()).or_else(|| offer["basePlanId"].as_str()).unwrap_or("").to_string();
         }
     }
 
     let sub_state = v["subscriptionState"].as_str().unwrap_or("");
+    // Paused by the player: no access until it resumes by itself (or earlier, when the player
+    // resumes it). Unknown resume time: looked at again in a day.
+    let paused_until_ms = if sub_state == "SUBSCRIPTION_STATE_PAUSED" {
+        v["pausedStateContext"]["autoResumeTime"].as_str().and_then(parse_rfc3339_ms).unwrap_or(now_ms + GRACE_RECHECK_MS)
+    } else {
+        0
+    };
     // Grace period: the renewal payment failed, the player keeps access. Google may report the
     // paid period's end only, so access lasts at least a day more; the worker checks again daily.
     let in_grace = sub_state == "SUBSCRIPTION_STATE_IN_GRACE_PERIOD";
@@ -220,6 +235,10 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
         billing_issue,
         auto_renew_off,
         renew_product_id,
+        paused_until_ms,
+        family_shared: false,
+        offer_id,
+        offer_type: String::new(),
     })
 }
 
@@ -442,5 +461,17 @@ mod tests {
         assert!(product_url("com.game", "diamonds_10", "abc.DEF-ghi_1").is_ok());
         assert!(product_url("com.game", "x/../../y", "t").is_err());
         assert!(subscription_v2_url("com.game", "t?x=1").is_err());
+    }
+
+    #[test]
+    fn a_paused_subscription_and_its_offer() {
+        let body = r#"{"subscriptionState":"SUBSCRIPTION_STATE_PAUSED","latestOrderId":"GPA.8",
+            "pausedStateContext":{"autoResumeTime":"2027-01-20T00:00:00Z"},
+            "lineItems":[{"productId":"vip","expiryTime":"2026-09-20T00:00:00Z","offerDetails":{"basePlanId":"monthly","offerId":"spring"}}]}"#;
+        let tx = parse_subscription_v2("com.example.mygame", "tok", body, 1_790_000_000_000).unwrap();
+        assert_eq!((tx.state, tx.paused_until_ms, tx.offer_id.as_str()), (TxState::Expired, 1_800_403_200_000, "spring"));
+        let base = body.replace(r#","offerId":"spring""#, "").replace("SUBSCRIPTION_STATE_PAUSED", "SUBSCRIPTION_STATE_ACTIVE");
+        let tx = parse_subscription_v2("com.example.mygame", "tok", &base, 1_790_000_000_000).unwrap();
+        assert_eq!((tx.paused_until_ms, tx.offer_id.as_str()), (0, "monthly"));
     }
 }

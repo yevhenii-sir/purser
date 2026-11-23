@@ -27,8 +27,9 @@ pub struct PendingPurchase {
     pub attempts: u32,
 }
 
-/// A purchase a player owns now: not consumable and in an owned status. `/entitlements` reads the
-/// few ledger rows these point to instead of everything the player ever bought.
+/// A purchase a player owns now (not consumable, in an owned status) or a subscription they
+/// paused. `/entitlements` reads the few ledger rows these point to instead of everything the
+/// player ever bought.
 #[spacetimedb::table(accessor = owned_purchase, cache_policy = required_in_memory)]
 pub struct OwnedPurchase {
     #[primary_key]
@@ -41,6 +42,17 @@ pub struct OwnedPurchase {
 
 fn is_owned_row(p: &Purchase) -> bool {
     p.kind != kind::CONSUMABLE && status::is_owned(&p.status)
+}
+
+/// A subscription the player paused: listed with the owned ones (`/entitlements` says when it
+/// resumes), giving no access.
+fn is_paused_row(p: &Purchase) -> bool {
+    p.kind == kind::SUBSCRIPTION && p.paused_until_ms > 0 && matches!(p.status.as_str(), status::EXPIRE_PENDING | status::EXPIRED)
+}
+
+/// Rows [`OwnedPurchase`] lists.
+pub fn is_listed(p: &Purchase) -> bool {
+    is_owned_row(p) || is_paused_row(p)
 }
 
 /// Brings both tables in step with ledger row `p` (after it was inserted or changed).
@@ -67,7 +79,7 @@ pub fn sync(tx: &ReducerContext, p: &Purchase) {
     }
 
     let owned = tx.db.owned_purchase().purchase_id().find(&p.id);
-    if is_owned_row(p) {
+    if is_listed(p) {
         let row = OwnedPurchase { purchase_id: p.id.clone(), user_id: p.user_id.clone(), app_id: p.app_id.clone() };
         match owned {
             Some(old) if old.user_id == row.user_id && old.app_id == row.app_id => {}
@@ -85,16 +97,21 @@ pub fn sync(tx: &ReducerContext, p: &Purchase) {
 
 /// The purchases `user_id` owns now (every app; not consumables).
 pub fn owned_by(tx: &ReducerContext, user_id: &str) -> Vec<Purchase> {
+    owned_or_paused_by(tx, user_id).into_iter().filter(is_owned_row).collect()
+}
+
+/// [`owned_by`] and the subscriptions `user_id` paused.
+pub fn owned_or_paused_by(tx: &ReducerContext, user_id: &str) -> Vec<Purchase> {
     if reindexing(tx) {
         // The table is being rebuilt: read the ledger itself.
-        return tx.db.purchase().user_id().filter(user_id).filter(is_owned_row).collect();
+        return tx.db.purchase().user_id().filter(user_id).filter(is_listed).collect();
     }
     tx.db
         .owned_purchase()
         .user_id()
         .filter(user_id)
         .filter_map(|o| tx.db.purchase().id().find(&o.purchase_id))
-        .filter(is_owned_row)
+        .filter(is_listed)
         .collect()
 }
 

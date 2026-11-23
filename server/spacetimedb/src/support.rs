@@ -141,7 +141,7 @@ fn purchase_json(tx: &TxContext, p: &Purchase) -> Value {
         "attempts": p.attempts, "next_attempt_at_micros": p.next_attempt_at_micros, "last_error": p.last_error,
         "created_at_micros": p.created_at_micros, "updated_at_micros": p.updated_at_micros,
         "grace_until_ms": p.grace_until_ms, "billing_issue": p.billing_issue, "auto_renew_off": p.auto_renew_off,
-        "renew_product_id": p.renew_product_id, "replaced_by": p.replaced_by, "refunded_micros": p.refunded_micros, "offer_id": p.offer_id,
+        "renew_product_id": p.renew_product_id, "replaced_by": p.replaced_by, "refunded_micros": p.refunded_micros, "offer_id": p.offer_id, "offer_type": p.offer_type, "paused_until_ms": p.paused_until_ms, "family_shared": p.family_shared,
         "attention": rules::attention(&p.status, p.attempts, p.next_attempt_at_micros),
         "admin_revoke": revoke,
     })

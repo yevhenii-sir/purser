@@ -18,7 +18,7 @@ use crate::handlers::valid_user_id;
 use crate::ledger;
 use crate::net;
 use crate::store_health;
-use crate::{product, purchase, GameApp, Product, Purchase};
+use crate::{product, purchase, purchase_log, GameApp, Product, Purchase};
 use purser_core::doctor::{Level, Report};
 use purser_core::event::delivery;
 use purser_core::model::{kind, ledger_id, status, store};
@@ -343,10 +343,9 @@ pub(crate) fn notification(ctx: &mut impl Ctx, req: Request) -> Answer {
         Event::UserValidation { user_id } if valid_user_id(&user_id) => ok_204("ok", ""),
         Event::UserValidation { .. } => rejected(400, "INVALID_USER", "invalid user id"),
         Event::Paid(p) => paid(ctx, &app, &p, &source),
-        Event::Refunded { transaction_id, order_id, partial, reason } => {
+        Event::Refunded { transaction_id, order_id, partial, reason, refunded_micros, currency, refunded_at } => {
             if partial {
-                log::info!("{source} for {} ({transaction_id}): the purchase stays granted", app.app_id);
-                return ok_204("ignored", "partial refund: the purchase stays granted");
+                return partially_refunded(ctx, &app, &transaction_id, refunded_micros, &currency, &refunded_at, &source);
             }
             refunded(ctx, &app, &transaction_id, &order_id, format!("{source} {reason}").trim())
         }
@@ -450,6 +449,43 @@ fn refunded(ctx: &mut impl Ctx, app: &GameApp, transaction_id: &str, order_id: &
         }
     }
 }
+
+/// `partial_refund`: part of a payment was refunded; the purchase stays granted and revenue loses
+/// the refunded amount. Each webhook carries one refund's amount; a repeated delivery of the
+/// same refund (same transaction, refund date and amount) counts once.
+fn partially_refunded(ctx: &mut impl Ctx, app: &GameApp, transaction_id: &str, amount_micros: i64, currency: &str, refunded_at: &str, source: &str) -> Answer {
+    if transaction_id.is_empty() || amount_micros <= 0 {
+        return ok_204("ignored", "partial refund without a transaction or an amount");
+    }
+    let id = ledger_id(store::XSOLLA, transaction_id);
+    let refund_ref = format!("{refunded_at}/{amount_micros}/{currency}");
+    let (app_id, source_c) = (app.app_id.clone(), source.to_string());
+    let done = ctx.tx(|tx| {
+        let Some(p) = tx.db.purchase().id().find(&id).filter(|p| p.app_id == app_id) else { return "unknown transaction" };
+        if !p.currency.eq_ignore_ascii_case(currency) {
+            log::warn!("{source_c} for {id}: refund in {currency}, payment in {}; not counted", p.currency);
+            return "currency differs from the payment";
+        }
+        let seen = tx.db.purchase_log().purchase_id().filter(id.as_str()).any(|l| l.event == PARTIAL_REFUND_REF && l.details == refund_ref);
+        if seen {
+            return "already counted";
+        }
+        let total = p.refunded_micros + amount_micros;
+        if ledger::partial_refund(tx, p, total, &source_c) {
+            ledger::log_event(tx, &id, PARTIAL_REFUND_REF, &refund_ref);
+        }
+        ""
+    });
+    if done.is_empty() {
+        ok_204("ok", "")
+    } else {
+        log::info!("{source} for {} ({transaction_id}): {done}", app.app_id);
+        ok_204("ignored", done)
+    }
+}
+
+/// Purchase-log event that remembers a counted Xsolla partial refund (`{date}/{amount}/{currency}`).
+const PARTIAL_REFUND_REF: &str = "partial_refund_ref";
 
 /// `cancel_subscription`: ends the subscription at `date_end` (now when it has passed or is missing).
 fn subscription_canceled(ctx: &mut impl Ctx, app: &GameApp, subscription_id: &str, ends_ms: i64, source: &str) -> Answer {

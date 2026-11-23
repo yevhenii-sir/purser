@@ -137,6 +137,10 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
         linked_purchase_token: String::new(),
         country: crate::country::normalize(&s("storefront")),
         trial: is_free_trial(p),
+        family_shared: s("inAppOwnershipType") == "FAMILY_SHARED",
+        offer_id: s("offerIdentifier"),
+        offer_type: offer_type(p["offerType"].as_i64()).to_string(),
+        paused_until_ms: 0,
         grace_until_ms: 0,
         billing_issue: false,
         auto_renew_off: false,
@@ -210,6 +214,17 @@ fn id_text(v: &Value) -> String {
         Value::String(s) => s.clone(),
         Value::Number(n) => n.to_string(),
         _ => String::new(),
+    }
+}
+
+/// `offerType` of a transaction: 1 introductory, 2 promotional, 3 offer code, 4 win-back.
+pub fn offer_type(code: Option<i64>) -> &'static str {
+    match code {
+        Some(1) => "intro",
+        Some(2) => "promo",
+        Some(3) => "code",
+        Some(4) => "winback",
+        _ => "",
     }
 }
 
@@ -600,5 +615,16 @@ mod tests {
             "https://api.storekit-sandbox.itunes.apple.com/inApps/v2/transactions/consumption/2000000123"
         );
         assert!(consumption_url(PRODUCTION_API, "1/../2").is_err());
+    }
+
+    #[test]
+    fn family_sharing_and_the_offer_of_a_transaction() {
+        let p = serde_json::json!({ "transactionId": "1", "originalTransactionId": "1", "bundleId": "b", "productId": "vip",
+            "inAppOwnershipType": "FAMILY_SHARED", "offerType": 4, "offerIdentifier": "come_back" });
+        let tx = parse_transaction_payload(&p, 0).unwrap();
+        assert_eq!((tx.family_shared, tx.offer_id.as_str(), tx.offer_type.as_str()), (true, "come_back", "winback"));
+        let own = parse_transaction_payload(&serde_json::json!({ "transactionId": "2", "inAppOwnershipType": "PURCHASED" }), 0).unwrap();
+        assert_eq!((own.family_shared, own.offer_type.as_str()), (false, ""));
+        assert_eq!([1, 2, 3, 4, 9].map(|c| offer_type(Some(c))), ["intro", "promo", "code", "winback", ""]);
     }
 }

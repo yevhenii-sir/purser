@@ -20,7 +20,9 @@ Event (`v1` argument or webhook body; the webhook body also has `catalog_product
 - `transfer` (below);
 - `admin`: revoked by support from the admin page; handle it like `refund`;
 - `replaced`: the player switched to another subscription (upgrade, downgrade, crossgrade in Google Play, an App Store subscription group or Stripe). The `grant` of the new product comes with its own `transaction_id`;
-- `reinstated`: a purchase revoked for a payment dispute is granted again, because the merchant won the dispute.
+- `reinstated`: a purchase taken back is granted again: the merchant won a payment dispute (Stripe), or Apple reversed a refund (`REFUND_REVERSED`). A subscription period that ended meanwhile gets its revenue back without a `grant`;
+- `paused` (`revoke`): the player paused a Google Play subscription; no access until it resumes. `/entitlements` lists it under `paused` with `resumes_at_ms`;
+- `resumed`: never sent as a reason of its own: a paused subscription that runs again is granted with reason `renewal` or `purchase` like any reverified period.
 
 `expires_at_ms` of a subscription is when access ends: the paid period, or the store's grace period after a failed renewal payment.
 

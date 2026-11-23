@@ -45,6 +45,11 @@ pub mod reason {
     /// A purchase revoked for a payment dispute is granted again: the merchant won the dispute.
     /// Grant it although this `transaction_id` was granted (and revoked) before.
     pub const REINSTATED: &str = "reinstated";
+    /// The player paused the subscription (Google): access comes back with `grant` (reason
+    /// `resumed`) when it resumes.
+    pub const PAUSED: &str = "paused";
+    /// A paused subscription runs again.
+    pub const RESUMED: &str = "resumed";
 }
 
 /// Event sent to games (the one reducer argument, or the webhook body).
@@ -53,7 +58,7 @@ pub mod reason {
 pub struct BillingEvent {
     /// `grant` | `revoke`
     pub event: String,
-    /// `purchase` | `renewal` | `refund` | `expire` | `transfer` | `admin` | `replaced` | `reinstated`
+    /// `purchase` | `renewal` | `refund` | `expire` | `transfer` | `admin` | `replaced` | `reinstated` | `paused` | `resumed`
     pub reason: String,
     pub store: String,
     pub environment: String,
