@@ -61,10 +61,41 @@ fn bump(tx: &ReducerContext, app_id: &str, status: &str, up: bool) {
 }
 
 /// Every new ledger row goes through here (and [`save_purchase`] for changes).
-pub fn insert_purchase(tx: &ReducerContext, p: Purchase) -> Purchase {
+pub fn insert_purchase(tx: &ReducerContext, mut p: Purchase) -> Purchase {
+    set_period_facts(tx, &mut p);
     bump(tx, &p.app_id, &p.status, true);
     crate::ledger_index::sync(tx, &p);
     tx.db.purchase().insert(p)
+}
+
+/// Where a new subscription row stands in its subscription (`purser_core::revenue::PeriodFacts`):
+/// read from the subscription's rows once, here, and kept on the row. A row that arrives out of
+/// order (a period older than ones already recorded) corrects the later rows too.
+fn set_period_facts(tx: &ReducerContext, p: &mut Purchase) {
+    use purser_core::revenue::{chain_period_facts, ChainRow};
+    if p.kind != kind::SUBSCRIPTION || p.original_transaction_id.is_empty() {
+        return;
+    }
+    let mut chain: Vec<Purchase> = tx
+        .db
+        .purchase()
+        .original_transaction_id()
+        .filter(p.original_transaction_id.as_str())
+        .filter(|o| o.app_id == p.app_id && o.store == p.store && o.id != p.id)
+        .collect();
+    chain.push(p.clone());
+    chain.sort_by(|a, b| (a.created_at_micros, a.id.as_str()).cmp(&(b.created_at_micros, b.id.as_str())));
+    let periods: Vec<ChainRow> = chain.iter().map(|o| ChainRow { created_at_micros: o.created_at_micros, trial: o.trial }).collect();
+    for (mut row, facts) in chain.into_iter().zip(chain_period_facts(&periods)) {
+        if row.id == p.id {
+            p.trial_conversion = facts.trial_conversion;
+            p.after_first_year = facts.after_first_year;
+        } else if (row.trial_conversion, row.after_first_year) != (facts.trial_conversion, facts.after_first_year) {
+            row.trial_conversion = facts.trial_conversion;
+            row.after_first_year = facts.after_first_year;
+            tx.db.purchase().id().update(row);
+        }
+    }
 }
 
 /// Every change of a ledger row goes through here: it keeps [`PurchaseCount`] and the derived
@@ -343,7 +374,7 @@ fn record_row(
     // A renewal keeps the paywall of the subscription's first purchase; else the client's.
     crate::paywalls::inherit(tx, &mut row);
     crate::paywalls::attribute(&mut row, &claim.paywall);
-    crate::ledger::insert_purchase(tx, row.clone());
+    let row = crate::ledger::insert_purchase(tx, row);
     log_event(
         tx,
         &id,

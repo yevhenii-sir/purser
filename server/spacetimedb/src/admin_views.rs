@@ -23,6 +23,8 @@ pub const LIST_MAX_LIMIT: usize = 1000;
 /// First time window `admin_list_purchases` reads (then ×4 each step back in time).
 const FIRST_WINDOW_MICROS: i64 = 3_600_000_000;
 const WINDOW_GROWTH: i64 = 4;
+/// Ledger rows one `admin_list_purchases` call reads at most (the page goes on in the next call).
+pub const LIST_SCAN_LIMIT: usize = 20_000;
 
 /// A ledger row with the field names of the `purchase` columns, so the page reads it like `/sql` rows.
 pub fn purchase_row(p: &Purchase) -> Value {
@@ -190,11 +192,12 @@ fn subscription_matches(p: &Purchase, filter: &str, now_ms: i64) -> bool {
         }
 }
 
-/// Purchases updated in `[since, until]` that match the filters, newest first, at most `limit`;
-/// the flag says whether more matched. The range is read backward in growing time windows through
-/// the `updated_at_micros` index, so the newest rows come without reading the whole range, and the
-/// filters apply before the limit.
-pub fn list_purchases(tx: &TxContext, q: &ListQuery) -> (Vec<Purchase>, bool) {
+/// Purchases updated in `[since, until]` that match the filters, newest first, at most `limit`,
+/// and where the next page starts (`None`: nothing more). The range is read backward in time
+/// windows through the `updated_at_micros` index: a window grows while it finds few rows and
+/// shrinks when it finds many, and one call reads at most [`LIST_SCAN_LIMIT`] rows, so a filter
+/// that matches little cannot make it read the whole ledger (the next page goes on from there).
+pub fn list_purchases(tx: &TxContext, q: &ListQuery) -> (Vec<Purchase>, Option<(i64, String)>) {
     let limit = if q.limit == 0 { LIST_DEFAULT_LIMIT } else { q.limit.min(LIST_MAX_LIMIT) };
     let since = q.since_micros.max(0);
     let mut hi = q.until_micros.unwrap_or(i64::MAX);
@@ -205,31 +208,45 @@ pub fn list_purchases(tx: &TxContext, q: &ListQuery) -> (Vec<Purchase>, bool) {
             && (q.kind.is_empty() || p.kind == q.kind)
             && (q.store.is_empty() || p.store == q.store)
             && subscription_matches(p, &q.subscription, now / 1000)
-            && (q.before_id.is_empty() || Some(p.updated_at_micros) != until || p.id < q.before_id)
     };
+    let after_cursor = |p: &Purchase| q.before_id.is_empty() || Some(p.updated_at_micros) != until || p.id < q.before_id;
     // The first window ends at `until`, or now when `until` is open (rows are stamped with tx time).
     let mut window = FIRST_WINDOW_MICROS;
     let mut lo = hi.min(now).saturating_sub(window).max(since);
     let mut out: Vec<Purchase> = Vec::new();
-    while hi >= since && out.len() <= limit {
+    let mut scanned = 0usize;
+    loop {
         // Selected builds through `(app_id, updated_at)`, the whole server through `updated_at`.
         let mut rows: Vec<Purchase> = if q.app_ids.is_empty() {
-            tx.db.purchase().updated_at_micros().filter(lo..=hi).filter(|p| keep(p)).collect()
+            tx.db.purchase().updated_at_micros().filter(lo..=hi).filter(|p| after_cursor(p)).collect()
         } else {
-            q.app_ids.iter().flat_map(|a| tx.db.purchase().app_updated().filter((a.as_str(), lo..=hi)).filter(|p| keep(p)).collect::<Vec<_>>()).collect()
+            q.app_ids.iter().flat_map(|a| tx.db.purchase().app_updated().filter((a.as_str(), lo..=hi)).filter(|p| after_cursor(p)).collect::<Vec<_>>()).collect()
         };
         rows.sort_by(|a, b| b.updated_at_micros.cmp(&a.updated_at_micros).then_with(|| b.id.cmp(&a.id)));
-        out.extend(rows);
+        let found = rows.len();
+        for p in rows {
+            scanned += 1;
+            let position = (p.updated_at_micros, p.id.clone());
+            if keep(&p) {
+                out.push(p);
+            }
+            if out.len() > limit {
+                out.pop();
+                let last = out.last().map(|p| (p.updated_at_micros, p.id.clone()));
+                return (out, last);
+            }
+            if scanned >= LIST_SCAN_LIMIT {
+                // Read enough for one call: the next page goes on after this row.
+                return (out, Some(position));
+            }
+        }
         if lo <= since {
-            break;
+            return (out, None);
         }
         hi = lo - 1;
-        window = window.saturating_mul(WINDOW_GROWTH);
+        window = if found > LIST_SCAN_LIMIT / 8 { (window / 2).max(1_000_000) } else { window.saturating_mul(WINDOW_GROWTH) };
         lo = hi.saturating_sub(window).max(since);
     }
-    let more = out.len() > limit;
-    out.truncate(limit);
-    (out, more)
 }
 
 /// `query_json`: `{"since_micros", "until_micros"?, "app_ids"?, "status"?, "kind"?, "store"?,
@@ -256,9 +273,10 @@ pub fn admin_list_purchases(ctx: &mut ProcedureContext, query_json: String) -> S
                 return Ok(json!({ "rows": [], "more": false }));
             }
         }
-        let (rows, more) = list_purchases(tx, &q);
-        // Where the next page starts: the last row's time, rows at that time after its id.
-        let next = rows.last().filter(|_| more).map(|p| json!({ "until_micros": p.updated_at_micros, "before_id": p.id }));
+        let (rows, next) = list_purchases(tx, &q);
+        // Where the next page starts: rows at `until_micros` itself only before `before_id`.
+        let more = next.is_some();
+        let next = next.map(|(until_micros, before_id)| json!({ "until_micros": until_micros, "before_id": before_id }));
         Ok::<_, String>(json!({ "rows": rows.iter().map(purchase_row).collect::<Vec<_>>(), "more": more, "next": next }))
     });
     match result {

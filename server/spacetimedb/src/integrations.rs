@@ -58,6 +58,7 @@ pub struct IntegrationOutbox {
     pub id: u64,
     pub kind: String,
     pub app_id: String,
+    #[index(btree)]
     pub purchase_id: String,
     /// Serialized `OutEvent`.
     pub event_json: String,
@@ -202,7 +203,7 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         app_instance_id: p.app_instance_id.clone(),
         attribution: load_attribution(tx, &p.app_id, &p.user_id),
         country: p.country.clone(),
-        commission_percent: crate::revenue::commission(tx).percent_for_period(&p.app_id, crate::revenue::period_facts(tx, p).after_first_year),
+        commission_percent: crate::revenue::commission(tx).percent_for_period(&p.app_id, crate::revenue::period_facts(p).after_first_year),
         previous_product_id: String::new(),
     }
 }
@@ -250,6 +251,10 @@ pub fn secret_for(kind: &str) -> Option<&'static str> {
 /// Queues `kind` (see `event_kind`) of purchase `p` for every active integration of its app.
 pub fn enqueue(tx: &ReducerContext, p: &Purchase, kind: &str) {
     let Some(app) = tx.db.game_app().app_id().find(&p.app_id) else { return };
+    // Nothing to send to: the event (attribution ids, commission, the subscription's history) is not built.
+    if active_kinds(tx, &app).is_empty() {
+        return;
+    }
     let event = out_event(tx, &app, p, kind);
     enqueue_event(tx, &app, &p.id, &event, None);
 }
@@ -257,6 +262,9 @@ pub fn enqueue(tx: &ReducerContext, p: &Purchase, kind: &str) {
 /// `product_change`: subscription `p` replaced one of `previous_product_id`.
 pub fn enqueue_change(tx: &ReducerContext, p: &Purchase, previous_product_id: &str) {
     let Some(app) = tx.db.game_app().app_id().find(&p.app_id) else { return };
+    if active_kinds(tx, &app).is_empty() {
+        return;
+    }
     let mut event = out_event(tx, &app, p, event_kind::PRODUCT_CHANGE);
     event.previous_product_id = previous_product_id.to_string();
     enqueue_event(tx, &app, &p.id, &event, None);

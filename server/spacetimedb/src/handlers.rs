@@ -399,22 +399,23 @@ fn enabled_app(tx: &TxContext, app_id: &str) -> Result<GameApp, Outcome> {
     config::find_app(tx, app_id).filter(|a| a.enabled).ok_or_else(|| Outcome::status(400, "error", format!("unknown app {app_id}")))
 }
 
-fn get_entitlements(ctx: &mut impl Ctx, r: &EntitlementsRequest) -> Result<Outcome, Outcome> {
+fn entitlements_tx(tx: &TxContext, r: &EntitlementsRequest) -> Result<Outcome, Outcome> {
     if !valid_user_id(&r.user_id) {
         return Err(Outcome::status(400, "error", "invalid user_id"));
     }
-    let body = ctx.tx(|tx| {
-        enabled_app(tx, &r.app_id).map(|app| {
-            players::touch(tx, &app.app_id, &r.user_id, &r.client);
-            ledger::entitlements(tx, &app, &r.user_id)
-        })
-    })?;
-    Ok(Outcome::new(200, body))
+    let app = enabled_app(tx, &r.app_id)?;
+    players::touch(tx, &app.app_id, &r.user_id, &r.client);
+    Ok(Outcome::new(200, ledger::entitlements(tx, &app, &r.user_id)))
+}
+
+#[cfg(test)]
+fn get_entitlements(ctx: &mut impl Ctx, r: &EntitlementsRequest) -> Result<Outcome, Outcome> {
+    ctx.tx(|tx| entitlements_tx(tx, r))
 }
 
 #[handler]
 fn entitlements(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run(ctx, req, "entitlements", true, |ctx, r: &EntitlementsRequest| get_entitlements(ctx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "entitlements", true, |tx, r: &EntitlementsRequest| entitlements_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 #[derive(Deserialize)]
@@ -552,21 +553,23 @@ fn paywall_error(e: paywalls::ClientError) -> Outcome {
     Outcome::new(e.http, json!({ "status": status, "code": e.code, "message": e.message }))
 }
 
-fn get_paywall(ctx: &mut impl Ctx, r: &PaywallRequest) -> Result<Outcome, Outcome> {
+fn paywall_tx(tx: &TxContext, r: &PaywallRequest) -> Result<Outcome, Outcome> {
     if !r.user_id.is_empty() && !valid_user_id(&r.user_id) {
         return Err(Outcome::status(400, "error", "invalid user_id"));
     }
-    ctx.tx(|tx| {
-        let app = enabled_app(tx, &r.app_id)?;
-        players::touch(tx, &app.app_id, &r.user_id, &r.client);
-        paywalls::serve(tx, &app, &r.placement, &r.user_id).map_err(paywall_error)
-    })
-    .map(|body| Outcome::new(200, body))
+    let app = enabled_app(tx, &r.app_id)?;
+    players::touch(tx, &app.app_id, &r.user_id, &r.client);
+    paywalls::serve(tx, &app, &r.placement, &r.user_id).map_err(paywall_error).map(|body| Outcome::new(200, body))
+}
+
+#[cfg(test)]
+fn get_paywall(ctx: &mut impl Ctx, r: &PaywallRequest) -> Result<Outcome, Outcome> {
+    ctx.tx(|tx| paywall_tx(tx, r))
 }
 
 #[handler]
 fn paywall(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run(ctx, req, "paywall", false, |ctx, r: &PaywallRequest| get_paywall(ctx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "paywall", false, |tx, r: &PaywallRequest| paywall_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 // ---------------------------------------------------------------------
@@ -584,11 +587,16 @@ struct AttributesRequest {
     client: ClientInfo,
 }
 
+#[cfg(test)]
 fn set_attributes(ctx: &mut impl Ctx, r: &AttributesRequest) -> Result<Outcome, Outcome> {
+    ctx.tx(|tx| attributes_tx(tx, r))
+}
+
+fn attributes_tx(tx: &TxContext, r: &AttributesRequest) -> Result<Outcome, Outcome> {
     if !valid_user_id(&r.user_id) {
         return Err(Outcome::status(400, "error", "invalid user_id"));
     }
-    ctx.tx(|tx| {
+    {
         let app = enabled_app(tx, &r.app_id)?;
         if app.client_auth != purser_core::client_api::mode::SIGNED {
             let personal = r.attributes.iter().find(|(k, v)| {
@@ -598,15 +606,15 @@ fn set_attributes(ctx: &mut impl Ctx, r: &AttributesRequest) -> Result<Outcome, 
                 return Err(Outcome::status(403, "forbidden", format!("[ERR_PERSONAL_ATTRIBUTE] '{k}' needs player tokens (client_auth = signed)")));
             }
         }
-        players::touch(tx, &app.app_id, &r.user_id, &r.client);
-        players::set_attributes(tx, &app.app_id, &r.user_id, &r.attributes).map_err(|e| Outcome::status(400, "error", e))
-    })
-    .map(|saved| Outcome::new(200, json!({ "status": "ok", "attributes": saved })))
+        players::set_attributes(tx, &app.app_id, &r.user_id, &r.client, &r.attributes)
+            .map_err(|e| Outcome::status(400, "error", e))
+            .map(|saved| Outcome::new(200, json!({ "status": "ok", "attributes": saved })))
+    }
 }
 
 #[handler]
 fn player_attributes(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run(ctx, req, "attributes", false, |ctx, r: &AttributesRequest| set_attributes(ctx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "attributes", false, |tx, r: &AttributesRequest| attributes_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 fn default_paywall_event() -> String {
@@ -627,20 +635,23 @@ struct PaywallEventRequest {
     event: String,
 }
 
-fn paywall_event_outcome(ctx: &mut impl Ctx, r: &PaywallEventRequest) -> Result<Outcome, Outcome> {
+fn paywall_event_tx(tx: &TxContext, r: &PaywallEventRequest) -> Result<Outcome, Outcome> {
     if !r.user_id.is_empty() && !valid_user_id(&r.user_id) {
         return Err(Outcome::status(400, "error", "invalid user_id"));
     }
-    ctx.tx(|tx| {
-        let app = enabled_app(tx, &r.app_id)?;
-        paywalls::record_event(tx, &app, &r.placement, &r.variant_id, &r.test_id, &r.event).map_err(paywall_error)
-    })
-    .map(|_| Outcome::status(200, "ok", ""))
+    let app = enabled_app(tx, &r.app_id)?;
+    paywalls::record_event(tx, &app, &r.placement, &r.variant_id, &r.test_id, &r.event).map_err(paywall_error)?;
+    Ok(Outcome::status(200, "ok", ""))
+}
+
+#[cfg(test)]
+fn paywall_event_outcome(ctx: &mut impl Ctx, r: &PaywallEventRequest) -> Result<Outcome, Outcome> {
+    ctx.tx(|tx| paywall_event_tx(tx, r))
 }
 
 #[handler]
 fn paywall_event(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run(ctx, req, "paywall_event", false, |ctx, r: &PaywallEventRequest| paywall_event_outcome(ctx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "paywall_event", false, |tx, r: &PaywallEventRequest| paywall_event_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 // ---------------------------------------------------------------------
@@ -1077,22 +1088,45 @@ fn offers_apple_sign(ctx: &mut HandlerContext, req: Request) -> Response {
 
 /// Admin UI (single static page). It talks to `/sql`, `/call/admin_*` and `/logs` of this database
 /// with the signed-in admin's token, so the page itself contains nothing secret.
-const ADMIN_PAGE: &str = include_str!("../admin/index.html");
+/// The page gzipped by `build.rs` (a third of its size, in the wasm and on the wire).
+const ADMIN_PAGE_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/admin.html.gz"));
+/// Changes with the page: browsers ask again (`no-cache`) and get `304` while it is the same.
+const ADMIN_ETAG: &str = concat!("\"", env!("ADMIN_ETAG"), "\"");
 /// Content-Security-Policy of the page, written by its build: the hash of its one inline script.
 const ADMIN_CSP: &str = include_str!("../admin/csp.txt");
 
-#[handler]
-fn admin_page(_ctx: &mut HandlerContext, _req: Request) -> Response {
-    http::Response::builder()
-        .status(200)
-        .header("Content-Type", "text/html; charset=utf-8")
-        .header("Cache-Control", "no-store")
+/// The admin page for a request with these headers: `304` when the browser has this version,
+/// gzipped when it accepts gzip, unpacked otherwise.
+fn admin_page_response(headers: &http::HeaderMap) -> Response {
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let b = http::Response::builder()
+        .header("ETag", ADMIN_ETAG)
+        .header("Cache-Control", "no-cache")
+        .header("Vary", "Accept-Encoding")
         .header("X-Frame-Options", "DENY")
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
-        .header("Content-Security-Policy", ADMIN_CSP.trim())
-        .body(Body::from(ADMIN_PAGE))
-        .expect("valid response")
+        .header("Content-Security-Policy", ADMIN_CSP.trim());
+    // A proxy that compresses may have made the tag weak (`W/"…"`): the value inside still matches.
+    if header("if-none-match").contains(ADMIN_ETAG) {
+        return b.status(304).body(Body::from(Vec::new())).expect("valid response");
+    }
+    let b = b.status(200).header("Content-Type", "text/html; charset=utf-8");
+    if header("accept-encoding").to_ascii_lowercase().contains("gzip") {
+        return b.header("Content-Encoding", "gzip").body(Body::from(ADMIN_PAGE_GZ)).expect("valid response");
+    }
+    b.body(Body::from(admin_page_html())).expect("valid response")
+}
+
+/// The page unpacked: the deflate stream between the 10-byte gzip header `build.rs` writes and
+/// the 8-byte trailer.
+fn admin_page_html() -> Vec<u8> {
+    miniz_oxide::inflate::decompress_to_vec(&ADMIN_PAGE_GZ[10..ADMIN_PAGE_GZ.len() - 8]).unwrap_or_default()
+}
+
+#[handler]
+fn admin_page(_ctx: &mut HandlerContext, req: Request) -> Response {
+    admin_page_response(req.headers())
 }
 
 /// `POST /checkout/steam`: the server starts a Steam purchase with its publisher key.

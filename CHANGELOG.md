@@ -4,7 +4,7 @@
 
 ### Breaking
 
-- Publish with `--delete-data`: the `purchase` table loses its `app_id`, `transaction_id` and `next_attempt_at_micros` indexes. `admin_select` still finds a purchase by `transaction_id` (through the ledger id).
+- Publish with `--delete-data`: the `purchase` table loses its `app_id`, `transaction_id` and `next_attempt_at_micros` indexes and gains `trial_conversion` and `after_first_year`. `admin_select` still finds a purchase by `transaction_id` (through the ledger id).
 
 ### Fixed
 
@@ -18,6 +18,10 @@
 - `/entitlements`, `/restore` and the player profile read the purchases a player owns now (`owned_purchase`, in memory) instead of everything the player ever bought.
 - Alerts, the setup check and the Overview read the worker's queue instead of every pending ledger row.
 - `admin_reindex_ledger` (owner) rebuilds the two derived tables from the ledger; `backup.py restore` runs it, and the worker continues an unfinished rebuild.
+- `/entitlements`, `/paywall`, `/paywall/event` and `/attributes` are one transaction each (the rate limit is checked in the route's own transaction); `/attributes` writes the player row only when something changed.
+- A subscription's trial-conversion and paid-year facts are written with its ledger row (`trial_conversion`, `after_first_year`), so renewals, refunds and integration events no longer re-read the subscription's history. Integration events are not built for builds without integrations.
+- Admin reads: the purchase list reads at most 20 000 ledger rows per call (its `next` cursor goes on from there), A/B results outside a test read the game's builds only, active-subscription counts read the owned purchases, `admin_select` reads a table without an index on the column once for all values. Retention, Steam order pruning and player erasure go through indexes.
+- The admin page is embedded gzipped and served with `Content-Encoding: gzip`, an `ETag` and `Cache-Control: no-cache` (a repeated visit is a `304`): about 450 KB on the wire instead of 1.6 MB. The page uses the Latin subset of its font only, and the owner's reads of many ids are one `/sql` query per 50 ids. The wasm is stripped of its name section (5.2 MB → 3.5 MB).
 
 ## 0.8.1 - 2026-11-20
 

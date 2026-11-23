@@ -66,13 +66,49 @@ pub fn touch(tx: &ReducerContext, app_id: &str, user_id: &str, client: &ClientIn
 }
 
 /// Applies an attributes update (`rules::merge_attributes`) and returns the player's attributes.
-pub fn set_attributes(tx: &ReducerContext, app_id: &str, user_id: &str, update: &serde_json::Map<String, Value>) -> Result<BTreeMap<String, String>, String> {
-    touch(tx, app_id, user_id, &ClientInfo::default());
-    let mut row = tx.db.player_profile().key().find(key(app_id, user_id)).ok_or("player row missing")?;
-    let current: BTreeMap<String, String> = serde_json::from_str(&row.attributes_json).unwrap_or_default();
+/// Also what [`touch`] does with `client`, with one read of the row; nothing is written when
+/// neither the attributes nor what `touch` keeps changed.
+pub fn set_attributes(
+    tx: &ReducerContext,
+    app_id: &str,
+    user_id: &str,
+    client: &ClientInfo,
+    update: &serde_json::Map<String, Value>,
+) -> Result<BTreeMap<String, String>, String> {
+    let now = tx.timestamp.to_micros_since_unix_epoch();
+    let k = key(app_id, user_id);
+    let existing = tx.db.player_profile().key().find(&k);
+    let stored: ClientInfo = existing.as_ref().and_then(|r| serde_json::from_str(&r.client_json).ok()).unwrap_or_default();
+    let seen = stored.updated_with(&client.sanitized());
+    let current: BTreeMap<String, String> = existing.as_ref().and_then(|r| serde_json::from_str(&r.attributes_json).ok()).unwrap_or_default();
     let merged = rules::merge_attributes(&current, update)?;
-    row.attributes_json = serde_json::to_string(&merged).unwrap_or_else(|_| "{}".into());
-    tx.db.player_profile().key().update(row);
+    let touched = rules::needs_touch(existing.as_ref().map(|r| r.last_seen_micros), now, &stored, &seen);
+    if existing.is_some() && !touched && merged == current {
+        return Ok(merged);
+    }
+    let attributes_json = serde_json::to_string(&merged).unwrap_or_else(|_| "{}".into());
+    let client_json = serde_json::to_string(&seen).unwrap_or_default();
+    match existing {
+        Some(mut r) => {
+            if touched {
+                r.last_seen_micros = now;
+                r.client_json = client_json;
+            }
+            r.attributes_json = attributes_json;
+            tx.db.player_profile().key().update(r);
+        }
+        None => {
+            tx.db.player_profile().insert(PlayerProfile {
+                key: k,
+                user_id: user_id.to_string(),
+                app_id: app_id.to_string(),
+                first_seen_micros: now,
+                last_seen_micros: now,
+                client_json,
+                attributes_json,
+            });
+        }
+    }
     Ok(merged)
 }
 

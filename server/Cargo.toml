@@ -6,3 +6,5 @@ members = ["core", "spacetimedb"]
 opt-level = "s"
 lto = true
 codegen-units = 1
+# No `name` section in the wasm (about 0.6 MB of function names).
+strip = true

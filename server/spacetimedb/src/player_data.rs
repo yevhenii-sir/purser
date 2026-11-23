@@ -10,7 +10,7 @@ use purser_core::model::{kind, status};
 use purser_core::roles::Cap;
 use purser_core::support::{erased_user_id, TransferPolicy};
 use serde_json::{json, Value};
-use spacetimedb::{ProcedureContext, ReducerContext, Table};
+use spacetimedb::{ProcedureContext, ReducerContext};
 use std::collections::BTreeSet;
 
 fn policy_key(game_key: &str) -> String {
@@ -162,7 +162,7 @@ pub fn admin_erase_player(ctx: &ReducerContext, game_key: String, user_id: Strin
             l.details = l.details.replace(&user_id, &erased);
             ctx.db.purchase_log().id().update(l);
         }
-        let queued: Vec<u64> = ctx.db.integration_outbox().iter().filter(|o| o.purchase_id == id).map(|o| o.id).collect();
+        let queued: Vec<u64> = ctx.db.integration_outbox().purchase_id().filter(id.as_str()).map(|o| o.id).collect();
         for q in queued {
             ctx.db.integration_outbox().id().delete(q);
         }

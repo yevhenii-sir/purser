@@ -18,6 +18,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # SATS → JSON of table rows for `access::admin_select`.
 spacetimedb-sats = { version = "=2.16.1", features = ["serde"] }
+# Unpacks the embedded admin page for the rare client that does not accept gzip.
+miniz_oxide = "0.8"
+
+[build-dependencies]
+# The admin page is embedded gzipped (`build.rs`).
+flate2 = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 purser-core = { path = "../core", features = ["testing"] }

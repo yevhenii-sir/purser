@@ -2609,6 +2609,8 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
         paywall_id: "pw_b".into(),
         country: String::new(),
         trial: false,
+        trial_conversion: false,
+        after_first_year: false,
         grace_until_ms: 0,
         billing_issue: false,
         auto_renew_off: false,
@@ -4134,6 +4136,8 @@ impl World {
             previous_user_id: String::new(),
             country: String::new(),
             trial: false,
+            trial_conversion: false,
+            after_first_year: false,
             grace_until_ms: 0,
             billing_issue: false,
             auto_renew_off: false,
@@ -4717,6 +4721,8 @@ fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -
         previous_user_id: String::new(),
         country: String::new(),
         trial: false,
+        trial_conversion: false,
+        after_first_year: false,
         grace_until_ms: 0,
         billing_issue: false,
         auto_renew_off: false,
@@ -7142,4 +7148,132 @@ fn requests_without_a_player_id_share_a_bucket_sized_for_many_players() {
     for i in 0..200 {
         assert!(guard(&w, "paywall", "", "").is_ok(), "anonymous request {i}");
     }
+}
+
+#[test]
+fn a_guarded_database_route_is_one_transaction() {
+    let w = World::new();
+    google_buy(&w, "player-1", "no_ads");
+    let r: EntitlementsRequest = serde_json::from_value(json!({ "app_id": APP, "user_id": "player-1" })).unwrap();
+    let (out, txs) = w.count_txs(|w| {
+        crate::client_guard::guarded_tx(&mut w.ctx(), "entitlements", "", &r, true, |tx, r| entitlements_tx(tx, r).unwrap_or_else(|o| o).into())
+    });
+    let ((http, body), _) = out.unwrap();
+    assert_eq!((http, &body["non_consumables"]), (200, &json!(["no_ads"])));
+    assert_eq!(txs, 1, "the rate limit and the answer share a transaction");
+    // A refused request (rate limit) never reaches the route.
+    for _ in 0..40 {
+        let _ = crate::client_guard::guarded_tx(&mut w.ctx(), "entitlements", "", &r, true, |tx, r| entitlements_tx(tx, r).unwrap_or_else(|o| o).into());
+    }
+    let refused = crate::client_guard::guarded_tx(&mut w.ctx(), "entitlements", "", &r, true, |_, _| panic!("route ran")).unwrap_err();
+    assert_eq!(refused.http, 429);
+}
+
+#[test]
+fn attributes_that_change_nothing_write_nothing() {
+    use crate::players::player_profile;
+    let w = World::new();
+    let r: AttributesRequest = serde_json::from_value(json!({ "app_id": APP, "user_id": "player-1", "attributes": { "level": "7" } })).unwrap();
+    assert_eq!(set_attributes(&mut w.ctx(), &r).unwrap_or_else(|o| o).body["attributes"]["level"], "7");
+    let row = |w: &World| w.read(|tx| tx.db.player_profile().iter().map(|p| (p.last_seen_micros, p.attributes_json)).collect::<Vec<_>>());
+    let first = row(&w);
+    assert_eq!(first.len(), 1);
+    w.advance_clock(60);
+    assert_eq!(set_attributes(&mut w.ctx(), &r).unwrap_or_else(|o| o).http, 200);
+    assert_eq!(row(&w), first, "same attributes within the hour: the row is not rewritten");
+}
+
+#[test]
+fn the_admin_page_is_served_compressed_and_cached_by_its_etag() {
+    let page = include_str!("../admin/index.html");
+    assert_eq!(admin_page_html(), page.as_bytes(), "the embedded copy unpacks to admin/index.html");
+    let get = |name: &'static str, value: &str| {
+        let mut h = http::HeaderMap::new();
+        if !value.is_empty() {
+            h.insert(name, value.parse().unwrap());
+        }
+        admin_page_response(&h)
+    };
+    let header = |r: &Response, name: &str| r.headers().get(name).map(|v| v.to_str().unwrap().to_string());
+
+    let gz = get("accept-encoding", "gzip, deflate, br");
+    assert_eq!((gz.status().as_u16(), header(&gz, "content-encoding").as_deref()), (200, Some("gzip")));
+    assert_eq!(header(&gz, "cache-control").as_deref(), Some("no-cache"));
+    assert!(header(&gz, "content-security-policy").is_some());
+    let etag = header(&gz, "etag").expect("etag");
+
+    let plain = get("accept-encoding", "");
+    assert_eq!((plain.status().as_u16(), header(&plain, "content-encoding")), (200, None));
+    assert_eq!(header(&plain, "etag").as_deref(), Some(etag.as_str()));
+
+    assert_eq!(get("if-none-match", &etag).status().as_u16(), 304);
+    assert_eq!(get("if-none-match", &format!("W/{etag}")).status().as_u16(), 304, "a proxy made the tag weak");
+    assert_eq!(get("if-none-match", "\"another\"").status().as_u16(), 200);
+}
+
+#[test]
+fn subscription_period_facts_are_written_with_the_row_even_out_of_order() {
+    const DAY: i64 = 86_400_000_000;
+    let w = World::new();
+    let product = Product::new(APP, "vip", kind::SUBSCRIPTION);
+    let period = |tx_id: &str, day: i64, trial: bool| Purchase {
+        original_transaction_id: "sub-1".into(),
+        trial,
+        next_attempt_at_micros: 0,
+        status: status::COMPLETED.into(),
+        ..Purchase::new("apple", tx_id, APP, &product, "player-1", NOW_MICROS + day * DAY)
+    };
+    let facts = |w: &World, id: &str| {
+        let p = w.read(|tx| tx.db.purchase().id().find(format!("apple:{id}")).unwrap());
+        (p.trial_conversion, p.after_first_year)
+    };
+    w.write(|tx| {
+        ledger::insert_purchase(tx, period("t0", 0, true));
+        // The period after the first paid year arrives before the first paid one.
+        ledger::insert_purchase(tx, period("t400", 400, false));
+    });
+    assert_eq!(facts(&w, "t0"), (false, false));
+    assert_eq!(facts(&w, "t400"), (true, false), "the only paid period so far");
+    w.write(|tx| {
+        ledger::insert_purchase(tx, period("t7", 7, false));
+    });
+    assert_eq!(facts(&w, "t7"), (true, false), "the first paid period after the trial");
+    assert_eq!(facts(&w, "t400"), (false, true), "corrected: a paid period more than a year after the first");
+    // Another subscription of the same player is not part of it.
+    w.write(|tx| {
+        let mut other = period("u1", 500, false);
+        other.original_transaction_id = "sub-2".into();
+        ledger::insert_purchase(tx, other);
+    });
+    assert_eq!(facts(&w, "u1"), (false, false));
+}
+
+#[test]
+fn a_selective_purchase_filter_reads_a_bounded_part_of_the_ledger_per_call() {
+    let w = World::new();
+    w.as_admin(false);
+    let n = crate::admin_views::LIST_SCAN_LIMIT + 100;
+    w.write(|tx| {
+        let product = Product::new(APP, "gems", kind::CONSUMABLE);
+        // One revoked purchase, older than many completed ones.
+        let mut old = Purchase::new("google", "old-revoked", APP, &product, "player-1", NOW_MICROS - 100_000_000_000);
+        old.status = status::REVOKED.into();
+        old.next_attempt_at_micros = 0;
+        ledger::insert_purchase(tx, old);
+        for i in 0..n {
+            let mut p = Purchase::new("google", &format!("c-{i:06}"), APP, &product, "player-1", NOW_MICROS - 1_000_000 * i as i64);
+            p.status = status::COMPLETED.into();
+            p.next_attempt_at_micros = 0;
+            ledger::insert_purchase(tx, p);
+        }
+    });
+    let first = w.list_purchases(json!({ "since_micros": 0, "status": "revoked", "limit": 10 }));
+    assert!(listed_ids(&first).is_empty(), "not reached in the first call");
+    assert_eq!(first["more"], true);
+    let mut q = json!({ "since_micros": 0, "status": "revoked", "limit": 10 });
+    q["until_micros"] = first["next"]["until_micros"].clone();
+    q["before_id"] = first["next"]["before_id"].clone();
+    let second = w.list_purchases(q);
+    assert_eq!(listed_ids(&second), ["google:old-revoked"]);
+    assert_eq!(second["more"], false);
 }

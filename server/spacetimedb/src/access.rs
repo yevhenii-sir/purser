@@ -375,6 +375,19 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
     Ok(if column.is_empty() { all } else { all.into_iter().filter(|r| matches(r, column, value)).collect() })
 }
 
+/// The columns [`read`] looks up through an index (the ledger tables are read only that way).
+fn has_index(table: &str, column: &str) -> bool {
+    matches!(
+        (table, column),
+        ("game_app", "app_id" | "game_key")
+            | ("product" | "integration" | "integration_health" | "app_check" | "store_create_job", "app_id")
+            | ("paywall" | "placement", "game_key")
+            | ("paywall_test", "placement_key")
+            | ("admin_audit", "since")
+            | ("purchase" | "purchase_log", _)
+    )
+}
+
 /// Values one [`select`] may look up at once.
 pub const SELECT_MAX_VALUES: usize = 500;
 
@@ -419,11 +432,20 @@ pub fn select(ctx: &ReducerContext, q: &SelectQuery) -> Result<Vec<Value>, Strin
             if values.len() > SELECT_MAX_VALUES {
                 return Err(format!("[ERR_BAD_QUERY] at most {SELECT_MAX_VALUES} values"));
             }
-            let mut rows = Vec::new();
-            for v in &values {
-                rows.extend(read(ctx, &q.table, &w.column, v)?);
+            if has_index(&q.table, &w.column) {
+                let mut rows = Vec::new();
+                for v in &values {
+                    rows.extend(read(ctx, &q.table, &w.column, v)?);
+                }
+                rows
+            } else {
+                // No index on the column: the table is read once for all the values.
+                let wanted: BTreeSet<&str> = values.iter().map(String::as_str).collect();
+                read(ctx, &q.table, "", "")?
+                    .into_iter()
+                    .filter(|r| wanted.iter().any(|v| matches(r, &w.column, v)))
+                    .collect()
             }
-            rows
         }
     };
     if let Some(apps) = who.app_ids(ctx) {

@@ -121,20 +121,29 @@ export function project(rows: Row[], columns?: readonly string[]): Row[] {
   return columns?.length ? rows.map((r) => Object.fromEntries(columns.map((c) => [c, r[c]]))) : rows
 }
 
-async function lookup(q: Query, column: string, value: string): Promise<Row[]> {
+/** Values one `/sql` query matches at once (`column = a OR column = b ...`). */
+const SQL_VALUES_PER_QUERY = 50
+
+async function lookup(q: Query, column: string, values: string[]): Promise<Row[]> {
   const cols = q.columns?.length ? q.columns.join(", ") : "*"
-  return sql(`SELECT ${cols} FROM ${q.table}${column ? ` WHERE ${column} = ${sqlStr(value)}` : ""}`)
+  const where = column ? ` WHERE ${values.map((v) => `${column} = ${sqlStr(v)}`).join(" OR ")}` : ""
+  return sql(`SELECT ${cols} FROM ${q.table}${where}`)
 }
 
-/** Rows of a table, as the signed-in admin may read them: one `admin_select` call for every
- * value of the filter, or an indexed `/sql` query per value for the owner. */
+/** Rows of a table, as the signed-in admin may read them: one `admin_select` call, or for the
+ * owner `/sql` queries of up to `SQL_VALUES_PER_QUERY` values each. */
 export async function select<T = Row>(q: Query): Promise<T[]> {
   if (__DEMO__) return (await import("./demo")).select(q) as T[]
   if (readThroughProcedure) {
     const where = q.where && { column: q.where.column, equals: typeof q.where.equals === "string" ? q.where.equals : [...new Set(q.where.equals)] }
     return proc<T[]>("admin_select", JSON.stringify({ table: q.table, columns: q.columns ?? [], where }))
   }
-  const lists = await Promise.all(lookups(q).map(([column, value]) => lookup(q, column, value)))
+  const pairs = lookups(q)
+  const column = pairs[0][0]
+  const values = pairs.map(([, v]) => v)
+  const chunks: string[][] = []
+  for (let i = 0; i < values.length; i += SQL_VALUES_PER_QUERY) chunks.push(values.slice(i, i + SQL_VALUES_PER_QUERY))
+  const lists = await Promise.all(chunks.map((c) => lookup(q, column, c)))
   return lists.flat() as T[]
 }
 

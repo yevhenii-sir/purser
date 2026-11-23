@@ -573,8 +573,11 @@ pub fn results(ctx: &mut impl Ctx, query_json: &str) -> Result<Value, String> {
         // `created_at_micros`.
         let apps: BTreeSet<String> = apps_of(tx, &q.game_key).into_iter().map(|a| a.app_id).collect();
         let candidates: Box<dyn Iterator<Item = crate::Purchase>> = if q.test_id.is_empty() {
+            // The game's builds through `(app_id, created_at)`, not every app's purchases.
             let (start, end) = (from as i64 * MICROS_PER_DAY, (to as i64 + 1) * MICROS_PER_DAY);
-            Box::new(tx.db.purchase().created_at_micros().filter(start..end))
+            let rows: Vec<crate::Purchase> =
+                apps.iter().flat_map(|a| tx.db.purchase().app_created().filter((a.as_str(), start..end)).collect::<Vec<_>>()).collect();
+            Box::new(rows.into_iter())
         } else {
             Box::new(tx.db.purchase().paywall_test_id().filter(q.test_id.as_str()))
         };

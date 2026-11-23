@@ -132,6 +132,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
     const q = { from: isoDay(from), to: isoDay(to), include_sandbox: sandbox, game_key: game === ALL ? "" : game }
     return revenueStats(q, fresh)
   }, [days, game, sandbox])
+  const netSeries = useMemo(() => (r?.series || []).map((s) => ({ ...s, net: s.net_usd_micros })), [r])
 
   const exportCsv = () => {
     if (!r) return
@@ -229,7 +230,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
 
           <Section title="Net revenue per day" description="Hover a day for gross, refunds, estimated proceeds and payments.">
             <ChartContainer config={netConfig} className="aspect-auto h-64 w-full">
-              <BarChart data={r.series.map((s) => ({ ...s, net: s.net_usd_micros }))} margin={{ left: 4, right: 4 }}>
+              <BarChart data={netSeries} margin={{ left: 4, right: 4 }}>
                 <CartesianGrid vertical={false} />
                 <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} tickFormatter={shortDay} />
                 <YAxis tickLine={false} axisLine={false} width={56} tickFormatter={compactUsd} />

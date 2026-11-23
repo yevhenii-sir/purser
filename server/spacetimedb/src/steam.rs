@@ -75,6 +75,7 @@ pub struct SteamOrder {
     pub steam_id: u64,
     pub item_id: u32,
     /// `purser_core::steam::order_status`.
+    #[index(btree)]
     pub status: String,
     pub trans_id: String,
     /// Billing agreement of a subscription.
@@ -865,12 +866,11 @@ pub fn run_due(ctx: &mut impl Ctx, due: Due, budget: Budget) {
 /// have no next check); the ledger never had them.
 fn prune_orders(tx: &TxContext) {
     let now = tx_now_micros(tx);
-    let old: Vec<u64> = tx
-        .db
-        .steam_order()
-        .next_check_at_micros()
-        .filter(0i64)
-        .filter(|o| matches!(o.status.as_str(), order_status::DENIED | order_status::FAILED) && o.updated_at_micros < now - PRUNE_AFTER_MICROS)
+    // Through the status index: completed orders (kept for good) are never looked at.
+    let old: Vec<u64> = [order_status::DENIED, order_status::FAILED]
+        .into_iter()
+        .flat_map(|s| tx.db.steam_order().status().filter(s).collect::<Vec<_>>())
+        .filter(|o| o.next_check_at_micros == 0 && o.updated_at_micros < now - PRUNE_AFTER_MICROS)
         .take(PRUNE_BATCH)
         .map(|o| o.order_id)
         .collect();

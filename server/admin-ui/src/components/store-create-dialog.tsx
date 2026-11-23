@@ -340,8 +340,13 @@ export function StoreJobs({ apps, onFinished }: { apps: GameApp[]; onFinished: (
 
   useEffect(() => {
     if (!pending) return
-    const t = setTimeout(jobs.reload, 2000)
-    return () => clearTimeout(t)
+    // Not while the tab is hidden: the next look is when it is shown again.
+    const tick = () => (document.hidden ? document.addEventListener("visibilitychange", tick, { once: true }) : jobs.reload())
+    const t = setTimeout(tick, 2000)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener("visibilitychange", tick)
+    }
   }, [pending, jobs.data, jobs.reload])
   useEffect(() => {
     if (seenDone.current !== null && done > seenDone.current) onFinished()

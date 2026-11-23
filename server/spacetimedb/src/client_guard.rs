@@ -135,6 +135,39 @@ pub fn answer(http: u16, body: &Value, key: Option<&str>) -> Response {
     response(http, &text, &headers)
 }
 
+/// The guard and a route whose whole work is one transaction, in that transaction: a request
+/// that only reads and writes this database costs one transaction, not two.
+pub fn guarded_tx<C: Ctx, T: ClientRequest>(
+    ctx: &mut C,
+    route: &str,
+    authorization: &str,
+    r: &T,
+    signs: bool,
+    f: impl Fn(&TxContext, &T) -> Answer,
+) -> Result<(Answer, Passed), Refused> {
+    let token = api::bearer(authorization).to_string();
+    ctx.tx(|tx| check_tx(tx, route, &token, r.app_id(), r.user_id(), signs).map(|passed| (f(tx, r), passed)))
+}
+
+/// Runs a client route that is one transaction ([`guarded_tx`]): the JSON body, the guard and `f`.
+pub fn run_tx<C: Ctx, T: DeserializeOwned + ClientRequest>(
+    ctx: &mut C,
+    req: Request,
+    route: &str,
+    signs: bool,
+    f: impl Fn(&TxContext, &T) -> Answer,
+) -> Response {
+    let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let r: T = match web::json(req) {
+        Ok(r) => r,
+        Err(a) => return web::respond(a),
+    };
+    match guarded_tx(ctx, route, &authorization, &r, signs, f) {
+        Ok(((http, body), passed)) => answer(http, &body, passed.signing_key.as_deref()),
+        Err(refused) => refused.into_response(),
+    }
+}
+
 /// Runs a client route: the JSON body, the guard, then `f`.
 pub fn run<C: Ctx, T: DeserializeOwned + ClientRequest>(
     ctx: &mut C,

@@ -35,6 +35,7 @@ pub struct OwnedPurchase {
     pub purchase_id: String,
     #[index(btree)]
     pub user_id: String,
+    #[index(btree)]
     pub app_id: String,
 }
 
@@ -95,6 +96,19 @@ pub fn owned_by(tx: &ReducerContext, user_id: &str) -> Vec<Purchase> {
         .filter_map(|o| tx.db.purchase().id().find(&o.purchase_id))
         .filter(is_owned_row)
         .collect()
+}
+
+/// The purchases owned now in these builds (empty: every build); not consumables.
+pub fn owned_in(tx: &ReducerContext, apps: &BTreeSet<String>) -> Vec<Purchase> {
+    if reindexing(tx) {
+        return tx.db.purchase().iter().filter(|p| is_owned_row(p) && (apps.is_empty() || apps.contains(&p.app_id))).collect();
+    }
+    let ids: Vec<String> = if apps.is_empty() {
+        tx.db.owned_purchase().iter().map(|o| o.purchase_id).collect()
+    } else {
+        apps.iter().flat_map(|a| tx.db.owned_purchase().app_id().filter(a.as_str()).map(|o| o.purchase_id).collect::<Vec<_>>()).collect()
+    };
+    ids.into_iter().filter_map(|id| tx.db.purchase().id().find(&id)).filter(is_owned_row).collect()
 }
 
 /// Rows the worker handles in this run: due rows, oldest first within a build, at most `per_app`

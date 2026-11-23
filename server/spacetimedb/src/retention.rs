@@ -48,17 +48,18 @@ pub fn prune(tx: &ReducerContext, now: i64) {
     for k in &profiles {
         tx.db.player_profile().key().delete(k);
     }
-    let attribution: Vec<String> = tx
-        .db
-        .user_attribution()
-        .updated_at_micros()
-        .filter(..cutoff)
-        .filter(|r| !r.key.split_once('/').is_some_and(|(_, user)| subscribed(tx, &r.app_id, user, now / 1000)))
-        .take(BATCH)
-        .map(|r| r.key)
-        .collect();
-    for k in &attribution {
-        tx.db.user_attribution().key().delete(k);
+    // A subscriber's ids are kept (renewals still send them) and count as fresh again, so the
+    // next days do not look at them again.
+    let stale: Vec<_> = tx.db.user_attribution().updated_at_micros().filter(..cutoff).take(BATCH).collect();
+    let mut attribution = Vec::new();
+    for mut r in stale {
+        if r.key.split_once('/').is_some_and(|(_, user)| subscribed(tx, &r.app_id, user, now / 1000)) {
+            r.updated_at_micros = now;
+            tx.db.user_attribution().key().update(r);
+        } else {
+            tx.db.user_attribution().key().delete(&r.key);
+            attribution.push(r.key);
+        }
     }
     let cutoff_day = purser_core::time::day_of_micros(cutoff);
     let views: Vec<String> = tx.db.paywall_daily().day().filter(..cutoff_day).take(BATCH).map(|r| r.key).collect();

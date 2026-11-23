@@ -281,28 +281,20 @@ fn today(tx: &ReducerContext) -> i32 {
     day_of_micros(crate::ctx::tx_now_micros(tx))
 }
 
-/// Trial / conversion / paid-year facts of a purchase, from the periods of the same subscription
-/// recorded before it (`purser_core::revenue::period_facts`).
-pub(crate) fn period_facts(tx: &ReducerContext, p: &Purchase) -> PeriodFacts {
-    if p.kind != kind::SUBSCRIPTION || p.original_transaction_id.is_empty() {
-        return PeriodFacts { trial: p.trial, ..Default::default() };
+/// Trial / conversion / paid-year facts of a purchase (`purser_core::revenue::period_facts`), as
+/// `ledger::insert_purchase` wrote them on the row.
+pub(crate) fn period_facts(p: &Purchase) -> PeriodFacts {
+    if p.trial {
+        return PeriodFacts { trial: true, ..Default::default() };
     }
-    let earlier: Vec<ChainRow> = tx
-        .db
-        .purchase()
-        .original_transaction_id()
-        .filter(p.original_transaction_id.as_str())
-        .filter(|o| o.app_id == p.app_id && o.store == p.store && (o.created_at_micros, o.id.as_str()) < (p.created_at_micros, p.id.as_str()))
-        .map(|o| ChainRow { created_at_micros: o.created_at_micros, trial: o.trial })
-        .collect();
-    rv::period_facts(p.trial, p.created_at_micros, &earlier)
+    PeriodFacts { trial: false, trial_conversion: p.trial_conversion, after_first_year: p.after_first_year }
 }
 
-fn refund_delta(tx: &ReducerContext, p: &Purchase) -> Option<Delta> {
+fn refund_delta(p: &Purchase) -> Option<Delta> {
     if p.store == store::MANUAL {
         return None;
     }
-    rv::refund_delta_with(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &period_facts(tx, p))
+    rv::refund_delta_with(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &period_facts(p))
 }
 
 /// Part of a purchase was refunded (`amount_micros` more than before).
@@ -310,7 +302,7 @@ pub fn on_partial_refund(tx: &ReducerContext, p: &Purchase, amount_micros: i64) 
     if !counts_live(tx, p) {
         return;
     }
-    if let Some(d) = rv::partial_refund_delta(&p.store, p.was_granted, amount_micros, &period_facts(tx, p)) {
+    if let Some(d) = rv::partial_refund_delta(&p.store, p.was_granted, amount_micros, &period_facts(p)) {
         apply(tx, p, today(tx), &d);
     }
 }
@@ -320,7 +312,7 @@ pub fn on_reinstate(tx: &ReducerContext, p: &Purchase) {
     if !counts_live(tx, p) {
         return;
     }
-    if let Some(d) = rv::reinstate_delta(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &period_facts(tx, p)) {
+    if let Some(d) = rv::reinstate_delta(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &period_facts(p)) {
         apply(tx, p, today(tx), &d);
     }
 }
@@ -384,7 +376,7 @@ pub fn on_first_grant(tx: &ReducerContext, p: &Purchase) {
     if p.store == store::MANUAL || !counts_live(tx, p) {
         return;
     }
-    if let Some(d) = rv::grant_delta_with(&p.store, grant_kind(p), p.price_micros, &period_facts(tx, p)) {
+    if let Some(d) = rv::grant_delta_with(&p.store, grant_kind(p), p.price_micros, &period_facts(p)) {
         apply(tx, p, day_of_micros(p.created_at_micros), &d);
     }
 }
@@ -395,7 +387,7 @@ pub fn on_inactive(tx: &ReducerContext, p: &Purchase, new_status: &str) {
         return;
     }
     let d = match new_status {
-        status::REVOKE_PENDING => refund_delta(tx, p),
+        status::REVOKE_PENDING => refund_delta(p),
         status::EXPIRE_PENDING => rv::expire_delta(&p.store, &p.kind),
         _ => None,
     };
@@ -640,16 +632,16 @@ pub fn rebuild_at_once(tx: &ReducerContext) {
     let rows: Vec<Purchase> = tx.db.purchase().iter().collect();
     for p in &rows {
         if p.was_granted && p.store != store::MANUAL {
-            if let Some(d) = rv::grant_delta_with(&p.store, grant_kind(p), p.price_micros, &period_facts(tx, p)) {
+            if let Some(d) = rv::grant_delta_with(&p.store, grant_kind(p), p.price_micros, &period_facts(p)) {
                 apply(tx, p, day_of_micros(p.created_at_micros), &d);
             }
         }
-        for (at, d) in logged_money(p, &all_logs(&p.id), &period_facts(tx, p)) {
+        for (at, d) in logged_money(p, &all_logs(&p.id), &period_facts(p)) {
             apply(tx, p, day_of_micros(at), &d);
         }
         let inactive = match p.status.as_str() {
             status::REVOKE_PENDING | status::REVOKED if !crate::support::revoked_by_admin(tx, &p.id) => {
-                Some((status::REVOKE_PENDING, refund_delta(tx, p)))
+                Some((status::REVOKE_PENDING, refund_delta(p)))
             }
             status::EXPIRE_PENDING | status::EXPIRED => Some((status::EXPIRE_PENDING, rv::expire_delta(&p.store, &p.kind))),
             _ => None,
@@ -730,11 +722,12 @@ pub fn admin_delete_fx_override(ctx: &ReducerContext, currency: String) -> Resul
 /// Active subscriptions now: (app, product, environment, currency) → (count, monthly micros).
 /// Renewals of one subscription are counted once (latest row). Only rows that expire after now
 /// are read (index range).
-fn active_subscriptions(tx: &ReducerContext) -> BTreeMap<(String, String, String, String), (u32, i64)> {
+fn active_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> BTreeMap<(String, String, String, String), (u32, i64)> {
     let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
     let mut latest: BTreeMap<(String, String), Purchase> = BTreeMap::new();
-    for p in tx.db.purchase().expires_at_ms().filter((now_ms + 1)..) {
-        if p.kind != kind::SUBSCRIPTION || p.store == store::MANUAL || !status::is_owned(&p.status) {
+    // What players own now (an in-memory list), not every row whose period has not ended.
+    for p in crate::ledger_index::owned_in(tx, apps) {
+        if p.kind != kind::SUBSCRIPTION || p.store == store::MANUAL || p.expires_at_ms <= now_ms {
             continue;
         }
         let k = (p.app_id.clone(), p.original_transaction_id.clone());
@@ -752,21 +745,15 @@ fn active_subscriptions(tx: &ReducerContext) -> BTreeMap<(String, String, String
     out
 }
 
-/// How far back a subscription in a grace period may have ended its paid period (the longest
-/// store grace period is Apple's 28 days).
-const GRACE_LOOKBACK_MS: i64 = 35 * 86_400_000;
-
 /// Subscriptions that give access now, by renewal state: (auto-renew off, in a grace period,
 /// billing issue). One per subscription (its latest row).
-fn subscription_states(tx: &ReducerContext, keep: &dyn Fn(&str) -> bool, include_sandbox: bool) -> (u32, u32, u32) {
+fn subscription_states(tx: &ReducerContext, apps: &BTreeSet<String>, include_sandbox: bool) -> (u32, u32, u32) {
     let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
     let mut latest: BTreeMap<(String, String), Purchase> = BTreeMap::new();
-    for p in tx.db.purchase().expires_at_ms().filter((now_ms - GRACE_LOOKBACK_MS)..) {
+    for p in crate::ledger_index::owned_in(tx, apps) {
         let skip = p.kind != kind::SUBSCRIPTION
             || p.store == store::MANUAL
-            || !status::is_owned(&p.status)
-            || p.access_until_ms() <= now_ms
-            || !keep(&p.app_id)
+            || (p.access_until_ms() != 0 && p.access_until_ms() <= now_ms)
             || (!include_sandbox && p.environment == purser_core::model::environment::SANDBOX);
         if skip {
             continue;
@@ -786,7 +773,7 @@ fn subscription_states(tx: &ReducerContext, keep: &dyn Fn(&str) -> bool, include
 }
 
 fn snapshot_subscriptions(tx: &ReducerContext, day: i32) {
-    for ((app_id, product_id, environment, currency), (active, monthly_micros)) in active_subscriptions(tx) {
+    for ((app_id, product_id, environment, currency), (active, monthly_micros)) in active_subscriptions(tx, &BTreeSet::new()) {
         let row = SubscriptionDaily {
             key: row_key(day, &app_id, &product_id, &environment, &currency),
             day,
@@ -1162,7 +1149,6 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
                 return Err(format!("{} any app", crate::access::SCOPE_ERROR));
             }
         }
-        let keep = |app: &str| apps.is_empty() || apps.contains(app);
         // A filter reads each build through its `(app_id, day)` index, the whole server by `day`.
         let daily: Vec<RevenueDaily> = if apps.is_empty() {
             tx.db.revenue_daily().day().filter(from..=to).collect()
@@ -1237,9 +1223,8 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
                 currency: r.currency,
             })
             .collect();
-        let active_now: Vec<(String, String, u32, i64)> = active_subscriptions(tx)
+        let active_now: Vec<(String, String, u32, i64)> = active_subscriptions(tx, &apps)
             .into_iter()
-            .filter(|((app, ..), _)| keep(app))
             .map(|((_, _, env, ccy), (n, m))| (env, ccy, n, m))
             .collect();
 
@@ -1254,7 +1239,7 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
             today,
         });
         report["fx"]["overrides"] = json!(tx.db.fx_override().iter().map(|o| (o.currency, o.units_per_usd)).collect::<BTreeMap<_, _>>());
-        let (auto_renew_off, in_grace, billing_issue) = subscription_states(tx, &keep, q.include_sandbox);
+        let (auto_renew_off, in_grace, billing_issue) = subscription_states(tx, &apps, q.include_sandbox);
         report["subscriptions"]["auto_renew_off_now"] = json!(auto_renew_off);
         report["subscriptions"]["in_grace_now"] = json!(in_grace);
         report["subscriptions"]["billing_issue_now"] = json!(billing_issue);

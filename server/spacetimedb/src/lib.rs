@@ -257,6 +257,11 @@ pub struct Purchase {
     pub country: String,
     /// A free-trial period: nothing was paid (`price_micros` is 0).
     pub trial: bool,
+    /// Subscriptions: the first paid period after a free trial. Written with the row
+    /// (`ledger::insert_purchase`), so revenue never re-reads the subscription's history.
+    pub trial_conversion: bool,
+    /// Subscriptions: paid after the first 12 paid months (the reduced store fee applies).
+    pub after_first_year: bool,
     /// Subscriptions: the renewal payment failed and the store keeps access until then (grace
     /// period); 0 = not in one. Access lasts until [`Purchase::access_until_ms`].
     pub grace_until_ms: i64,
@@ -315,6 +320,8 @@ impl Purchase {
             previous_user_id: String::new(),
             country: String::new(),
             trial: false,
+            trial_conversion: false,
+            after_first_year: false,
             grace_until_ms: 0,
             billing_issue: false,
             auto_renew_off: false,
@@ -1067,6 +1074,9 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             previous_user_id: r.previous_user_id,
             country: r.country,
             trial: r.trial,
+            // Set from the subscription's rows when the row is inserted.
+            trial_conversion: false,
+            after_first_year: false,
             grace_until_ms: r.grace_until_ms,
             billing_issue: r.billing_issue,
             auto_renew_off: r.auto_renew_off,

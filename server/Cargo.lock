@@ -2953,12 +2953,15 @@ name = "purser"
 version = "0.8.1"
 dependencies = [
  "ed25519-dalek",
+ "flate2",
  "http",
  "log",
+ "miniz_oxide",
  "p256",
  "purser-core",
  "serde",
  "serde_json",
+ "sha2",
  "spacetimedb",
  "spacetimedb-sats",
 ]
