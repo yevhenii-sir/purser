@@ -94,13 +94,25 @@ namespace Purser
                 var tcs = new TaskCompletionSource<bool>();
                 var operation = request.SendWebRequest();
                 operation.completed += _ => tcs.TrySetResult(true);
-                using (ct.Register(() =>
+                // The token may be cancelled on another thread, and a UnityWebRequest is touched on the main thread
+                // only: the abort is posted there. By then the request may have ended and been disposed.
+                var mainThread = SynchronizationContext.Current;
+                var ended = false;
+                using (ct.Register(() => MainThreadPost.Run(mainThread, () =>
                        {
-                           request.Abort();
+                           if (!ended)
+                               request.Abort();
                            tcs.TrySetCanceled();
-                       }))
+                       })))
                 {
-                    await tcs.Task;
+                    try
+                    {
+                        await tcs.Task;
+                    }
+                    finally
+                    {
+                        ended = true;
+                    }
                 }
 
                 var raw = request.downloadHandler?.data;

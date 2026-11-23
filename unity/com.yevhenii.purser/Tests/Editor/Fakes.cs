@@ -44,6 +44,8 @@ namespace Purser.Tests
         /// <summary>Subscription period the store reports for every subscription (like Google Play), or null.</summary>
         public string Period;
         public bool Disposed;
+        /// <summary>When set, <see cref="FetchProductsAsync"/> waits for it (a slow store).</summary>
+        public TaskCompletionSource<bool> HoldProducts;
 
         /// <summary>What happens on Purchase(storeId): return an order to deliver as pending, or null.</summary>
         public Func<string, StoreOrder> OnPurchase;
@@ -71,8 +73,10 @@ namespace Purser.Tests
 
         public void DeferChange(string storeProductId) => ChangeDeferred?.Invoke(storeProductId);
 
-        public Task<IReadOnlyList<StoreProduct>> FetchProductsAsync(IReadOnlyList<BillingProductConfig> products, CancellationToken ct)
+        public async Task<IReadOnlyList<StoreProduct>> FetchProductsAsync(IReadOnlyList<BillingProductConfig> products, CancellationToken ct)
         {
+            if (HoldProducts != null)
+                await HoldProducts.Task;
             IReadOnlyList<StoreProduct> list = products
                 .Select(p => NoPrices
                     ? new StoreProduct(p.id, p.StoreId(Store), p.type, "", 0m, null, p.id, "", true)
@@ -81,7 +85,7 @@ namespace Purser.Tests
                         offers: p.type == BillingProductType.Subscription ? Offers : null,
                         introEligible: p.type == BillingProductType.Subscription ? IntroEligible : null))
                 .ToList();
-            return Task.FromResult(list);
+            return list;
         }
 
         public void SetAccountBinding(string userId) => BoundUserId = userId;

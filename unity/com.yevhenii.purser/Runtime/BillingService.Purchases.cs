@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,6 +10,27 @@ namespace Purser
     // are verified by OrderProcessor, which reports through IOrderProcessorHost.
     public sealed partial class BillingService : IOrderProcessorHost
     {
+        /// <summary>A <c>PurchaseAsync</c> call waiting for the result of the purchase it started.</summary>
+        private sealed class PurchaseWaiter : TaskCompletionSource<PurchaseResult>
+        {
+            /// <summary>The orders the service had when the purchase started (<see cref="OrderProcessor.KnownOrders"/>):
+            /// their results are not the result of this purchase.</summary>
+            public readonly HashSet<string> Older;
+
+            public PurchaseWaiter(HashSet<string> older)
+            {
+                Older = older;
+            }
+        }
+
+        /// <summary>Registers the caller of a purchase of <paramref name="storeId"/> that starts now.</summary>
+        private PurchaseWaiter StartWaiting(string storeId)
+        {
+            var waiter = new PurchaseWaiter(m_Orders.KnownOrders());
+            m_Waiters[storeId] = waiter;
+            return waiter;
+        }
+
         /// <inheritdoc/>
         public StoreProduct GetProduct(string productId) =>
             m_Products.FirstOrDefault(p => p.Id == productId) ?? m_Products.FirstOrDefault(p => p.StoreId == productId);
@@ -58,8 +80,7 @@ namespace Purser
             }
 
             BindAccount();
-            var waiter = new TaskCompletionSource<PurchaseResult>();
-            m_Waiters[storeId] = waiter;
+            var waiter = StartWaiting(storeId);
             m_Orders.SetPurchaseContext(storeId, options?.Paywall, options?.OfferId);
             try
             {
@@ -84,8 +105,7 @@ namespace Purser
 
         /// <summary>Waits for the result of the store purchase. Cancelling <paramref name="ct"/> stops waiting only: the
         /// purchase goes on in the store and keeps its paywall and offer for the server.</summary>
-        private async Task<PurchaseResult> AwaitResultAsync(string storeId, TaskCompletionSource<PurchaseResult> waiter,
-            CancellationToken ct)
+        private async Task<PurchaseResult> AwaitResultAsync(string storeId, PurchaseWaiter waiter, CancellationToken ct)
         {
             using (ct.Register(() => waiter.TrySetCanceled()))
             {
@@ -135,21 +155,28 @@ namespace Purser
             Report(new PurchaseResult(status, m_Config.FindByStoreId(storeId)?.id ?? storeId, storeId, message: failure.Reason));
         }
 
-        /// <summary>Completes the purchase's waiter and raises its event. <see cref="ReportOutcome.HandlerFailed"/> when
-        /// a game handler threw (logged, never passed on to the store callbacks).</summary>
-        private ReportOutcome Report(PurchaseResult result)
+        /// <summary>
+        /// Completes the purchase's waiter and raises its event. <see cref="ReportOutcome.HandlerFailed"/> when a game
+        /// handler threw (logged, never passed on to the store callbacks).
+        /// </summary>
+        /// <param name="order">The order the result is about; null when the store reported the purchase without one.
+        /// An order the service already had when a purchase of the product started is not the result of that purchase:
+        /// its waiter keeps waiting.</param>
+        private ReportOutcome Report(PurchaseResult result, StoreOrder order = null)
         {
             var received = false;
             if (!string.IsNullOrEmpty(result.StoreProductId))
             {
-                if (m_Waiters.TryGetValue(result.StoreProductId, out var waiter))
+                if (m_Waiters.TryGetValue(result.StoreProductId, out var waiter) &&
+                    (order == null || !OrderProcessor.IsKnown(waiter.Older, order)))
                 {
                     m_Waiters.Remove(result.StoreProductId);
                     received = waiter.TrySetResult(result);
                 }
-                // The purchase ended: its paywall and offer are not sent with later orders of the product. A pending
-                // one keeps them for the order the store delivers later.
-                if (result.Status != PurchaseStatus.PendingPayment && result.Status != PurchaseStatus.PendingVerification)
+                // The purchase ended without an order: its paywall and offer are not sent with later orders of the
+                // product. A pending one keeps them for the order the store delivers later; OrderProcessor releases
+                // those of an order.
+                if (order == null && result.Status != PurchaseStatus.PendingPayment && result.Status != PurchaseStatus.PendingVerification)
                     m_Orders.ClearPurchaseContext(result.StoreProductId);
             }
 
@@ -160,7 +187,7 @@ namespace Purser
             {
                 case PurchaseStatus.Success:
                 case PurchaseStatus.PendingDelivery:
-                    (handlers, name) = (PurchaseSucceeded, nameof(PurchaseSucceeded));
+                    (handlers, name) = (m_PurchaseSucceeded, nameof(PurchaseSucceeded));
                     break;
                 case PurchaseStatus.PendingPayment:
                 case PurchaseStatus.PendingVerification:
@@ -184,8 +211,10 @@ namespace Purser
 
         // ---- IOrderProcessorHost (its Products is the public property) ----
 
+        Task IOrderProcessorHost.ProductsFetch => m_ProductsFetch?.Task;
+
         string IOrderProcessorHost.SyncUser() => SyncUser();
 
-        ReportOutcome IOrderProcessorHost.Report(PurchaseResult result) => Report(result);
+        ReportOutcome IOrderProcessorHost.Report(PurchaseResult result, StoreOrder order) => Report(result, order);
     }
 }

@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A purchase the game grants itself (`delivery: "client"`, `PurchaseResult.GrantOnClient`) was finished in the store
+  even when nobody received it (no `PurchaseSucceeded` handler and no `PurchaseAsync` waiting, e.g. a purchase the
+  store delivers at launch): the reward was lost. It is now kept, not finished, and given to the first handler added
+  to `PurchaseSucceeded`, then finished; a handler that throws leaves it for the next one.
+- An `Initialized` handler that throws no longer fails the initialization (the waiting orders and the first customer
+  info refresh were skipped, and a later `InitializeAsync` connected the store again).
+- A provider of the game that never answers (`IAnalyticsIdProvider`, `IAttributionProvider`, `IPlayerTokenProvider`,
+  Apple Ads attribution) no longer blocks purchase verification: after a few seconds the request goes without its
+  value (a warning is logged once).
+- An order whose verification was given up (the server could not be reached) is verified again when the app returns
+  to the foreground and when the store reconnects, not only on the next launch. Its paywall and offer stay with it and
+  are no longer sent with later orders of the same product.
+- `RestoreAsync` waits (at most one request timeout) for the purchases being verified, so the customer info it returns
+  includes them.
+- A customer info refresh that failed no longer counts for the five-minute foreground throttle: the next return to
+  the foreground tries again.
+- An older order of a product (one being verified, waiting for a player or given up when `PurchaseAsync` was called)
+  no longer completes the `PurchaseAsync` of a new purchase of that product, and does not take its paywall. Its result
+  still arrives through the events.
+- After `Dispose`, `IsInitialized` is false, `RestoreAsync` and `RefreshCustomerInfoAsync` fail with
+  `ObjectDisposedException` and `PurchaseAsync` answers `NotInitialized` instead of calling the store or the server.
+- A store disconnect raised while a reconnection was finishing (inside `StoreReconnected` handlers) was ignored and
+  the service stayed "initialized" on a dead connection; it reconnects again now.
+- `UnityWebRequestTransport`: a request cancelled from another thread is aborted on the main thread.
+- An order the store delivers while the products are still loading (unfinished purchases right after the store
+  connects) was verified with price 0 and no currency; it waits for the products now (at most 10 s).
+
+### Changed
+
+- `InitializeAsync`: when the store cannot be connected or the products cannot be loaded, the returned task still
+  fails, but the service keeps trying in the background (5 s doubling to 5 minutes, and right away when the app returns
+  to the foreground) and raises `Initialized` when it succeeds. Configuration problems (server URL without https,
+  unsupported platform) are not retried. The hidden lifecycle object is created at the first `InitializeAsync`.
+
 ## [0.8.1] - 2026-11-20
 
 No package changes: the version follows the server (SpacetimeDB 2.16.1, table cache policies), which works with this package as before.

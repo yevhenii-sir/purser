@@ -109,6 +109,11 @@ player are verified, and the new player's cached customer info is loaded.
 If the store connection drops after initialization (`StoreDisconnected`), `IsInitialized` is false and the service
 reconnects with backoff (5 s doubling to 5 minutes); `StoreReconnected` follows and the customer info is refreshed.
 
+If the first `InitializeAsync()` cannot connect the store or load the products, its task fails and the service keeps
+trying in the background with the same backoff, and right away when the app returns to the foreground; `Initialized`
+fires when it succeeds. A configuration problem (a server URL without https, a platform without purchases) is not
+retried.
+
 ### Manual construction
 
 ```csharp
@@ -140,6 +145,9 @@ How this protects the reward:
 - The package fires `PurchaseSucceeded` first and finishes the purchase in the store only **after** the handlers: it consumes in Google or calls `finishTransaction` in Apple. If the game crashes before that, the store delivers the purchase again, the server answers `success` again, and the handler uses `TransactionId` to tell whether the reward was already granted.
 - Grant the reward in `PurchaseSucceeded` and save it there too. The continuation of `await PurchaseAsync(...)` may run after the purchase has already been finished in the store.
 - If a handler throws, the purchase isn't finished and the store delivers it again.
+- If nobody listens yet (no `PurchaseSucceeded` handler and no `PurchaseAsync` waiting, e.g. a purchase the store
+  delivers at launch before the shop is created), the purchase is kept and not finished: the first handler added to
+  `PurchaseSucceeded` gets it right away, then it is finished.
 
 After a reinstall the id will be new: non-consumables and subscriptions come back via `RestoreAsync()` (on Android the store returns them on startup anyway), and consumables don't need restoring.
 
@@ -167,7 +175,7 @@ The store reports an order: a new purchase, a redelivery after restart, or a res
 | `pending` (202) | finish in the store, the server will deliver the reward | `PendingDelivery` |
 | `pending_or_canceled` | doesn't confirm, the store will deliver the order again | `PendingPayment` |
 | `invalid` / `forbidden` / `expired` / `revoked` | finish in the store as not granted (so the order doesn't keep coming back; Amazon: `UNAVAILABLE`), `PurchaseFailed` | `Rejected` |
-| `error`, 5xx, `429`, no network | doesn't confirm, retries after `retryDelaysSeconds` (`429`: after its `Retry-After`), then on the next launch | `PendingVerification` |
+| `error`, 5xx, `429`, no network | doesn't confirm, retries after `retryDelaysSeconds` (`429`: after its `Retry-After`), then when the app returns to the foreground, when the store reconnects and on the next launch | `PendingVerification` |
 
 Details:
 - If the `user_id` isn't known yet (before login), the order waits until a player appears.

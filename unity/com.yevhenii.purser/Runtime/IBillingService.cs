@@ -29,7 +29,9 @@ namespace Purser
 
         event Action Initialized;
 
-        /// <summary>Server accepted a purchase (also for purchases finished in the background or after restart).</summary>
+        /// <summary>Server accepted a purchase (also for purchases finished in the background or after restart).
+        /// A purchase the game grants itself (<see cref="PurchaseResult.GrantOnClient"/>) that was verified while
+        /// nobody listened is kept, not finished in the store, and given to the first handler added here.</summary>
         event Action<PurchaseResult> PurchaseSucceeded;
 
         /// <summary>Payment or verification is still pending.</summary>
@@ -48,7 +50,9 @@ namespace Purser
         /// <summary>The store is connected again after <see cref="StoreDisconnected"/>; the customer info is refreshed.</summary>
         event Action StoreReconnected;
 
-        /// <summary>Connects to the store and loads products. Safe to call once; later calls return the same task.</summary>
+        /// <summary>Connects to the store and loads products. Safe to call once; later calls return the same task.
+        /// When the store or the network fails, the task fails and the service keeps trying by itself (with backoff,
+        /// and when the app returns to the foreground) until <see cref="Initialized"/>; calling it again tries now.</summary>
         Task InitializeAsync(CancellationToken ct = default);
 
         /// <summary>Sets the current player (replaces the user id provider with a static one).</summary>
@@ -86,7 +90,8 @@ namespace Purser
         /// (<see cref="PurchaseOptions"/>).</summary>
         Task<PurchaseResult> PurchaseAsync(string productId, PurchaseOptions options, CancellationToken ct = default);
 
-        /// <summary>"Restore purchases": re-verifies what the store reports and returns fresh customer info.</summary>
+        /// <summary>"Restore purchases": re-verifies what the store reports and returns fresh customer info (purchases
+        /// that are being verified at that moment included).</summary>
         Task<CustomerInfo> RestoreAsync(CancellationToken ct = default);
 
         /// <summary>Asks the server for the customer info; the cached copy (<see cref="CustomerInfo.IsFromCache"/>) when it

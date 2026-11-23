@@ -18,6 +18,12 @@ namespace Purser.Tests
         public IBillingStorage Storage = new MemoryBillingStorage();
         public IUserIdProvider Users = new StaticUserIdProvider("player-1");
         public IPlayerTokenProvider Tokens;
+        public IAttributionProvider Attribution;
+        public IAnalyticsIdProvider Analytics;
+        /// <summary>False: nobody listens to the purchase events.</summary>
+        public bool Subscribe = true;
+        /// <summary>Warnings the service logged (with <c>Config.logLevel</c> at Warning or above).</summary>
+        public readonly List<string> Warnings = new List<string>();
         public DateTime Now = new DateTime(2027, 1, 15, 12, 0, 0, DateTimeKind.Utc);
         public readonly List<TimeSpan> Delays = new List<TimeSpan>();
         /// <summary>Replaces the immediate delay (e.g. a gate the test opens).</summary>
@@ -54,6 +60,13 @@ namespace Purser.Tests
                 Api = Api,
                 UserIdProvider = Users,
                 PlayerTokenProvider = Tokens,
+                AttributionProvider = Attribution,
+                AnalyticsIdProvider = Analytics,
+                LogSink = (level, message) =>
+                {
+                    if (level == BillingLogLevel.Warning)
+                        Warnings.Add(message);
+                },
                 Storage = Storage,
                 UtcNow = () => Now,
                 Delay = (delay, ct) =>
@@ -64,9 +77,12 @@ namespace Purser.Tests
                 IsEditor = IsEditor,
                 CreateLifecycleHook = false,
             });
-            Service.PurchaseSucceeded += Succeeded.Add;
-            Service.PurchasePending += Pending.Add;
-            Service.PurchaseFailed += Failed.Add;
+            if (Subscribe)
+            {
+                Service.PurchaseSucceeded += Succeeded.Add;
+                Service.PurchasePending += Pending.Add;
+                Service.PurchaseFailed += Failed.Add;
+            }
             Service.CustomerInfoChanged += Changes.Add;
             if (initialize)
                 Sync.Run(Service.InitializeAsync());

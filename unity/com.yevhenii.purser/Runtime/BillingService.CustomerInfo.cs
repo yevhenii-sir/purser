@@ -10,8 +10,11 @@ namespace Purser
     public sealed partial class BillingService : ICustomerInfoHost
     {
         /// <inheritdoc/>
+        /// <exception cref="ObjectDisposedException">The service was disposed.</exception>
+        /// <exception cref="BillingException">Billing is not initialized, or the user id is not set.</exception>
         public async Task<CustomerInfo> RestoreAsync(CancellationToken ct = default)
         {
+            ThrowIfDisposed();
             if (!IsInitialized)
                 throw new BillingException("Billing is not initialized");
             var user = SyncUser(refreshOnChange: false) ?? throw new BillingException("User id is not set");
@@ -23,6 +26,7 @@ namespace Purser
 
             // Orders being verified right now (e.g. re-delivered by RestoreTransactions) are not sent again.
             var orders = await m_Store.FetchPurchasesAsync(ct);
+            ThrowIfDisposed();
             var items = orders
                 .Where(o => !string.IsNullOrEmpty(o.Key) && !m_Orders.IsInFlight(o))
                 .GroupBy(o => o.Key)
@@ -35,6 +39,9 @@ namespace Purser
                     StoreUserId = string.IsNullOrEmpty(o.StoreUserId) ? null : o.StoreUserId,
                 })
                 .ToList();
+            // ... but what the player gets from them belongs to the answer: wait for them, as long as one request may take.
+            await m_Orders.WaitForInFlightAsync(TimeSpan.FromSeconds(Math.Max(1, m_Config.requestTimeoutSeconds)), ct);
+            ThrowIfDisposed();
             if (items.Count == 0)
                 return await RefreshCustomerInfoAsync(ct);
 
@@ -66,7 +73,11 @@ namespace Purser
         }
 
         /// <inheritdoc/>
-        public Task<CustomerInfo> RefreshCustomerInfoAsync(CancellationToken ct = default) => m_Refresher.RefreshAsync(ct);
+        /// <exception cref="ObjectDisposedException">The service was disposed.</exception>
+        public Task<CustomerInfo> RefreshCustomerInfoAsync(CancellationToken ct = default) =>
+            m_Context.IsDisposed
+                ? Task.FromException<CustomerInfo>(new ObjectDisposedException(nameof(BillingService)))
+                : m_Refresher.RefreshAsync(ct);
 
         /// <inheritdoc/>
         /// <remarks>Subscriptions count only while the customer info is fresh (<see cref="BillingConfig.entitlementsMaxAgeDays"/>,

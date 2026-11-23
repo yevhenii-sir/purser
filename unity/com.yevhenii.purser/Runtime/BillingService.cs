@@ -85,16 +85,27 @@ namespace Purser
         /// <summary>Holds and refreshes the customer info.</summary>
         private readonly CustomerInfoRefresher m_Refresher;
 
-        private readonly Dictionary<string, TaskCompletionSource<PurchaseResult>> m_Waiters =
-            new Dictionary<string, TaskCompletionSource<PurchaseResult>>();
+        /// <summary>The <c>PurchaseAsync</c> calls waiting for their result, by store product id.</summary>
+        private readonly Dictionary<string, PurchaseWaiter> m_Waiters = new Dictionary<string, PurchaseWaiter>();
 
         private IUserIdProvider m_Users;
+        /// <summary>The initialization attempt that is running, or the last one.</summary>
         private Task m_InitTask;
+        /// <summary>A failed initialization is being retried in the background.</summary>
+        private bool m_InitRetrying;
+        /// <summary>Ends the wait before the next background initialization attempt (the app returned to the foreground).</summary>
+        private TaskCompletionSource<bool> m_InitWake;
+        /// <summary>The product fetch of the initialization attempt that is running (orders that arrive meanwhile wait
+        /// for the prices).</summary>
+        private TaskCompletionSource<bool> m_ProductsFetch;
         private List<StoreProduct> m_Products = new List<StoreProduct>();
         private string m_BoundUser;
         private bool m_EverInitialized;
         private bool m_Reconnecting;
+        /// <summary>The store disconnected again while a reconnection was finishing: its reason.</summary>
+        private string m_DisconnectedAgain;
         private BillingLifecycleHook m_Hook;
+        private Action<PurchaseResult> m_PurchaseSucceeded;
 
         /// <inheritdoc/>
         public bool IsInitialized { get; private set; }
@@ -110,7 +121,16 @@ namespace Purser
         /// <inheritdoc/>
         public event Action Initialized;
         /// <inheritdoc/>
-        public event Action<PurchaseResult> PurchaseSucceeded;
+        public event Action<PurchaseResult> PurchaseSucceeded
+        {
+            add
+            {
+                m_PurchaseSucceeded += value;
+                // Purchases the game grants itself that were verified while nobody listened.
+                m_Orders.DeliverHeld(value);
+            }
+            remove => m_PurchaseSucceeded -= value;
+        }
         /// <inheritdoc/>
         public event Action<PurchaseResult> PurchasePending;
         /// <inheritdoc/>
@@ -157,7 +177,7 @@ namespace Purser
             if (deps.PlayerTokenProvider != null)
             {
                 // One cache for the API client and the adapter: the game backend is asked once per player.
-                var tokens = new PlayerTokenCache(deps.PlayerTokenProvider);
+                var tokens = new PlayerTokenCache(deps.PlayerTokenProvider, m_Log, m_Delay);
                 (m_Api as IPlayerTokenConsumer)?.SetPlayerTokenProvider(tokens);
                 (m_Store as IPlayerTokenConsumer)?.SetPlayerTokenProvider(tokens);
             }
@@ -205,6 +225,8 @@ namespace Purser
             if (m_Context.IsDisposed)
                 return;
             m_Context.Dispose();
+            IsInitialized = false;
+            m_InitWake?.TrySetResult(false);
             m_Hook?.Release();
             m_Hook = null;
             m_Store.OrderPending -= m_Orders.OnOrderPending;

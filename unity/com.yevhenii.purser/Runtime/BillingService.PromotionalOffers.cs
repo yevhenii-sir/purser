@@ -56,8 +56,7 @@ namespace Purser
                 return new PurchaseResult(PurchaseStatus.AlreadyInProgress, config.id, storeId);
 
             // Hold the product while the signature is fetched, so a second tap does not start another purchase.
-            var waiter = new TaskCompletionSource<PurchaseResult>();
-            m_Waiters[storeId] = waiter;
+            var waiter = StartWaiting(storeId);
             try
             {
                 var (offer, error) = await SignOfferAsync(storeId, offerId, user, ct);

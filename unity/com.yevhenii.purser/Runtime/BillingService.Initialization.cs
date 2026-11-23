@@ -13,16 +13,40 @@ namespace Purser
         /// <inheritdoc/>
         /// <exception cref="BillingException">The platform has no in-app purchases, the server URL is not https outside
         /// the Editor, or the store failed to connect.</exception>
+        /// <remarks>When the store cannot be connected or the products cannot be loaded, the returned task fails and
+        /// the service keeps trying in the background (with the backoff of a store reconnection, and right away when the
+        /// app returns to the foreground) until it succeeds or is disposed; <see cref="Initialized"/> is raised then.
+        /// A configuration problem is not retried.</remarks>
         public Task InitializeAsync(CancellationToken ct = default)
         {
-            if (m_InitTask == null || m_InitTask.IsFaulted || m_InitTask.IsCanceled)
-                m_InitTask = InitializeCoreAsync(ct);
-            return m_InitTask;
+            // One attempt at a time: the one that runs (also a background one), or the one that succeeded.
+            if (m_InitTask != null && !m_InitTask.IsFaulted && !m_InitTask.IsCanceled)
+                return m_InitTask;
+            try
+            {
+                ThrowIfDisposed();
+                CheckConfiguration();
+            }
+            catch (Exception e)
+            {
+                // Nothing a later attempt could change: not retried in the background.
+                return m_InitTask = Task.FromException(e);
+            }
+
+            // Before the store is connected: the app returning to the foreground retries a failed initialization.
+            if (m_CreateLifecycleHook && m_Hook == null)
+                m_Hook = BillingLifecycleHook.Create(this);
+            var attempt = ConnectAndLoadAsync(ct);
+            m_InitTask = attempt;
+            RetryInBackgroundIfFailed(attempt, ct);
+            return attempt;
         }
 
-        private async Task InitializeCoreAsync(CancellationToken ct)
+        /// <summary>Problems of the config and the platform that no retry fixes.</summary>
+        /// <exception cref="BillingException">The server URL is not https outside the Editor, or the platform has no
+        /// in-app purchases.</exception>
+        private void CheckConfiguration()
         {
-            ThrowIfDisposed();
             foreach (var problem in m_Config.Validate())
                 m_Log.Warning("Config: " + problem);
             var insecure = UrlPolicy.ServerUrlProblem(m_Config.serverBaseUrl, m_IsEditor);
@@ -30,13 +54,27 @@ namespace Purser
                 throw new BillingException(insecure);
             if (Platform == BillingPlatform.Unsupported && !m_IsEditor)
                 throw new BillingException($"In-app purchases are not supported on {Application.platform}");
+        }
 
-            SyncUser(refreshOnChange: false);
-            BindAccount();
-            await m_Store.ConnectAsync(ct);
+        /// <summary>One initialization attempt: connects the store, loads the products, then tells the game.</summary>
+        private async Task ConnectAndLoadAsync(CancellationToken ct)
+        {
             ThrowIfDisposed();
-            var products = m_Config.products.Where(p => p != null && !string.IsNullOrEmpty(p.id)).ToList();
-            m_Products = (await m_Store.FetchProductsAsync(products, ct)).Select(WithFallbacks).ToList();
+            // Orders the store delivers from now on wait for the prices (IOrderProcessorHost.ProductsFetch).
+            var fetch = m_ProductsFetch = new TaskCompletionSource<bool>();
+            try
+            {
+                SyncUser(refreshOnChange: false);
+                BindAccount();
+                await m_Store.ConnectAsync(ct);
+                ThrowIfDisposed();
+                var products = m_Config.products.Where(p => p != null && !string.IsNullOrEmpty(p.id)).ToList();
+                m_Products = (await m_Store.FetchProductsAsync(products, ct)).Select(WithFallbacks).ToList();
+            }
+            finally
+            {
+                fetch.TrySetResult(true);
+            }
             ThrowIfDisposed();
             m_Log.Info($"Initialized: {m_Products.Count} products, store {m_Store.Store} ({AppId})");
 
@@ -46,13 +84,82 @@ namespace Purser
                 LogFailure(appleAds.WarmUpAsync(), "Apple Ads attribution");
             IsInitialized = true;
             m_EverInitialized = true;
-            if (m_CreateLifecycleHook && m_Hook == null)
-                m_Hook = BillingLifecycleHook.Create(this);
-            Initialized?.Invoke();
+            try
+            {
+                Initialized?.Invoke();
+            }
+            catch (Exception e)
+            {
+                m_Log.Error($"{nameof(Initialized)} handler threw: {e}");
+            }
 
             m_Orders.ProcessWaitingOrders();
             if (m_Config.refreshEntitlementsOnInit && m_Context.User != null)
                 m_Refresher.RefreshInBackground();
+        }
+
+        /// <summary>Starts the background retries when <paramref name="attempt"/> fails for a reason a later attempt
+        /// may not have (the store, the network); not when the caller cancelled it or the service was disposed.</summary>
+        private async void RetryInBackgroundIfFailed(Task attempt, CancellationToken ct)
+        {
+            try
+            {
+                await attempt;
+                return;
+            }
+            catch (Exception e)
+            {
+                if (m_Context.IsDisposed || m_InitRetrying || m_EverInitialized)
+                    return;
+                if (e is OperationCanceledException && ct.IsCancellationRequested)
+                    return;
+                m_Log.Warning($"Initialization failed ({e.Message}); retrying in the background.");
+            }
+            await RetryInitializationAsync();
+        }
+
+        /// <summary>Attempts the initialization again until it succeeds or the service is disposed, waiting
+        /// <see cref="ReconnectDelay"/> before each attempt; <see cref="OnAppResumed"/> ends the wait.</summary>
+        private async Task RetryInitializationAsync()
+        {
+            m_InitRetrying = true;
+            try
+            {
+                for (var attempt = 0; !m_Context.IsDisposed && !m_EverInitialized; attempt++)
+                {
+                    m_InitWake = new TaskCompletionSource<bool>();
+                    using (var wait = CancellationTokenSource.CreateLinkedTokenSource(m_Context.Lifetime))
+                    {
+                        await Task.WhenAny(m_Delay(ReconnectDelay(attempt), wait.Token), m_InitWake.Task);
+                        wait.Cancel();
+                    }
+                    if (m_Context.IsDisposed || m_EverInitialized)
+                        return;
+                    // An InitializeAsync call of the game may be trying right now: that attempt is the one to wait for.
+                    if (m_InitTask == null || m_InitTask.IsCompleted)
+                        m_InitTask = ConnectAndLoadAsync(m_Context.Lifetime);
+                    try
+                    {
+                        await m_InitTask;
+                    }
+                    catch (Exception e)
+                    {
+                        if (m_Context.IsDisposed)
+                            return;
+                        m_Log.Warning($"Initialization attempt {attempt + 2} failed: {e.Message}");
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                if (!m_Context.IsDisposed)
+                    m_Log.Error("Initialization retries stopped: " + e);
+            }
+            finally
+            {
+                m_InitRetrying = false;
+                m_InitWake = null;
+            }
         }
 
         /// <summary>The config's fallback price and subscription period where the store gave none.</summary>
@@ -164,16 +271,24 @@ namespace Purser
             m_BoundUser = user;
         }
 
-        /// <summary>The app came back to the foreground (<see cref="BillingLifecycleHook"/>): notices a changed user id
-        /// and refreshes the customer info, at most once per <see cref="CustomerInfoRefresher.ResumeRefreshInterval"/>.</summary>
+        /// <summary>The app came back to the foreground (<see cref="BillingLifecycleHook"/>): notices a changed user id,
+        /// retries a failed initialization now, verifies again the orders that were given up and refreshes the customer
+        /// info, at most once per <see cref="CustomerInfoRefresher.ResumeRefreshInterval"/>.</summary>
         internal void OnAppResumed()
         {
             if (m_Context.IsDisposed)
                 return;
-            var user = SyncUser();
+            var previous = m_Context.User;
+            var user = SyncUser(refreshOnChange: false);
+            m_InitWake?.TrySetResult(true);
             if (!IsInitialized || user == null || SkipServer)
                 return;
-            m_Refresher.RefreshOnResume();
+            m_Orders.RetryGivenUp();
+            // One refresh: a new player's right away, the same player's unless the server answered one lately.
+            if (user != previous)
+                m_Refresher.RefreshInBackground();
+            else
+                m_Refresher.RefreshOnResume();
         }
 
         /// <summary>Once a second in play mode: notices a changed user id of the provider.</summary>

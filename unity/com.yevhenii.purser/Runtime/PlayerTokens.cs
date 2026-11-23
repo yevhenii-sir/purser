@@ -47,15 +47,28 @@ namespace Purser
         void SetPlayerTokenProvider(IPlayerTokenProvider provider);
     }
 
-    /// <summary>Keeps the last token per player until the server refuses it (shared by every consumer of a service).</summary>
+    /// <summary>Keeps the last token per player until the server refuses it (shared by every consumer of a service).
+    /// A provider that does not answer within <see cref="ProviderTimeout"/> gives no token: the request goes without
+    /// one instead of waiting for it.</summary>
     internal sealed class PlayerTokenCache : IPlayerTokenProvider
     {
-        private readonly IPlayerTokenProvider m_Provider;
-        private readonly Dictionary<string, string> m_Tokens = new Dictionary<string, string>();
+        /// <summary>How long the game backend may take to make a token.</summary>
+        internal static readonly TimeSpan ProviderTimeout = TimeSpan.FromSeconds(10);
 
-        public PlayerTokenCache(IPlayerTokenProvider provider)
+        private readonly IPlayerTokenProvider m_Provider;
+        private readonly BillingLog m_Log;
+        private readonly Func<TimeSpan, CancellationToken, Task> m_Delay;
+        private readonly Dictionary<string, string> m_Tokens = new Dictionary<string, string>();
+        private bool m_TimedOut;
+
+        /// <param name="log">Where a provider that does not answer is reported (default: warnings to the Unity console).</param>
+        /// <param name="delay">The timer of <see cref="ProviderTimeout"/> (tests); default <c>Task.Delay</c>.</param>
+        public PlayerTokenCache(IPlayerTokenProvider provider, BillingLog log = null,
+            Func<TimeSpan, CancellationToken, Task> delay = null)
         {
             m_Provider = provider ?? throw new ArgumentNullException(nameof(provider));
+            m_Log = log ?? new BillingLog(BillingLogLevel.Warning);
+            m_Delay = delay;
         }
 
         /// <summary>The provider's token, wrapped in a cache unless it already is one; null for null.</summary>
@@ -68,7 +81,13 @@ namespace Purser
                 return null;
             if (m_Tokens.TryGetValue(userId, out var cached))
                 return cached;
-            var token = await m_Provider.GetTokenAsync(userId, ct);
+            var (answered, token) = await TaskTimeout.Try(m_Provider.GetTokenAsync(userId, ct), ProviderTimeout, ct, m_Delay);
+            if (!answered && !m_TimedOut)
+            {
+                m_TimedOut = true;
+                m_Log.Warning($"The player token provider did not answer in {ProviderTimeout.TotalSeconds:0} s: requests go " +
+                              "without a token (reported once).");
+            }
             if (string.IsNullOrEmpty(token))
                 return null;
             m_Tokens[userId] = token;

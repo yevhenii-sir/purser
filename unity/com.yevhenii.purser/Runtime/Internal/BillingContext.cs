@@ -32,7 +32,13 @@ namespace Purser
         /// <summary>Device ids for attribution integrations; may be null.</summary>
         public readonly IAttributionProvider Attribution;
 
+        /// <summary>How long a provider of the game (attribution ids, app instance id) may take to answer; a request
+        /// that needs its value goes without it after that.</summary>
+        internal static readonly TimeSpan ProviderTimeout = TimeSpan.FromSeconds(5);
+
         private readonly CancellationTokenSource m_Lifetime = new CancellationTokenSource();
+        private bool m_AttributionTimedOut;
+        private bool m_AnalyticsTimedOut;
 
         public BillingContext(BillingConfig config, IStoreAdapter store, IBillingApi api, IBillingStorage storage, BillingLog log,
             Func<DateTime> utcNow, Func<TimeSpan, CancellationToken, Task> delay, bool isEditor, ClientInfoDto client,
@@ -76,7 +82,8 @@ namespace Purser
             m_Lifetime.Dispose();
         }
 
-        /// <summary>The attribution ids of the game and the refund data consent, cleaned; null when there are none.</summary>
+        /// <summary>The attribution ids of the game and the refund data consent, cleaned; null when there are none.
+        /// A provider that does not answer within <see cref="ProviderTimeout"/> gives nothing.</summary>
         public async Task<Dictionary<string, string>> AttributionAsync()
         {
             var clean = new Dictionary<string, string>();
@@ -84,8 +91,11 @@ namespace Purser
             {
                 try
                 {
-                    var values = await Attribution.GetAttributionAsync();
-                    if (values != null)
+                    var (answered, values) = await TaskTimeout.Try(Attribution.GetAttributionAsync(), ProviderTimeout,
+                        LifetimeOrCancelled, Delay);
+                    if (!answered)
+                        WarnOnce(ref m_AttributionTimedOut, "The attribution provider");
+                    else if (values != null)
                         foreach (var kv in values.Where(kv => !string.IsNullOrEmpty(kv.Key) && !string.IsNullOrEmpty(kv.Value)))
                             clean[kv.Key] = kv.Value;
                 }
@@ -101,14 +111,18 @@ namespace Purser
             return clean.Count == 0 ? null : clean;
         }
 
-        /// <summary>Firebase <c>app_instance_id</c>; null when there is no provider or it failed.</summary>
+        /// <summary>Firebase <c>app_instance_id</c>; null when there is no provider, it failed or it did not answer
+        /// within <see cref="ProviderTimeout"/>.</summary>
         public async Task<string> AppInstanceIdAsync()
         {
             if (Analytics == null)
                 return null;
             try
             {
-                var id = await Analytics.GetAppInstanceIdAsync();
+                var (answered, id) = await TaskTimeout.Try(Analytics.GetAppInstanceIdAsync(), ProviderTimeout,
+                    LifetimeOrCancelled, Delay);
+                if (!answered)
+                    WarnOnce(ref m_AnalyticsTimedOut, "The analytics id provider");
                 return string.IsNullOrEmpty(id) ? null : id;
             }
             catch (Exception e)
@@ -116,6 +130,18 @@ namespace Purser
                 Log.Verbose("App instance id unavailable: " + e.Message);
                 return null;
             }
+        }
+
+        /// <summary><see cref="Lifetime"/>, or a cancelled token once the service is disposed.</summary>
+        private CancellationToken LifetimeOrCancelled => IsDisposed ? new CancellationToken(true) : m_Lifetime.Token;
+
+        private void WarnOnce(ref bool warned, string provider)
+        {
+            if (warned)
+                return;
+            warned = true;
+            Log.Warning($"{provider} did not answer in {ProviderTimeout.TotalSeconds:0} s: requests go without its value " +
+                        "(reported once).");
         }
     }
 }

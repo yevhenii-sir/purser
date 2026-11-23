@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Purser
@@ -24,12 +25,16 @@ namespace Purser
         /// <summary>Products loaded from the store: the price the store charges goes to <c>/verify</c>.</summary>
         IReadOnlyList<StoreProduct> Products { get; }
 
+        /// <summary>Ends when the product fetch of the initialization attempt that is running ended, either way; null
+        /// or completed when none is running.</summary>
+        Task ProductsFetch { get; }
+
         /// <summary>Reads the user id again, handling a changed player first; null when there is no player.</summary>
         string SyncUser();
 
-        /// <summary>Hands a purchase result to the game: completes the purchase's waiter and raises its event.
-        /// A throwing handler is logged, never passed on.</summary>
-        ReportOutcome Report(PurchaseResult result);
+        /// <summary>Hands the result of <paramref name="order"/> to the game: completes the waiter of the purchase that
+        /// brought the order and raises its event. A throwing handler is logged, never passed on.</summary>
+        ReportOutcome Report(PurchaseResult result, StoreOrder order);
     }
 
     /// <summary>
@@ -39,7 +44,7 @@ namespace Purser
     /// (<see cref="IStoreAdapter.Finish"/>) once the server accepted or definitively rejected it.
     /// Used from the Unity main thread only.
     /// </summary>
-    internal sealed class OrderProcessor
+    internal sealed partial class OrderProcessor
     {
         private enum Outcome
         {
@@ -55,11 +60,33 @@ namespace Purser
         {
             public Paywall Paywall;
             public string OfferId;
+            /// <summary>The orders known when the purchase started (<see cref="KnownOrders"/>): they are not its order.</summary>
+            public HashSet<string> Older;
+        }
+
+        /// <summary>An order whose verification was given up for now, with what the game said about its purchase.</summary>
+        private sealed class GivenUpOrder
+        {
+            public StoreOrder Order;
+            public PurchaseContext Context;
+        }
+
+        /// <summary>A purchase the game must grant itself that nobody received yet.</summary>
+        private sealed class HeldResult
+        {
+            public StoreOrder Order;
+            public PurchaseResult Result;
+            /// <summary>A handler is being called with it right now.</summary>
+            public bool Delivering;
         }
 
         /// <summary>Rate-limited verification retries (429 with <c>Retry-After</c>) that do not use up
         /// <see cref="BillingConfig.retryDelaysSeconds"/>.</summary>
         internal const int MaxRateLimitedRetries = 10;
+
+        /// <summary>How long an order that arrives while the products are being fetched waits for them (the price the
+        /// store charges goes to <c>/verify</c>).</summary>
+        internal static readonly TimeSpan ProductsWait = TimeSpan.FromSeconds(10);
 
         private readonly BillingContext m_Context;
         private readonly IOrderProcessorHost m_Host;
@@ -76,6 +103,12 @@ namespace Purser
         /// <summary>The verifications that are waiting for something (the server, a retry delay), by order key.</summary>
         private readonly Dictionary<string, Task> m_InFlightTasks = new Dictionary<string, Task>();
         private readonly Dictionary<string, StoreOrder> m_WaitingForUser = new Dictionary<string, StoreOrder>();
+        /// <summary>Orders the server could not be asked about, by key: verified again when the app returns to the
+        /// foreground or the store reconnects (<see cref="RetryGivenUp"/>).</summary>
+        private readonly Dictionary<string, GivenUpOrder> m_GivenUp = new Dictionary<string, GivenUpOrder>();
+        /// <summary>Verified purchases the game grants itself that had no receiver, by key: not finished in the store
+        /// until a <c>PurchaseSucceeded</c> handler takes them (<see cref="DeliverHeld"/>).</summary>
+        private readonly Dictionary<string, HeldResult> m_Held = new Dictionary<string, HeldResult>();
         /// <summary>Paywall and offer of the purchase started for a store product id (sent with /verify). Kept until the
         /// purchase ends, also when the caller stopped waiting for it.</summary>
         private readonly Dictionary<string, PurchaseContext> m_PurchaseContext = new Dictionary<string, PurchaseContext>();
@@ -98,17 +131,35 @@ namespace Purser
         // ------------------------------------------------------------------
 
         /// <summary>Remembers the paywall and the offer of the purchase the game starts for a store product id; forgets
-        /// the previous ones when both are empty.</summary>
+        /// the previous ones when both are empty. Orders known by now (<see cref="KnownOrders"/>) do not get them.</summary>
         public void SetPurchaseContext(string storeId, Paywall paywall, string offerId)
         {
             if (paywall == null && string.IsNullOrEmpty(offerId))
                 m_PurchaseContext.Remove(storeId);
             else
-                m_PurchaseContext[storeId] = new PurchaseContext { Paywall = paywall, OfferId = NullIfEmpty(offerId) };
+                m_PurchaseContext[storeId] = new PurchaseContext { Paywall = paywall, OfferId = NullIfEmpty(offerId), Older = KnownOrders() };
         }
 
-        /// <summary>The purchase of a store product id ended: its paywall and offer are not sent with later orders.</summary>
+        /// <summary>The purchase of a store product id ended without an order: its paywall and offer are not sent with
+        /// later orders.</summary>
         public void ClearPurchaseContext(string storeId) => m_PurchaseContext.Remove(storeId);
+
+        /// <summary>What the game said about the purchase that brought <paramref name="order"/>; null when it said
+        /// nothing, or the order was known before that purchase started.</summary>
+        private PurchaseContext ContextOf(StoreOrder order)
+        {
+            if (string.IsNullOrEmpty(order.StoreProductId) || !m_PurchaseContext.TryGetValue(order.StoreProductId, out var context))
+                return null;
+            return IsKnown(context.Older, order) ? null : context;
+        }
+
+        /// <summary>The order ended (or was given up): later orders of its product do not inherit its paywall and offer.</summary>
+        private void ReleaseContext(StoreOrder order, PurchaseContext context)
+        {
+            if (context != null && !string.IsNullOrEmpty(order.StoreProductId) &&
+                m_PurchaseContext.TryGetValue(order.StoreProductId, out var current) && ReferenceEquals(current, context))
+                m_PurchaseContext.Remove(order.StoreProductId);
+        }
 
         // ------------------------------------------------------------------
         // Orders
@@ -120,8 +171,33 @@ namespace Purser
             (!string.IsNullOrEmpty(order.TransactionId) && m_InFlightTransactions.Contains(order.TransactionId));
 
         /// <summary>The verifications running now, one task per order. A task ends when its order was reported, given
-        /// up for the session or the service was disposed; it does not fault.</summary>
+        /// up for now or the service was disposed; it does not fault.</summary>
         public IReadOnlyCollection<Task> InFlightTasks => m_InFlightTasks.Values;
+
+        /// <summary>
+        /// Keys and transaction ids of every order the processor has now: being verified, waiting for a player, given
+        /// up, held for a handler. A purchase the game starts after this cannot have brought any of them
+        /// (<see cref="IsKnown"/>).
+        /// </summary>
+        public HashSet<string> KnownOrders()
+        {
+            var known = new HashSet<string>(m_InFlightKeys);
+            known.UnionWith(m_InFlightTransactions);
+            foreach (var order in m_WaitingForUser.Values.Concat(m_GivenUp.Values.Select(g => g.Order)).Concat(m_Held.Values.Select(h => h.Order)))
+            {
+                known.Add(order.Key);
+                if (!string.IsNullOrEmpty(order.TransactionId))
+                    known.Add(order.TransactionId);
+            }
+            return known;
+        }
+
+        /// <summary><paramref name="order"/> is one of <paramref name="known"/> (<see cref="KnownOrders"/>), by its key
+        /// or its transaction id.</summary>
+        public static bool IsKnown(HashSet<string> known, StoreOrder order) =>
+            known != null && order != null &&
+            ((!string.IsNullOrEmpty(order.Key) && known.Contains(order.Key)) ||
+             (!string.IsNullOrEmpty(order.TransactionId) && known.Contains(order.TransactionId)));
 
         /// <summary>The store delivered an order (<see cref="IStoreAdapter.OrderPending"/>): verifies it, or keeps it
         /// until there is a player.</summary>
@@ -137,13 +213,20 @@ namespace Purser
             }
             if (IsInFlight(order))
                 return;
+            var held = FindHeld(order);
+            if (held != null)
+            {
+                // Verified already; it waits for a PurchaseSucceeded handler. Finish what the store delivered last.
+                held.Order = order;
+                return;
+            }
             if (m_Host.SyncUser() == null)
             {
                 m_WaitingForUser[key] = order;
                 m_Log.Info($"Order {order} waits for a user id.");
                 return;
             }
-            var verification = ProcessOrderAsync(order);
+            var verification = ProcessOrderAsync(order, TakeGivenUp(order));
             // Kept while it waits; one that needed no waiting (the Editor without the server) is done already.
             if (!verification.IsCompleted)
                 m_InFlightTasks[key] = verification;
@@ -160,6 +243,67 @@ namespace Purser
                 OnOrderPending(order);
         }
 
+        /// <summary>Verifies again the orders that were given up (the server could not be reached): the app returned
+        /// to the foreground or the store reconnected.</summary>
+        public void RetryGivenUp()
+        {
+            if (m_Context.IsDisposed || m_Context.User == null || m_GivenUp.Count == 0)
+                return;
+            foreach (var givenUp in m_GivenUp.Values.ToList())
+                OnOrderPending(givenUp.Order);
+        }
+
+        /// <summary>
+        /// Waits until the verifications running now ended, at most <paramref name="timeout"/> (one that waits to retry
+        /// takes longer).
+        /// </summary>
+        public async Task WaitForInFlightAsync(TimeSpan timeout, CancellationToken ct)
+        {
+            var running = m_InFlightTasks.Values.ToList();
+            if (running.Count == 0)
+                return;
+            using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            {
+                await Task.WhenAny(Task.WhenAll(running), m_Context.Delay(timeout, cts.Token));
+                cts.Cancel();
+            }
+            ct.ThrowIfCancellationRequested();
+        }
+
+        /// <summary>
+        /// A handler was added to <c>PurchaseSucceeded</c>: gives it the purchases that had no receiver, and finishes
+        /// each one it took in the store. One it throws for stays held.
+        /// </summary>
+        public void DeliverHeld(Action<PurchaseResult> handler)
+        {
+            if (m_Context.IsDisposed || handler == null || m_Held.Count == 0)
+                return;
+            foreach (var entry in m_Held.ToList())
+            {
+                var held = entry.Value;
+                // A handler that adds another handler, or the store delivering the order again, gets here again.
+                if (held.Delivering || !m_Held.TryGetValue(entry.Key, out var current) || !ReferenceEquals(current, held))
+                    continue;
+                held.Delivering = true;
+                try
+                {
+                    m_Log.Info("Purchase " + held.Result + " (kept until a PurchaseSucceeded handler was added)");
+                    handler(held.Result);
+                }
+                catch (Exception e)
+                {
+                    m_Log.Error($"PurchaseSucceeded handler threw for {held.Result}: {e}");
+                    continue;
+                }
+                finally
+                {
+                    held.Delivering = false;
+                }
+                m_Held.Remove(entry.Key);
+                m_Store.Finish(held.Order, true);
+            }
+        }
+
         /// <summary>The store confirmed (or refused to confirm) an order (<see cref="IStoreAdapter.OrderFinished"/>).</summary>
         public void OnOrderFinished(StoreOrder order, bool success, string error)
         {
@@ -168,204 +312,40 @@ namespace Purser
                               "(expected when the server already consumed the purchase).");
         }
 
-        private async Task ProcessOrderAsync(StoreOrder order)
+        private HeldResult FindHeld(StoreOrder order)
         {
+            if (m_Held.Count == 0)
+                return null;
+            if (m_Held.TryGetValue(order.Key, out var held))
+                return held;
+            return string.IsNullOrEmpty(order.TransactionId)
+                ? null
+                : m_Held.Values.FirstOrDefault(h => h.Order.TransactionId == order.TransactionId);
+        }
+
+        /// <summary>The given-up entry of the order, removed; null when it was not given up.</summary>
+        private GivenUpOrder TakeGivenUp(StoreOrder order)
+        {
+            if (m_GivenUp.Count == 0)
+                return null;
             var key = order.Key;
-            var transactionId = string.IsNullOrEmpty(order.TransactionId) ? null : order.TransactionId;
-            m_InFlightKeys.Add(key);
-            if (transactionId != null)
-                m_InFlightTransactions.Add(transactionId);
-            var config = m_Config.FindByStoreId(order.StoreProductId);
-            var productId = config?.id ?? order.StoreProductId;
-            try
-            {
-                var user = m_Context.User;
-                if (m_Context.SkipServer)
-                {
-                    m_Store.Finish(order, true);
-                    if (config != null)
-                        m_Refresher.GrantLocally(user, config);
-                    m_Host.Report(new PurchaseResult(PurchaseStatus.Success, productId, order.StoreProductId,
-                        order.TransactionId ?? key, "editor: confirmed locally without the server"));
-                    return;
-                }
-
-                var request = await BuildVerifyRequestAsync(order, user);
-                if (m_Context.IsDisposed)
-                    return;
-                var delays = m_Config.retryDelaysSeconds ?? new int[0];
-                var attempt = 0;
-                var rateLimited = 0;
-                var reported = false;
-                while (true)
-                {
-                    // Webhook stores (Stripe, Xsolla) have no receipt: the adapter asks the server about the order.
-                    var response = m_Store is IWebhookStoreAdapter webhookStore
-                        ? await webhookStore.CheckOrderAsync(order, request, m_Context.Lifetime)
-                        : await m_Api.VerifyAsync(m_Store.Store, request, m_Context.Lifetime);
-                    if (m_Context.IsDisposed)
-                        return;
-                    var outcome = Classify(response);
-                    if (outcome != Outcome.Retry)
-                    {
-                        if (config == null && !string.IsNullOrEmpty(response.Value?.ProductId))
-                        {
-                            // The store did not name the product (a Steam order authorized before a restart, a resumed
-                            // Stripe session): the server's answer does.
-                            config = m_Config.FindByStoreId(response.Value.ProductId);
-                            productId = config?.id ?? response.Value.ProductId;
-                        }
-                        Apply(order, config, productId, response.Value, outcome);
-                        return;
-                    }
-
-                    m_Log.Warning($"Verification of {order} failed ({response}), attempt {attempt + rateLimited + 1}.");
-                    if (!reported)
-                    {
-                        reported = true;
-                        m_Host.Report(new PurchaseResult(PurchaseStatus.PendingVerification, productId, order.StoreProductId,
-                            order.TransactionId, "payment received, verification will be retried", response?.Value));
-                    }
-                    TimeSpan wait;
-                    if (response != null && response.IsRateLimited && response.RetryAfter.HasValue && rateLimited < MaxRateLimitedRetries)
-                    {
-                        // The server asked to wait (429): it is not a failed attempt.
-                        rateLimited++;
-                        wait = response.RetryAfter.Value;
-                    }
-                    else
-                    {
-                        if (attempt >= delays.Length)
-                        {
-                            m_Log.Warning($"Giving up on {order} for this session; the store will deliver it again on next launch.");
-                            return;
-                        }
-                        wait = TimeSpan.FromSeconds(delays[attempt]);
-                        attempt++;
-                    }
-                    await m_Context.Delay(wait, m_Context.Lifetime);
-                    if (m_Context.IsDisposed)
-                        return;
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // Service disposed.
-            }
-            catch (ObjectDisposedException) when (m_Context.IsDisposed)
-            {
-            }
-            catch (Exception e)
-            {
-                m_Log.Error($"Processing {order} failed: {e}");
-                m_Host.Report(new PurchaseResult(PurchaseStatus.PendingVerification, productId, order.StoreProductId,
-                    order.TransactionId, e.Message));
-            }
-            finally
-            {
-                m_InFlightKeys.Remove(key);
-                if (transactionId != null)
-                    m_InFlightTransactions.Remove(transactionId);
-                m_InFlightTasks.Remove(key);
-            }
+            if (!m_GivenUp.ContainsKey(key))
+                key = string.IsNullOrEmpty(order.TransactionId)
+                    ? null
+                    : m_GivenUp.FirstOrDefault(kv => kv.Value.Order.TransactionId == order.TransactionId).Key;
+            if (key == null)
+                return null;
+            var givenUp = m_GivenUp[key];
+            m_GivenUp.Remove(key);
+            return givenUp;
         }
 
-        private async Task<VerifyRequest> BuildVerifyRequestAsync(StoreOrder order, string user)
+        /// <summary>Keeps the order for <see cref="RetryGivenUp"/> with what the game said about its purchase, which
+        /// later orders of the product must not inherit.</summary>
+        private void GiveUp(StoreOrder order, PurchaseContext context)
         {
-            // A fallback price is the game's guess, not what the store charged: the server is not told it.
-            var product = m_Host.Products.FirstOrDefault(p => p.StoreId == order.StoreProductId && !p.IsFallbackPrice);
-            // Read before the first await: the purchase that set it may finish meanwhile.
-            m_PurchaseContext.TryGetValue(order.StoreProductId, out var context);
-            var paywall = context?.Paywall;
-            return new VerifyRequest
-            {
-                AppId = m_Context.AppId,
-                UserId = user,
-                ProductId = order.StoreProductId,
-                PurchaseToken = NullIfEmpty(order.PurchaseToken),
-                OrderId = string.IsNullOrEmpty(order.TransactionId) ? null : order.TransactionId,
-                StoreUserId = string.IsNullOrEmpty(order.StoreUserId) ? null : order.StoreUserId,
-                AppInstanceId = await m_Context.AppInstanceIdAsync(),
-                PriceMicros = product?.PriceMicros ?? 0,
-                Currency = string.IsNullOrEmpty(product?.Currency) ? null : product.Currency,
-                Attribution = await m_Context.AttributionAsync(),
-                Placement = NullIfEmpty(paywall?.PlacementId),
-                VariantId = NullIfEmpty(paywall?.VariantId),
-                TestId = NullIfEmpty(paywall?.TestId),
-                PaywallId = NullIfEmpty(paywall?.PaywallId),
-                OfferId = context?.OfferId,
-                Client = m_Context.Client,
-            };
-        }
-
-        private static string NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
-
-        private static Outcome Classify(ApiResult<VerifyResponse> response)
-        {
-            if (response == null || response.IsTransportError || response.IsRateLimited)
-                return Outcome.Retry;
-            switch (response.Value?.Status)
-            {
-                case VerifyStatus.Success:
-                    return Outcome.Success;
-                case VerifyStatus.Pending:
-                    return Outcome.PendingDelivery;
-                case VerifyStatus.PendingOrCanceled:
-                    return Outcome.PendingPayment;
-                case VerifyStatus.Invalid:
-                case VerifyStatus.Forbidden:
-                case VerifyStatus.Expired:
-                case VerifyStatus.Revoked:
-                    return Outcome.Rejected;
-                default:
-                    // `error` (server misconfiguration, store outage, refused player token), 5xx, unexpected body: keep
-                    // the order and retry.
-                    return Outcome.Retry;
-            }
-        }
-
-        private void Apply(StoreOrder order, BillingProductConfig config, string productId, VerifyResponse server, Outcome outcome)
-        {
-            var transactionId = server?.TransactionId ?? order.TransactionId;
-            switch (outcome)
-            {
-                case Outcome.Success:
-                case Outcome.PendingDelivery:
-                    var result = new PurchaseResult(
-                        outcome == Outcome.Success ? PurchaseStatus.Success : PurchaseStatus.PendingDelivery,
-                        productId, order.StoreProductId, transactionId, server?.Message, server);
-                    if (result.GrantOnClient)
-                    {
-                        // The game grants the reward in PurchaseSucceeded. Finish the purchase (Google
-                        // consume / Apple finishTransaction) only after that: if the app dies in between,
-                        // the store delivers it again and the server answers success from its ledger.
-                        if (m_Host.Report(result) == ReportOutcome.HandlerFailed)
-                        {
-                            m_Log.Error($"PurchaseSucceeded handler failed for {order}, not finishing it " +
-                                        "so the store delivers it again.");
-                            return;
-                        }
-                        m_Store.Finish(order, true);
-                    }
-                    else
-                    {
-                        m_Store.Finish(order, true);
-                        m_Host.Report(result);
-                    }
-                    if (config == null || config.type != BillingProductType.Consumable)
-                        m_Refresher.RefreshInBackground();
-                    break;
-                case Outcome.PendingPayment:
-                    m_Host.Report(new PurchaseResult(PurchaseStatus.PendingPayment, productId, order.StoreProductId,
-                        transactionId, "payment is not completed yet", server));
-                    break;
-                case Outcome.Rejected:
-                    // Definitive answer: finish the transaction so the store stops re-delivering it.
-                    m_Store.Finish(order, false);
-                    m_Host.Report(new PurchaseResult(PurchaseStatus.Rejected, productId, order.StoreProductId,
-                        transactionId, $"{server?.Status}: {server?.Message}", server));
-                    break;
-            }
+            m_GivenUp[order.Key] = new GivenUpOrder { Order = order, Context = context };
+            ReleaseContext(order, context);
         }
     }
 }

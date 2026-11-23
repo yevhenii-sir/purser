@@ -8,8 +8,19 @@ namespace Purser
     {
         private void OnStoreDisconnected(string reason)
         {
-            if (m_Context.IsDisposed || !m_EverInitialized || m_Reconnecting)
+            if (m_Context.IsDisposed || !m_EverInitialized)
                 return;
+            if (m_Reconnecting)
+            {
+                // While it waits or connects, the store is known to be down. Once it has connected (the game is being
+                // told, orders are picked up), this is a new disconnect: handled when that reconnection ends.
+                if (IsInitialized)
+                {
+                    IsInitialized = false;
+                    m_DisconnectedAgain = reason ?? "";
+                }
+                return;
+            }
             IsInitialized = false;
             m_Log.Warning($"Store disconnected ({reason}); reconnecting.");
             try
@@ -30,6 +41,7 @@ namespace Purser
         private async Task ReconnectAsync()
         {
             m_Reconnecting = true;
+            m_DisconnectedAgain = null;
             try
             {
                 for (var attempt = 0; !m_Context.IsDisposed; attempt++)
@@ -65,6 +77,7 @@ namespace Purser
                     m_Orders.ProcessWaitingOrders();
                     if (SyncUser(refreshOnChange: false) != null)
                         m_Refresher.RefreshInBackground();
+                    m_Orders.RetryGivenUp();
                     return;
                 }
             }
@@ -79,6 +92,10 @@ namespace Purser
             finally
             {
                 m_Reconnecting = false;
+                var again = m_DisconnectedAgain;
+                m_DisconnectedAgain = null;
+                if (again != null)
+                    OnStoreDisconnected(again);
             }
         }
     }

@@ -181,20 +181,43 @@ namespace Purser
     internal static class TaskTimeout
     {
         /// <summary>Awaits a store callback; throws <see cref="BillingException"/> after <paramref name="timeout"/>.</summary>
-        public static async Task<T> With<T>(Task<T> task, TimeSpan timeout, CancellationToken ct, string what)
+        /// <param name="delay">The timer (tests); default <c>Task.Delay</c>.</param>
+        public static async Task<T> With<T>(Task<T> task, TimeSpan timeout, CancellationToken ct, string what,
+            Func<TimeSpan, CancellationToken, Task> delay = null)
         {
-            using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+            var (completed, value) = await Try(task, timeout, ct, delay);
+            if (!completed)
+                throw new BillingException($"Timed out waiting for {what}");
+            return value;
+        }
+
+        /// <summary>
+        /// The result of <paramref name="task"/> when it ends within <paramref name="timeout"/>: <c>(true, result)</c>;
+        /// <c>(false, default)</c> when it takes longer (the task goes on, what it does later is ignored). Throws what
+        /// the task throws, and <see cref="OperationCanceledException"/> when <paramref name="ct"/> is cancelled first.
+        /// </summary>
+        /// <param name="delay">The timer (tests); default <c>Task.Delay</c>.</param>
+        public static async Task<(bool Completed, T Value)> Try<T>(Task<T> task, TimeSpan timeout, CancellationToken ct,
+            Func<TimeSpan, CancellationToken, Task> delay = null)
+        {
+            if (!task.IsCompleted)
             {
-                var delay = Task.Delay(timeout, cts.Token);
-                var done = await Task.WhenAny(task, delay);
-                cts.Cancel();
-                if (done != task)
+                using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
                 {
-                    ct.ThrowIfCancellationRequested();
-                    throw new BillingException($"Timed out waiting for {what}");
+                    var timer = delay != null ? delay(timeout, cts.Token) : Task.Delay(timeout, cts.Token);
+                    var done = await Task.WhenAny(task, timer);
+                    cts.Cancel();
+                    if (done != task)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        // Nobody awaits it any more: a late failure must not surface as an unobserved exception.
+                        _ = task.ContinueWith(t => t.Exception, CancellationToken.None,
+                            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                        return (false, default);
+                    }
                 }
-                return await task;
             }
+            return (true, await task);
         }
     }
 }

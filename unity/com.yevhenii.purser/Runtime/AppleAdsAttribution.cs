@@ -34,6 +34,10 @@ namespace Purser
         private readonly Func<TimeSpan, Task> m_Delay;
         private readonly BillingLog m_Log;
         private Task<Dictionary<string, string>> m_Resolve;
+        private bool m_TimedOut;
+
+        /// <summary>How long <see cref="GetAttributionAsync"/> waits for Apple's answer.</summary>
+        internal static readonly TimeSpan ResolveWait = TimeSpan.FromSeconds(3);
 
         private sealed class State
         {
@@ -74,8 +78,20 @@ namespace Purser
             }
             try
             {
-                foreach (var kv in await Resolve())
-                    result[kv.Key] = kv.Value;
+                // Apple may take a while (it is asked up to three times, 5 s apart): a request made meanwhile goes
+                // without the campaign; the answer keeps arriving for the later ones.
+                var (answered, values) = await TaskTimeout.Try(Resolve(), ResolveWait, CancellationToken.None, (d, ct) => m_Delay(d));
+                if (answered)
+                {
+                    foreach (var kv in values)
+                        result[kv.Key] = kv.Value;
+                }
+                else if (!m_TimedOut)
+                {
+                    m_TimedOut = true;
+                    m_Log.Warning($"Apple Ads attribution did not arrive in {ResolveWait.TotalSeconds:0} s: requests go " +
+                                  "without it until it does (reported once).");
+                }
             }
             catch (Exception e)
             {

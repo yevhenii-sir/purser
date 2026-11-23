@@ -67,11 +67,12 @@ namespace Purser
             if (m_Context.SkipServer)
                 return m_CustomerInfo;
 
-            m_LastRefreshUtc = m_UtcNow();
             var response = await m_Api.EntitlementsAsync(
                 new EntitlementsRequest { AppId = m_Context.AppId, UserId = user, Client = m_Context.Client }, ct);
             if (response.IsHttpSuccess && response.Value != null)
             {
+                // Only an answer counts for the foreground throttle: a failed refresh is tried again on the next resume.
+                m_LastRefreshUtc = m_UtcNow();
                 Set(user, response.Value);
                 return m_CustomerInfo;
             }
@@ -98,8 +99,8 @@ namespace Purser
             }
         }
 
-        /// <summary>The app came back to the foreground: refreshes in the background unless a refresh started less
-        /// than <see cref="ResumeRefreshInterval"/> ago.</summary>
+        /// <summary>The app came back to the foreground: refreshes in the background unless the server answered a
+        /// refresh less than <see cref="ResumeRefreshInterval"/> ago.</summary>
         public void RefreshOnResume()
         {
             var now = m_UtcNow();
