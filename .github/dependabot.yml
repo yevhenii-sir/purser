@@ -1,0 +1,20 @@
+# Dependency updates. Rust crates: security updates only (the SpacetimeDB crates pin many
+# dependencies, and a broad `cargo update` breaks spacetimedb-core; see AGENTS.md, Commands).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /server
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+  - package-ecosystem: npm
+    directory: /server/admin-ui
+    schedule:
+      interval: weekly
+    groups:
+      admin-ui:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

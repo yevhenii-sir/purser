@@ -1431,12 +1431,26 @@ fn integration_health_shows_sent_skipped_and_failed_events_in_the_setup_check() 
     assert!(health(&w).unwrap().last_failure_final);
     assert_eq!(check(&w).0, "fail");
     assert!(check(&w).1.starts_with("The last event was dropped"), "{:?}", check(&w));
+    // The dropped event is kept for a replay.
+    let dead = |w: &World| {
+        use crate::integrations::integration_dead;
+        w.read(|tx| tx.db.integration_dead().iter().map(|d| (d.kind, d.purchase_id, d.last_error)).collect::<Vec<_>>())
+    };
+    assert_eq!(dead(&w).len(), 1);
+    assert!(dead(&w)[0].2.contains("401"), "{:?}", dead(&w));
 
-    // Working again.
+    // Working again; an admin sends the dropped event again.
     w.advance_clock(120);
     adjust_answers(&w, 200, "{}");
     crate::integrations::send_integration_event(&mut w.ctx(), row);
     assert_eq!(check(&w).0, "ok");
+    w.as_admin(false);
+    let before = outbox(&w).len();
+    w.test
+        .with_reducer_tx(TestAuth::internal(), |ctx| crate::integrations::admin_replay_integration_events(ctx, APP.into(), "adjust".into()))
+        .unwrap();
+    assert!(dead(&w).is_empty());
+    assert_eq!(outbox(&w).len(), before + 1);
 }
 
 // ---------------------------------------------------------------------

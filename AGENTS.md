@@ -35,7 +35,8 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 | `unity/com.yevhenii.purser` | UPM package: `BillingService`, `BillingConfig`, providers, Unity IAP adapter, Editor inspector, EditMode tests, native iOS plugin (`Runtime/Plugins/iOS`). |
 | `docs/` | store setup, game integration contract, analytics, self-hosting, migrating from Adapty. |
 | `tools/generate_unity_meta.py` | Creates `.meta` files for new Unity package files (deterministic GUIDs). |
-| `.github/workflows/` | `ci.yml` (tests, wasm, admin page freshness, scripts, personal-infra grep guard), `release.yml` (tag `v*`). |
+| `tools/e2e.py` | End-to-end check of a built module on a real SpacetimeDB server (CI runs it in a container). |
+| `.github/workflows/` | `ci.yml` (tests, wasm, end to end on SpacetimeDB, admin page freshness, scripts, personal-infra grep guard), `release.yml` (tag `v*`), `audit.yml` (weekly `cargo audit` / `npm audit`); `dependabot.yml`. |
 
 ## Domain model (names used everywhere)
 

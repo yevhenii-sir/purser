@@ -61,6 +61,29 @@ jobs:
           name: purser.wasm
           path: server/target/wasm32-unknown-unknown/release/purser.wasm
 
+  e2e:
+    name: end to end on SpacetimeDB
+    needs: wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: purser.wasm
+          path: wasm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The version the module is built with (server/spacetimedb/Cargo.toml).
+      - name: SpacetimeDB server
+        run: docker run -d --name stdb -p 127.0.0.1:3000:3000 clockworklabs/spacetime:v2.16.1 start --listen-addr 0.0.0.0:3000
+      - run: python tools/e2e.py --server http://127.0.0.1:3000 --wasm wasm/purser.wasm
+      - name: Server log
+        if: failure()
+        run: docker logs stdb | tail -200
+
   admin-ui:
     name: admin page build is up to date
     runs-on: ubuntu-latest

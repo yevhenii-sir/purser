@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use spacetimedb::ProcedureContext;
 
 /// Purchases retried this many times are reported as stuck.
-const STUCK_ATTEMPTS: u32 = 3;
+pub const STUCK_ATTEMPTS: u32 = 3;
 
 
 #[derive(Deserialize)]

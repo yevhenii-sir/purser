@@ -1,0 +1,37 @@
+name: Audit
+
+# Known vulnerabilities in the dependencies. Separate from CI: an advisory in a crate the
+# SpacetimeDB crates pin must not block every push; it shows up here (weekly and on lockfile changes).
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  push:
+    branches: [main]
+    paths: ["server/Cargo.lock", "server/admin-ui/package-lock.json", ".github/workflows/audit.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit --file server/Cargo.lock
+
+  npm:
+    name: npm audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server/admin-ui
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: npm audit --audit-level=high --omit=dev

@@ -1155,14 +1155,32 @@ fn healthz(ctx: &mut HandlerContext, _req: Request) -> Response {
 /// `/healthz`: the database answers and the ledger worker runs (503 when it has not run for
 /// `settings::WORKER_STALE_MICROS`; right after a publish it has not run yet: `starting`).
 fn health_report(ctx: &mut impl Ctx) -> Outcome {
-    let age = ctx.tx(|tx| crate::settings::worker_age_secs(tx));
+    let (age, pending, stuck, outbox) = ctx.tx(|tx| {
+        use crate::integrations::integration_outbox;
+        use crate::ledger_index::pending_purchase;
+        use spacetimedb::Table;
+        (
+            crate::settings::worker_age_secs(tx),
+            tx.db.pending_purchase().count(),
+            tx.db.pending_purchase().attempts().filter(crate::doctor::STUCK_ATTEMPTS..).count(),
+            tx.db.integration_outbox().count(),
+        )
+    });
     let stale = crate::settings::WORKER_STALE_MICROS / 1_000_000;
     let (http, status) = match age {
         None => (200, "starting"),
         Some(a) if a > stale => (503, "worker_stopped"),
         Some(_) => (200, "healthy"),
     };
-    Outcome::new(http, json!({ "status": status, "version": env!("CARGO_PKG_VERSION"), "worker_age_secs": age }))
+    // The backlog, for a monitor that alerts on numbers: purchases the worker has to continue, those
+    // it keeps retrying, queued integration events.
+    Outcome::new(
+        http,
+        json!({
+            "status": status, "version": env!("CARGO_PKG_VERSION"), "worker_age_secs": age,
+            "pending_purchases": pending, "stuck_purchases": stuck, "queued_integration_events": outbox,
+        }),
+    )
 }
 
 #[router]

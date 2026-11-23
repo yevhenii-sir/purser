@@ -10,11 +10,18 @@ Everything goes through the owner's `/sql` (SELECT to back up; DELETE and INSERT
 token must be the database owner's: `PURSER_TOKEN`, else the `spacetime login` one.
 
 What is copied: every table except caches (access tokens, rate limit buckets), queues of work in
-progress (integration, alert and Apple refund outboxes) and the worker's schedules, which the new
-module creates itself. Restoring replaces the rows of each copied table, so restore into a freshly
-published database; the backup's format version must match the server's (no conversion of older
-formats yet). Auto-increment ids of logs are given anew (their order is kept); alert channels keep
-their secrets (`alert-<id>` scopes are rewritten to the new ids).
+progress (integration, alert and Apple refund outboxes), the worker's schedules, which the new
+module creates itself, and tables derived from the ledger (rebuilt after a restore). Large tables are
+read in windows of an indexed column, so no single `/sql` answer holds a whole ledger.
+
+Restoring replaces the rows of each copied table, so restore into a freshly published database. A
+newer module may have added columns: they get their zero value (empty text, 0, false); columns the
+new module removed are dropped. Auto-increment ids of logs are given anew (their order is kept);
+alert channels keep their secrets (`alert-<id>` scopes are rewritten to the new ids). A restore that
+stopped half-way goes on with `--resume` (tables already restored are left as they are).
+
+The files hold every secret of the database (store keys, tokens): they are written readable by
+their owner only; keep them so.
 
 Exit code 1 on any error. `--dry-run` (restore) prints what would be written.
 """
@@ -46,6 +53,31 @@ SKIP = {
 FRESH_IDS = {"purchase_log": "id", "admin_audit": "id", "alert_log": "id", "store_create_job": "id"}
 # Rows per INSERT statement.
 BATCH = 200
+# Large tables read in windows of an indexed integer column (rows per `/sql` answer at most PAGE).
+# (column, lowest, past the highest value): integer columns, so the windows fit their type.
+MICROS, IDS, DAYS = (0, 2 ** 62), (0, 2 ** 62), (0, 2 ** 31 - 1)
+PAGED = {
+    "purchase": ("created_at_micros", *MICROS),
+    "purchase_log": ("id", *IDS),
+    "admin_audit": ("id", *IDS),
+    "user_attribution": ("updated_at_micros", *MICROS),
+    "player_profile": ("last_seen_micros", *MICROS),
+    "steam_order": ("order_id", *IDS),
+    "revenue_daily": ("day", *DAYS),
+    "revenue_country_daily": ("day", *DAYS),
+    "subscription_daily": ("day", *DAYS),
+    "paywall_daily": ("day", *DAYS),
+}
+PAGE = 20_000
+# Where a restore stopped (in the backup's directory).
+PROGRESS = "restore.progress.json"
+
+
+def write_private(path, data, indent=None):
+    """JSON to a file only its owner may read (the backup holds every secret)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=indent)
 
 
 def sql(base, db, tok, query):
@@ -93,6 +125,61 @@ def literal(value, algebraic_type):
     raise ValueError(f"cannot restore a column of type {json.dumps(algebraic_type)}")
 
 
+def read_table(base, db, tok, name):
+    """(schema, rows) of a table: in one answer, or in windows of its column in `PAGED`."""
+    if name not in PAGED:
+        result = sql(base, db, tok, f"SELECT * FROM {name}")[0]
+        return result["schema"], result["rows"]
+    column, lo, top = PAGED[name]
+    total = sql(base, db, tok, f"SELECT COUNT(*) AS n FROM {name}")[0]["rows"][0][0]
+    schema = sql(base, db, tok, f"SELECT * FROM {name} LIMIT 0")[0]["schema"]
+    rows, width = [], top - lo
+    while len(rows) < total and lo < top:
+        hi = min(lo + width, top)
+        limit = "" if width == 1 else f" LIMIT {PAGE + 1}"
+        got = sql(base, db, tok, f"SELECT * FROM {name} WHERE {column} >= {lo} AND {column} < {hi}{limit}")[0]["rows"]
+        if len(got) > PAGE and width > 1:
+            width //= 2
+            continue
+        rows.extend(got)
+        lo = hi
+        if len(got) < PAGE // 4:
+            width *= 2
+    return schema, rows
+
+
+def target_columns(base, db, tok, name):
+    """Column names and types of a table in the database restored into."""
+    schema = sql(base, db, tok, f"SELECT * FROM {name} LIMIT 0")[0]["schema"]
+    return column_names(schema), [e["algebraic_type"] for e in schema["elements"]]
+
+
+def zero(algebraic_type):
+    """The value a column the backup does not have gets."""
+    (kind, _), = algebraic_type.items()
+    if kind == "String":
+        return ""
+    if kind == "Bool":
+        return False
+    if kind in ("F32", "F64"):
+        return 0.0
+    if kind in ("I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64", "I128", "U128", "I256", "U256"):
+        return 0
+    raise ValueError(f"no default for a new column of type {json.dumps(algebraic_type)}")
+
+
+def converted(data, cols, types):
+    """The backup's rows in the target table's columns: new columns get zero values, removed ones
+    are dropped."""
+    have = column_names(data["schema"])
+    index = {c: i for i, c in enumerate(have)}
+    rows = [[row[index[c]] if c in index else zero(t) for c, t in zip(cols, types)] for row in data["rows"]]
+    elements = [{"name": {"some": c}, "algebraic_type": t} for c, t in zip(cols, types)]
+    added = [c for c in cols if c not in index]
+    dropped = [c for c in have if c not in cols]
+    return {"schema": {"elements": elements}, "rows": rows}, added, dropped
+
+
 def backup(a, base, tok):
     os.makedirs(a.dir, exist_ok=True)
     if os.listdir(a.dir) and not a.force:
@@ -106,13 +193,11 @@ def backup(a, base, tok):
     for name in tables(base, a.database, tok):
         if name in SKIP:
             continue
-        result = sql(base, a.database, tok, f"SELECT * FROM {name}")[0]
-        with open(os.path.join(a.dir, f"{name}.json"), "w", encoding="utf-8") as f:
-            json.dump({"schema": result["schema"], "rows": result["rows"]}, f)
-        manifest["tables"][name] = len(result["rows"])
-        print(f"backup   {name}: {len(result['rows'])} rows")
-    with open(os.path.join(a.dir, "manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
+        schema, rows = read_table(base, a.database, tok, name)
+        write_private(os.path.join(a.dir, f"{name}.json"), {"schema": schema, "rows": rows})
+        manifest["tables"][name] = len(rows)
+        print(f"backup   {name}: {len(rows)} rows")
+    write_private(os.path.join(a.dir, "manifest.json"), manifest, indent=2)
     print(f"done     {sum(manifest['tables'].values())} rows of {len(manifest['tables'])} tables in {a.dir} "
           f"(module {manifest['module_version'] or 'unknown'})")
 
@@ -157,6 +242,13 @@ def reindex(base, db, tok):
     sys.exit("admin_reindex_ledger did not finish: the worker continues it")
 
 
+def mark_done(a, progress, path, name):
+    if a.dry_run:
+        return
+    progress["done"].append(name)
+    write_private(path, progress)
+
+
 def restore(a, base, tok):
     with open(os.path.join(a.dir, "manifest.json"), encoding="utf-8") as f:
         manifest = json.load(f)
@@ -164,17 +256,30 @@ def restore(a, base, tok):
         sys.exit(f"backup format {manifest.get('format_version')} is not {FORMAT_VERSION}: restore it with the purser "
                  "version that made it")
     present = set(tables(base, a.database, tok))
-    missing = [t for t in manifest["tables"] if t not in present]
-    if missing:
-        sys.exit(f"the database has no table {', '.join(missing)}: is it the same purser version as the backup?")
+    gone = [t for t in manifest["tables"] if t not in present]
+    if gone:
+        print(f"skipped  tables the new module no longer has: {', '.join(gone)}")
     run = (lambda q: print(q[:200] + ("..." if len(q) > 200 else ""))) if a.dry_run else (lambda q: sql(base, a.database, tok, q))
+    progress_path = os.path.join(a.dir, PROGRESS)
+    progress = {"done": [], "channel_ids": {}}
+    if a.resume and os.path.exists(progress_path):
+        with open(progress_path, encoding="utf-8") as f:
+            progress = json.load(f)
+    elif os.path.exists(progress_path) and not a.dry_run:
+        os.remove(progress_path)
 
     # Alert channels first: they get new ids, and their secrets' scopes follow.
-    order = sorted(manifest["tables"], key=lambda t: (t != "alert_channel", t == "credential", t))
-    channel_ids = {}
+    order = sorted((t for t in manifest["tables"] if t in present), key=lambda t: (t != "alert_channel", t == "credential", t))
+    channel_ids = progress["channel_ids"]
     for name in order:
+        if name in progress["done"]:
+            print(f"restore  {name}: already restored")
+            continue
         with open(os.path.join(a.dir, f"{name}.json"), encoding="utf-8") as f:
             data = json.load(f)
+        data, added, dropped = converted(data, *target_columns(base, a.database, tok, name))
+        if added or dropped:
+            print(f"convert  {name}: new columns {added or '-'}, removed {dropped or '-'}")
         run(f"DELETE FROM {name}")
         if name == "alert_channel":
             cols = column_names(data["schema"])
@@ -188,6 +293,7 @@ def restore(a, base, tok):
                     got = sql(base, a.database, tok, f"SELECT id FROM alert_channel WHERE name = {sql_str(row[cols.index('name')])}")[0]["rows"]
                     channel_ids[f"alert-{old}"] = f"alert-{got[0][0]}"
             print(f"restore  {name}: {len(data['rows'])} rows")
+            mark_done(a, progress, progress_path, name)
             continue
 
         def rename_scope(cols, row):
@@ -202,8 +308,10 @@ def restore(a, base, tok):
         for stmt in insert_statements(name, data, rename_scope):
             run(stmt)
         print(f"restore  {name}: {len(data['rows'])} rows")
+        mark_done(a, progress, progress_path, name)
     if not a.dry_run:
         reindex(base, a.database, tok)
+        os.remove(progress_path)
     print("done     the worker continues unfinished purchases within a minute (admin page: Overview)")
 
 
@@ -215,6 +323,7 @@ def main():
     p.add_argument("--dir", required=True)
     p.add_argument("--force", action="store_true", help="backup: write into a non-empty --dir")
     p.add_argument("--dry-run", action="store_true", help="restore: print the statements instead of running them")
+    p.add_argument("--resume", action="store_true", help="restore: go on after the tables a stopped restore finished")
     a = p.parse_args()
     base = a.server if a.server.startswith("http") else server_url(a.server)
     try:

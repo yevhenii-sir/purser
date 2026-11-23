@@ -388,6 +388,7 @@ pub fn send_integration_event(ctx: &mut ProcedureContext, row: IntegrationOutbox
             let detail = format!("{} event of {} not sent to {}: {e}", event.kind, row.purchase_id, row.kind);
             ctx.tx(|tx| {
                 record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &e, last: true });
+                bury(tx, &row, &e);
                 crate::alerts::integration_failed(tx, &row.app_id, &detail)
             });
             return;
@@ -407,6 +408,88 @@ pub fn send_integration_event(ctx: &mut ProcedureContext, row: IntegrationOutbox
     retry(ctx, &row, &label, status, detail);
 }
 
+/// An event an integration did not take (it refused it, or it kept failing): kept so an admin can
+/// send it again once the cause is fixed (`admin_replay_integration_events`).
+#[spacetimedb::table(accessor = integration_dead, cache_policy = required_on_disk)]
+pub struct IntegrationDead {
+    #[primary_key]
+    #[auto_inc]
+    pub id: u64,
+    pub kind: String,
+    #[index(btree)]
+    pub app_id: String,
+    pub purchase_id: String,
+    pub event_json: String,
+    pub last_error: String,
+    #[index(btree)]
+    pub failed_at_micros: i64,
+}
+
+/// Events kept per build and kind at most (the oldest go first).
+const DEAD_KEEP: usize = 1000;
+/// Days a dropped event is kept for a replay.
+const DEAD_KEEP_DAYS: i64 = 30;
+
+fn bury(tx: &ReducerContext, row: &IntegrationOutbox, error: &str) {
+    tx.db.integration_dead().insert(IntegrationDead {
+        id: 0,
+        kind: row.kind.clone(),
+        app_id: row.app_id.clone(),
+        purchase_id: row.purchase_id.clone(),
+        event_json: row.event_json.clone(),
+        last_error: error.chars().take(500).collect(),
+        failed_at_micros: tx.timestamp.to_micros_since_unix_epoch(),
+    });
+    let mine: Vec<(i64, u64)> = tx
+        .db
+        .integration_dead()
+        .app_id()
+        .filter(row.app_id.as_str())
+        .filter(|d| d.kind == row.kind)
+        .map(|d| (d.failed_at_micros, d.id))
+        .collect();
+    if mine.len() > DEAD_KEEP {
+        let over = mine.len() - DEAD_KEEP;
+        let mut mine = mine;
+        mine.sort_unstable();
+        for (_, id) in mine.into_iter().take(over) {
+            tx.db.integration_dead().id().delete(id);
+        }
+    }
+}
+
+/// Worker: drops events kept longer than `DEAD_KEEP_DAYS` (a batch per run).
+pub fn prune_dead(tx: &ReducerContext) {
+    let before = tx.timestamp.to_micros_since_unix_epoch() - DEAD_KEEP_DAYS * 86_400_000_000;
+    let old: Vec<u64> = tx.db.integration_dead().failed_at_micros().filter(..before).take(500).map(|d| d.id).collect();
+    for id in old {
+        tx.db.integration_dead().id().delete(id);
+    }
+}
+
+/// Sends the dropped events of a build's integration again (after fixing its settings or key).
+/// `kind` empty: every integration of the build. Returns how many were queued.
+#[spacetimedb::reducer]
+pub fn admin_replay_integration_events(ctx: &ReducerContext, app_id: String, kind: String) -> Result<(), String> {
+    let who = crate::access::require_app(ctx, purser_core::roles::Cap::Configure, &app_id)?;
+    let rows: Vec<IntegrationDead> =
+        ctx.db.integration_dead().app_id().filter(app_id.as_str()).filter(|d| kind.is_empty() || d.kind == kind).collect();
+    crate::access::audit(ctx, &who, "admin_replay_integration_events", &app_id, &format!("{} {} events", kind, rows.len()));
+    for d in rows {
+        ctx.db.integration_dead().id().delete(d.id);
+        ctx.db.integration_outbox().insert(IntegrationOutbox {
+            id: 0,
+            kind: d.kind,
+            app_id: d.app_id,
+            purchase_id: d.purchase_id,
+            event_json: d.event_json,
+            attempts: 0,
+            scheduled_at: ScheduleAt::Time(ctx.timestamp),
+        });
+    }
+    Ok(())
+}
+
 /// Logs a failed delivery and queues the next attempt when the failure is transient.
 fn retry(ctx: &mut ProcedureContext, row: &IntegrationOutbox, label: &str, status: u16, detail: String) {
     let attempts = row.attempts + 1;
@@ -415,6 +498,7 @@ fn retry(ctx: &mut ProcedureContext, row: &IntegrationOutbox, label: &str, statu
         let text = format!("{label}: dropped after {attempts} attempt(s): {detail}");
         ctx.tx(|tx| {
             record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &detail, last: true });
+            bury(tx, row, &detail);
             crate::alerts::integration_failed(tx, &row.app_id, &text)
         });
         return;

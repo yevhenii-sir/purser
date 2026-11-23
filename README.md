@@ -97,6 +97,7 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | [docs/mcp.md](docs/mcp.md) | MCP server: ask Claude about revenue, players, purchases and the setup (`server/mcp_server.py`) |
 | [docs/migrating-from-adapty.md](docs/migrating-from-adapty.md) | Running next to Adapty, moving the ledger between servers |
 | [docs/migrating-from-revenuecat.md](docs/migrating-from-revenuecat.md) | Importing RevenueCat's transactions export, switching clients |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Every error code, and what to do |
 | [server/README.md](server/README.md) | Server reference: tables, secrets, HTTP API, admin calls, `seed.py` |
 | [unity/com.yevhenii.purser/README.md](unity/com.yevhenii.purser/README.md) | Unity package |
 

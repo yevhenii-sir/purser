@@ -882,6 +882,7 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
         crate::access::prune_audit(tx);
         crate::retention::daily(tx);
         crate::client_guard::prune(tx);
+        crate::integrations::prune_dead(tx);
         (picked, crate::revenue::upkeep(tx))
     });
     let budget = Budget::new(ctx, crate::ctx::WORKER_BUDGET_SECS);

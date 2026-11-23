@@ -69,6 +69,7 @@ nav:
   - Self-hosting: self-hosting.md
   - Moving servers and from Adapty: migrating-from-adapty.md
   - Migrating from RevenueCat: migrating-from-revenuecat.md
+  - Troubleshooting: troubleshooting.md
   - MCP server: mcp.md
   - API reference: api.md
   - Server reference: https://github.com/yevhenii-sir/purser/blob/main/server/README.md

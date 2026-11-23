@@ -12,6 +12,12 @@
 
 - `server/import_revenuecat.py`: imports RevenueCat's transactions export (Scheduled Data Exports, CSV) into the ledger as history (docs/migrating-from-revenuecat.md). `admin_import_purchases` takes `family_shared`. CI runs the scripts' unit tests (`server/tests`).
 
+- Integration events an integration refused or kept failing are kept for 30 days (`integration_dead`) and sent again with `admin_replay_integration_events`.
+- `/healthz` reports the backlog: `pending_purchases`, `stuck_purchases`, `queued_integration_events`.
+- `backup.py`: large tables are read in windows (no single `/sql` answer holds the ledger), the files are readable by their owner only, a restore fills columns a newer module added and drops removed ones, and `--resume` continues a stopped restore.
+- CI runs `tools/e2e.py` against a real SpacetimeDB 2.16.1 (routes over HTTP, the admin page's gzip and ETag, server keys, backup → `--delete-data` publish → restore); a weekly `cargo audit` / `npm audit` workflow and Dependabot (npm, GitHub Actions; Rust security updates only).
+- docs/troubleshooting.md: every error code and what to do.
+
 ### Fixed
 
 - The ledger worker no longer starves builds: it picked its batch from the 2000 oldest due rows, so a build with thousands of rows that keep failing took every run. Builds now take turns (at most 5 rows of a build, 25 in a run), read from an in-memory queue (`pending_purchase`), and an idle run reads no ledger row.
