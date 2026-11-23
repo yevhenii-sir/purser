@@ -28,7 +28,7 @@ namespace Purser
         public async Task<PurchaseResult> PurchaseWithPromotionalOfferAsync(string productId, string offerId, Paywall paywall,
             CancellationToken ct = default)
         {
-            if (!IsInitialized || m_Disposed)
+            if (!IsInitialized || m_Context.IsDisposed)
                 return new PurchaseResult(PurchaseStatus.NotInitialized, productId, message: "billing is not initialized");
             if (m_IsEditor && Platform != BillingPlatform.Apple)
             {
@@ -61,7 +61,7 @@ namespace Purser
             try
             {
                 var (offer, error) = await SignOfferAsync(storeId, offerId, user, ct);
-                if (offer == null || m_Disposed || SyncUser() != user)
+                if (offer == null || m_Context.IsDisposed || SyncUser() != user)
                 {
                     m_Waiters.Remove(storeId);
                     return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId,
@@ -69,13 +69,13 @@ namespace Purser
                 }
                 BindAccount();
                 // The offer id goes to /verify (revenue by offer), the paywall to the A/B test results.
-                SetContext(storeId, paywall, offerId);
+                m_Orders.SetPurchaseContext(storeId, paywall, offerId);
                 offerStore.PurchaseWithPromotionalOffer(storeId, offer);
             }
             catch (Exception e)
             {
                 m_Waiters.Remove(storeId);
-                m_PurchaseContext.Remove(storeId);
+                m_Orders.ClearPurchaseContext(storeId);
                 if (e is OperationCanceledException)
                     throw;
                 return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: e.Message);

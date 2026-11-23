@@ -1,0 +1,191 @@
+using System;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Purser
+{
+    // Purchases: starting them in the store and reporting their results to the game. The orders the store delivers
+    // are verified by OrderProcessor, which reports through IOrderProcessorHost.
+    public sealed partial class BillingService : IOrderProcessorHost
+    {
+        /// <inheritdoc/>
+        public StoreProduct GetProduct(string productId) =>
+            m_Products.FirstOrDefault(p => p.Id == productId) ?? m_Products.FirstOrDefault(p => p.StoreId == productId);
+
+        /// <inheritdoc/>
+        public Task<PurchaseResult> PurchaseAsync(string productId, CancellationToken ct = default) =>
+            PurchaseCoreAsync(productId, null, ct);
+
+        /// <inheritdoc/>
+        public Task<PurchaseResult> PurchaseAsync(string productId, Paywall paywall, CancellationToken ct = default) =>
+            PurchaseCoreAsync(productId, new PurchaseOptions { Paywall = paywall }, ct);
+
+        /// <inheritdoc/>
+        public Task<PurchaseResult> PurchaseAsync(string productId, PurchaseOptions options, CancellationToken ct = default) =>
+            PurchaseCoreAsync(productId, options, ct);
+
+        private async Task<PurchaseResult> PurchaseCoreAsync(string productId, PurchaseOptions options, CancellationToken ct)
+        {
+            if (!IsInitialized || m_Context.IsDisposed)
+                return new PurchaseResult(PurchaseStatus.NotInitialized, productId, message: "billing is not initialized");
+
+            var config = m_Config.FindById(productId) ?? m_Config.FindByStoreId(productId);
+            if (config == null)
+                return new PurchaseResult(PurchaseStatus.Failed, productId, message: "unknown product");
+            var storeId = config.StoreId(m_Store.Store);
+            if (SyncUser() == null)
+                return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: "user id is not set");
+            if (m_Waiters.ContainsKey(storeId))
+                return new PurchaseResult(PurchaseStatus.AlreadyInProgress, config.id, storeId);
+
+            string replacedStoreId = null;
+            if (!string.IsNullOrEmpty(options?.ReplacesProductId))
+            {
+                var replaced = m_Config.FindById(options.ReplacesProductId) ?? m_Config.FindByStoreId(options.ReplacesProductId);
+                string problem = null;
+                if (replaced == null)
+                    problem = $"unknown product to replace: {options.ReplacesProductId}";
+                else if (config.type != BillingProductType.Subscription || replaced.type != BillingProductType.Subscription)
+                    problem = "only a subscription can replace a subscription";
+                else if (replaced.StoreId(m_Store.Store) == storeId)
+                    problem = "the subscription cannot replace itself";
+                else if (!(m_Store is ISubscriptionChangeStore))
+                    problem = $"the {m_Store.Store} store adapter does not change subscriptions";
+                if (problem != null)
+                    return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: problem);
+                replacedStoreId = replaced.StoreId(m_Store.Store);
+            }
+
+            BindAccount();
+            var waiter = new TaskCompletionSource<PurchaseResult>();
+            m_Waiters[storeId] = waiter;
+            m_Orders.SetPurchaseContext(storeId, options?.Paywall, options?.OfferId);
+            try
+            {
+                if (m_Store is ICheckoutStoreAdapter checkout)
+                    checkout.PrepareCheckout(new CheckoutContext { UserId = m_Context.User, Attribution = await m_Context.AttributionAsync() });
+                if (m_Context.IsDisposed)
+                    return new PurchaseResult(PurchaseStatus.NotInitialized, config.id, storeId, message: "billing was disposed");
+                if (replacedStoreId != null)
+                    ((ISubscriptionChangeStore)m_Store).PurchaseReplacing(storeId, replacedStoreId, options.ReplacementMode);
+                else
+                    m_Store.Purchase(storeId);
+            }
+            catch (Exception e)
+            {
+                m_Waiters.Remove(storeId);
+                m_Orders.ClearPurchaseContext(storeId);
+                return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: e.Message);
+            }
+
+            return await AwaitResultAsync(storeId, waiter, ct);
+        }
+
+        /// <summary>Waits for the result of the store purchase. Cancelling <paramref name="ct"/> stops waiting only: the
+        /// purchase goes on in the store and keeps its paywall and offer for the server.</summary>
+        private async Task<PurchaseResult> AwaitResultAsync(string storeId, TaskCompletionSource<PurchaseResult> waiter,
+            CancellationToken ct)
+        {
+            using (ct.Register(() => waiter.TrySetCanceled()))
+            {
+                try
+                {
+                    return await waiter.Task;
+                }
+                finally
+                {
+                    if (m_Waiters.TryGetValue(storeId, out var current) && current == waiter)
+                        m_Waiters.Remove(storeId);
+                }
+            }
+        }
+
+        private void OnOrderDeferred(StoreOrder order)
+        {
+            var config = m_Config.FindByStoreId(order.StoreProductId);
+            Report(new PurchaseResult(PurchaseStatus.PendingPayment, config?.id ?? order.StoreProductId,
+                order.StoreProductId, order.TransactionId, "waiting for approval"));
+        }
+
+        private void OnSubscriptionChangeDeferred(string storeProductId)
+        {
+            if (m_Context.IsDisposed)
+                return;
+            var config = m_Config.FindByStoreId(storeProductId);
+            m_Orders.ClearPurchaseContext(storeProductId);
+            Report(new PurchaseResult(PurchaseStatus.PendingPayment, config?.id ?? storeProductId, storeProductId,
+                message: "the subscription change takes effect at the next renewal"));
+            m_Refresher.RefreshInBackground();
+        }
+
+        private void OnStorePurchaseFailed(StorePurchaseFailure failure)
+        {
+            var status = failure.UserCancelled ? PurchaseStatus.Cancelled : PurchaseStatus.Failed;
+            if (string.IsNullOrEmpty(failure.StoreProductId))
+            {
+                // The store did not say which purchase failed: fail every open one rather than leave them waiting.
+                if (m_Waiters.Count == 0)
+                    Report(new PurchaseResult(status, null, null, message: failure.Reason));
+                foreach (var open in m_Waiters.Keys.ToList())
+                    Report(new PurchaseResult(status, m_Config.FindByStoreId(open)?.id ?? open, open, message: failure.Reason));
+                return;
+            }
+            var storeId = failure.StoreProductId;
+            Report(new PurchaseResult(status, m_Config.FindByStoreId(storeId)?.id ?? storeId, storeId, message: failure.Reason));
+        }
+
+        /// <summary>Completes the purchase's waiter and raises its event. <see cref="ReportOutcome.HandlerFailed"/> when
+        /// a game handler threw (logged, never passed on to the store callbacks).</summary>
+        private ReportOutcome Report(PurchaseResult result)
+        {
+            var received = false;
+            if (!string.IsNullOrEmpty(result.StoreProductId))
+            {
+                if (m_Waiters.TryGetValue(result.StoreProductId, out var waiter))
+                {
+                    m_Waiters.Remove(result.StoreProductId);
+                    received = waiter.TrySetResult(result);
+                }
+                // The purchase ended: its paywall and offer are not sent with later orders of the product. A pending
+                // one keeps them for the order the store delivers later.
+                if (result.Status != PurchaseStatus.PendingPayment && result.Status != PurchaseStatus.PendingVerification)
+                    m_Orders.ClearPurchaseContext(result.StoreProductId);
+            }
+
+            m_Log.Info("Purchase " + result);
+            Action<PurchaseResult> handlers;
+            string name;
+            switch (result.Status)
+            {
+                case PurchaseStatus.Success:
+                case PurchaseStatus.PendingDelivery:
+                    (handlers, name) = (PurchaseSucceeded, nameof(PurchaseSucceeded));
+                    break;
+                case PurchaseStatus.PendingPayment:
+                case PurchaseStatus.PendingVerification:
+                    (handlers, name) = (PurchasePending, nameof(PurchasePending));
+                    break;
+                default:
+                    (handlers, name) = (PurchaseFailed, nameof(PurchaseFailed));
+                    break;
+            }
+            try
+            {
+                handlers?.Invoke(result);
+                return received || handlers != null ? ReportOutcome.Received : ReportOutcome.NoReceiver;
+            }
+            catch (Exception e)
+            {
+                m_Log.Error($"{name} handler threw for {result}: {e}");
+                return ReportOutcome.HandlerFailed;
+            }
+        }
+
+        // ---- IOrderProcessorHost (its Products is the public property) ----
+
+        string IOrderProcessorHost.SyncUser() => SyncUser();
+
+        ReportOutcome IOrderProcessorHost.Report(PurchaseResult result) => Report(result);
+    }
+}
