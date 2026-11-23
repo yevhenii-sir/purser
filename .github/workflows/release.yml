@@ -35,7 +35,7 @@ jobs:
           mkdir dist
           cp server/target/wasm32-unknown-unknown/release/purser.wasm dist/
           (cd dist && sha256sum purser.wasm > purser.wasm.sha256)
-          (cd server && zip -qr ../dist/seed.example.zip seed.example seed.py stdb.py backup.py migrate.py setup_google.py mcp_server.py spacetime.example.json)
+          (cd server && zip -qr ../dist/seed.example.zip seed.example seed.py stdb.py backup.py migrate.py setup_google.py mcp_server.py import_revenuecat.py spacetime.example.json)
       - uses: actions/upload-artifact@v4
         with:
           name: release-assets

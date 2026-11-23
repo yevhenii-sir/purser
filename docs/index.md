@@ -58,3 +58,4 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | [API reference](api.md) | The public HTTP API (OpenAPI 3.1) |
 | [MCP server](mcp.md) | Ask Claude (or any MCP client) about revenue, players, purchases and the setup |
 | [Migrating from Adapty](migrating-from-adapty.md) | Running next to Adapty, moving the ledger |
+| [Migrating from RevenueCat](migrating-from-revenuecat.md) | Importing RevenueCat's history, switching clients |

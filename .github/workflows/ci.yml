@@ -98,6 +98,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m py_compile server/*.py tools/*.py
+      - run: python -m unittest discover -s server/tests
       - name: No personal infrastructure in the repository
         env:
           PRIVATE_NAMES_RE: ${{ vars.PRIVATE_NAMES_RE }}

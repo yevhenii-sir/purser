@@ -10,6 +10,8 @@
 
 - Server keys for the game's backend: `/server/entitlements` (read a player's customer info), `/server/grant` (give a product without a store purchase, idempotent by `transaction_id`) and `/server/revoke`, with `Authorization: Bearer psk_…`. Keys belong to an app, have scopes and their own rate limit; the server keeps only their SHA-256; the admin page makes and revokes them (Delivery tab), and grants and revokes are audited as `server-key:<id>`.
 
+- `server/import_revenuecat.py`: imports RevenueCat's transactions export (Scheduled Data Exports, CSV) into the ledger as history (docs/migrating-from-revenuecat.md). `admin_import_purchases` takes `family_shared`. CI runs the scripts' unit tests (`server/tests`).
+
 ### Fixed
 
 - The ledger worker no longer starves builds: it picked its batch from the 2000 oldest due rows, so a build with thousands of rows that keep failing took every run. Builds now take turns (at most 5 rows of a build, 25 in a run), read from an in-memory queue (`pending_purchase`), and an idle run reads no ledger row.

@@ -999,6 +999,8 @@ struct PurchaseImport {
     #[serde(default)]
     offer_id: String,
     #[serde(default)]
+    family_shared: bool,
+    #[serde(default)]
     paywall_placement: String,
     #[serde(default)]
     paywall_variant_id: String,
@@ -1104,7 +1106,7 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             offer_id: r.offer_id,
             offer_type: String::new(),
             paused_until_ms: 0,
-            family_shared: false,
+            family_shared: r.family_shared,
             paywall_placement: r.paywall_placement,
             paywall_variant_id: r.paywall_variant_id,
             paywall_test_id: r.paywall_test_id,
