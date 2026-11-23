@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Integrations: Amplitude (HTTP V2 API, `amplitude_api_key`), Mixpanel (Import API, service account `mixpanel_service_account`) and the Meta Conversions API for app events (`meta_access_token`). Amplitude and Mixpanel get `purser_<kind>` events with signed revenue for the billing user id on every platform; Meta gets `Purchase`, `Subscribe` and `StartTrial` from mobile builds, matched by `meta_anon_id` or the advertising id. New attribution keys `amplitude_device_id` and `meta_anon_id`. Publish in place: no `--delete-data`.
+
 ## 0.8.1 - 2026-11-20
 
 ### Changed

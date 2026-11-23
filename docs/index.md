@@ -10,7 +10,7 @@ flowchart LR
     purser["<b>Purser</b><br/>SpacetimeDB module<br/>ledger · retries<br/>revenue · admin panel"]
     stores["<b>Stores</b><br/>Google Play · App Store<br/>Amazon · Steam<br/>Stripe · Xsolla"]
     game["<b>Your game</b><br/>SpacetimeDB database<br/>or backend"]
-    tools["<b>Analytics and attribution</b><br/>GA4 · AppsFlyer · Adjust<br/>Tenjin · AppMetrica<br/>webhook · Cloud Storage"]
+    tools["<b>Analytics and attribution</b><br/>GA4 · AppsFlyer · Adjust<br/>Tenjin · AppMetrica<br/>Amplitude · Mixpanel · Meta<br/>webhook · Cloud Storage"]
 
     client -->|"POST /verify, /restore"| purser
     purser <-->|"verify, consume, acknowledge"| stores
@@ -26,7 +26,7 @@ flowchart LR
 - **Admin panel** served by the module: an *Add an app* wizard, a setup check with fix hints, products with Google Play and App Store import, players, purchases, integrations, keys, logs.
 - **Revenue** ([analytics](analytics.md)): net revenue, refunds, subscriptions and MRR in USD (ECB rates), by app, product, country and currency.
 - **[Paywalls and A/B tests](paywalls.md)** as remote config, and **[alerts](alerts.md)** to Telegram, Slack, Discord or a webhook when deliveries fail or keys are rejected.
-- **Integrations**: GA4, AppsFlyer, Adjust, Tenjin and AppMetrica server-to-server events, a signed JSON webhook, raw event export to Google Cloud Storage (BigQuery).
+- **Integrations**: GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Mixpanel and Meta Conversions API server-to-server events, a signed JSON webhook, raw event export to Google Cloud Storage (BigQuery).
 - **Unity package** on Unity IAP 5 with VContainer / Zenject adapters and Apple Ads attribution.
 - **Configuration as code** (`server/seed.py`: upload, export, a setup wizard) and an **[MCP server](mcp.md)** to ask Claude about revenue, players and the setup.
 
@@ -44,7 +44,7 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | Client SDKs | Unity; any engine over HTTP + JSON | Native iOS / Android, cross-platform frameworks, Unity and more |
 | Reward delivery | Reducer call into your SpacetimeDB game, signed webhook, or on the client | Webhooks, client SDK |
 | Paywalls, A/B tests, cohorts | Remote-config paywalls and A/B tests (no visual builder), payer cohorts | Visual paywall builder, A/B tests, cohorts |
-| Integrations | GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, webhook, Cloud Storage | Many analytics, attribution and marketing integrations |
+| Integrations | GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Mixpanel, Meta, webhook, Cloud Storage | Many analytics, attribution and marketing integrations |
 | Operations | You run and upgrade it | The vendor runs it |
 
 ## Where to go next

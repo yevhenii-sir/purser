@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `AttributionKeys.AmplitudeDeviceId`, `AttributionKeys.MetaAnonId` for the server's Amplitude and Meta Conversions API integrations.
+
 ## [0.8.1] - 2026-11-20
 
 No package changes: the version follows the server (SpacetimeDB 2.16.1, table cache policies), which works with this package as before.
