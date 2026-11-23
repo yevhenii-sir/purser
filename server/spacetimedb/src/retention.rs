@@ -9,8 +9,8 @@ use crate::integrations::user_attribution;
 use crate::paywalls::paywall_daily;
 use crate::players::player_profile;
 use crate::settings::{self, key};
-use crate::{access_token_cache, game_app, purchase};
-use purser_core::model::{kind, status};
+use crate::{access_token_cache, game_app};
+use purser_core::model::kind;
 use spacetimedb::{ReducerContext, Table};
 
 pub const DEFAULT_DAYS: i64 = 730;
@@ -36,11 +36,9 @@ fn days(tx: &ReducerContext) -> i64 {
 
 /// The player owns an active subscription of the build (its renewals still need the ids).
 fn subscribed(tx: &ReducerContext, app_id: &str, user_id: &str, now_ms: i64) -> bool {
-    tx.db
-        .purchase()
-        .user_id()
-        .filter(user_id)
-        .any(|p| p.app_id == app_id && p.kind == kind::SUBSCRIPTION && status::is_owned(&p.status) && p.expires_at_ms > now_ms)
+    crate::ledger_index::owned_by(tx, user_id)
+        .iter()
+        .any(|p| p.app_id == app_id && p.kind == kind::SUBSCRIPTION && p.expires_at_ms > now_ms)
 }
 
 /// One batch of every table (also called by tests).

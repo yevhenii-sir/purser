@@ -120,6 +120,14 @@ pub fn limits(route: &str) -> (Option<Limit>, Option<Limit>) {
     }
 }
 
+/// How many players' worth of requests the bucket of requests without a player id allows.
+pub const ANONYMOUS_PLAYERS: u32 = 50;
+
+/// The limit of a build's requests without a player id: [`ANONYMOUS_PLAYERS`] players' worth.
+pub fn anonymous(per_player: Limit) -> Limit {
+    Limit { per_minute: per_player.per_minute.saturating_mul(ANONYMOUS_PLAYERS), burst: per_player.burst.saturating_mul(ANONYMOUS_PLAYERS) }
+}
+
 /// One request against a bucket that had `tokens_milli` (thousandths of a request) at
 /// `updated_micros`. Returns the tokens left (to store) or, when empty, the seconds to wait.
 pub fn take(limit: Limit, stored: Option<(i64, i64)>, now_micros: i64) -> Result<i64, u64> {

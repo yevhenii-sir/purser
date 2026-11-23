@@ -8,6 +8,7 @@ use crate::ctx::{tx_now_micros, Ctx};
 use crate::health::app_check;
 use crate::integrations::{integration, integration_outbox};
 use crate::ledger::purchase_count;
+use crate::ledger_index::pending_purchase;
 use crate::{game_app, product, purchase, Purchase};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -100,9 +101,11 @@ pub fn overview(tx: &spacetimedb::ReducerContext, only: Option<&std::collections
     let products: usize = builds.iter().map(|a| tx.db.product().app_id().filter(a.app_id.as_str()).count()).sum();
     let mut pending_total = 0u64;
     let mut pending: Vec<Value> = Vec::new();
-    for p in tx.db.purchase().next_attempt_at_micros().filter(1..=i64::MAX).filter(|p| visible(&p.app_id)) {
+    // The worker's queue (in memory); only the listed rows are read from the ledger.
+    for q in tx.db.pending_purchase().next_attempt_at_micros().filter(1..=i64::MAX).filter(|q| visible(&q.app_id)) {
         pending_total += 1;
         if pending.len() < OVERVIEW_PENDING_ROWS {
+            let Some(p) = tx.db.purchase().id().find(&q.purchase_id) else { continue };
             pending.push(json!({
                 "id": p.id, "app_id": p.app_id, "product_id": p.product_id, "user_id": p.user_id,
                 "status": p.status, "attempts": p.attempts, "next_attempt_at_micros": p.next_attempt_at_micros,

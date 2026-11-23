@@ -29,6 +29,7 @@ mod handlers;
 mod health;
 mod integrations;
 mod ledger;
+mod ledger_index;
 mod net;
 mod offers;
 mod paywalls;
@@ -214,11 +215,9 @@ pub struct Purchase {
     #[primary_key]
     pub id: String,
     pub store: String,
-    #[index(btree)]
     pub app_id: String,
     pub product_id: String,
     pub kind: String,
-    #[index(btree)]
     pub transaction_id: String,
     #[index(btree)]
     pub original_transaction_id: String,
@@ -243,8 +242,8 @@ pub struct Purchase {
     /// integrations (renewals and repeated grants are not counted again).
     pub was_granted: bool,
     pub attempts: u32,
-    /// When the worker should continue processing; 0 = nothing to do.
-    #[index(btree)]
+    /// When the worker should continue processing; 0 = nothing to do (`ledger_index::PendingPurchase`
+    /// lists the rows with work).
     pub next_attempt_at_micros: i64,
     pub last_error: String,
     #[index(btree)]

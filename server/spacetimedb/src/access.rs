@@ -358,7 +358,12 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
         "purchase" => match column {
             "id" => rows(db.purchase().id().find(value.to_string()).into_iter()),
             "user_id" => rows(db.purchase().user_id().filter(value)),
-            "transaction_id" => rows(db.purchase().transaction_id().filter(value)),
+            // The ledger id is `{store}:{transaction_id}`: one look-up per store.
+            "transaction_id" => rows(
+                purser_core::registry::STORES
+                    .iter()
+                    .filter_map(|s| db.purchase().id().find(purser_core::model::ledger_id(s.id, value))),
+            ),
             "original_transaction_id" => rows(db.purchase().original_transaction_id().filter(value)),
             "purchase_token" => rows(db.purchase().purchase_token().filter(value)),
             _ => return Err("[ERR_BAD_QUERY] purchases are read by id, user_id, transaction_id, original_transaction_id or purchase_token".into()),

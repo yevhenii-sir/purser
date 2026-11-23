@@ -68,7 +68,10 @@ fn check_tx(tx: &TxContext, route: &str, token: &str, app_id: &str, user_id: &st
         }
     }
     let (per_player, per_build) = api::limits(route);
-    let player = if crate::handlers::valid_user_id(user_id) { user_id } else { "-" };
+    // Requests without a player id (a paywall shown before sign-in) share one bucket of the
+    // build, sized for many players.
+    let (per_player, player) =
+        if crate::handlers::valid_user_id(user_id) { (per_player, user_id) } else { (per_player.map(api::anonymous), "-") };
     let mut taken = Vec::new();
     for (limit, key) in [(per_player, format!("{route}/{}/{player}", app.app_id)), (per_build, format!("{route}/{}", app.app_id))] {
         let Some(limit) = limit else { continue };

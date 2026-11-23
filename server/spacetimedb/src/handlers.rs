@@ -23,7 +23,7 @@
 use crate::players;
 use purser_core::player::ClientInfo;
 use crate::config::{self, secret_name};
-use crate::ctx::Ctx;
+use crate::ctx::{Budget, Ctx};
 use crate::health;
 use crate::integrations;
 use crate::store_health;
@@ -445,6 +445,9 @@ struct RestoreRequest {
     client: ClientInfo,
 }
 
+/// Seconds a `/restore` call may spend starting the checks of its purchases.
+const RESTORE_BUDGET_SECS: i64 = 15;
+
 /// Verifies every purchase the store SDK reported on "Restore purchases", then returns entitlements.
 /// The build, the products and the store credential are read once for all items.
 fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, Outcome> {
@@ -479,8 +482,20 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
         return Err(Outcome::status(400, "error", format!("{} purchases are not restored from client receipts", app_store.name)));
     }
 
+    // Every item costs store and delivery calls: past the budget the rest is not started (the
+    // client restores again; purchases already recorded answer from the ledger then).
+    let budget = Budget::new(ctx, RESTORE_BUDGET_SECS);
     let mut results = Vec::new();
-    for (item, (product, environment)) in r.purchases.iter().zip(items) {
+    for (i, (item, (product, environment))) in r.purchases.iter().zip(items).enumerate() {
+        if !budget.left() {
+            results.push(json!({
+                "product_id": item.product_id,
+                "http_status": 503,
+                "status": "error",
+                "message": "not checked in this call: restore again",
+            }));
+            continue;
+        }
         let v = VerifyRequest {
             app_id: app.app_id.clone(),
             user_id: r.user_id.clone(),
@@ -491,7 +506,8 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
             app_instance_id: r.app_instance_id.clone(),
             price_micros: 0,
             currency: String::new(),
-            attribution: r.attribution.clone(),
+            // The same ids for every item: remembered with the first one.
+            attribution: if i == 0 { r.attribution.clone() } else { Default::default() },
             placement: String::new(),
             variant_id: String::new(),
             test_id: String::new(),

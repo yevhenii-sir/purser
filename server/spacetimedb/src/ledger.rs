@@ -25,8 +25,8 @@ const LEASE_MICROS: i64 = 2 * 60 * 1_000_000;
 const WORKER_BATCH: usize = 25;
 /// Rows of one build per worker run, so one build's backlog cannot hold up the others.
 const WORKER_PER_APP: usize = 5;
-/// Due rows the worker looks at (oldest first) to pick its batch.
-const WORKER_CANDIDATES: usize = 2000;
+/// Steps of a derived-table rebuild (`ledger_index`) one worker run takes.
+const REINDEX_STEPS_PER_RUN: usize = 25;
 /// Part of the worker budget the purchases may use; the rest is for re-checks and Steam.
 const PURCHASE_BUDGET_SECS: i64 = 25;
 
@@ -63,10 +63,12 @@ fn bump(tx: &ReducerContext, app_id: &str, status: &str, up: bool) {
 /// Every new ledger row goes through here (and [`save_purchase`] for changes).
 pub fn insert_purchase(tx: &ReducerContext, p: Purchase) -> Purchase {
     bump(tx, &p.app_id, &p.status, true);
+    crate::ledger_index::sync(tx, &p);
     tx.db.purchase().insert(p)
 }
 
-/// Every change of a ledger row goes through here: it keeps [`PurchaseCount`] in step.
+/// Every change of a ledger row goes through here: it keeps [`PurchaseCount`] and the derived
+/// tables of `ledger_index` in step.
 pub fn save_purchase(tx: &ReducerContext, p: Purchase) -> Purchase {
     if let Some(old) = tx.db.purchase().id().find(&p.id) {
         if old.status != p.status || old.app_id != p.app_id {
@@ -74,6 +76,7 @@ pub fn save_purchase(tx: &ReducerContext, p: Purchase) -> Purchase {
             bump(tx, &p.app_id, &p.status, true);
         }
     }
+    crate::ledger_index::sync(tx, &p);
     tx.db.purchase().id().update(p)
 }
 
@@ -810,23 +813,8 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
     }
     let (picked, upkeep): (Vec<(String, String)>, _) = ctx.tx(|tx| {
         let now = tx_now_micros(tx);
-        // Oldest first, at most `WORKER_PER_APP` rows of one build: a build whose calls keep
-        // failing cannot take the whole run.
-        let mut per_app: BTreeMap<String, usize> = BTreeMap::new();
-        let picked = tx
-            .db
-            .purchase()
-            .next_attempt_at_micros()
-            .filter(1i64..=now)
-            .take(WORKER_CANDIDATES)
-            .filter(|p| {
-                let n = per_app.entry(p.app_id.clone()).or_default();
-                *n += 1;
-                *n <= WORKER_PER_APP
-            })
-            .take(WORKER_BATCH)
-            .map(|p| (p.id, p.app_id))
-            .collect();
+        crate::ledger_index::reindex_step(tx);
+        let picked = crate::ledger_index::due(tx, now, WORKER_PER_APP, WORKER_BATCH);
         crate::settings::set(tx, crate::settings::key::WORKER_HEARTBEAT, &now.to_string());
         crate::access::prune_audit(tx);
         crate::retention::daily(tx);
@@ -857,6 +845,11 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
     });
     crate::poll::run_due(ctx, due, budget);
     crate::revenue::catch_up(ctx, &upkeep);
+    // A rebuild of the derived tables goes on while this run has time.
+    let mut steps = 0;
+    while steps < REINDEX_STEPS_PER_RUN && budget.left() && ctx.tx(|tx| crate::ledger_index::reindex_step(tx)) {
+        steps += 1;
+    }
 }
 
 /// What a user owns across all apps of the same game (see `purser_core::customer`): access
@@ -880,8 +873,8 @@ pub fn entitlements(tx: &TxContext, app: &GameApp, user_id: &str) -> Value {
             .clone()
     };
     let mut owned = Vec::new();
-    for p in tx.db.purchase().user_id().filter(user_id) {
-        if !apps.contains(&p.app_id) || !status::is_owned(&p.status) || p.kind == kind::CONSUMABLE {
+    for p in crate::ledger_index::owned_by(tx, user_id) {
+        if !apps.contains(&p.app_id) {
             continue;
         }
         let row = product(&p.app_id, &p.product_id);

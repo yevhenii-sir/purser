@@ -5973,7 +5973,7 @@ fn a_build_whose_calls_time_out_does_not_hold_up_the_others() {
     w.fake.borrow_mut().call_secs = 11;
     w.run_worker();
     let delivered = |app: &str| {
-        w.read(|tx| tx.db.purchase().app_id().filter(app).filter(|p| p.status != status::VERIFIED).count())
+        w.read(|tx| tx.db.purchase().app_created().filter((app, i64::MIN..)).filter(|p| p.status != status::VERIFIED).count())
     };
     assert_eq!(delivered(APP), 1, "after a call past the timeout the build waits for the next run");
     assert_eq!(delivered(OTHER), 1, "the other build is served in the same run");
@@ -6050,7 +6050,7 @@ fn deleting_a_build_removes_its_rows_but_keeps_the_ledger() {
     admin_call(&w, |ctx| crate::admin_delete_game_app(ctx, APP.into())).unwrap();
     let (products, check, ledger) = w.read(|tx| {
         use crate::health::app_check;
-        (tx.db.product().app_id().filter(APP).count(), tx.db.app_check().app_id().find(APP.to_string()).is_some(), tx.db.purchase().app_id().filter(APP).count())
+        (tx.db.product().app_id().filter(APP).count(), tx.db.app_check().app_id().find(APP.to_string()).is_some(), tx.db.purchase().app_created().filter((APP, i64::MIN..)).count())
     });
     assert_eq!((products, check, ledger), (0, false, 1));
 }
@@ -6966,5 +6966,180 @@ fn every_table_declares_a_cache_policy() {
         ("retry_schedule", "required_in_memory"),
     ] {
         assert_eq!(policies.get(table).map(String::as_str), Some(want), "{table}");
+    }
+}
+
+// ---------------------------------------------------------------------
+// Derived ledger tables (`ledger_index`)
+// ---------------------------------------------------------------------
+
+type DerivedRows = (Vec<(String, String, i64, u32)>, Vec<(String, String, String)>);
+
+/// What `ledger_index` should hold, computed from the ledger itself: (pending, owned).
+fn derived_from_ledger(w: &World) -> DerivedRows {
+    w.read(|tx| {
+        let mut pending: Vec<_> = tx
+            .db
+            .purchase()
+            .iter()
+            .filter(|p| p.next_attempt_at_micros > 0)
+            .map(|p| (p.id, p.app_id, p.next_attempt_at_micros, p.attempts))
+            .collect();
+        let mut owned: Vec<_> = tx
+            .db
+            .purchase()
+            .iter()
+            .filter(|p| p.kind != kind::CONSUMABLE && status::is_owned(&p.status))
+            .map(|p| (p.id, p.user_id, p.app_id))
+            .collect();
+        pending.sort();
+        owned.sort();
+        (pending, owned)
+    })
+}
+
+fn derived_tables(w: &World) -> DerivedRows {
+    use crate::ledger_index::{owned_purchase, pending_purchase};
+    w.read(|tx| {
+        let mut pending: Vec<_> =
+            tx.db.pending_purchase().iter().map(|r| (r.purchase_id, r.app_id, r.next_attempt_at_micros, r.attempts)).collect();
+        let mut owned: Vec<_> = tx.db.owned_purchase().iter().map(|r| (r.purchase_id, r.user_id, r.app_id)).collect();
+        pending.sort();
+        owned.sort();
+        (pending, owned)
+    })
+}
+
+fn google_buy(w: &World, user: &str, product_id: &str) -> Outcome {
+    let token = format!("{TOKEN}-{product_id}-{user}");
+    let purchase = json!({ "orderId": format!("GPA.{product_id}.{user}"), "purchaseState": 0, "consumptionState": 0, "acknowledgementState": 0 });
+    w.script(&token, 200, &purchase.to_string());
+    let r: VerifyRequest =
+        serde_json::from_value(json!({ "app_id": APP, "user_id": user, "product_id": product_id, "purchase_token": token })).unwrap();
+    verify(&mut w.ctx(), store::GOOGLE, &r)
+}
+
+#[test]
+fn the_derived_ledger_tables_follow_every_change_and_rebuild_to_the_same() {
+    use crate::ledger_index::{owned_purchase, pending_purchase};
+    let w = World::new();
+    w.fake.borrow_mut().game_status = 503;
+    google_buy(&w, "player-1", "gems");
+    google_buy(&w, "player-2", "no_ads");
+    keep_google_token_valid(&w, 30);
+    assert_eq!(derived_tables(&w), derived_from_ledger(&w));
+    assert_eq!(derived_tables(&w).0.len(), 2, "both wait for the delivery");
+    assert_eq!(derived_tables(&w).1.len(), 1, "the non-consumable is owned");
+
+    w.fake.borrow_mut().game_status = 200;
+    google_buy(&w, "player-3", "gems");
+    w.advance_clock(3600);
+    w.run_worker();
+    assert_eq!(derived_tables(&w), derived_from_ledger(&w));
+    assert!(derived_tables(&w).0.is_empty(), "nothing left to do");
+
+    // A revoke takes the non-consumable away.
+    w.ctx().tx(|tx| {
+        let p = tx.db.purchase().user_id().filter("player-2").next().unwrap();
+        ledger::mark_revoked_by_admin(tx, p, 0, "test");
+    });
+    assert_eq!(derived_tables(&w), derived_from_ledger(&w));
+    w.advance_clock(60);
+    w.run_worker();
+    assert_eq!(derived_tables(&w), derived_from_ledger(&w));
+    assert!(derived_tables(&w).1.is_empty());
+
+    // Rows written past the ledger functions (a restored backup): the rebuild brings both back.
+    google_buy(&w, "player-4", "no_ads");
+    w.fake.borrow_mut().game_status = 503;
+    google_buy(&w, "player-5", "gems");
+    let live = derived_tables(&w);
+    assert!(!live.0.is_empty() && !live.1.is_empty());
+    w.write(|tx| {
+        for id in tx.db.pending_purchase().iter().map(|r| r.purchase_id).collect::<Vec<_>>() {
+            tx.db.pending_purchase().purchase_id().delete(id);
+        }
+        for id in tx.db.owned_purchase().iter().map(|r| r.purchase_id).collect::<Vec<_>>() {
+            tx.db.owned_purchase().purchase_id().delete(id);
+        }
+        crate::ledger_index::start_reindex(tx);
+    });
+    // While it runs, the player's purchases are read from the ledger.
+    assert_eq!(w.entitlements("player-4")["non_consumables"], json!(["no_ads"]));
+    let mut steps = 0;
+    while w.read(crate::ledger_index::reindex_step) {
+        steps += 1;
+        assert!(steps < 10);
+    }
+    assert!(!w.read(crate::ledger_index::reindexing));
+    assert_eq!(derived_tables(&w), live);
+    assert_eq!(w.entitlements("player-4")["non_consumables"], json!(["no_ads"]));
+}
+
+#[test]
+fn a_build_with_a_huge_backlog_does_not_starve_the_others() {
+    let w = World::new();
+    w.write(|tx| {
+        let product = Product::new("com.studio.broken", "gems", kind::CONSUMABLE);
+        for i in 0..3000 {
+            let p = Purchase::new("google", &format!("old-{i:04}"), "com.studio.broken", &product, "player-1", NOW_MICROS - 1_000_000 + i);
+            ledger::insert_purchase(tx, p);
+        }
+        let product = Product::new("com.studio.other", "gems", kind::CONSUMABLE);
+        ledger::insert_purchase(tx, Purchase::new("google", "new-1", "com.studio.other", &product, "player-2", NOW_MICROS));
+    });
+    let picked = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 5, 25));
+    assert_eq!(picked.iter().filter(|(_, app)| app == "com.studio.broken").count(), 5);
+    assert!(picked.contains(&("google:new-1".to_string(), "com.studio.other".to_string())), "{picked:?}");
+    assert_eq!(picked[0].0, "google:old-0000", "oldest first within a build");
+}
+
+#[test]
+fn builds_take_turns_when_more_have_work_than_a_run_takes() {
+    let w = World::new();
+    w.write(|tx| {
+        for b in 0..30 {
+            let app = format!("com.studio.b{b:02}");
+            let product = Product::new(&app, "gems", kind::CONSUMABLE);
+            ledger::insert_purchase(tx, Purchase::new("google", &format!("t-{b}"), &app, &product, "player-1", NOW_MICROS));
+        }
+    });
+    let first = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 5, 25));
+    let second = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 5, 25));
+    assert_eq!((first.len(), second.len()), (25, 25));
+    let served: std::collections::BTreeSet<String> = first.iter().chain(&second).map(|(_, app)| app.clone()).collect();
+    assert_eq!(served.len(), 30, "the second run starts after the last build the first one reached");
+}
+
+#[test]
+fn restore_stops_checking_purchases_after_its_budget() {
+    let w = World::new();
+    let purchases: Vec<Value> = ["a", "b", "c"]
+        .iter()
+        .map(|n| {
+            let token = format!("{TOKEN}-{n}");
+            let purchase = json!({ "orderId": format!("GPA.{n}"), "purchaseState": 0, "consumptionState": 0, "acknowledgementState": 0 });
+            w.script(&token, 200, &purchase.to_string());
+            json!({ "product_id": "gems", "purchase_token": token })
+        })
+        .collect();
+    let r: RestoreRequest = serde_json::from_value(json!({ "app_id": APP, "user_id": "player-1", "purchases": purchases })).unwrap();
+    // Every call takes 8 s: the first purchase (look-up, delivery) uses the 15 s up.
+    w.fake.borrow_mut().call_secs = 8;
+    let o = restore_purchases(&mut w.ctx(), &r).unwrap_or_else(|o| o);
+    assert_eq!(o.body["results"][0]["http_status"], 200);
+    assert_eq!((o.body["results"][1]["http_status"].as_i64(), o.body["results"][2]["http_status"].as_i64()), (Some(503), Some(503)));
+    assert_eq!(w.calls(&format!("{TOKEN}-b")) + w.calls(&format!("{TOKEN}-c")), 0, "not started");
+}
+
+#[test]
+fn requests_without_a_player_id_share_a_bucket_sized_for_many_players() {
+    let w = World::new();
+    for _ in 0..30 {
+        assert!(guard(&w, "paywall", "", "player-1").is_ok());
+    }
+    assert_eq!(guard(&w, "paywall", "", "player-1").unwrap_err().http, 429, "one player's burst");
+    for i in 0..200 {
+        assert!(guard(&w, "paywall", "", "").is_ok(), "anonymous request {i}");
     }
 }

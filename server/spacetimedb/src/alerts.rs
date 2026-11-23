@@ -16,7 +16,7 @@ use crate::ctx::Ctx;
 use crate::revenue::revenue_daily;
 use crate::settings::{self, key, server_state};
 use crate::store_health;
-use crate::{credential, game_app, net, purchase, Purchase};
+use crate::{credential, game_app, net, Purchase};
 use purser_core::alerts::{self as al, channel_kind, rule, state, ChannelSettings, Message, Rules, Throttle};
 use purser_core::integrations::{is_retryable_status, HttpCall};
 use purser_core::model::{environment, store};
@@ -539,13 +539,7 @@ fn last_fx_success(tx: &ReducerContext) -> i64 {
 /// Builds with rows the worker keeps retrying: one pass over the pending rows per check, however
 /// many alerts are open.
 fn builds_with_stuck_purchases(tx: &ReducerContext, attempts: u32) -> std::collections::BTreeSet<String> {
-    tx.db
-        .purchase()
-        .next_attempt_at_micros()
-        .filter(1i64..=i64::MAX)
-        .filter(|p| p.attempts >= attempts)
-        .map(|p| p.app_id)
-        .collect()
+    crate::ledger_index::stuck_builds(tx, attempts)
 }
 
 /// Keeps the newest `LOG_KEEP` messages (called when one is added).

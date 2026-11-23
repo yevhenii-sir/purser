@@ -45,6 +45,10 @@ pub mod key {
     pub const RETENTION_DAY: &str = "retention_day";
     /// Last run of the ledger worker (micros): `/healthz` and the admin page report a stopped worker.
     pub const WORKER_HEARTBEAT: &str = "worker_heartbeat_micros";
+    /// The last build the worker's previous run reached: the next run starts after it.
+    pub const WORKER_CURSOR: &str = "worker_cursor";
+    /// A running rebuild of the ledger's derived tables (`ledger_index`); absent while idle.
+    pub const LEDGER_REINDEX: &str = "ledger_reindex";
 }
 
 /// A worker that has not run for this long has stopped (it runs every minute).

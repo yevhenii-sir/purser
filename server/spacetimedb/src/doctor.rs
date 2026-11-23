@@ -118,12 +118,9 @@ fn snapshot(ctx: &mut impl Ctx, app_id: &str) -> Result<Snapshot, String> {
             .map(|name| (name, config::secret(tx, &app, name).map(|s| (s.scope, s.value))))
             .collect();
         // Rows with pending work (few) instead of every purchase of the app.
-        let stuck = tx
-            .db
-            .purchase()
-            .next_attempt_at_micros()
-            .filter(1i64..)
-            .filter(|p| p.app_id == app.app_id && p.attempts >= STUCK_ATTEMPTS)
+        let stuck = crate::ledger_index::stuck_of(tx, &app.app_id, STUCK_ATTEMPTS)
+            .into_iter()
+            .filter_map(|id| tx.db.purchase().id().find(&id))
             .map(|p| (p.id, p.last_error))
             .collect();
         let integrations = tx.db.integration().app_id().filter(app.app_id.as_str()).collect();

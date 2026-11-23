@@ -14,6 +14,7 @@ import { useAppIndex, useApps } from "@/lib/apps"
 import { errorText, fmtMs, fmtTime, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { openPlayer } from "@/lib/player"
+import { STORES } from "@/lib/stores"
 import { catalogIdOf, KINDS, STATUSES, type GameApp, type Product, type Purchase } from "@/lib/types"
 import { downloadBlob } from "@/lib/utils"
 import { playerRoute, type PageProps } from "@/routes"
@@ -84,10 +85,13 @@ export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: s
     const status = filter.status === ANY ? "" : filter.status
     const ids = shownKey?.split(",") || []
     if (q) {
-      // Exact matches on the indexed id columns.
-      const lists = await Promise.all(
-        ["id", "user_id", "transaction_id", "original_transaction_id", "purchase_token"].map((column) => select<Purchase>({ table: "purchase", where: { column, equals: q } })),
-      )
+      // Exact matches on the indexed id columns. A store's transaction id is the ledger id without
+      // its `{store}:` prefix.
+      const ledgerIds = [q, ...STORES.map((s) => `${s.id}:${q}`)]
+      const lists = await Promise.all([
+        select<Purchase>({ table: "purchase", where: { column: "id", equals: ledgerIds } }),
+        ...["user_id", "original_transaction_id", "purchase_token"].map((column) => select<Purchase>({ table: "purchase", where: { column, equals: q } })),
+      ])
       let rows = [...new Map(lists.flat().map((r) => [r.id, r])).values()]
       if (ids.length) {
         const only = new Set(ids)

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Breaking
+
+- Publish with `--delete-data`: the `purchase` table loses its `app_id`, `transaction_id` and `next_attempt_at_micros` indexes. `admin_select` still finds a purchase by `transaction_id` (through the ledger id).
+
+### Fixed
+
+- The ledger worker no longer starves builds: it picked its batch from the 2000 oldest due rows, so a build with thousands of rows that keep failing took every run. Builds now take turns (at most 5 rows of a build, 25 in a run), read from an in-memory queue (`pending_purchase`), and an idle run reads no ledger row.
+- `/restore` stops starting store checks after 15 seconds: the purchases it did not reach answer `503` in `results` (restore again) instead of holding the request for minutes.
+- Requests without a player id (a paywall shown before sign-in) no longer share one player's rate limit: they get a bucket of the build sized for 50 players.
+- The release archive `seed.example.zip` lacked `backup.py` (which `migrate.py` imports), `setup_google.py` and `mcp_server.py`.
+
+### Changed
+
+- `/entitlements`, `/restore` and the player profile read the purchases a player owns now (`owned_purchase`, in memory) instead of everything the player ever bought.
+- Alerts, the setup check and the Overview read the worker's queue instead of every pending ledger row.
+- `admin_reindex_ledger` (owner) rebuilds the two derived tables from the ledger; `backup.py restore` runs it, and the worker continues an unfinished rebuild.
+
 ## 0.8.1 - 2026-11-20
 
 ### Changed

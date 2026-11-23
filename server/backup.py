@@ -23,7 +23,7 @@ import json
 import os
 import sys
 
-from stdb import StdbError, request, server_url, sql_str, token
+from stdb import StdbError, call_raw, request, server_url, sql_str, token
 
 FORMAT_VERSION = 1
 
@@ -37,6 +37,9 @@ SKIP = {
     "retry_schedule",
     "revenue_rebuild_tick",
     "store_create_tick",
+    # Derived from the ledger: rebuilt after a restore (`admin_reindex_ledger`).
+    "pending_purchase",
+    "owned_purchase",
 }
 # Auto-increment primary keys that nothing refers to: inserted as 0, so the new database's sequence
 # gives them ids (inserting the old ids would collide with ids it gives later).
@@ -133,6 +136,27 @@ def insert_statements(name, data, rename_scope=None):
         yield f"INSERT INTO {name} ({', '.join(cols)}) VALUES " + ", ".join(values[i:i + BATCH])
 
 
+def reindex(base, db, tok):
+    """Rebuilds the tables derived from the ledger rows (the worker's queue, the players' owned
+    purchases). The request is a `server_state` row, so the worker does it even when the caller is
+    not an admin of the restored database; an owner admin gets it done right away."""
+    sql(base, db, tok, "DELETE FROM server_state WHERE key = 'ledger_reindex'")
+    sql(base, db, tok, "INSERT INTO server_state (key, value, updated_at_micros) VALUES ('ledger_reindex', 'clear', 0)")
+    for _ in range(100000):
+        try:
+            out = call_raw(base, db, tok, "admin_reindex_ledger") or {}
+        except StdbError as e:
+            out = {"error": str(e)}
+        if out.get("error"):
+            print("reindex  queued: the worker rebuilds the queue and the owned purchases within minutes "
+                  f"({out['error']})")
+            return
+        if out.get("done"):
+            print("reindex  worker queue and owned purchases rebuilt from the ledger")
+            return
+    sys.exit("admin_reindex_ledger did not finish: the worker continues it")
+
+
 def restore(a, base, tok):
     with open(os.path.join(a.dir, "manifest.json"), encoding="utf-8") as f:
         manifest = json.load(f)
@@ -178,6 +202,8 @@ def restore(a, base, tok):
         for stmt in insert_statements(name, data, rename_scope):
             run(stmt)
         print(f"restore  {name}: {len(data['rows'])} rows")
+    if not a.dry_run:
+        reindex(base, a.database, tok)
     print("done     the worker continues unfinished purchases within a minute (admin page: Overview)")
 
 
