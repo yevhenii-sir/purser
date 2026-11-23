@@ -21,6 +21,7 @@ https://<host>/v1/database/<your-billing-db>/route
 | `POST` | `/attributes` | game client: custom attributes of the player |
 | `POST` | `/offers/apple/sign` | game client: an App Store promotional offer signature |
 | `POST` | `/checkout/steam`, `/checkout/xsolla`, `/checkout/xsolla/status`, `/checkout/stripe` | game client: web and Steam purchases the server starts |
+| `POST` | `/server/entitlements`, `/server/grant`, `/server/revoke` | game backend with a server key: read a player's purchases, give and take back products |
 | `POST` | `/notify/google?secret=…` | Google Play RTDN (Pub/Sub push) |
 | `POST` | `/notify/apple` | App Store Server Notifications V2 |
 | `POST` | `/notify/amazon?app=…`, `/notify/xsolla?app=…`, `/notify/stripe?app=…` | Amazon RTN (SNS), Xsolla and Stripe webhooks |

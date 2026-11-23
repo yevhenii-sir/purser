@@ -154,6 +154,19 @@ pub fn audit(ctx: &ReducerContext, who: &Who, action: &str, target: &str, detail
     });
 }
 
+/// An action of something that is not an admin (a server key): `actor` like `server-key:<id>`.
+pub fn audit_as(ctx: &ReducerContext, actor: &str, name: &str, action: &str, target: &str, detail: &str) {
+    ctx.db.admin_audit().insert(AdminAudit {
+        id: 0,
+        at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+        identity: actor.chars().take(100).collect(),
+        name: name.chars().take(100).collect(),
+        action: action.into(),
+        target: target.chars().take(200).collect(),
+        detail: roles::audit_summary(detail),
+    });
+}
+
 /// Drops old audit rows (worker): at most 500 per run.
 pub fn prune_audit(ctx: &ReducerContext) {
     let cutoff = ctx.timestamp.to_micros_since_unix_epoch() - AUDIT_KEEP_DAYS * 86_400_000_000;
@@ -342,6 +355,9 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
         "spacetime_host" => rows(db.spacetime_host().iter()),
         "retry_schedule" => rows(db.retry_schedule().iter()),
         "admin" => rows(db.admin().iter()),
+        // Never the key hashes.
+        "server_key" if column == "game_key" => crate::server_api::key_rows(ctx, Some(value)),
+        "server_key" => crate::server_api::key_rows(ctx, None),
         // `since`: the actions from this time (micros) on, through the `at_micros` index.
         "admin_audit" if column == "since" => {
             let since: i64 = value.parse().map_err(|_| "[ERR_BAD_QUERY] since must be micros")?;

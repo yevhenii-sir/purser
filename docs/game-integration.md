@@ -110,6 +110,22 @@ var token = new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(
 
 **Signed answers** (a response signing key). `/entitlements` and `/restore` answers carry `X-Purser-Signature`: the base64 Ed25519 signature of the exact response body. Check it with the build's public key (Delivery tab) before trusting or caching the answer, so an offline copy on the device cannot be edited.
 
+## Your backend: server keys
+
+A game with its own backend calls `/server/*` with a **server key** of the app (Delivery tab → Server keys → New key;
+the key is made in the browser and shown once, the server keeps only its SHA-256). Send it as
+`Authorization: Bearer psk_…`; it works for every build of the app and has scopes:
+
+| Route | Scope | Body | What it does |
+|---|---|---|---|
+| `POST /server/entitlements` | `read` | `{"app_id", "user_id"}` | the player's customer info, the same as `/entitlements` |
+| `POST /server/grant` | `grant` | `{"app_id", "user_id", "product_id", "transaction_id", "expires_at_ms"?, "note"?}` | gives a product without a store purchase (rewards, compensation): the game gets `grant` like for a purchase (store `manual`, no revenue). Idempotent by your `transaction_id`. |
+| `POST /server/revoke` | `revoke` | `{"app_id", "purchase_id", "reason"?}` | takes a purchase back (`revoke`, reason `admin`); not a refund |
+
+`401 ERR_SERVER_KEY`: no key, a malformed, unknown or revoked one. `403 ERR_SERVER_SCOPE`: the key lacks the scope or
+the build belongs to another app. A key has its own rate limit (`429` + `Retry-After`). Every grant and revoke is in
+the audit log under `server-key:<key_id>`. Never ship a server key in a client: use player tokens there.
+
 ## Client integration
 
 **Unity:** a ready-made package [`unity/com.yevhenii.purser`](../unity/com.yevhenii.purser/README.md) on Unity IAP 5. It handles verification, order confirmation, restore, entitlements and binding purchases to the player.

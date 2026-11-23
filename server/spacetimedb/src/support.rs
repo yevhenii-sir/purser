@@ -98,15 +98,22 @@ pub fn revoke(tx: &TxContext, purchase_id: &str, reason: &str) -> Result<Option<
         .find(purchase_id.to_string())
         .ok_or("[ERR_PURCHASE_NOT_FOUND] Unknown purchase")?;
     who.check_app(tx, &p.app_id)?;
+    revoke_row(tx, p, reason, &format!("admin {}", tx.sender()))
+}
+
+/// Revokes ledger row `p` for support (`by`: who, for the history), not as a refund.
+/// `Ok(None)`: already revoked.
+pub fn revoke_row(tx: &TxContext, p: Purchase, reason: &str, by: &str) -> Result<Option<String>, String> {
+    let purchase_id = p.id.clone();
     if !rules::admin_revoke_decision(&p.status).map_err(|e| format!("[ERR_NOT_REVOCABLE] {e}"))? {
         return Ok(None);
     }
     let note: String = reason.trim().chars().take(500).collect();
     let now = tx_now_micros(tx);
-    let details = format!("revoked by admin {}{}", tx.sender(), if note.is_empty() { String::new() } else { format!(": {note}") });
+    let details = format!("revoked by {by}{}", if note.is_empty() { String::new() } else { format!(": {note}") });
     let id = ledger::mark_revoked_by_admin(tx, p, now / 1000, &details);
-    tx.db.admin_revoke().purchase_id().delete(purchase_id.to_string());
-    tx.db.admin_revoke().insert(AdminRevoke { purchase_id: purchase_id.to_string(), by: tx.sender(), note, at_micros: now });
+    tx.db.admin_revoke().purchase_id().delete(purchase_id.clone());
+    tx.db.admin_revoke().insert(AdminRevoke { purchase_id, by: tx.sender(), note, at_micros: now });
     Ok(id)
 }
 

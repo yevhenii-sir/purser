@@ -292,6 +292,13 @@ A paywall view for A/B test results (counted per day and variant).
 `a-z0-9_` (up to 40 characters, at most 30 per player and build), values strings / numbers / booleans stored as text,
 `null` or `""` removes a key.
 
+### `POST /server/entitlements`, `/server/grant`, `/server/revoke`
+
+For the game's backend, with `Authorization: Bearer psk_…` (a server key of the app, table `server_key`: only the
+SHA-256 of the key, its scopes `read` / `grant` / `revoke` and its app). See docs/game-integration.md, "Your backend:
+server keys". `admin_add_server_key` (`{"game_key", "name", "scopes", "key_id", "key_hash"}`, Secrets capability) and
+`admin_revoke_server_key(key_id)` manage them; the admin page makes the key in the browser.
+
 `/verify`, `/restore`, `/entitlements`, `/paywall` and `/attributes` also take an optional
 `client: {device, os, app_version, sdk_version}` (the Unity package sends it). The server keeps, per player and build
 (`player_profile`), the latest device info, the attributes and when it first and last heard from the player

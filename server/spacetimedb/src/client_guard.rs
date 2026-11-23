@@ -96,6 +96,20 @@ fn check_tx(tx: &TxContext, route: &str, token: &str, app_id: &str, user_id: &st
     Ok(Passed { signing_key })
 }
 
+/// One request against bucket `key` (a key of its own, e.g. `server/<key_id>`): stored when it
+/// passes; `Err(seconds to wait)` when it is empty.
+pub fn take(tx: &TxContext, key: &str, limit: api::Limit, now: i64) -> Result<(), u64> {
+    let stored = tx.db.rate_bucket().key().find(key.to_string()).map(|b| (b.tokens_milli, b.updated_at_micros));
+    let tokens_milli = api::take(limit, stored, now)?;
+    let row = RateBucket { key: key.to_string(), tokens_milli, updated_at_micros: now };
+    if stored.is_some() {
+        tx.db.rate_bucket().key().update(row);
+    } else {
+        tx.db.rate_bucket().insert(row);
+    }
+    Ok(())
+}
+
 /// Worker: deletes buckets that are full again.
 pub fn prune(tx: &TxContext) {
     let before = tx_now_micros(tx) - IDLE_MICROS;

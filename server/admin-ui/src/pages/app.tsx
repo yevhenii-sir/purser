@@ -24,6 +24,7 @@ import { checkBuilds, replaceRtdnSecret, reportUrls } from "@/lib/checks"
 import { DELIVERY_DEFAULTS, type DeliverySettings } from "@/lib/delivery"
 import { buildLabel, PLATFORM_ICON, platformById, storeOf, STORE_SECRETS } from "@/lib/stores"
 import { tryAct, useAsync, useCopy } from "@/lib/hooks"
+import { fmtTime } from "@/lib/format"
 import type { GameApp, IntegrationHealth, Level, Report } from "@/lib/types"
 import { cn, parseJsonOr } from "@/lib/utils"
 import { AppIntegrationsTab } from "@/pages/app-integrations"
@@ -422,6 +423,7 @@ function DeliveryTab({ data, reload, go }: TabProps) {
       </Section>
       <ClientSecuritySection apps={g.apps} reload={reload} />
       <TransferPolicySection gameKey={g.key} />
+      <ServerKeysSection gameKey={g.key} />
     </>
   )
 }
@@ -576,6 +578,99 @@ function KeysTab({ data, reload }: TabProps) {
   )
 }
 
+interface ServerKeyRow { key_id: string; name: string; scopes: string; created_at_micros: number; last_used_at_micros: number }
+const SERVER_SCOPES = [
+  ["read", "Read a player's purchases (/server/entitlements)"],
+  ["grant", "Give products: rewards, compensation (/server/grant)"],
+  ["revoke", "Take purchases back (/server/revoke)"],
+] as const
+
+/** SHA-256 hex in the browser: the server only ever gets the hash of a key. */
+async function sha256Hex(text: string): Promise<string> {
+  return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))))
+}
+
+/** Keys of the app's own backend for the /server/* routes. */
+function ServerKeysSection({ gameKey }: { gameKey: string }) {
+  const canSet = useCan()("secrets")
+  const keys = useAsync(() => select<ServerKeyRow>({ table: "server_key", where: { column: "game_key", equals: gameKey } }), [gameKey])
+  const [form, setForm] = useState<{ name: string; scopes: string[] } | null>(null)
+  const [shown, setShown] = useState<string | null>(null)
+  const create = async () => {
+    if (!form) return
+    // psk_<key_id>_<secret>: the id is public (listed here), the secret is shown once.
+    const keyId = hex(randomBytes()).slice(0, 12)
+    const secret = btoa(String.fromCharCode(...randomBytes())).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+    const key = `psk_${keyId}_${secret}`
+    const input = { game_key: gameKey, name: form.name.trim() || "backend", scopes: form.scopes.join(","), key_id: keyId, key_hash: await sha256Hex(key) }
+    const ok = await tryAct(async () => { await call("admin_add_server_key", JSON.stringify(input)); return true }, "Key created")
+    if (ok) {
+      setForm(null)
+      setShown(key)
+      keys.reload()
+    }
+  }
+  const revoke = async (k: ServerKeyRow) => {
+    if (!confirm(`Revoke key ${k.key_id} (${k.name})? Requests with it are refused at once.`)) return
+    if (await tryAct(() => call("admin_revoke_server_key", k.key_id), "Key revoked")) keys.reload()
+  }
+  return (
+    <Section
+      title="Server keys"
+      description={<>Keys of your game's backend for <Mono>/server/entitlements</Mono>, <Mono>/server/grant</Mono> and <Mono>/server/revoke</Mono> (<Mono>Authorization: Bearer psk_…</Mono>). They work for every build of this app. Never put one in a client.</>}
+      actions={canSet && <Button size="sm" variant="outline" onClick={() => setForm({ name: "", scopes: ["read"] })}>New key</Button>}
+    >
+      {keys.error ? <ErrorBox error={keys.error} /> : keys.loading && !keys.data ? <Loading /> : (
+        <DataTable
+          rows={keys.data || []}
+          empty="No server keys"
+          rowKey={(k) => k.key_id}
+          columns={[
+            { title: "Key id", cell: (k) => <Mono>{k.key_id}</Mono> },
+            { title: "Name", cell: (k) => k.name },
+            { title: "Scopes", cell: (k) => k.scopes.split(",").join(", ") },
+            { title: "Created", cell: (k) => fmtTime(k.created_at_micros) },
+            { title: "Last used", cell: (k) => (Number(k.last_used_at_micros) ? fmtTime(k.last_used_at_micros) : "never") },
+            { title: "", className: "text-right", cell: (k) => canSet && <Button size="xs" variant="outline" onClick={() => revoke(k)}>Revoke</Button> },
+          ]}
+        />
+      )}
+      <Dialog open={!!form} onOpenChange={(o) => !o && setForm(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>New server key</DialogTitle>
+            <DialogDescription>The key is made in this browser; the server keeps only its hash.</DialogDescription>
+          </DialogHeader>
+          {form && (
+            <div className="space-y-3">
+              <Field label="Name"><Input value={form.name} placeholder="backend" onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
+              {SERVER_SCOPES.map(([scope, label]) => (
+                <label key={scope} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={form.scopes.includes(scope)}
+                    onCheckedChange={(on) => setForm({ ...form, scopes: on ? [...form.scopes, scope] : form.scopes.filter((s) => s !== scope) })}
+                  />
+                  <span><Mono>{scope}</Mono> — {label}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          <DialogFooter><Button onClick={create} disabled={!form?.scopes.length}>Create</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!shown} onOpenChange={(o) => !o && setShown(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Server key</DialogTitle>
+            <DialogDescription>Store it in your backend's secrets. It is not shown again.</DialogDescription>
+          </DialogHeader>
+          {shown && <CopyField label="Server key" value={shown} />}
+          <DialogFooter><Button onClick={() => setShown(null)}>Done</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Section>
+  )
+}
 
 interface TransferPolicy { mode: "always" | "cooldown" | "never"; cooldown_days: number; max_transfers: number }
 

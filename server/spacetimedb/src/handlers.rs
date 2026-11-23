@@ -1178,7 +1178,10 @@ fn routes() -> Router {
         .post("/offers/apple/sign", offers_apple_sign)
         .post("/checkout/xsolla", crate::xsolla::checkout_route)
         .post("/checkout/xsolla/status", crate::xsolla::checkout_status_route)
-        .post("/checkout/steam", checkout_steam);
+        .post("/checkout/steam", checkout_steam)
+        .post("/server/entitlements", crate::server_api::server_entitlements)
+        .post("/server/grant", crate::server_api::server_grant)
+        .post("/server/revoke", crate::server_api::server_revoke);
     for s in registry::STORES {
         if let Some(route) = s.verify_route() {
             router = router.post(route, verify_store);

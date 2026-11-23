@@ -37,6 +37,7 @@ mod player_data;
 mod players;
 mod poll;
 mod revenue;
+mod server_api;
 mod settings;
 mod steam;
 mod store_create;
@@ -878,30 +879,38 @@ pub fn admin_requeue_purchase(ctx: &ReducerContext, purchase_id: String) -> Resu
 }
 
 #[derive(Deserialize)]
-struct ManualGrantInput {
-    app_id: String,
-    user_id: String,
-    product_id: String,
+pub struct ManualGrantInput {
+    pub app_id: String,
+    pub user_id: String,
+    pub product_id: String,
     /// Idempotency key; generated from the time if empty.
     #[serde(default)]
-    transaction_id: String,
+    pub transaction_id: String,
     /// 0 = never expires (only meaningful for subscriptions).
     #[serde(default)]
-    expires_at_ms: i64,
+    pub expires_at_ms: i64,
     #[serde(default)]
-    note: String,
+    pub note: String,
 }
 
 /// Grants a product without a store purchase (support compensation, promo). Goes through the
 /// normal ledger: the worker delivers it to the game and it shows up in `/entitlements`.
 #[spacetimedb::reducer]
 pub fn admin_grant_manual(ctx: &ReducerContext, json: String) -> Result<(), String> {
-    use purser_core::model::{ledger_id, store};
 
     let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Support)?;
     crate::access::audit(ctx, &who, "admin_grant_manual", "", &json);
     let i: ManualGrantInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
     who.check_app(ctx, &i.app_id)?;
+    grant_manual(ctx, &i, &ctx.sender().to_string()).map(|_| ())
+}
+
+/// A manual grant (`admin_grant_manual`, `/server/grant`): a ledger row of the `manual` store the
+/// worker delivers like any purchase. `by` is who asked (an admin identity, a server key).
+/// Returns the ledger id.
+pub fn grant_manual(ctx: &ReducerContext, i: &ManualGrantInput, by: &str) -> Result<String, String> {
+    use purser_core::model::{ledger_id, store};
+
     if !crate::handlers::valid_user_id(&i.user_id) {
         return Err("[ERR_BAD_USER] user_id: 1-128 characters of A-Z a-z 0-9 - _ . :".into());
     }
@@ -918,7 +927,7 @@ pub fn admin_grant_manual(ctx: &ReducerContext, json: String) -> Result<(), Stri
         .find(product_key(&i.app_id, &i.product_id))
         .ok_or("[ERR_BAD_PRODUCT] Unknown product")?;
     let now = ctx.timestamp.to_micros_since_unix_epoch();
-    let tx_id = if i.transaction_id.is_empty() { format!("manual-{now}") } else { i.transaction_id };
+    let tx_id = if i.transaction_id.is_empty() { format!("manual-{now}") } else { i.transaction_id.clone() };
     let id = ledger_id(store::MANUAL, &tx_id);
     if ctx.db.purchase().id().find(&id).is_some() {
         return Err("[ERR_TX_EXISTS] Transaction already exists".into());
@@ -929,8 +938,8 @@ pub fn admin_grant_manual(ctx: &ReducerContext, json: String) -> Result<(), Stri
         was_granted: true,
         ..Purchase::new(store::MANUAL, &tx_id, &i.app_id, &product, &i.user_id, now)
     });
-    crate::ledger::log_event(ctx, &id, "manual_grant", &format!("by {} {}", ctx.sender(), i.note));
-    Ok(())
+    crate::ledger::log_event(ctx, &id, "manual_grant", &format!("by {by} {}", i.note));
+    Ok(id)
 }
 
 /// One `purchase` row as exported by `migrate.py` (`SELECT * FROM purchase` of the old database).

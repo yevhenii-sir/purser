@@ -6935,6 +6935,7 @@ fn every_route_is_in_the_openapi_description() {
     let mut routes: Vec<String> = [
         "/healthz", "/restore", "/entitlements", "/paywall", "/paywall/event", "/attributes", "/offers/apple/sign",
         "/checkout/xsolla", "/checkout/xsolla/status", "/checkout/steam", "/checkout/stripe", "/verify/stripe",
+        "/server/entitlements", "/server/grant", "/server/revoke",
     ]
     .iter()
     .map(|r| r.to_string())
@@ -7354,4 +7355,110 @@ fn a_paused_google_subscription_is_revoked_until_it_resumes() {
     assert!(status::is_owned(&p.status));
     assert_eq!(w.entitlements("player-1")["subscriptions"]["vip"]["product_id"], "vip");
     assert!(w.entitlements("player-1")["paused"].as_object().unwrap().is_empty());
+}
+
+// ---------------------------------------------------------------------
+// Server keys (`/server/*`)
+// ---------------------------------------------------------------------
+
+const SERVER_KEY: &str = "psk_k1a2b3c4_0123456789abcdefghijABCDEFGHIJklmnop";
+
+fn add_server_key(w: &World, key: &str, scopes: &str) {
+    w.as_admin(true);
+    let id = purser_core::server_api::key_id(key).unwrap();
+    let input = json!({ "game_key": "game", "name": "backend", "scopes": scopes, "key_id": id, "key_hash": purser_core::server_api::hash(key) });
+    w.test
+        .with_reducer_tx(TestAuth::internal(), |ctx| crate::server_api::admin_add_server_key(ctx, input.to_string()))
+        .unwrap();
+}
+
+fn bearer(key: &str) -> String {
+    format!("Bearer {key}")
+}
+
+#[test]
+fn server_keys_read_grant_and_revoke_for_their_app_only() {
+    use crate::server_api::{entitlements, grant, revoke, EntitlementsQuery, GrantRequest, RevokeRequest};
+    let w = World::new();
+    add_server_key(&w, SERVER_KEY, "read,grant");
+    let q = |user: &str| EntitlementsQuery { app_id: APP.into(), user_id: user.into() };
+
+    // No key, a wrong key, a key without the scope.
+    assert_eq!((entitlements(&mut w.ctx(), "", &q("player-1")).0).0, 401);
+    let other = SERVER_KEY.replace("mnop", "mnoq");
+    assert_eq!((entitlements(&mut w.ctx(), &bearer(&other), &q("player-1")).0).0, 401);
+    let revoke_req = RevokeRequest { app_id: APP.into(), purchase_id: "manual:reward-1".into(), reason: "abuse".into() };
+    let ((http, body), _) = revoke(&mut w.ctx(), &bearer(SERVER_KEY), &revoke_req);
+    assert_eq!((http, body["code"].as_str()), (403, Some("ERR_SERVER_SCOPE")));
+
+    // Grant: delivered like a purchase, idempotent by transaction_id.
+    let g = GrantRequest {
+        app_id: APP.into(),
+        user_id: "player-1".into(),
+        product_id: "no_ads".into(),
+        transaction_id: "reward-1".into(),
+        expires_at_ms: 0,
+        note: "season reward".into(),
+    };
+    let ((http, body), _) = grant(&mut w.ctx(), &bearer(SERVER_KEY), &g);
+    assert_eq!((http, body["purchase_id"].as_str()), (200, Some("manual:reward-1")), "{body}");
+    assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_grant player-1 purchase"));
+    let calls = w.reducer_calls().len();
+    let ((http, body), _) = grant(&mut w.ctx(), &bearer(SERVER_KEY), &g);
+    assert_eq!((http, body["repeated"].as_bool()), (200, Some(true)));
+    assert_eq!(w.reducer_calls().len(), calls, "granted once");
+    let clash = GrantRequest { user_id: "player-2".into(), ..g };
+    assert_eq!((grant(&mut w.ctx(), &bearer(SERVER_KEY), &clash).0).0, 409);
+
+    let ((http, body), _) = entitlements(&mut w.ctx(), &bearer(SERVER_KEY), &q("player-1"));
+    assert_eq!((http, &body["non_consumables"]), (200, &json!(["no_ads"])));
+
+    // A build of another app is not the key's.
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
+        app.app_id = "com.studio.other".into();
+        app.game_key = "other".into();
+        tx.db.game_app().insert(app);
+    });
+    let foreign = EntitlementsQuery { app_id: "com.studio.other".into(), user_id: "player-1".into() };
+    assert_eq!((entitlements(&mut w.ctx(), &bearer(SERVER_KEY), &foreign).0).0, 403);
+
+    // Revoke with a key that has the scope.
+    let revoker = "psk_r9r9r9r9_0123456789abcdefghijABCDEFGHIJklmnop";
+    add_server_key(&w, revoker, "revoke");
+    let ((http, body), _) = revoke(&mut w.ctx(), &bearer(revoker), &revoke_req);
+    assert_eq!(http, 200, "{body}");
+    assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_revoke player-1 admin"));
+    let unknown = RevokeRequest { purchase_id: "manual:nope".into(), ..revoke_req };
+    assert_eq!((revoke(&mut w.ctx(), &bearer(revoker), &unknown).0).0, 404);
+
+    // The audit log names the key; admins never read the hash.
+    use crate::access::admin_audit;
+    let audit = w.read(|tx| tx.db.admin_audit().iter().map(|a| (a.identity, a.action)).collect::<Vec<_>>());
+    assert!(audit.contains(&("server-key:k1a2b3c4".to_string(), "server_grant".to_string())), "{audit:?}");
+    let listed = w.read(|tx| crate::server_api::key_rows(tx, Some("game")));
+    assert_eq!(listed.len(), 2);
+    assert!(listed.iter().all(|k| k.get("key_hash").is_none()));
+
+    // Revoking the key stops it at once.
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::server_api::admin_revoke_server_key(ctx, "k1a2b3c4".into())).unwrap();
+    assert_eq!((entitlements(&mut w.ctx(), &bearer(SERVER_KEY), &q("player-1")).0).0, 401);
+}
+
+#[test]
+fn server_keys_are_rate_limited_and_need_an_admin_with_the_secrets_capability() {
+    use crate::server_api::{entitlements, EntitlementsQuery};
+    let w = World::new();
+    // Not an admin.
+    let input = json!({ "game_key": "game", "name": "x", "scopes": "read", "key_id": "k1a2b3c4", "key_hash": purser_core::server_api::hash(SERVER_KEY) });
+    assert!(w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::server_api::admin_add_server_key(ctx, input.to_string())).is_err());
+    add_server_key(&w, SERVER_KEY, "read");
+    let q = EntitlementsQuery { app_id: APP.into(), user_id: "player-1".into() };
+    let burst = purser_core::server_api::KEY_LIMIT.burst;
+    for _ in 0..burst {
+        assert_eq!((entitlements(&mut w.ctx(), &bearer(SERVER_KEY), &q).0).0, 200);
+    }
+    let ((http, _), retry_after) = entitlements(&mut w.ctx(), &bearer(SERVER_KEY), &q);
+    assert_eq!(http, 429);
+    assert!(retry_after.is_some());
 }

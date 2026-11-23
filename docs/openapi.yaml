@@ -57,6 +57,8 @@ tags:
     description: Called by the game client to describe the player on the admin page.
   - name: Checkout
     description: Web and Steam purchases the server starts (Stripe Checkout, Xsolla Pay Station, Steam MicroTxn).
+  - name: Server API
+    description: Called by the game's own backend with a server key (rewards, support, reading a player's purchases).
   - name: Monitoring
 security:
   - {}
@@ -754,6 +756,107 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/StatusMessage" }
 
+  /server/entitlements:
+    post:
+      tags: [Server API]
+      operationId: serverEntitlements
+      security: [{ serverKey: [] }]
+      summary: A player's customer info, for the game's backend (scope `read`)
+      description: The same answer as `/entitlements`, for any player of the key's app.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, user_id]
+              properties:
+                app_id: { type: string, description: Any build of the key's app. }
+                user_id: { type: string }
+      responses:
+        "200":
+          description: The player's customer info.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Entitlements"
+        "401": { $ref: "#/components/responses/ServerKey" }
+        "403": { $ref: "#/components/responses/ServerScope" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /server/grant:
+    post:
+      tags: [Server API]
+      operationId: serverGrant
+      security: [{ serverKey: [] }]
+      summary: Give a product without a store purchase (scope `grant`)
+      description: |
+        A reward, a compensation, a promo: the game gets `grant` like for a purchase (store `manual`,
+        no revenue) and `/entitlements` lists it. Idempotent by `transaction_id`: the same request
+        again answers `repeated: true`; another grant with the same id is refused with `409`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, user_id, product_id, transaction_id]
+              properties:
+                app_id: { type: string }
+                user_id: { type: string }
+                product_id: { type: string, description: The product id of the build `app_id`. }
+                transaction_id: { type: string, description: "Your id of this grant (1-128 of A-Z a-z 0-9 - _ . :)." }
+                expires_at_ms: { type: integer, format: int64, description: "Subscriptions: when access ends; 0 = never." }
+                note: { type: string }
+            example:
+              app_id: com.example.mygame
+              user_id: c2005b4c1622269bf51cddf038743f7f
+              product_id: no_ads
+              transaction_id: season-3-reward-c2005b4c
+      responses:
+        "200":
+          description: Granted (or granted before by the same request).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+                  purchase_id: { type: string, examples: ["manual:season-3-reward-c2005b4c"] }
+                  purchase_status: { type: string }
+                  repeated: { type: boolean }
+        "400": { description: Invalid input (unknown product, user id). }
+        "401": { $ref: "#/components/responses/ServerKey" }
+        "403": { $ref: "#/components/responses/ServerScope" }
+        "409": { description: "`transaction_id` is used by another grant." }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /server/revoke:
+    post:
+      tags: [Server API]
+      operationId: serverRevoke
+      security: [{ serverKey: [] }]
+      summary: Take a purchase back (scope `revoke`)
+      description: The game gets `revoke` (reason `admin`). Not a refund; revenue does not change.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, purchase_id]
+              properties:
+                app_id: { type: string }
+                purchase_id: { type: string, description: "Ledger id `{store}:{transaction_id}`." }
+                reason: { type: string }
+      responses:
+        "200": { description: Revoked (or revoked before). }
+        "401": { $ref: "#/components/responses/ServerKey" }
+        "403": { $ref: "#/components/responses/ServerScope" }
+        "404": { description: Not a purchase of the key's app. }
+        "409": { description: The purchase cannot be revoked in its state. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
 components:
   schemas:
     ClientInfo:
@@ -1081,6 +1184,12 @@ components:
           type: string
 
   securitySchemes:
+    serverKey:
+      type: http
+      scheme: bearer
+      description: |
+        A server key of the app (`psk_<key_id>_<secret>`), made on the admin page (app → Delivery →
+        Server keys). Only for the game's backend: never ship it in a client.
     playerToken:
       type: http
       scheme: bearer
@@ -1090,6 +1199,18 @@ components:
         (`aud` optional) signed with the build's `client_auth_secret` by the game's backend.
 
   responses:
+    ServerKey:
+      description: "`code: ERR_SERVER_KEY`: no server key, a malformed, unknown or revoked one."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatusMessage"
+    ServerScope:
+      description: "`code: ERR_SERVER_SCOPE`: the key lacks the scope, or the build is not one of its app."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatusMessage"
     ClientAuth:
       description: "`code: ERR_CLIENT_AUTH`: the build needs a player token and the request has none, an expired one or one for another player."
       content:
