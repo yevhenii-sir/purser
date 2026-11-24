@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-24
+
 ### Added
 
 - Paused subscriptions and Family Sharing (needs a server that reports them): `CustomerInfo.Paused` (catalog product
