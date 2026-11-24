@@ -362,6 +362,7 @@ namespace Purser.Tests
         [Test]
         public void Refresh_CancellingStopsTheWait_NotTheRequest()
         {
+            using (Sync.InlineContinuations())
             using (var h = new ServiceHarness())
             {
                 h.Start();

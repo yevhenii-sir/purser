@@ -156,6 +156,20 @@ python -m py_compile server/*.py tools/*.py
 python -m unittest discover -s server/tests   # unit tests of the scripts
 ```
 
+Unity package tests in a real editor (CI does not run them): a local project in `unity/TestProject/` (gitignored)
+with `Packages/manifest.json` = `{"dependencies": {"com.yevhenii.purser": "file:../../com.yevhenii.purser",
+"com.unity.test-framework": "1.1.33"}, "testables": ["com.yevhenii.purser"]}` and `ProjectSettings/ProjectVersion.txt`
+naming the oldest supported editor (`m_EditorVersion: 2022.3.62f3`), then:
+
+```bash
+"<Unity 2022.3>/Editor/Unity.exe" -batchmode -nographics -projectPath unity/TestProject -runTests \
+    -testPlatform EditMode -testResults results.xml -logFile unity.log
+```
+
+Unity runs awaits on its editor synchronization context: a continuation that waits for something completed later (a
+cancellation) runs on the next editor update, after a synchronous test has looked. Such tests use
+`Sync.InlineContinuations()` (`Tests/Editor/Fakes.cs`).
+
 Build order matters: `npm run build` **before** the wasm build, because the page is embedded.
 Don't run a full `cargo update` (newer `icu_*` crates break `spacetimedb-core`); upgrade SpacetimeDB
 with `cargo update -p spacetimedb --precise <version>`.

@@ -18,6 +18,8 @@ credentials.json
 
 # ---- Unity (test / sample projects; the UPM package itself has no such folders) ----
 # NOTE: *.meta files are intentionally NOT ignored: UPM packages need them.
+# A local Unity project for trying the package (Packages/manifest.json points at it with file:).
+unity/TestProject/
 [Ll]ibrary/
 [Tt]emp/
 [Oo]bj/

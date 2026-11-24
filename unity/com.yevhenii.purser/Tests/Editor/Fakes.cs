@@ -298,6 +298,27 @@ namespace Purser.Tests
             Assert.IsTrue(task.IsCompleted, "task was expected to complete synchronously");
             task.GetAwaiter().GetResult();
         }
+
+        /// <summary>
+        /// No synchronization context until disposed: an await resumes inline when what it waits for completes later
+        /// (a cancellation), as under a plain .NET test runner. Unity's editor context posts it to the next editor
+        /// update, after the test has looked.
+        /// </summary>
+        public static IDisposable InlineContinuations()
+        {
+            var previous = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(null);
+            return new Restore(previous);
+        }
+
+        private sealed class Restore : IDisposable
+        {
+            private readonly SynchronizationContext m_Previous;
+
+            public Restore(SynchronizationContext previous) => m_Previous = previous;
+
+            public void Dispose() => SynchronizationContext.SetSynchronizationContext(m_Previous);
+        }
     }
 
     // ---- Offer codes ----

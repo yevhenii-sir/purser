@@ -93,6 +93,7 @@ namespace Purser.Tests
         [Test]
         public void CancellingTheWait_KeepsThePaywallOfTheStorePurchase()
         {
+            using (Sync.InlineContinuations())
             using (var h = new ServiceHarness())
             {
                 h.Start();
