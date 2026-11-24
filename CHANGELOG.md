@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Security
+
+- Dependency updates. In the module: `bytes` 1.12 (RUSTSEC-2026-0007), `anyhow`, `rand`, `keccak`, `spin`, `chrono`. In the native test host only: `openssl`, `rustls`, `rustls-webpki`, `h2`, `rkyv`, `time`, `zstd` and others. The admin page: `recharts` 3.11, `lucide-react`, `vite` 8.3.8.
+- The Audit workflow checks what ships, the module's wasm dependencies, with `cargo deny` (`server/deny.toml`; two accepted advisories in RSA and elliptic-curve signing, with the reasons). The whole lockfile, mostly the SpacetimeDB host the tests run on, is still listed by `cargo audit` for reference.
+
 ## 0.9.0 - 2026-11-24
 
 ### Breaking

@@ -1,13 +1,14 @@
 name: Audit
 
-# Known vulnerabilities in the dependencies. Separate from CI: an advisory in a crate the
-# SpacetimeDB crates pin must not block every push; it shows up here (weekly and on lockfile changes).
+# Known vulnerabilities in the dependencies, weekly and on lockfile changes. Separate from CI: a new
+# advisory must not block every push. The Rust check covers what ships (the module's wasm, see
+# server/deny.toml); the whole lockfile, test-only SpacetimeDB host included, is listed for reference.
 on:
   schedule:
     - cron: "17 5 * * 1"
   push:
     branches: [main]
-    paths: ["server/Cargo.lock", "server/admin-ui/package-lock.json", ".github/workflows/audit.yml"]
+    paths: ["server/Cargo.lock", "server/deny.toml", "server/admin-ui/package-lock.json", ".github/workflows/audit.yml"]
   workflow_dispatch:
 
 permissions:
@@ -15,8 +16,23 @@ permissions:
 
 jobs:
   rust:
-    name: cargo audit
+    name: cargo deny (the module's wasm)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: cargo install cargo-deny --locked
+      - run: cargo deny check advisories
+
+  rust-all:
+    name: cargo audit (whole lockfile, for reference)
+    runs-on: ubuntu-latest
+    # Mostly the SpacetimeDB host the native tests run on, at the versions SpacetimeDB pins.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
         with:

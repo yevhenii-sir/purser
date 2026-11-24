@@ -1,0 +1,26 @@
+# `cargo deny check advisories` (the Audit workflow): known vulnerabilities in what ships, the
+# module's wasm. Dev-dependencies are left out: `spacetimedb` with `test-utils` brings a whole
+# SpacetimeDB host (wasmtime, openssl, rustls, tokio, ...) into the native unit tests only, at the
+# versions SpacetimeDB pins; those move with a SpacetimeDB upgrade. `cargo audit` of the whole
+# lockfile still lists them, for reference.
+
+[graph]
+targets = ["wasm32-unknown-unknown"]
+exclude-dev = true
+
+[advisories]
+# Unmaintained crates are reported for the workspace's direct dependencies only: deeper ones
+# belong to the SpacetimeDB crates.
+unmaintained = "workspace"
+ignore = [
+    # `rsa` 0.9 (Google service account tokens, RS256). The Marvin attack needs many timed
+    # decryptions or signatures of attacker-chosen data; the module signs its own JWT claims, once
+    # an hour per account, inside the SpacetimeDB host. No fixed release yet (0.10 is in
+    # pre-release).
+    { id = "RUSTSEC-2023-0071", reason = "signing own JWT claims only; no fixed rsa release" },
+    # `crypto-bigint` 0.5 under `elliptic-curve` 0.13 (`p256` / `p384`): ES256 tokens and
+    # promotional offer signatures with App Store keys (own claims, same reasoning as above) and
+    # the check of App Store signed payloads (public data, timing reveals nothing). The fix is
+    # 0.7, which needs the next major versions of the RustCrypto curves.
+    { id = "RUSTSEC-2026-0387", reason = "own claims and public data only; fix needs elliptic-curve 0.14" },
+]
