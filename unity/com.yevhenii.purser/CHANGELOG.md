@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+Checked in Unity 2022.3, 6.0, 6.3 and 6.6: the package compiles without warnings and the EditMode tests pass.
+
+### Fixed
+
+- Tools → Purser → Add Bootstrap To Scene used an API obsolete in Unity 6.6 (a compiler warning); it uses
+  `FindAnyObjectByType` everywhere now.
+
 ### Changed
 
 - The customer info and paywall caches are kept per billing server (the key has a hash of the server URL): a profile

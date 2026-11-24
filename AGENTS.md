@@ -159,7 +159,9 @@ python -m unittest discover -s server/tests   # unit tests of the scripts
 Unity package tests in a real editor (CI does not run them): a local project in `unity/TestProject/` (gitignored)
 with `Packages/manifest.json` = `{"dependencies": {"com.yevhenii.purser": "file:../../com.yevhenii.purser",
 "com.unity.test-framework": "1.1.33"}, "testables": ["com.yevhenii.purser"]}` and `ProjectSettings/ProjectVersion.txt`
-naming the oldest supported editor (`m_EditorVersion: 2022.3.62f3`), then:
+naming the oldest supported editor (`m_EditorVersion: 2022.3.62f3`); Unity 6 gets projects of its own
+(`unity/TestProject6.0`, `6.3`, `6.6`: opening a project in a newer editor upgrades it) with the test framework the
+editor bundles (`1.6.0` on 6.0 / 6.3, `1.8.0` on 6.6). Then:
 
 ```bash
 "<Unity 2022.3>/Editor/Unity.exe" -batchmode -nographics -projectPath unity/TestProject -runTests \

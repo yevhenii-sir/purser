@@ -352,11 +352,8 @@ namespace Purser.Editor
         [MenuItem("Tools/Purser/Add Bootstrap To Scene")]
         private static void AddBootstrap()
         {
-#if UNITY_2023_1_OR_NEWER
-            var existing = Object.FindFirstObjectByType<BillingBootstrap>();
-#else
-            var existing = Object.FindObjectOfType<BillingBootstrap>();
-#endif
+            // FindAnyObjectByType: 2022.3 and Unity 6 (FindObjectOfType / FindFirstObjectByType are obsolete there).
+            var existing = Object.FindAnyObjectByType<BillingBootstrap>();
             if (existing != null)
             {
                 Selection.activeObject = existing.gameObject;
