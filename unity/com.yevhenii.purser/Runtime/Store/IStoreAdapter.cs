@@ -396,4 +396,15 @@ namespace Purser
         /// <summary>Shows the sheet; false when the store cannot show it.</summary>
         bool PresentOfferCodeRedemption();
     }
+
+    /// <summary>
+    /// Optional <see cref="IStoreAdapter"/> capability: the store's page where a player manages subscriptions comes
+    /// from the billing server or the adapter's settings (<see cref="IBillingService.OpenManageSubscriptionsAsync"/>).
+    /// Implemented by <see cref="StripeStoreAdapter"/>.
+    /// </summary>
+    public interface ISubscriptionManagementStore
+    {
+        /// <summary>The page for <paramref name="userId"/> (null when not set), or null when there is none.</summary>
+        Task<string> GetManageSubscriptionsUrlAsync(string userId, CancellationToken ct);
+    }
 }

@@ -4,6 +4,7 @@
 
 ### Added
 
+- `POST /manage/stripe`: a Stripe customer portal session for the player's subscription (cancel, change the card, invoices), for builds with player tokens; others answer `ERR_PLAYER_TOKENS_REQUIRED` and link Stripe's portal login page. Publish in place: no `--delete-data`.
 - `seed.py --server-key <game_key>` (`--key-name`, `--key-scopes read,grant,revoke`) makes a key for the game's backend in the terminal, as the admin page does, and prints it once.
 
 ### Security

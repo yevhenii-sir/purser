@@ -3626,6 +3626,71 @@ fn stripe_webhooks_need_a_valid_signature() {
 }
 
 #[test]
+fn stripe_customer_portal_needs_player_tokens_and_a_subscription() {
+    let w = World::new();
+    add_stripe_build(&w);
+    let now = NOW_MICROS / 1_000_000;
+    let req = |user: &str, return_url: &str| crate::stripe::ManageRequest {
+        app_id: WEB_APP.into(),
+        user_id: user.into(),
+        return_url: return_url.into(),
+    };
+    let manage = |r: &crate::stripe::ManageRequest| crate::stripe::manage(&mut w.ctx(), r);
+    const BACK: &str = "https://game.example/account";
+
+    // A build without player tokens: anyone could open a player's billing account. Refused before any call.
+    let (http, v) = manage(&req("player-1", BACK));
+    assert_eq!((http, v["code"].as_str()), (403, Some(purser_core::client_api::ERR_PLAYER_TOKENS_REQUIRED)), "{v}");
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(WEB_APP.to_string()).unwrap();
+        app.client_auth = purser_core::client_api::mode::SIGNED.into();
+        tx.db.game_app().app_id().update(app);
+    });
+    let (http, v) = manage(&req("player-1", BACK));
+    assert_eq!((http, v["code"].as_str()), (404, Some(purser_core::client_api::ERR_NO_SUBSCRIPTION)), "{v}");
+
+    // The player subscribes through Checkout.
+    let mut session = stripe_session("price_vip", "player-1");
+    session["mode"] = json!("subscription");
+    session["payment_intent"] = Value::Null;
+    session["subscription"] = json!("sub_1");
+    session["invoice"] = json!("in_1");
+    w.script(
+        "api.stripe.com/v1/subscriptions/sub_1",
+        200,
+        &json!({ "id": "sub_1", "status": "active", "customer": "cus_1", "items": { "data": [ { "current_period_end": now + 30 * 86_400 } ] } })
+            .to_string(),
+    );
+    assert_eq!(stripe_webhook(&w, &stripe_event("evt_p1", "checkout.session.completed", session)).http, 200);
+    w.script("api.stripe.com/v1/billing_portal/sessions", 200, r#"{"id":"bps_1","url":"https://billing.stripe.com/p/session/test_1"}"#);
+
+    let (http, v) = manage(&req("player-1", BACK));
+    assert_eq!((http, v["url"].as_str()), (200, Some("https://billing.stripe.com/p/session/test_1")), "{v}");
+    let calls = w.fake.borrow().calls.clone();
+    assert!(
+        calls.iter().any(|c| c.starts_with("POST https://api.stripe.com/v1/billing_portal/sessions")
+            && c.ends_with("customer=cus_1&return_url=https%3A%2F%2Fgame.example%2Faccount")),
+        "{calls:?}"
+    );
+
+    // The return URL is checked; another player has no subscription of their own.
+    assert_eq!(manage(&req("player-1", "javascript:alert(1)")).0, 400);
+    assert_eq!(manage(&req("player-1", "http://localhost:8080/back")).0, 200, "sandbox builds may return to localhost");
+    assert_eq!(manage(&req("player-2", BACK)).1["code"], purser_core::client_api::ERR_NO_SUBSCRIPTION);
+    assert_eq!(manage(&req("bad id!", BACK)).0, 400);
+    // A portal that is not set up in the Stripe Dashboard is the server's answer to show, not a retry.
+    w.fake.borrow_mut().overrides.retain(|(needle, _, _)| !needle.contains("billing_portal"));
+    w.script(
+        "api.stripe.com/v1/billing_portal/sessions",
+        400,
+        r#"{"error":{"message":"No configuration provided and your test mode default configuration has not been created."}}"#,
+    );
+    let (http, v) = manage(&req("player-1", BACK));
+    assert_eq!(http, 400, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("configuration"), "{v}");
+}
+
+#[test]
 fn stripe_subscription_first_period_renewal_and_end() {
     let w = World::new();
     add_stripe_build(&w);
@@ -5407,6 +5472,7 @@ fn parse_sdk_request(route: &str, body: &Value) -> Result<(), String> {
         "/offers/apple/sign" => p::<crate::offers::AppleOfferRequest>(body),
         "/checkout/steam" => p::<crate::steam::CheckoutRequest>(body),
         "/checkout/stripe" => p::<crate::stripe::CheckoutRequest>(body),
+        "/manage/stripe" => p::<crate::stripe::ManageRequest>(body),
         "/checkout/xsolla" => p::<crate::xsolla::CheckoutRequest>(body),
         "/checkout/xsolla/status" => p::<crate::xsolla::StatusRequest>(body),
         other => Err(format!("no route {other} (or the contract test does not know it yet)")),

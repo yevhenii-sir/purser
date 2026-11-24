@@ -56,8 +56,39 @@ namespace Purser
         Task<ApiResult<VerifyResponse>> VerifyStripeSessionAsync(StripeSessionRequest request, CancellationToken ct = default);
     }
 
-    public sealed partial class BillingApiClient : IStripeCheckoutApi
+    /// <summary>Body of <c>POST /manage/stripe</c>: a Customer Portal session of the player's subscription.</summary>
+    public sealed class StripePortalRequest
     {
+        [JsonProperty("app_id")] public string AppId;
+        [JsonProperty("user_id")] public string UserId;
+        /// <summary>Where the portal's Return link leads (https).</summary>
+        [JsonProperty("return_url")] public string ReturnUrl;
+    }
+
+    /// <summary>Answer of <c>POST /manage/stripe</c>: <c>status = ok</c> and the portal page.</summary>
+    public sealed class StripePortalResponse
+    {
+        [JsonProperty("status")] public string Status;
+        [JsonProperty("message")] public string Message;
+        [JsonProperty("url")] public string Url;
+    }
+
+    /// <summary>
+    /// The Stripe Customer Portal route of the billing server (<c>/manage/stripe</c>; builds with player tokens).
+    /// Implemented by <see cref="BillingApiClient"/>; used by <see cref="StripeStoreAdapter"/> when its API client
+    /// implements it.
+    /// </summary>
+    public interface IStripePortalApi
+    {
+        /// <summary><c>POST /manage/stripe</c>.</summary>
+        Task<ApiResult<StripePortalResponse>> CreateStripePortalAsync(StripePortalRequest request, CancellationToken ct = default);
+    }
+
+    public sealed partial class BillingApiClient : IStripeCheckoutApi, IStripePortalApi
+    {
+        public Task<ApiResult<StripePortalResponse>> CreateStripePortalAsync(StripePortalRequest request, CancellationToken ct = default) =>
+            m_Http.PostAsync<StripePortalResponse>("/manage/stripe", request, request?.UserId, ct);
+
         public Task<ApiResult<StripeCheckoutResponse>> CreateStripeCheckoutAsync(StripeCheckoutRequest request, CancellationToken ct = default) =>
             m_Http.PostAsync<StripeCheckoutResponse>("/checkout/stripe", request, request?.UserId, ct);
 

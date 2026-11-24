@@ -242,6 +242,42 @@ pub fn parse_created_session(body: &str) -> Result<(String, String), String> {
     Ok((id.to_string(), url.to_string()))
 }
 
+/// `POST /v1/billing_portal/sessions` URL: the Customer Portal, where a customer cancels a
+/// subscription, changes the payment method and downloads invoices.
+pub fn billing_portal_sessions_url() -> String {
+    format!("{API}/v1/billing_portal/sessions")
+}
+
+/// Form body of a Customer Portal session of `customer` that returns to `return_url`. The portal
+/// uses the account's default configuration (Stripe Dashboard → Settings → Billing → Customer portal).
+pub fn billing_portal_form(customer: &str, return_url: &str) -> Result<String, String> {
+    let customer = path_id("customer", customer)?;
+    if !customer.starts_with("cus_") {
+        return Err("invalid Stripe customer id".into());
+    }
+    let enc = crate::encoding::percent_encode;
+    Ok(format!("customer={}&return_url={}", enc(&customer), enc(return_url)))
+}
+
+/// The customer of a Subscription object (`customer`: an id, or the expanded Customer).
+pub fn subscription_customer(body: &str) -> Result<String, String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad Stripe response: {e}"))?;
+    let customer = id_of(&v["customer"]);
+    if !customer.starts_with("cus_") {
+        return Err("the Subscription has no customer".into());
+    }
+    Ok(customer)
+}
+
+/// The URL of a created Customer Portal session.
+pub fn parse_portal_session(body: &str) -> Result<String, String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad Stripe response: {e}"))?;
+    match v["url"].as_str() {
+        Some(url) if url.starts_with("https://") => Ok(url.to_string()),
+        _ => Err("Stripe response without a portal url".into()),
+    }
+}
+
 /// `GET` URL of a Checkout Session, with its Subscription expanded (period end in one call).
 pub fn session_url(session_id: &str) -> Result<String, String> {
     Ok(format!("{API}/v1/checkout/sessions/{}?expand%5B%5D=subscription", path_id("session", session_id)?))
@@ -902,6 +938,30 @@ mod tests {
         assert_eq!(minor_to_micros(1250, "kwd"), 1_250_000);
         // ISK / UGX: zero-decimal, but the API keeps two decimals.
         assert_eq!(minor_to_micros(50_000, "isk"), 500_000_000);
+    }
+
+    #[test]
+    fn billing_portal_session() {
+        assert_eq!(billing_portal_sessions_url(), "https://api.stripe.com/v1/billing_portal/sessions");
+        assert_eq!(
+            billing_portal_form("cus_N1x2", "https://game.example.com/account?tab=1").unwrap(),
+            "customer=cus_N1x2&return_url=https%3A%2F%2Fgame.example.com%2Faccount%3Ftab%3D1"
+        );
+        assert!(billing_portal_form("cus_x&y=1", "https://game.example.com").is_err());
+        assert!(billing_portal_form("sub_1", "https://game.example.com").is_err());
+        assert!(billing_portal_form("", "https://game.example.com").is_err());
+
+        assert_eq!(subscription_customer(r#"{"id":"sub_1","customer":"cus_A"}"#).unwrap(), "cus_A");
+        assert_eq!(subscription_customer(r#"{"id":"sub_1","customer":{"id":"cus_B","object":"customer"}}"#).unwrap(), "cus_B");
+        assert!(subscription_customer(r#"{"id":"sub_1","customer":null}"#).is_err());
+        assert!(subscription_customer("not json").is_err());
+
+        assert_eq!(
+            parse_portal_session(r#"{"id":"bps_1","url":"https://billing.stripe.com/p/session/test_x"}"#).unwrap(),
+            "https://billing.stripe.com/p/session/test_x"
+        );
+        assert!(parse_portal_session(r#"{"id":"bps_1","url":"http://evil.example.com"}"#).is_err());
+        assert!(parse_portal_session(r#"{"id":"bps_1"}"#).is_err());
     }
 
     #[test]

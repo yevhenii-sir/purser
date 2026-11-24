@@ -300,6 +300,48 @@ paths:
                 attribution: { $ref: "#/components/schemas/Attribution" }
       responses: *checkoutResponses
 
+  /manage/stripe:
+    post:
+      tags: [Checkout]
+      operationId: manageStripe
+      summary: Open the Stripe Customer Portal for the player's subscription
+      description: |
+        Creates a Customer Portal session for the Stripe customer of the player's newest active
+        subscription of the build, where they cancel it, change the payment method and see invoices.
+        The portal acts for that customer, so only builds with player tokens (`client_auth = signed`)
+        get one; others answer `403 ERR_PLAYER_TOKENS_REQUIRED` (link Stripe's customer portal login
+        page instead). The portal uses the account's default configuration (Stripe Dashboard → Settings
+        → Billing → Customer portal); one that is not set up answers `400` with Stripe's message.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, user_id, return_url]
+              properties:
+                app_id: { type: string }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                return_url: { type: string, description: "Where the portal's Return link leads: https (http://localhost on builds that allow sandbox purchases)." }
+      responses:
+        "200":
+          description: The portal session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, url]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  url: { type: string, examples: ["https://billing.stripe.com/p/session/test_YWNjdF8x"] }
+        "400": { description: "Invalid request, or the portal is not set up in Stripe", content: { application/json: { schema: { $ref: "#/components/schemas/StatusMessage" } } } }
+        "401": { $ref: "#/components/responses/ClientAuth" }
+        "403": { description: "ERR_PLAYER_TOKENS_REQUIRED: the build has no player tokens", content: { application/json: { schema: { $ref: "#/components/schemas/StatusMessage" } } } }
+        "404": { description: "ERR_NO_SUBSCRIPTION: the player has no active Stripe subscription in this build", content: { application/json: { schema: { $ref: "#/components/schemas/StatusMessage" } } } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+        "502": { $ref: "#/components/responses/StoreUnavailable" }
+
   /restore:
     post:
       tags: [Purchases]
@@ -1009,6 +1051,10 @@ components:
           examples: [error, invalid, forbidden]
         message:
           type: string
+        code:
+          type: string
+          description: An error code where the client acts on it (docs/troubleshooting.md).
+          examples: [ERR_PLAYER_TOKENS_REQUIRED, ERR_NO_SUBSCRIPTION]
 
     NotificationResult:
       type: object

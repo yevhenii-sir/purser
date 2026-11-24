@@ -254,7 +254,7 @@ The setup check fetches every product's Price (up to 8 per run) and reports miss
 
 ### Keys
 
-- `stripe_secret_key`: Developers → **API keys** → the secret key (`sk_live_…` / `sk_test_…`). One per Stripe account: store it on the developer account. A [restricted key](https://docs.stripe.com/keys/restricted-api-keys) (`rk_…`) works too with **Checkout Sessions: Write** and **Prices, Subscriptions, Invoices: Read**.
+- `stripe_secret_key`: Developers → **API keys** → the secret key (`sk_live_…` / `sk_test_…`). One per Stripe account: store it on the developer account. A [restricted key](https://docs.stripe.com/keys/restricted-api-keys) (`rk_…`) works too with **Checkout Sessions: Write** and **Prices, Subscriptions, Invoices: Read** (plus **Customer portal: Write** for the customer portal below).
 - A test-mode key makes sandbox purchases: enable **Sandbox purchases** on the build, or every purchase is ignored (the setup check fails then).
 
 ### Webhook endpoint
@@ -272,6 +272,13 @@ By hand:
 3. Copy the endpoint's **Signing secret** (`whsec_…`) into `stripe_webhook_secret` of the build.
 
 Every webhook is checked with its `Stripe-Signature` (5 minutes tolerance); a wrong secret shows up in the setup check as *notifications are rejected*. Stripe retries failed deliveries for three days; retries and duplicates never grant twice. Partial refunds keep the purchase and take the refunded part out of revenue; a full refund or a dispute revokes it, and a dispute you win grants it again (reason `reinstated`). Plan changes (customer portal, API) are followed: the invoice that charges the new Price makes it the subscription's product and ends the old one (reason `replaced`); every Price you let players switch to must be a product of the build.
+
+### Customer portal
+
+Players cancel a subscription, change the card and download invoices in Stripe's [customer portal](https://docs.stripe.com/customer-management). Set it up once per mode: Stripe Dashboard → **Settings → Billing → Customer portal** → choose what customers may do → **Save** (live mode refuses portal sessions until it is saved; if you let players switch plans, list only Prices that are products of the build).
+
+- **Builds with player tokens** (`client_auth = signed`): `POST /manage/stripe` `{"app_id", "user_id", "return_url"}` → `{"status": "ok", "url"}` creates a portal session for the Stripe customer of the player's active subscription (two Stripe calls); the Unity package opens it from `OpenManageSubscriptionsAsync()`. A player without a subscription gets `404 ERR_NO_SUBSCRIPTION`.
+- **Builds without player tokens** get `403 ERR_PLAYER_TOKENS_REQUIRED`: the portal acts for the customer, and without tokens anyone who knows a player id could open it. Turn on the portal's **Login link** on the same Dashboard page and use it instead (`https://billing.stripe.com/p/login/…`; the customer signs in with the email of their payments): `StripeCheckoutOptions.CustomerPortalLoginUrl` in Unity, a link on your page elsewhere.
 
 ### Test
 

@@ -191,6 +191,14 @@
       }
     },
     {
+      "route": "/manage/stripe",
+      "body": {
+        "app_id": "com.studio.game.web",
+        "user_id": "player-1",
+        "return_url": "https://game.example/"
+      }
+    },
+    {
       "route": "/checkout/xsolla",
       "body": {
         "app_id": "com.studio.game.web",

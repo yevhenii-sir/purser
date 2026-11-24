@@ -268,9 +268,12 @@ if (BillingPeriods.TryParse(yearly.SubscriptionPeriod, out var count, out var un
     periodLabel.text = Localize(unit, count);                         // "1 year"
 ```
 
-Stores require a way to manage a subscription from the app: `OpenManageSubscriptions(productId)` opens Google Play's
-page for that subscription or the App Store's subscriptions page, and returns false for stores without such a page
-(Amazon Appstore, Steam, web stores). `PresentOfferCodeRedemption()` shows the App Store's sheet for redeeming an
+Stores require a way to manage a subscription from the app: `await OpenManageSubscriptionsAsync(productId)` opens
+Google Play's page for that subscription, the App Store's subscriptions page or Stripe's customer portal, and returns
+false when there is no such page (Amazon Appstore, Steam, Xsolla). On Stripe builds with player tokens the server
+creates a portal session of the player's subscription; otherwise set `StripeCheckoutOptions.CustomerPortalLoginUrl`
+to the portal's login link (docs/store-setup.md, Stripe → Customer portal). `PortalReturnUrl` (default `CancelUrl`)
+is where the portal's Return link leads. On WebGL a page opened after an await may be blocked as a popup. `PresentOfferCodeRedemption()` shows the App Store's sheet for redeeming an
 offer code (iOS 14 and later; false elsewhere); a redeemed code arrives as a purchase and is verified like any other.
 
 ## Amazon Appstore, Steam, web

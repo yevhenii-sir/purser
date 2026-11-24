@@ -114,10 +114,11 @@ namespace Purser
         /// <summary>
         /// Opens the store's page where the player cancels or changes subscriptions (stores require apps to offer
         /// one): Google Play's subscriptions page, for one subscription when <paramref name="productId"/> names it,
-        /// or the App Store's. Returns false for stores without such a page (Amazon Appstore, Steam, web stores:
-        /// players manage those in the store's app or on their account page).
+        /// the App Store's subscriptions page, or Stripe's Customer Portal (a session from the server on builds with
+        /// player tokens, else <see cref="StripeCheckoutOptions.CustomerPortalLoginUrl"/>). Returns false when there
+        /// is no such page (Amazon Appstore, Steam and Xsolla: players manage those in the store's app or account).
         /// </summary>
-        bool OpenManageSubscriptions(string productId = null);
+        Task<bool> OpenManageSubscriptionsAsync(string productId = null, CancellationToken ct = default);
 
         /// <summary>
         /// App Store: shows StoreKit's sheet where the player redeems an offer code (iOS 14 and later). A redeemed code

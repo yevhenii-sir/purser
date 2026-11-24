@@ -35,6 +35,8 @@
     <type fullname="Purser.StripeCheckoutRequest" preserve="all" />
     <type fullname="Purser.StripeCheckoutResponse" preserve="all" />
     <type fullname="Purser.StripeSessionRequest" preserve="all" />
+    <type fullname="Purser.StripePortalRequest" preserve="all" />
+    <type fullname="Purser.StripePortalResponse" preserve="all" />
     <type fullname="Purser.VerifyRequest" preserve="all" />
     <type fullname="Purser.VerifyResponse" preserve="all" />
     <type fullname="Purser.XsollaCheckoutResponse" preserve="all" />

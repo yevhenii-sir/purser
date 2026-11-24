@@ -1,19 +1,29 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Purser
 {
     public sealed partial class BillingService
     {
         /// <inheritdoc/>
-        public bool OpenManageSubscriptions(string productId = null)
+        public async Task<bool> OpenManageSubscriptionsAsync(string productId = null, CancellationToken ct = default)
         {
             ThrowIfDisposed();
-            var product = string.IsNullOrEmpty(productId) ? null : GetProduct(productId);
-            var storeProductId = product != null && product.Type == BillingProductType.Subscription ? product.StoreId : null;
-            var url = ManageSubscriptionsUrl(m_Store.Store, AppId, storeProductId);
+            string url;
+            if (m_Store is ISubscriptionManagementStore store)
+            {
+                url = await store.GetManageSubscriptionsUrlAsync(SyncUser(), ct);
+            }
+            else
+            {
+                var product = string.IsNullOrEmpty(productId) ? null : GetProduct(productId);
+                var storeProductId = product != null && product.Type == BillingProductType.Subscription ? product.StoreId : null;
+                url = ManageSubscriptionsUrl(m_Store.Store, AppId, storeProductId);
+            }
             if (url == null)
             {
-                m_Log.Info($"The {m_Store.Store} store has no subscription management page: manage subscriptions in the store's own app or account");
+                m_Log.Info($"No subscription management page for the {m_Store.Store} store: players manage subscriptions in the store's own app or account");
                 return false;
             }
             m_OpenUrl(url);

@@ -9,8 +9,18 @@ using NUnit.Framework;
 namespace Purser.Tests
 {
     /// <summary>Billing server Stripe routes, scripted per test; answers synchronously.</summary>
-    internal sealed class FakeStripeApi : IStripeCheckoutApi
+    internal sealed class FakeStripeApi : IStripeCheckoutApi, IStripePortalApi
     {
+        public readonly List<StripePortalRequest> PortalRequests = new List<StripePortalRequest>();
+        public ApiResult<StripePortalResponse> PortalResult = new ApiResult<StripePortalResponse>(200,
+            new StripePortalResponse { Status = "ok", Url = "https://billing.stripe.com/p/session/test_1" }, null);
+
+        public Task<ApiResult<StripePortalResponse>> CreateStripePortalAsync(StripePortalRequest request, CancellationToken ct = default)
+        {
+            PortalRequests.Add(request);
+            return Task.FromResult(PortalResult);
+        }
+
         public readonly List<StripeCheckoutRequest> Checkouts = new List<StripeCheckoutRequest>();
         public readonly List<StripeSessionRequest> SessionChecks = new List<StripeSessionRequest>();
         public ApiResult<StripeCheckoutResponse> CheckoutResult = new ApiResult<StripeCheckoutResponse>(200,
@@ -46,6 +56,7 @@ namespace Purser.Tests
         private BillingService m_Service;
         private readonly List<PurchaseResult> m_Events = new List<PurchaseResult>();
         private IAttributionProvider m_Attribution;
+        private string m_LoginUrl;
 
         [SetUp]
         public void SetUp()
@@ -63,6 +74,7 @@ namespace Purser.Tests
             m_Now = new DateTime(2026, 11, 10, 12, 0, 0, DateTimeKind.Utc);
             m_Events.Clear();
             m_Attribution = null;
+            m_LoginUrl = null;
         }
 
         [TearDown]
@@ -80,6 +92,7 @@ namespace Purser.Tests
             PollInterval = TimeSpan.FromSeconds(1),
             PaymentTimeout = TimeSpan.FromSeconds(2),
             OpenUrl = url => m_Opened.Add(url),
+            CustomerPortalLoginUrl = m_LoginUrl,
         };
 
         private BillingService CreateService()
@@ -103,11 +116,49 @@ namespace Purser.Tests
                 Storage = new MemoryBillingStorage(),
                 Delay = (d, ct) => Task.CompletedTask,
                 IsEditor = false,
+                OpenUrl = url => m_Opened.Add(url),
             });
             m_Service.PurchaseSucceeded += r => m_Events.Add(r);
             m_Service.PurchasePending += r => m_Events.Add(r);
             Sync.Run(m_Service.InitializeAsync());
             return m_Service;
+        }
+
+        [Test]
+        public void ManageSubscriptions_OpensAPortalSessionOfThePlayer()
+        {
+            CreateService();
+            Assert.IsTrue(Sync.Run(m_Service.OpenManageSubscriptionsAsync("vip")));
+            CollectionAssert.AreEqual(new[] { "https://billing.stripe.com/p/session/test_1" }, m_Opened);
+            var request = m_Stripe.PortalRequests.Single();
+            Assert.AreEqual(("com.test.game.web", User, "https://game.example/play"), (request.AppId, request.UserId, request.ReturnUrl));
+        }
+
+        [Test]
+        public void ManageSubscriptions_FallsBackToTheLoginPage()
+        {
+            m_LoginUrl = "https://billing.stripe.com/p/login/test_abc";
+            m_Stripe.PortalResult = new ApiResult<StripePortalResponse>(403,
+                new StripePortalResponse { Status = "error", Message = "the customer portal needs player tokens" }, "HTTP 403",
+                "ERR_PLAYER_TOKENS_REQUIRED");
+            CreateService();
+            Assert.IsTrue(Sync.Run(m_Service.OpenManageSubscriptionsAsync()));
+            CollectionAssert.AreEqual(new[] { "https://billing.stripe.com/p/login/test_abc" }, m_Opened);
+        }
+
+        [Test]
+        public void ManageSubscriptions_WithoutAPortal_OpensNothing()
+        {
+            m_Stripe.PortalResult = new ApiResult<StripePortalResponse>(404,
+                new StripePortalResponse { Status = "error", Message = "no subscription" }, "HTTP 404", "ERR_NO_SUBSCRIPTION");
+            CreateService();
+            Assert.IsFalse(Sync.Run(m_Service.OpenManageSubscriptionsAsync()));
+            CollectionAssert.IsEmpty(m_Opened);
+            // A page that is not https is never opened.
+            m_Stripe.PortalResult = new ApiResult<StripePortalResponse>(200,
+                new StripePortalResponse { Status = "ok", Url = "http://evil.example.com" }, null);
+            Assert.IsFalse(Sync.Run(m_Service.OpenManageSubscriptionsAsync()));
+            CollectionAssert.IsEmpty(m_Opened);
         }
 
         [Test]

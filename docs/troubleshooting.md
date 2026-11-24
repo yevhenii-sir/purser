@@ -19,6 +19,8 @@ problems before they reach players; the Logs page shows what the module did.
 | `ERR_NOT_REVOCABLE` | admin, `/server/revoke` | The purchase cannot be revoked in its state (still being verified, already ended). | Look at its history on the purchase page. |
 | `ERR_TX_EXISTS` | manual grant, `/server/grant` (`409`) | The `transaction_id` of a grant is already used (by another grant). | Use one id per grant; repeat the same request to get its result. |
 | `ERR_BAD_USER` | everywhere | A player id must be 1-128 characters of `A-Z a-z 0-9 - _ . :`. | — |
+| `ERR_PLAYER_TOKENS_REQUIRED` | `/manage/stripe`, `403` | The customer portal acts for the player's Stripe customer: only builds with player tokens get a session. | Use player tokens, or Stripe's customer portal login link (`StripeCheckoutOptions.CustomerPortalLoginUrl`). |
+| `ERR_NO_SUBSCRIPTION` | `/manage/stripe`, `404` | The player has no active Stripe subscription in this build. | The login link still lets a customer in by email. |
 | `ERR_OFFER_KEY` | `/offers/apple/sign` | The App Store In-App Purchase key for promotional offers is not configured. | Keys tab ([apple-offers.md](apple-offers.md)). |
 
 A purchase that stays *pending* on the Overview has a `last_error`: a store or delivery call that keeps failing

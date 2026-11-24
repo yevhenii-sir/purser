@@ -38,6 +38,16 @@ namespace Purser
         /// tab on WebGL). On WebGL a page opened after an await may be blocked as a popup: redirect the tab from a
         /// jslib instead (the session is checked again when the game loads).</summary>
         public Action<string> OpenUrl;
+
+        /// <summary>Stripe's customer portal login page (Stripe Dashboard → Settings → Billing → Customer portal →
+        /// "Login link", <c>https://billing.stripe.com/p/login/...</c>): opened by
+        /// <see cref="IBillingService.OpenManageSubscriptionsAsync"/> when the server gives no portal session (builds
+        /// without player tokens, a player without a subscription, no connection). The customer signs in there by
+        /// email.</summary>
+        public string CustomerPortalLoginUrl;
+
+        /// <summary>Where the customer portal's Return link leads; default: <see cref="CancelUrl"/>.</summary>
+        public string PortalReturnUrl;
     }
 
     /// <summary>
@@ -51,7 +61,7 @@ namespace Purser
     /// the Stripe Price id (<see cref="StripeCheckoutOptions.PriceIds"/>, or a <c>stripe</c> entry of
     /// <see cref="BillingProductConfig.storeIds"/>).
     /// </summary>
-    public sealed class StripeStoreAdapter : ServerCheckoutStoreAdapter, IWebhookStoreAdapter
+    public sealed class StripeStoreAdapter : ServerCheckoutStoreAdapter, IWebhookStoreAdapter, ISubscriptionManagementStore
     {
         private const string PendingKey = "purser.stripe.sessions";
 
@@ -148,6 +158,37 @@ namespace Purser
             return CheckAsync(order, token => m_Api.VerifyStripeSessionAsync(session, token), m_Options.PollInterval, m_Options.PaymentTimeout,
                 () => !string.IsNullOrEmpty(order.StoreProductId) && m_Cancelled.Remove(order.StoreProductId), ct);
         }
+
+        /// <summary>
+        /// The Customer Portal of the player's subscription: a session from the billing server (<c>/manage/stripe</c>,
+        /// builds with player tokens), else <see cref="StripeCheckoutOptions.CustomerPortalLoginUrl"/>; null when
+        /// neither is available.
+        /// </summary>
+        public async Task<string> GetManageSubscriptionsUrlAsync(string userId, CancellationToken ct)
+        {
+            if (!string.IsNullOrEmpty(userId) && m_Api is IStripePortalApi portal)
+            {
+                var request = new StripePortalRequest
+                {
+                    AppId = m_AppId,
+                    UserId = userId,
+                    ReturnUrl = string.IsNullOrEmpty(m_Options.PortalReturnUrl) ? m_Options.CancelUrl : m_Options.PortalReturnUrl,
+                };
+                var res = await portal.CreateStripePortalAsync(request, ct);
+                var url = res?.Value?.Url;
+                if (res != null && res.IsHttpSuccess && IsHttps(url))
+                    return url;
+                // No player tokens on the build or no subscription: expected, the login page is the way.
+                var message = "Stripe customer portal: " + (res?.Value?.Message ?? res?.Error ?? "no answer");
+                if (res?.Code == "ERR_PLAYER_TOKENS_REQUIRED" || res?.Code == "ERR_NO_SUBSCRIPTION")
+                    Log.Info(message);
+                else
+                    Log.Warning(message);
+            }
+            return IsHttps(m_Options.CustomerPortalLoginUrl) ? m_Options.CustomerPortalLoginUrl : null;
+        }
+
+        private static bool IsHttps(string url) => !string.IsNullOrEmpty(url) && url.StartsWith("https://", StringComparison.Ordinal);
 
         /// <summary>Signs the Stripe routes with player tokens when the API client supports it.</summary>
         public override void SetPlayerTokenProvider(IPlayerTokenProvider provider)

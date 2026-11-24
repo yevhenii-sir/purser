@@ -25,6 +25,11 @@ pub mod mode {
 pub const ERR_CLIENT_AUTH: &str = "ERR_CLIENT_AUTH";
 /// Error code of a request over a rate limit (HTTP 429, with `Retry-After`).
 pub const ERR_RATE_LIMITED: &str = "ERR_RATE_LIMITED";
+/// Error code of a request that only builds with player tokens may make (HTTP 403): it would let
+/// anyone who knows a player id act for that player (a store's billing portal).
+pub const ERR_PLAYER_TOKENS_REQUIRED: &str = "ERR_PLAYER_TOKENS_REQUIRED";
+/// Error code of a subscription management request of a player without a subscription there (HTTP 404).
+pub const ERR_NO_SUBSCRIPTION: &str = "ERR_NO_SUBSCRIPTION";
 /// Shortest player token secret accepted (bytes).
 pub const MIN_SECRET_BYTES: usize = 32;
 /// Clock difference allowed between the game backend and this server.
@@ -116,6 +121,7 @@ pub fn limits(route: &str) -> (Option<Limit>, Option<Limit>) {
         "paywall_event" => (l(60, 30), None),
         "offers" => (l(20, 10), None),
         "checkout" => (l(20, 10), l(600, 300)),
+        "manage" => (l(10, 5), l(300, 150)),
         _ => (None, None),
     }
 }

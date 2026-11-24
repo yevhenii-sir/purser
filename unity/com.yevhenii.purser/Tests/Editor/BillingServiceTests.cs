@@ -553,9 +553,9 @@ namespace Purser.Tests
         public void OpenManageSubscriptions_OpensTheStoresPage()
         {
             CreateService();
-            Assert.IsTrue(m_Service.OpenManageSubscriptions("premium"));
-            Assert.IsTrue(m_Service.OpenManageSubscriptions());
-            Assert.IsTrue(m_Service.OpenManageSubscriptions("gems_100"), "not a subscription: the whole list");
+            Assert.IsTrue(Sync.Run(m_Service.OpenManageSubscriptionsAsync("premium")));
+            Assert.IsTrue(Sync.Run(m_Service.OpenManageSubscriptionsAsync()));
+            Assert.IsTrue(Sync.Run(m_Service.OpenManageSubscriptionsAsync("gems_100")), "not a subscription: the whole list");
             CollectionAssert.AreEqual(new[]
             {
                 "https://play.google.com/store/account/subscriptions?sku=premium_android&package=com.test.game",
@@ -569,7 +569,7 @@ namespace Purser.Tests
         {
             m_Store.Platform = BillingPlatform.Apple;
             CreateService();
-            Assert.IsTrue(m_Service.OpenManageSubscriptions("premium"));
+            Assert.IsTrue(Sync.Run(m_Service.OpenManageSubscriptionsAsync("premium")));
             CollectionAssert.AreEqual(new[] { "https://apps.apple.com/account/subscriptions" }, m_OpenedUrls);
         }
 

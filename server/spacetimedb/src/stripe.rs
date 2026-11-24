@@ -1,5 +1,6 @@
 //! Stripe (web builds): `POST /checkout/stripe` creates a Checkout Session, `POST /verify/stripe`
-//! confirms one right after the redirect, `POST /notify/stripe?app=<app_id>` takes the webhooks.
+//! confirms one right after the redirect, `POST /notify/stripe?app=<app_id>` takes the webhooks,
+//! `POST /manage/stripe` opens the Customer Portal of a player's subscription.
 //!
 //! Stripe is a webhook store (`purser_core::registry::Verification::Webhook`): the webhook is the
 //! source of truth; `/verify/stripe` only lets the client get its answer without waiting for it.
@@ -176,6 +177,94 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> Answer {
 #[handler]
 pub fn checkout_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
     crate::client_guard::run(ctx, req, "checkout", false, |ctx, r: &CheckoutRequest| checkout(ctx, r))
+}
+
+// ---------------------------------------------------------------------------------------------
+// POST /manage/stripe
+// ---------------------------------------------------------------------------------------------
+
+impl crate::client_guard::ClientRequest for ManageRequest {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ManageRequest {
+    pub app_id: String,
+    pub user_id: String,
+    /// Where the portal's "Return" link leads (https; http://localhost on sandbox builds).
+    pub return_url: String,
+}
+
+fn coded(http: u16, code: &str, message: impl Into<String>) -> Answer {
+    (http, json!({ "status": "error", "code": code, "message": message.into() }))
+}
+
+/// A Stripe Customer Portal session for the player's subscription of the build (cancel it, change
+/// the payment method, see invoices): `{status: "ok", url}`. The portal acts for the Stripe
+/// customer, so only builds with player tokens get one (the guard checked the token); others link
+/// Stripe's own portal login page, where the customer signs in by email.
+pub fn manage(ctx: &mut impl Ctx, r: &ManageRequest) -> Answer {
+    if !valid_user_id(&r.user_id) {
+        return answer(400, "error", "invalid user_id");
+    }
+    // One transaction: the build, its key and the player's newest Stripe subscription.
+    let loaded = ctx.tx(|tx| {
+        config::find_app(tx, &r.app_id).map(|a| {
+            let subscription = crate::ledger_index::owned_by(tx, &r.user_id)
+                .into_iter()
+                .filter(|p| p.app_id == a.app_id && p.store == store::STRIPE && p.kind == kind::SUBSCRIPTION)
+                .max_by_key(|p| p.expires_at_ms)
+                .map(|p| p.original_transaction_id);
+            (secret_key(tx, &a), subscription, a)
+        })
+    });
+    let (mut key, subscription, app) = match loaded {
+        Some((key, subscription, app)) => (key, subscription, Some(app)),
+        None => (Auth::default(), None, None),
+    };
+    let app = match check_stripe_app(&r.app_id, app) {
+        Ok(a) => a,
+        Err(a) => return a,
+    };
+    if app.client_auth != purser_core::client_api::mode::SIGNED {
+        return coded(
+            403,
+            purser_core::client_api::ERR_PLAYER_TOKENS_REQUIRED,
+            "the customer portal needs player tokens (client_auth = signed); without them, link Stripe's customer portal login page",
+        );
+    }
+    if let Err(e) = st::check_return_url("return_url", &r.return_url, app.allow_sandbox) {
+        return answer(400, "error", e);
+    }
+    let Some(subscription) = subscription.filter(|s| s.starts_with("sub_")) else {
+        return coded(404, purser_core::client_api::ERR_NO_SUBSCRIPTION, "the player has no Stripe subscription in this build");
+    };
+    let url = st::subscription_url(&subscription)
+        .map_err(StoreError::Invalid)
+        .and_then(|url| call(ctx, &app, &mut key, "GET", &url, None))
+        .and_then(|res| st::subscription_customer(&res.body).map_err(StoreError::Transient))
+        .and_then(|customer| st::billing_portal_form(&customer, &r.return_url).map_err(StoreError::Transient))
+        .and_then(|form| call(ctx, &app, &mut key, "POST", &st::billing_portal_sessions_url(), Some(form)))
+        .and_then(|res| st::parse_portal_session(&res.body).map_err(StoreError::Transient));
+    match url {
+        Ok(url) => (200, json!({ "status": "ok", "url": url })),
+        // The portal is not set up in the Stripe Dashboard (live mode needs its settings saved).
+        Err(StoreError::Invalid(m)) => {
+            log::warn!("Stripe customer portal for {}: {m}", app.app_id);
+            answer(400, "error", m)
+        }
+        Err(e) => store_error(e),
+    }
+}
+
+#[handler]
+pub fn manage_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
+    crate::client_guard::run(ctx, req, "manage", false, |ctx, r: &ManageRequest| manage(ctx, r))
 }
 
 // ---------------------------------------------------------------------------------------------

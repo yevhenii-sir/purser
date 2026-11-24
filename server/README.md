@@ -101,7 +101,7 @@ Every per-store fact lives in one registry, [`core/src/registry.rs`](core/src/re
 | `apple` | `ios` | `/verify/apple` (transaction id) | `/notify/apple` (ASSN V2) | `apple_issuer_id`, `apple_key_id`, `apple_private_key_p8`, `apple_notification_secret` |
 | `amazon` | `amazon` | `/verify/amazon` (receipt id + Amazon user id) | `/notify/amazon?app=<app_id>` (RTN via SNS) | `amazon_shared_secret` |
 | `xsolla` | `web` | none: checkout `/checkout/xsolla`, granted by webhooks | `/notify/xsolla?app=<app_id>` (signed webhooks) | `xsolla_project_id`, `xsolla_api_key`, `xsolla_webhook_secret` |
-| `stripe` | `web` | webhooks; `/checkout/stripe` creates the Checkout Session, `/verify/stripe` confirms one after the redirect | `/notify/stripe?app=<app_id>` (signed webhooks) | `stripe_secret_key`, `stripe_webhook_secret` |
+| `stripe` | `web` | webhooks; `/checkout/stripe` creates the Checkout Session, `/verify/stripe` confirms one after the redirect, `/manage/stripe` opens the customer portal | `/notify/stripe?app=<app_id>` (signed webhooks) | `stripe_secret_key`, `stripe_webhook_secret` |
 | `steam` | `steam` | `/checkout/steam` (server `InitTxn`), then `/verify/steam` (order id) | none: the worker polls `GetReport` | `steam_publisher_key` |
 
 ### Products (`product`)
@@ -344,6 +344,10 @@ Publisher Account → the project → **Project settings → Webhooks**: this UR
 ### `POST /verify/stripe`
 
 `{"app_id": "...", "user_id": "...", "session_id": "cs_…"}`. Optional: lets the client get its answer right after the redirect instead of waiting for the webhook. Fetches the session (with its Subscription) and records it like the webhook would; the answer has the shape of `/verify/<store>`: `success` / `pending` once paid, `pending_or_canceled` while the session is open or after it expired, `403 forbidden` for a session of another user. Either path grants once.
+
+### `POST /manage/stripe`
+
+`{"app_id": "...", "user_id": "...", "return_url": "https://…"}` → `{"status": "ok", "url": "https://billing.stripe.com/p/session/…"}`. A customer portal session (cancel, change the payment method, invoices) for the Stripe customer of the player's newest active subscription of the build: the Subscription is fetched for its customer, then the session is created. Only builds with player tokens (`403 ERR_PLAYER_TOKENS_REQUIRED` otherwise: use Stripe's portal login link); `404 ERR_NO_SUBSCRIPTION` without an active subscription; `400` with Stripe's message when the portal is not set up in the Dashboard. Rate limit: 10 a minute per player.
 
 ### `POST /notify/stripe?app=<app_id>`
 

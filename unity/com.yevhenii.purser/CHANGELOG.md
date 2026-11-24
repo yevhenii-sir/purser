@@ -4,9 +4,12 @@
 
 ### Added
 
-- `IBillingService.OpenManageSubscriptions(productId)`: opens Google Play's page of a subscription (or of all of
-  them) or the App Store's subscriptions page; false for stores without one. `BillingDependencies.OpenUrl` replaces
-  `Application.OpenURL`.
+- `IBillingService.OpenManageSubscriptionsAsync(productId)`: opens Google Play's page of a subscription (or of all
+  of them), the App Store's subscriptions page or Stripe's customer portal (needs a server with `/manage/stripe`);
+  false for stores without one. `BillingDependencies.OpenUrl` replaces `Application.OpenURL`.
+- Stripe: `StripeCheckoutOptions.CustomerPortalLoginUrl` (the portal's login link, for builds without player tokens)
+  and `PortalReturnUrl`; `IStripePortalApi` (`/manage/stripe`, implemented by `BillingApiClient`),
+  `ISubscriptionManagementStore` for store adapters.
 - `IBillingService.PresentOfferCodeRedemption()`: the App Store's offer code redemption sheet (through Unity IAP);
   `IOfferCodeRedemptionStore` for store adapters.
 - Prices per period: `StoreProduct.PricePer(unit)`, `LocalizedPricePer(unit)` (formatted like the store's

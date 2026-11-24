@@ -16,6 +16,7 @@
 //! | POST   | `/checkout/xsolla`, `/checkout/xsolla/status` | game client / website: Xsolla payment token, order status (`xsolla.rs`) |
 //! | POST   | `/checkout/stripe` | web client: creates a Stripe Checkout Session (`stripe.rs`) |
 //! | POST   | `/verify/stripe`   | web client after the Checkout redirect: confirms the session |
+//! | POST   | `/manage/stripe`   | web client: a Customer Portal session of the player's subscription (builds with player tokens) |
 //!
 //! SpacetimeDB routes have no path parameters: `routes()` registers one route per store of the
 //! registry, and `verify_store` / `notify_store` dispatch on the last path segment.
@@ -1209,7 +1210,10 @@ fn routes() -> Router {
         }
     }
     // Stripe: checkout and the optional confirmation after the redirect (webhooks are the source of truth).
-    router = router.post("/checkout/stripe", crate::stripe::checkout_stripe).post("/verify/stripe", crate::stripe::verify_stripe);
+    router = router
+        .post("/checkout/stripe", crate::stripe::checkout_stripe)
+        .post("/verify/stripe", crate::stripe::verify_stripe)
+        .post("/manage/stripe", crate::stripe::manage_stripe);
     router
 }
 
