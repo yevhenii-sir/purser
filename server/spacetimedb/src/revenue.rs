@@ -290,8 +290,14 @@ pub(crate) fn period_facts(p: &Purchase) -> PeriodFacts {
     PeriodFacts { trial: false, trial_conversion: p.trial_conversion, after_first_year: p.after_first_year }
 }
 
+/// Rows that are never sales: manual grants and items moved from the Xsolla inventory of the old
+/// client-side integration.
+fn not_a_sale(p: &Purchase) -> bool {
+    p.store == store::MANUAL || purser_core::xsolla::is_moved(&p.store, &p.purchase_token)
+}
+
 fn refund_delta(p: &Purchase) -> Option<Delta> {
-    if p.store == store::MANUAL {
+    if not_a_sale(p) {
         return None;
     }
     rv::refund_delta_with(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &period_facts(p))
@@ -373,7 +379,7 @@ fn counts_live(tx: &ReducerContext, p: &Purchase) -> bool {
 
 /// The first grant of a purchase (`was_granted` was false).
 pub fn on_first_grant(tx: &ReducerContext, p: &Purchase) {
-    if p.store == store::MANUAL || !counts_live(tx, p) {
+    if not_a_sale(p) || !counts_live(tx, p) {
         return;
     }
     if let Some(d) = rv::grant_delta_with(&p.store, grant_kind(p), p.price_micros, &period_facts(p)) {
@@ -418,7 +424,7 @@ fn chain_facts(tx: &ReducerContext, rows: &[Purchase]) -> HashMap<String, Period
     let mut out = HashMap::new();
     let mut seen: BTreeSet<(&str, &str, &str)> = BTreeSet::new();
     for p in rows {
-        if p.kind != kind::SUBSCRIPTION || p.original_transaction_id.is_empty() || p.store == store::MANUAL {
+        if p.kind != kind::SUBSCRIPTION || p.original_transaction_id.is_empty() || not_a_sale(p) {
             continue;
         }
         if !seen.insert((p.app_id.as_str(), p.store.as_str(), p.original_transaction_id.as_str())) {
@@ -447,7 +453,7 @@ fn count_purchases(tx: &ReducerContext, rows: &[Purchase]) {
     let facts = chain_facts(tx, rows);
     let mut b = Batch::default();
     for p in rows {
-        if p.store == store::MANUAL {
+        if not_a_sale(p) {
             continue;
         }
         let f = facts.get(&p.id).copied().unwrap_or(PeriodFacts { trial: p.trial, ..Default::default() });
@@ -631,7 +637,7 @@ pub fn rebuild_at_once(tx: &ReducerContext) {
     };
     let rows: Vec<Purchase> = tx.db.purchase().iter().collect();
     for p in &rows {
-        if p.was_granted && p.store != store::MANUAL {
+        if p.was_granted && !not_a_sale(p) {
             if let Some(d) = rv::grant_delta_with(&p.store, grant_kind(p), p.price_micros, &period_facts(p)) {
                 apply(tx, p, day_of_micros(p.created_at_micros), &d);
             }
@@ -727,7 +733,7 @@ fn active_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> BTreeMa
     let mut latest: BTreeMap<(String, String), Purchase> = BTreeMap::new();
     // What players own now (an in-memory list), not every row whose period has not ended.
     for p in crate::ledger_index::owned_in(tx, apps) {
-        if p.kind != kind::SUBSCRIPTION || p.store == store::MANUAL || p.expires_at_ms <= now_ms {
+        if p.kind != kind::SUBSCRIPTION || not_a_sale(&p) || p.expires_at_ms <= now_ms {
             continue;
         }
         let k = (p.app_id.clone(), p.original_transaction_id.clone());
@@ -752,7 +758,7 @@ fn subscription_states(tx: &ReducerContext, apps: &BTreeSet<String>, include_san
     let mut latest: BTreeMap<(String, String), Purchase> = BTreeMap::new();
     for p in crate::ledger_index::owned_in(tx, apps) {
         let skip = p.kind != kind::SUBSCRIPTION
-            || p.store == store::MANUAL
+            || not_a_sale(&p)
             || (p.access_until_ms() != 0 && p.access_until_ms() <= now_ms)
             || (!include_sandbox && p.environment == purser_core::model::environment::SANDBOX);
         if skip {
@@ -1010,7 +1016,7 @@ fn ledger_rows(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32)
     let window_start = month_start(rv::month_index(from));
     let window_end = month_start(rv::month_index(to) + 1) - 1;
     let start_micros = window_start as i64 * MICROS_PER_DAY;
-    let wanted = |p: &Purchase| p.store != store::MANUAL && (apps.is_empty() || apps.contains(&p.app_id));
+    let wanted = |p: &Purchase| !not_a_sale(p) && (apps.is_empty() || apps.contains(&p.app_id));
 
     let mut campaigns: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut row_of = |p: Purchase| {

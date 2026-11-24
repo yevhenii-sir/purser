@@ -5,7 +5,7 @@
 use super::*;
 use crate::config::secret_name;
 use crate::{
-    access_token_cache, admin, app_profile, credential, game_app, product, retry_schedule, AccessTokenCache, Admin, Credential, Purchase,
+    access_token_cache, admin, app_policy, app_profile, credential, game_app, product, retry_schedule, AccessTokenCache, Admin, Credential, Purchase,
     RetrySchedule,
 };
 use purser_core::model::{kind, status};
@@ -598,6 +598,39 @@ fn consumed_purchase_is_granted_when_the_client_consumes_itself() {
 
     assert_eq!((o.http, o.body["status"].as_str()), (200, Some("success")));
     assert_eq!(w.calls("/call/billing_grant"), 1);
+}
+
+#[test]
+fn observed_purchase_finished_by_the_client_is_recorded_without_store_calls() {
+    let w = World::new();
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
+        app.delivery = "none".into();
+        tx.db.game_app().app_id().update(app);
+    });
+    // The game's own IAP code granted the gems and consumed the purchase before asking.
+    w.fake.borrow_mut().consumed = true;
+    let o = w.verify_with_fields("player-1", json!({ "client_finished": true }));
+
+    assert_eq!((o.http, o.body["status"].as_str(), o.body["delivery"].as_str()), (200, Some("success"), Some("client")));
+    let p = w.purchase();
+    assert_eq!((p.status.as_str(), p.store_action.as_str()), (status::COMPLETED, purser_core::model::store_action::NONE));
+    assert_eq!(w.calls(":consume") + w.calls(":acknowledge"), 0);
+    assert_eq!(w.calls("/call/"), 0);
+    // Reported again (the game's queue retried): answered from the ledger.
+    assert_eq!(w.verify_with_fields("player-1", json!({ "client_finished": true })).body["status"], "success");
+}
+
+#[test]
+fn client_finished_is_ignored_when_the_server_delivers() {
+    let w = World::new();
+    // A consumed purchase the ledger does not know, replayed with the flag to a server-delivery
+    // build: the flag does not unlock a grant.
+    w.fake.borrow_mut().consumed = true;
+    let o = w.verify_with_fields("player-1", json!({ "client_finished": true }));
+    assert_eq!((o.http, o.body["status"].as_str()), (403, Some("forbidden")));
+    assert!(w.find_purchase().is_none());
+    assert_eq!(w.calls("/call/"), 0);
 }
 
 #[test]
@@ -1304,6 +1337,54 @@ fn purchases_are_sent_to_tenjin_with_the_device_ids_from_the_client() {
     crate::integrations::send_integration_event(&mut w.ctx(), rows.into_iter().next().unwrap());
     let call = w.fake.borrow().calls.iter().find(|c| c.contains("tenjin")).cloned().expect("Tenjin call");
     assert!(call.starts_with("POST https://track.tenjin.com/v0/purchase"), "{call}");
+}
+
+#[test]
+fn first_purchases_the_game_reports_itself_are_not_sent_twice() {
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "tenjin", json!({ "skip_client_purchases": true }));
+    w.set_secret(secret_name::TENJIN_SDK_KEY, "tenjin-key");
+    let r: VerifyRequest = serde_json::from_value(json!({
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "attribution": { "tenjin_id": "b1c5d7c4-1c4f-4d6e-9e2a-3a2f1f0a9b10" },
+    }))
+    .unwrap();
+    assert_eq!(verify(&mut w.ctx(), store::GOOGLE, &r).body["status"], "success");
+    for row in outbox(&w) {
+        crate::integrations::send_integration_event(&mut w.ctx(), row);
+    }
+    assert_eq!(w.calls("tenjin.com"), 0, "the game's Tenjin SDK reported the purchase");
+
+    // Unknown kinds are refused when the integration is saved.
+    let bad = w.test.with_reducer_tx(TestAuth::internal(), |ctx| {
+        crate::admin_upsert_integration(ctx, json!({ "app_id": APP, "kind": "tenjin", "settings": { "events": ["bought"] } }).to_string())
+    });
+    assert!(bad.unwrap_err().contains("unknown event kind"));
+}
+
+#[test]
+fn child_directed_apps_keep_no_advertising_ids() {
+    let w = World::new();
+    let game_key = w.read(|tx| tx.db.game_app().app_id().find(APP.to_string()).unwrap().game_key);
+    w.as_admin(true);
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_set_app_policy(ctx, game_key.clone(), true)).unwrap();
+    let r: VerifyRequest = serde_json::from_value(json!({
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "attribution": { "tenjin_id": "b1c5d7c4-1c4f-4d6e-9e2a-3a2f1f0a9b10", "advertising_id": "gaid-1", "idfa": "idfa-1" },
+    }))
+    .unwrap();
+    assert_eq!(verify(&mut w.ctx(), store::GOOGLE, &r).body["status"], "success");
+    let ids = w.read(|tx| crate::integrations::load_attribution(tx, APP, "player-1"));
+    assert_eq!(ids.keys().map(String::as_str).collect::<Vec<_>>(), ["tenjin_id"]);
+
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_set_app_policy(ctx, game_key.clone(), false)).unwrap();
+    assert!(w.read(|tx| tx.db.app_policy().game_key().find(&game_key)).is_none());
+    assert!(w
+        .test
+        .with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_set_app_policy(ctx, "no-such-app".into(), true))
+        .unwrap_err()
+        .contains("ERR_UNKNOWN_APP"));
 }
 
 fn outbox(w: &World) -> Vec<crate::integrations::IntegrationOutbox> {
@@ -3109,6 +3190,78 @@ fn add_xsolla_build(w: &World, allow_sandbox: bool) {
     w.set_secret(purser_core::xsolla::PROJECT_ID, "44056");
     w.set_secret(purser_core::xsolla::API_KEY, "xsolla-api-key");
     w.set_secret(purser_core::xsolla::WEBHOOK_SECRET, XSOLLA_SECRET);
+}
+
+/// A Login token of the old device-id integration (the server only reads its claims).
+fn xsolla_login_token(sub: &str, login_project: &str) -> String {
+    let part = |v: Value| purser_core::jwt::b64url(v.to_string().as_bytes());
+    format!(
+        "{}.{}.c2ln",
+        part(json!({ "alg": "HS256", "typ": "JWT" })),
+        part(json!({ "sub": sub, "xsolla_login_project_id": login_project, "exp": 1_900_000_000 }))
+    )
+}
+
+fn xsolla_claim(w: &World, user: &str, token: &str) -> (u16, Value) {
+    let r: crate::xsolla::ClaimRequest =
+        serde_json::from_value(json!({ "app_id": XSOLLA_APP, "user_id": user, "xsolla_token": token })).unwrap();
+    crate::xsolla::claim(&mut w.ctx(), &r)
+}
+
+#[test]
+fn xsolla_inventory_of_the_old_login_moves_to_the_player_once() {
+    let w = World::new();
+    add_xsolla_build(&w, false);
+    w.script(
+        "store.xsolla.com/api/v2/project/44056/user/inventory/items",
+        200,
+        r#"{"items":[{"sku":"no_ads","quantity":null},{"sku":"gems_100","quantity":3},{"sku":"old_sku","quantity":1}]}"#,
+    );
+    let token = xsolla_login_token("4f1c-77", "login-1");
+    let (http, body) = xsolla_claim(&w, "player-1", &token);
+    assert_eq!((http, body["status"].as_str()), (200, Some("ok")), "{body}");
+    assert_eq!(body["claimed"][0]["product_id"], "no_ads");
+    let skipped: Vec<_> = body["skipped"].as_array().unwrap().iter().map(|s| s["product_id"].as_str().unwrap()).collect();
+    assert_eq!(skipped, ["gems_100", "old_sku"], "consumables were used up; unknown SKUs stay");
+    let id = "xsolla:inventory:4f1c-77:no_ads";
+    let row = w.read(|tx| tx.db.purchase().id().find(id.to_string())).expect("moved row");
+    assert_eq!((row.user_id.as_str(), row.price_micros), ("player-1", 0));
+    assert!(status::is_owned(&row.status), "{}", row.status);
+    let grants = w.calls("/call/billing_grant");
+    assert_eq!(grants, 1, "the game gets the item like a purchase");
+
+    // Again (a retry): nothing new.
+    assert_eq!(xsolla_claim(&w, "player-1", &token).0, 200);
+    assert_eq!(w.calls("/call/billing_grant"), grants);
+    // Not a sale: no revenue.
+    assert!(w.read(|tx| { use crate::revenue::revenue_daily; tx.db.revenue_daily() }.iter().next()).is_none());
+
+    // The game was reinstalled: a new player id with the same Xsolla login gets the item.
+    xsolla_claim(&w, "player-2", &token);
+    w.advance_clock(61);
+    w.run_worker();
+    let row = w.read(|tx| tx.db.purchase().id().find(id.to_string())).unwrap();
+    assert_eq!(row.user_id, "player-2");
+}
+
+#[test]
+fn xsolla_claim_needs_a_token_xsolla_accepts() {
+    let w = World::new();
+    add_xsolla_build(&w, false);
+    let (http, body) = xsolla_claim(&w, "player-1", "not-a-token");
+    assert_eq!(http, 400);
+    assert!(body["message"].as_str().unwrap().contains("ERR_XSOLLA_TOKEN"));
+
+    w.script("user/inventory/items", 401, r#"{"errorCode":1501}"#);
+    let (http, body) = xsolla_claim(&w, "player-1", &xsolla_login_token("4f1c-77", "login-1"));
+    assert_eq!((http, body["status"].as_str()), (400, Some("invalid")));
+    assert!(body["message"].as_str().unwrap().contains("did not accept"));
+
+    w.set_secret(purser_core::xsolla::LOGIN_PROJECT_ID, "login-1");
+    let (http, body) = xsolla_claim(&w, "player-1", &xsolla_login_token("4f1c-77", "login-other"));
+    assert_eq!(http, 400);
+    assert!(body["message"].as_str().unwrap().contains("another Xsolla Login project"));
+    assert!(w.read(|tx| tx.db.purchase().iter().next()).is_none());
 }
 
 fn xsolla_checkout(w: &World, body: Value) -> (u16, Value) {
@@ -5475,6 +5628,7 @@ fn parse_sdk_request(route: &str, body: &Value) -> Result<(), String> {
         "/manage/stripe" => p::<crate::stripe::ManageRequest>(body),
         "/checkout/xsolla" => p::<crate::xsolla::CheckoutRequest>(body),
         "/checkout/xsolla/status" => p::<crate::xsolla::StatusRequest>(body),
+        "/claim/xsolla" => p::<crate::xsolla::ClaimRequest>(body),
         other => Err(format!("no route {other} (or the contract test does not know it yet)")),
     }
 }

@@ -6,7 +6,8 @@
       "name": "Android",
       "os": "android",
       "stores": [
-        "google"
+        "google",
+        "xsolla"
       ]
     },
     {
@@ -15,7 +16,8 @@
       "name": "iOS",
       "os": "ios",
       "stores": [
-        "apple"
+        "apple",
+        "xsolla"
       ]
     },
     {
@@ -300,7 +302,9 @@
       "notify_route": "/notify/xsolla",
       "notify_secret": null,
       "platforms": [
-        "web"
+        "web",
+        "android",
+        "ios"
       ],
       "polls_subscriptions": false,
       "product_create": [
@@ -331,6 +335,13 @@
           "label": "Xsolla project secret key (Project settings → Webhooks → Secret key)",
           "name": "xsolla_webhook_secret",
           "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Xsolla Login project ID, for moving inventory of the old device-id login (optional, not secret)",
+          "name": "xsolla_login_project_id",
+          "need": "optional"
         }
       ],
       "verification": "webhook",

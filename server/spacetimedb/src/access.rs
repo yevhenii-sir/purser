@@ -10,7 +10,7 @@ use crate::paywalls::{paywall, paywall_test, placement};
 use crate::settings::server_state;
 use crate::store_create::store_create_job;
 use std::collections::BTreeSet;
-use crate::{admin, app_profile, credential, game_app, product, purchase, purchase_log, retry_schedule, spacetime_host, Admin};
+use crate::{admin, app_policy, app_profile, credential, game_app, product, purchase, purchase_log, retry_schedule, spacetime_host, Admin};
 use purser_core::roles::{self, Cap, Role};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -333,6 +333,7 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
         "game_app" if column == "game_key" => rows(db.game_app().game_key().filter(value)),
         "game_app" => rows(db.game_app().iter()),
         "app_profile" => rows(db.app_profile().iter()),
+        "app_policy" => rows(db.app_policy().iter()),
         "product" if column == "app_id" => rows(db.product().app_id().filter(value)),
         "product" => rows(db.product().iter()),
         "integration" if column == "app_id" => rows(db.integration().app_id().filter(value)),

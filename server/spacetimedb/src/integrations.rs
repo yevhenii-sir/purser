@@ -152,6 +152,14 @@ pub(crate) fn attribution_key(app_id: &str, user_id: &str) -> String {
 
 /// Remembers the identifiers a client sent (only non-empty updates overwrite).
 pub fn save_attribution(tx: &ReducerContext, app_id: &str, user_id: &str, attribution: &BTreeMap<String, String>) {
+    let without_ads;
+    let attribution = if crate::app_policy_of(tx, app_id).no_ad_ids {
+        let ads = purser_core::integrations::attribution_key::ADVERTISING;
+        without_ads = attribution.iter().filter(|(k, _)| !ads.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
+        &without_ads
+    } else {
+        attribution
+    };
     if attribution.is_empty() {
         return;
     }
@@ -222,6 +230,7 @@ fn active_kinds(tx: &ReducerContext, app: &GameApp) -> Vec<String> {
 /// Validates the settings of an integration kind (admin input).
 pub fn validate_settings(kind: &str, settings_json: &str) -> Result<(), String> {
     revenue_mode::of_settings(settings_json)?;
+    purser_core::integrations::common::Settings::parse(settings_json)?;
     match kind {
         integration_kind::GA4 => ga4::Settings::parse(settings_json).map(|_| ()),
         integration_kind::APPSFLYER => appsflyer::Settings::parse(settings_json).map(|_| ()),
@@ -306,6 +315,10 @@ fn build_call(tx: &TxContext, row: &IntegrationOutbox, event: &OutEvent, access_
     let Some(integration) = integration.filter(|i| i.enabled) else {
         return Ok(Built::Skip(format!("{} integration is disabled", row.kind)));
     };
+    // Event kinds and client-reported first purchases, the same for every kind.
+    if let Some(reason) = purser_core::integrations::common::Settings::parse(&integration.settings_json)?.skip(event) {
+        return Ok(Built::Skip(reason));
+    }
     let secret = |name: &str| config::require_secret(tx, &app, name).map(|s| s.value);
     // What the analytics integrations report as revenue; the webhook and the export carry all amounts.
     let priced = event.with_revenue_mode(revenue_mode::of_settings(&integration.settings_json)?);

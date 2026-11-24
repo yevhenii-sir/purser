@@ -40,6 +40,22 @@ pub mod event_kind {
 
     /// Subscription changes without money: only the webhook and the Cloud Storage export get them.
     pub const LIFECYCLE: &[&str] = &[CANCEL, UNCANCEL, BILLING_ISSUE, BILLING_RECOVERED, PRODUCT_CHANGE, PAUSE, RESUME];
+
+    /// Every kind an integration can be sent (`test` is not filtered).
+    pub const ALL: &[&str] = &[
+        PURCHASE,
+        SUBSCRIPTION_START,
+        RENEWAL,
+        REFUND,
+        EXPIRE,
+        CANCEL,
+        UNCANCEL,
+        BILLING_ISSUE,
+        BILLING_RECOVERED,
+        PRODUCT_CHANGE,
+        PAUSE,
+        RESUME,
+    ];
 }
 
 pub mod integration_kind {
@@ -99,6 +115,10 @@ pub mod attribution_key {
     pub const AMPLITUDE_DEVICE_ID: &str = "amplitude_device_id";
     /// Facebook SDK anonymous install id (`AppEventsLogger.getAnonymousAppDeviceGUID`), Meta's `anon_id`.
     pub const META_ANON_ID: &str = "meta_anon_id";
+
+    /// Advertising identifiers and ad attribution: dropped for child-directed apps.
+    pub const ADVERTISING: &[&str] =
+        &[ADVERTISING_ID, OAID, IDFA, ATT, ASA_ORG_ID, ASA_CAMPAIGN_ID, ASA_AD_GROUP_ID, ASA_KEYWORD_ID, ASA_AD_ID, ASA_COUNTRY, META_ANON_ID];
 
     pub const ALL: &[&str] = &[
         APPSFLYER_ID,
@@ -193,6 +213,53 @@ pub mod revenue_mode {
             PROCEEDS => Ok(PROCEEDS),
             NET => Ok(NET),
             other => Err(format!("revenue must be gross, proceeds or net, not '{other}'")),
+        }
+    }
+}
+
+/// Settings every integration kind understands, next to its own (`revenue` is [`revenue_mode`]).
+pub mod common {
+    use super::*;
+
+    /// Stores whose first purchases the game sees itself (store SDK on the device): a game that
+    /// already reports them from the client (Tenjin / Firebase / AppMetrica SDK) sets
+    /// `skip_client_purchases` so they are not counted twice.
+    pub const CLIENT_REPORTED_STORES: &[&str] = &[crate::model::store::GOOGLE, crate::model::store::APPLE, crate::model::store::AMAZON];
+
+    #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+    pub struct Settings {
+        /// Only these event kinds; empty = all of them (`test` always passes).
+        #[serde(default)]
+        pub events: Vec<String>,
+        /// Leave out first purchases and subscription starts of [`CLIENT_REPORTED_STORES`]: the
+        /// game's SDKs report them. Renewals, refunds, subscription changes and purchases of web /
+        /// desktop stores (Xsolla, Stripe, Steam) are still sent.
+        #[serde(default)]
+        pub skip_client_purchases: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            let s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid settings: {e}"))?;
+            if let Some(bad) = s.events.iter().find(|e| !event_kind::ALL.contains(&e.as_str())) {
+                return Err(format!("events: unknown event kind '{bad}' (one of {})", event_kind::ALL.join(", ")));
+            }
+            Ok(s)
+        }
+
+        /// `Some(reason)` when the event is not for this integration.
+        pub fn skip(&self, ev: &OutEvent) -> Option<String> {
+            if ev.kind == event_kind::TEST {
+                return None;
+            }
+            if !self.events.is_empty() && !self.events.contains(&ev.kind) {
+                return Some(format!("'{}' is not in the integration's events", ev.kind));
+            }
+            let first = ev.kind == event_kind::PURCHASE || ev.kind == event_kind::SUBSCRIPTION_START;
+            if self.skip_client_purchases && first && CLIENT_REPORTED_STORES.contains(&ev.store.as_str()) {
+                return Some(format!("{} of a {} purchase: the game reports it", ev.kind, ev.store));
+            }
+            None
         }
     }
 }
@@ -654,11 +721,6 @@ pub mod webhook {
         /// Also send sandbox / license-tester purchases (default: no).
         #[serde(default)]
         pub send_sandbox: bool,
-        /// Only these event kinds; empty = all (`purchase`, `subscription_start`, `renewal`,
-        /// `refund`, `expire`, and the subscription changes of `event_kind::LIFECYCLE`; `test`
-        /// always passes).
-        #[serde(default)]
-        pub events: Vec<String>,
     }
 
     impl Settings {
@@ -678,9 +740,6 @@ pub mod webhook {
         }
         if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
             return Ok(Built::Skip("sandbox purchase".into()));
-        }
-        if ev.kind != event_kind::TEST && !settings.events.is_empty() && !settings.events.contains(&ev.kind) {
-            return Ok(Built::Skip(format!("webhook does not want '{}'", ev.kind)));
         }
         let body = ev.payload()?;
         Ok(Built::Send(HttpCall {
@@ -935,9 +994,6 @@ pub mod gcs {
         /// Also export sandbox / license-tester purchases (default: no).
         #[serde(default)]
         pub send_sandbox: bool,
-        /// Only these event kinds; empty = all (`test` always passes).
-        #[serde(default)]
-        pub events: Vec<String>,
     }
 
     impl Settings {
@@ -988,9 +1044,6 @@ pub mod gcs {
         }
         if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
             return Ok(Built::Skip("sandbox purchase".into()));
-        }
-        if ev.kind != event_kind::TEST && !settings.events.is_empty() && !settings.events.contains(&ev.kind) {
-            return Ok(Built::Skip(format!("export does not want '{}'", ev.kind)));
         }
         let body = ev.payload()? + "\n";
         Ok(Built::Send(HttpCall {
@@ -1660,7 +1713,6 @@ mod tests {
         assert_eq!(sig, crate::event::webhook_signature("secret", call.body.as_bytes()));
         let body: Value = serde_json::from_str(&call.body).unwrap();
         assert_eq!((body["kind"].as_str(), body["price_micros"].as_i64()), (Some("purchase"), Some(4_990_000)));
-        assert!(matches!(webhook::build(&event("renewal", "android"), &s, "secret").unwrap(), Built::Skip(_)));
         assert!(matches!(webhook::build(&event("test", "android"), &s, "secret").unwrap(), Built::Send(_)));
         assert!(webhook::build(&event("purchase", "android"), &s, "").is_err());
     }
@@ -1793,6 +1845,27 @@ mod tests {
     }
 
     #[test]
+    fn common_settings_filter_events_of_every_integration() {
+        let none = common::Settings::parse(r#"{"url":"https://example.com/hook"}"#).unwrap();
+        assert_eq!(none.skip(&event("purchase", "android")), None);
+
+        let only = common::Settings::parse(r#"{"events":["refund","renewal"]}"#).unwrap();
+        assert!(only.skip(&event("purchase", "android")).is_some());
+        assert_eq!(only.skip(&event("refund", "android")), None);
+        assert_eq!(only.skip(&event("test", "android")), None, "test events always pass");
+        assert!(common::Settings::parse(r#"{"events":["purchased"]}"#).unwrap_err().contains("unknown event kind"));
+
+        let skip = common::Settings::parse(r#"{"skip_client_purchases":true}"#).unwrap();
+        assert!(skip.skip(&event("purchase", "android")).unwrap().contains("the game reports it"));
+        assert!(skip.skip(&event("subscription_start", "ios")).is_some());
+        assert_eq!(skip.skip(&event("renewal", "android")), None);
+        assert_eq!(skip.skip(&event("refund", "android")), None);
+        let mut xsolla = event("purchase", "android");
+        xsolla.store = "xsolla".into();
+        assert_eq!(skip.skip(&xsolla), None, "web store purchases are never seen by the game's SDKs");
+    }
+
+    #[test]
     fn gcs_object_per_event() {
         let s = gcs::Settings::parse(r#"{"bucket":"my-billing-events","folder":"/billing/events/"}"#).unwrap();
         assert_eq!(s.folder, "billing/events");
@@ -1809,8 +1882,6 @@ mod tests {
         let mut odd = event("refund", "ios");
         odd.transaction_id = "a/b c".into();
         assert!(gcs::object_name(&odd, "").starts_with("dt=2026-10-05/1791198123123-refund-a_b_c"));
-        let only = gcs::Settings { events: vec!["refund".into()], ..s.clone() };
-        assert!(matches!(gcs::build(&event("purchase", "android"), &only, "t").unwrap(), Built::Skip(_)));
         assert!(gcs::Settings::parse(r#"{"bucket":"Bad Bucket"}"#).is_err());
         assert!(gcs::Settings::parse(r#"{"bucket":"ok-bucket","folder":"../x"}"#).is_err());
         assert!(gcs::build(&event("purchase", "android"), &s, "").is_err());

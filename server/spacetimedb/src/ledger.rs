@@ -154,6 +154,8 @@ pub struct Claim {
     pub paywall: Attribution,
     /// The store offer the client says the player bought; empty when none.
     pub offer_id: String,
+    /// The client finished the purchase in the store itself: no consume / acknowledge here.
+    pub client_finished: bool,
 }
 
 impl Claim {
@@ -259,7 +261,11 @@ fn record_row(
     let user_id = claim.user_id.as_str();
     let id = st.ledger_id();
     let grants_on_client = app.is_some_and(|a| delivery::grants_on_client(&a.delivery));
-    let action = st.store_action_after_grant(&product.kind, grants_on_client).to_string();
+    let action = if claim.client_finished {
+        purser_core::model::store_action::NONE.to_string()
+    } else {
+        st.store_action_after_grant(&product.kind, grants_on_client).to_string()
+    };
     crate::poll::schedule(tx, &id, st, &product.kind);
 
     if let Some(mut p) = tx.db.purchase().id().find(&id) {
@@ -722,7 +728,9 @@ fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event:
     p.updated_at_micros = now;
     if let Some(ev) = integration_event {
         let first_grant = matches!(ev, event_kind::PURCHASE | event_kind::SUBSCRIPTION_START | event_kind::RENEWAL);
-        if !first_grant || !p.was_granted {
+        // Items moved from the old Xsolla inventory were bought before: not a purchase to report.
+        let moved = purser_core::xsolla::is_moved(&p.store, &p.purchase_token);
+        if (!first_grant || !p.was_granted) && !moved {
             integrations::enqueue(tx, &p, ev);
         }
         if first_grant && !p.was_granted {

@@ -27,11 +27,16 @@ pub const PROJECT_ID: &str = "xsolla_project_id";
 pub const API_KEY: &str = "xsolla_api_key";
 /// Publisher Account → the project → Project settings → Webhooks → secret key.
 pub const WEBHOOK_SECRET: &str = "xsolla_webhook_secret";
+/// Publisher Account → Login → the login project: its id (a UUID, not secret). Optional: when set,
+/// `/claim/xsolla` only accepts player tokens of this login project.
+pub const LOGIN_PROJECT_ID: &str = "xsolla_login_project_id";
 
 pub const STORE: StoreInfo = StoreInfo {
     id: store::XSOLLA,
     name: "Xsolla",
-    platforms: &[platform::WEB],
+    // Web shops, and mobile games that sell through Pay Station next to the app store (a build of
+    // its own on Android / iOS: attribution integrations then get the device ids).
+    platforms: &[platform::WEB, platform::ANDROID, platform::IOS],
     implemented: true,
     verification: Verification::Webhook,
     notifications: true,
@@ -57,6 +62,13 @@ pub const STORE: StoreInfo = StoreInfo {
             name: WEBHOOK_SECRET,
             label: "Xsolla project secret key (Project settings → Webhooks → Secret key)",
             need: Need::Required,
+            account_wide: false,
+            file: false,
+        },
+        SecretSpec {
+            name: LOGIN_PROJECT_ID,
+            label: "Xsolla Login project ID, for moving inventory of the old device-id login (optional, not secret)",
+            need: Need::Optional,
             account_wide: false,
             file: false,
         },
@@ -141,7 +153,8 @@ pub struct TokenRequest {
     pub user_id: String,
     pub sku: String,
     pub sandbox: bool,
-    /// Where Pay Station sends the player after paying (optional, http(s)).
+    /// Where Pay Station sends the player after paying (optional): an https page, or an app link
+    /// (`mygame://...`) that brings a mobile game back.
     pub return_url: String,
     /// ISO 3166-1 alpha-2; Xsolla needs the country (or the player's IP) to pick the currency.
     pub country: String,
@@ -178,7 +191,16 @@ pub fn token_request_body(r: &TokenRequest) -> Result<String, String> {
     }
     let mut settings = serde_json::Map::new();
     if !r.return_url.is_empty() {
-        crate::stripe::check_return_url("return_url", &r.return_url, r.sandbox)?;
+        if is_app_link(&r.return_url) {
+            check_app_link(&r.return_url)?;
+            // Back to the game right away, whatever the result: the game asks the server.
+            settings.insert(
+                "redirect_policy".into(),
+                json!({ "redirect_conditions": "any", "delay": 0, "status_for_manual_redirection": "none" }),
+            );
+        } else {
+            crate::stripe::check_return_url("return_url", &r.return_url, r.sandbox)?;
+        }
         settings.insert("return_url".into(), json!(r.return_url));
     }
     if !r.currency.is_empty() {
@@ -197,6 +219,123 @@ pub fn token_request_body(r: &TokenRequest) -> Result<String, String> {
         body["settings"] = Value::Object(settings);
     }
     Ok(body.to_string())
+}
+
+/// Schemes that are never an app's own link (they run code, open files or other apps' intents).
+const FORBIDDEN_SCHEMES: &[&str] =
+    &["http", "https", "javascript", "data", "file", "intent", "content", "about", "blob", "vbscript", "filesystem", "ftp"];
+
+/// The return URL names an app scheme (`mygame://...`) rather than a web page.
+pub fn is_app_link(url: &str) -> bool {
+    !(url.starts_with("https://") || url.starts_with("http://"))
+}
+
+/// An app link of a mobile game: `<scheme>://...` with a scheme of its own (lowercase letter, then
+/// letters, digits, `+ . -`), no spaces or control characters.
+pub fn check_app_link(url: &str) -> Result<(), String> {
+    let bad = || Err("return_url must be an https URL or an app link like mygame://purchase".to_string());
+    if url.len() > 2048 || url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return bad();
+    }
+    let Some((scheme, rest)) = url.split_once("://") else { return bad() };
+    let valid = scheme.len() >= 2
+        && scheme.len() <= 64
+        && scheme.starts_with(|c: char| c.is_ascii_lowercase())
+        && scheme.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'));
+    if !valid || FORBIDDEN_SCHEMES.contains(&scheme) || rest.is_empty() {
+        return bad();
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------
+// Moving purchases of the old client-side integration (device-id login + inventory)
+// ---------------------------------------------------------------------
+
+/// Items per page of the inventory call (the API's maximum).
+pub const INVENTORY_PAGE: u32 = 50;
+/// Pages read per claim at most (500 items).
+pub const INVENTORY_MAX_PAGES: u32 = 10;
+
+/// What the server reads from a player's Xsolla Login token before asking Xsolla about it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoginClaims {
+    /// Xsolla Login user id.
+    pub sub: String,
+    /// Login project the token was issued by (`xsolla_login_project_id`).
+    pub login_project_id: String,
+    /// Expiry, seconds since the epoch; 0 when missing.
+    pub exp: i64,
+}
+
+/// Claims of a Login JWT **without** checking its signature: the token is only passed on to Xsolla,
+/// which rejects a forged or expired one (the inventory call answers 401). The claims pick the
+/// player whose items are moved and are checked against the build's login project.
+pub fn login_claims_unverified(token: &str) -> Result<LoginClaims, String> {
+    if token.len() > 8192 || token.chars().any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))) {
+        return Err("xsolla_token is not a JWT".into());
+    }
+    let v = crate::jwt::decode_jws_payload(token).map_err(|_| "xsolla_token is not a JWT".to_string())?;
+    let sub = v["sub"].as_str().unwrap_or("").to_string();
+    if sub.is_empty() || sub.len() > 128 || !sub.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':')) {
+        return Err("xsolla_token has no valid user id (sub)".into());
+    }
+    Ok(LoginClaims {
+        sub,
+        login_project_id: v["xsolla_login_project_id"].as_str().unwrap_or("").to_string(),
+        exp: v["exp"].as_i64().unwrap_or(0),
+    })
+}
+
+/// `GET` URL of a page of the player's inventory (Bearer = the player's Login token).
+pub fn inventory_url(project_id: &str, page: u32) -> Result<String, String> {
+    Ok(format!(
+        "{STORE_API}/v2/project/{}/user/inventory/items?limit={INVENTORY_PAGE}&offset={}",
+        project(project_id)?,
+        page * INVENTORY_PAGE
+    ))
+}
+
+/// One page of the inventory: SKUs the player holds (quantity above zero, or no quantity for items
+/// bought once) and whether another page may follow.
+pub fn parse_inventory_page(body: &str) -> Result<(Vec<String>, bool), String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("inventory is not JSON: {e}"))?;
+    let items = v["items"].as_array().ok_or("inventory has no items array")?;
+    let skus = items
+        .iter()
+        .filter(|i| i["quantity"].as_i64().is_none_or(|q| q > 0))
+        .filter_map(|i| i["sku"].as_str())
+        .filter(|sku| valid_sku(sku))
+        .map(str::to_string)
+        .collect();
+    Ok((skus, items.len() as u32 >= INVENTORY_PAGE))
+}
+
+/// `purchase_token` prefix of items moved from the inventory of the old integration.
+pub const MOVED_TOKEN_PREFIX: &str = "inventory:";
+
+/// A ledger row moved from the Xsolla inventory of the old client-side integration: owned, but not
+/// a sale here (no revenue, no integration events).
+pub fn is_moved(store_name: &str, purchase_token: &str) -> bool {
+    store_name == store::XSOLLA && purchase_token.starts_with(MOVED_TOKEN_PREFIX)
+}
+
+/// Ledger transaction id of an item moved from the inventory: one per Login user and SKU, so a
+/// repeated claim records nothing new and the item follows the restore rules between players.
+pub fn claim_transaction_id(sub: &str, sku: &str) -> String {
+    format!("inventory:{sub}:{sku}")
+}
+
+/// The ledger row of a moved inventory item: owned, nothing paid here (the payment was counted, if
+/// at all, by the old integration), `purchase_token` = `inventory:<sub>`.
+pub fn claim_store_tx(app_id: &str, sub: &str, sku: &str) -> StoreTx {
+    let id = claim_transaction_id(sub, sku);
+    let mut tx = store_tx(app_id, sku, &Paid::default(), &id);
+    tx.transaction_id = id;
+    tx.purchase_token = format!("{MOVED_TOKEN_PREFIX}{sub}");
+    tx.price_micros = 0;
+    tx.currency = String::new();
+    tx
 }
 
 /// Meaning of an HTTP status of the Store API.
@@ -575,6 +714,50 @@ pub fn classify_items(status: u16, body: &str, skus: &[String]) -> Verdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn jwt(payload: Value) -> String {
+        let b = |v: &Value| crate::jwt::b64url(v.to_string().as_bytes());
+        format!("{}.{}.sig", b(&json!({"alg": "HS256"})), b(&payload))
+    }
+
+    #[test]
+    fn app_links_bring_mobile_games_back_from_pay_station() {
+        let r = |url: &str| TokenRequest { user_id: "p1".into(), sku: "gems".into(), return_url: url.into(), ..Default::default() };
+        let body: Value = serde_json::from_str(&token_request_body(&r("mygame://purchase")).unwrap()).unwrap();
+        assert_eq!(body["settings"]["return_url"], "mygame://purchase");
+        assert_eq!(body["settings"]["redirect_policy"]["redirect_conditions"], "any");
+        let web: Value = serde_json::from_str(&token_request_body(&r("https://example.com/back")).unwrap()).unwrap();
+        assert!(web["settings"].get("redirect_policy").is_none());
+        for bad in ["javascript://alert(1)", "intent://x", "file://etc", "MyGame://x", "x://y", "mygame:/x", "mygame://", "my game://x"] {
+            assert!(token_request_body(&r(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn inventory_claims_read_the_login_token_and_items() {
+        let token = jwt(json!({ "sub": "d3a1-77", "xsolla_login_project_id": "lp-1", "exp": 1_900_000_000 }));
+        let c = login_claims_unverified(&token).unwrap();
+        assert_eq!((c.sub.as_str(), c.login_project_id.as_str(), c.exp), ("d3a1-77", "lp-1", 1_900_000_000));
+        assert!(login_claims_unverified("not a token").is_err());
+        assert!(login_claims_unverified(&jwt(json!({ "exp": 1 }))).is_err(), "no sub");
+
+        assert_eq!(
+            inventory_url("12345", 2).unwrap(),
+            "https://store.xsolla.com/api/v2/project/12345/user/inventory/items?limit=50&offset=100"
+        );
+        let (skus, more) = parse_inventory_page(
+            r#"{"items":[{"sku":"premium_car","quantity":null},{"sku":"gems_100","quantity":0},{"sku":"no_ads","quantity":1}]}"#,
+        )
+        .unwrap();
+        assert_eq!((skus, more), (vec!["premium_car".to_string(), "no_ads".to_string()], false));
+        assert!(parse_inventory_page("{}").is_err());
+
+        let tx = claim_store_tx("com.example.game.xsolla", "d3a1-77", "no_ads");
+        assert_eq!(tx.ledger_id(), "xsolla:inventory:d3a1-77:no_ads");
+        assert_eq!((tx.purchase_token.as_str(), tx.price_micros, tx.state), ("inventory:d3a1-77", 0, TxState::Active));
+        assert!(is_moved(store::XSOLLA, &tx.purchase_token));
+        assert!(!is_moved(store::XSOLLA, "8812345"), "an order id");
+    }
 
     const SECRET: &str = "project-secret-key";
 

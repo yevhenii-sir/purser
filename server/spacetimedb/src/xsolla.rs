@@ -5,6 +5,7 @@
 //! |--------|----------------------------|--------|
 //! | POST   | `/checkout/xsolla`         | game client / website: payment token + Pay Station URL for one item |
 //! | POST   | `/checkout/xsolla/status`  | game client / website: has the order been paid and granted? |
+//! | POST   | `/claim/xsolla`            | game client: moves items of the old device-id login's inventory to the player |
 //! | POST   | `/notify/xsolla?app=<id>`  | Xsolla webhooks (signed with the project secret key) |
 //!
 //! Xsolla grants through webhooks only: `order_paid` / `payment` record the purchase for the user id
@@ -289,6 +290,132 @@ pub(crate) fn checkout_status(ctx: &mut impl Ctx, r: &StatusRequest) -> Answer {
 #[handler]
 pub(crate) fn checkout_status_route(ctx: &mut HandlerContext, req: Request) -> Response {
     crate::client_guard::run(ctx, req, "entitlements", false, |ctx, r: &StatusRequest| checkout_status(ctx, r))
+}
+
+// ---------------------------------------------------------------------
+// Moving the inventory of the old client-side integration
+// ---------------------------------------------------------------------
+
+impl crate::client_guard::ClientRequest for ClaimRequest {
+    fn app_id(&self) -> &str {
+        &self.app_id
+    }
+    fn user_id(&self) -> &str {
+        &self.user_id
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ClaimRequest {
+    pub app_id: String,
+    pub user_id: String,
+    /// The player's Xsolla Login token (the old integration's device-id login).
+    pub xsolla_token: String,
+}
+
+/// Items of the player's Xsolla inventory that are non-consumable products of the build become
+/// owned purchases of `user_id` (`purser_core::xsolla::claim_store_tx`): not sales, no integration
+/// events. The token goes to Xsolla only (it rejects a forged or expired one). The same Login user
+/// claimed by another player follows the restore rules (the previous player loses the item, within
+/// the app's transfer limits).
+pub(crate) fn claim(ctx: &mut impl Ctx, r: &ClaimRequest) -> Answer {
+    if !valid_user_id(&r.user_id) {
+        return answer(400, "error", "invalid user_id");
+    }
+    let claims = match x::login_claims_unverified(&r.xsolla_token) {
+        Ok(c) => c,
+        Err(e) => return answer(400, "invalid", format!("[ERR_XSOLLA_TOKEN] {e}")),
+    };
+    let loaded = ctx.tx(|tx| {
+        let app = xsolla_app(tx, &r.app_id)?;
+        let project_id = config::secret(tx, &app, x::PROJECT_ID).map(|s| s.value);
+        let login_project = config::secret(tx, &app, x::LOGIN_PROJECT_ID).map(|s| s.value).unwrap_or_default();
+        Ok((app, project_id, login_project))
+    });
+    let (app, project_id, login_project) = match loaded {
+        Ok(v) => v,
+        Err(a) => return a,
+    };
+    if !login_project.trim().is_empty() && claims.login_project_id != login_project.trim() {
+        return answer(400, "invalid", "[ERR_XSOLLA_TOKEN] the token is from another Xsolla Login project");
+    }
+    let Some(project_id) = project_id else {
+        log::error!("{}: {} must be set to move Xsolla inventories", app.app_id, x::PROJECT_ID);
+        return answer(500, "error", "store credentials are not configured correctly");
+    };
+
+    // The inventory, page by page, while the request has time.
+    let budget = crate::ctx::Budget::new(ctx, crate::ctx::REQUEST_BUDGET_SECS);
+    let bearer = format!("Bearer {}", r.xsolla_token);
+    let mut skus: Vec<String> = Vec::new();
+    for page in 0..x::INVENTORY_MAX_PAGES {
+        if page > 0 && !budget.left() {
+            break;
+        }
+        let url = match x::inventory_url(&project_id, page) {
+            Ok(u) => u,
+            Err(e) => {
+                log::error!("{}: {e}", app.app_id);
+                return answer(500, "error", "store credentials are not configured correctly");
+            }
+        };
+        let headers = [("Authorization", bearer.as_str()), ("Accept", "application/json")];
+        let res = match net::send(ctx.http(), "GET", &url, &headers, Vec::<u8>::new()) {
+            Ok(res) => res,
+            Err(e) => {
+                log::warn!("Xsolla inventory for {}: {e}", app.app_id);
+                return answer(502, "error", "store is temporarily unavailable, retry later");
+            }
+        };
+        match res.status {
+            200..=299 => {}
+            401 | 403 => return answer(400, "invalid", "[ERR_XSOLLA_TOKEN] Xsolla did not accept the token (expired or forged)"),
+            s if s >= 500 || s == 429 => return answer(502, "error", "store is temporarily unavailable, retry later"),
+            s => return answer(400, "invalid", format!("Xsolla refused the inventory request (HTTP {s})")),
+        }
+        let (items, more) = match x::parse_inventory_page(&res.body) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("Xsolla inventory for {}: {e}", app.app_id);
+                return answer(502, "error", "store is temporarily unavailable, retry later");
+            }
+        };
+        skus.extend(items);
+        if !more {
+            break;
+        }
+    }
+    skus.sort();
+    skus.dedup();
+
+    let mut claimed = Vec::new();
+    let mut skipped = Vec::new();
+    for sku in skus {
+        let st = x::claim_store_tx(&app.app_id, &claims.sub, &sku);
+        let recorded = ctx.tx(|tx| {
+            let Some(product) = config::find_product(tx, &app.app_id, &sku) else {
+                return Err("not a product of this build".to_string());
+            };
+            if product.kind != kind::NON_CONSUMABLE {
+                return Err(format!("a {} (only items bought once move)", product.kind));
+            }
+            ledger::record_and_lease(tx, &app, &product, &st, &ledger::Claim::user(&r.user_id, "")).map_err(|e| e.to_string())
+        });
+        match recorded {
+            Ok(lease) => {
+                let status = ledger::run(ctx, lease).map(|p| p.status).unwrap_or_default();
+                claimed.push(json!({ "product_id": sku, "purchase_status": status }));
+            }
+            Err(reason) => skipped.push(json!({ "product_id": sku, "reason": reason })),
+        }
+    }
+    log::info!("{}: moved {} Xsolla inventory item(s) of {} to {}", app.app_id, claimed.len(), claims.sub, r.user_id);
+    (200, json!({ "status": "ok", "claimed": claimed, "skipped": skipped }))
+}
+
+#[handler]
+pub(crate) fn claim_route(ctx: &mut HandlerContext, req: Request) -> Response {
+    crate::client_guard::run(ctx, req, "claim", false, |ctx, r: &ClaimRequest| claim(ctx, r))
 }
 
 // ---------------------------------------------------------------------

@@ -122,6 +122,8 @@ pub fn limits(route: &str) -> (Option<Limit>, Option<Limit>) {
         "offers" => (l(20, 10), None),
         "checkout" => (l(20, 10), l(600, 300)),
         "manage" => (l(10, 5), l(300, 150)),
+        // Once per player in a transition version of the game; each call reads Xsolla pages.
+        "claim" => (l(3, 3), l(300, 150)),
         _ => (None, None),
     }
 }

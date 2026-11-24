@@ -341,10 +341,18 @@ pub static PLATFORMS: &[PlatformInfo] = &[
         id: platform::ANDROID,
         name: "Android",
         os: Some("android"),
-        stores: &[store::GOOGLE],
+        // Xsolla next to Google Play: an Android game that sells some players through Pay Station
+        // (a build of its own with store `xsolla`; entitlements are shared by the app's builds).
+        stores: &[store::GOOGLE, store::XSOLLA],
         default_store: Some(store::GOOGLE),
     },
-    PlatformInfo { id: platform::IOS, name: "iOS", os: Some("ios"), stores: &[store::APPLE], default_store: Some(store::APPLE) },
+    PlatformInfo {
+        id: platform::IOS,
+        name: "iOS",
+        os: Some("ios"),
+        stores: &[store::APPLE, store::XSOLLA],
+        default_store: Some(store::APPLE),
+    },
     PlatformInfo {
         id: platform::AMAZON,
         name: "Amazon",
@@ -435,6 +443,8 @@ mod tests {
         assert_eq!(build_store("web", "stripe").unwrap().id, store::STRIPE);
         assert!(build_store("desktop", "").is_err());
         assert!(build_store("web", "manual").is_err());
+        assert_eq!(build_store("android", "xsolla").unwrap().id, store::XSOLLA, "Pay Station next to Google Play");
+        assert_eq!(build_store("android", "").unwrap().id, store::GOOGLE);
     }
 
     #[test]

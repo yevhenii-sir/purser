@@ -168,6 +168,11 @@ struct VerifyRequest {
     /// Device the client runs on (shown on the admin page's player profile).
     #[serde(default)]
     client: ClientInfo,
+    /// The client already finished the purchase in the store (observer mode: the game's own IAP
+    /// code consumed / acknowledged it). Honored for builds where the client grants (`delivery`
+    /// `none`): the server records the purchase and leaves the store alone.
+    #[serde(default)]
+    client_finished: bool,
 }
 
 impl VerifyRequest {
@@ -311,7 +316,9 @@ fn verify_with(
 
     match st.state {
         TxState::Active => {
+            let client_finished = r.client_finished && delivery::grants_on_client(&app.delivery);
             let claim = ledger::Claim {
+                client_finished,
                 price_micros: r.price_micros,
                 currency: r.currency.clone(),
                 paywall: r.paywall(),
@@ -323,7 +330,7 @@ fn verify_with(
             // (leased as it is written, so the worker cannot take it before this request runs it).
             let recorded = ctx.tx(|tx| {
                 health::verified(tx, &app.app_id, fetched_ok);
-                if ledger::consumed_elsewhere(tx, app, &product, &st) {
+                if !client_finished && ledger::consumed_elsewhere(tx, app, &product, &st) {
                     return Recorded::ConsumedElsewhere;
                 }
                 // Before recording: the grant transition reads these ids for integration events.
@@ -445,6 +452,10 @@ struct RestoreRequest {
     purchases: Vec<RestoreItem>,
     #[serde(default)]
     client: ClientInfo,
+    /// The game's own IAP code finished these purchases in the store (observer mode), see
+    /// [`VerifyRequest::client_finished`].
+    #[serde(default)]
+    client_finished: bool,
 }
 
 /// Seconds a `/restore` call may spend starting the checks of its purchases.
@@ -516,6 +527,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
             paywall_id: String::new(),
             offer_id: String::new(),
             client: ClientInfo::default(),
+            client_finished: r.client_finished,
         };
         let o = verify_with(ctx, &app, product, &mut auth, &environment, &v);
         results.push(json!({
@@ -1197,6 +1209,7 @@ fn routes() -> Router {
         .post("/offers/apple/sign", offers_apple_sign)
         .post("/checkout/xsolla", crate::xsolla::checkout_route)
         .post("/checkout/xsolla/status", crate::xsolla::checkout_status_route)
+        .post("/claim/xsolla", crate::xsolla::claim_route)
         .post("/checkout/steam", checkout_steam)
         .post("/server/entitlements", crate::server_api::server_entitlements)
         .post("/server/grant", crate::server_api::server_grant)

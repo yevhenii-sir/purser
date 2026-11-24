@@ -386,6 +386,23 @@ pub struct AppProfile {
     pub display_name: String,
 }
 
+/// Privacy rules of an app (a `game_key` group of builds); no row = none.
+#[spacetimedb::table(accessor = app_policy, cache_policy = required_in_memory)]
+pub struct AppPolicy {
+    #[primary_key]
+    pub game_key: String,
+    /// Child-directed app (Google Play Families, Apple Kids Category, COPPA): advertising ids
+    /// (`purser_core::integrations::attribution_key::ADVERTISING`) are dropped when clients send
+    /// them, so they are neither stored nor sent to integrations.
+    pub no_ad_ids: bool,
+}
+
+/// The policy of the app a build belongs to (default: none).
+pub fn app_policy_of(tx: &ReducerContext, app_id: &str) -> AppPolicy {
+    let game_key = tx.db.game_app().app_id().find(app_id.to_string()).map(|a| a.game_key).unwrap_or_default();
+    tx.db.app_policy().game_key().find(&game_key).unwrap_or(AppPolicy { game_key, no_ad_ids: false })
+}
+
 /// Repeating schedule for the ledger worker (`ledger::process_pending`).
 #[spacetimedb::table(accessor = retry_schedule, cache_policy = required_in_memory, scheduled(process_pending))]
 pub struct RetrySchedule {
@@ -701,6 +718,21 @@ pub fn admin_set_app_name(ctx: &ReducerContext, game_key: String, name: String) 
     ctx.db.app_profile().game_key().delete(&game_key);
     if !name.is_empty() {
         ctx.db.app_profile().insert(AppProfile { game_key, display_name: name });
+    }
+    Ok(())
+}
+
+/// Sets the privacy rules of an app (`game_key`): `no_ad_ids` for child-directed apps.
+#[spacetimedb::reducer]
+pub fn admin_set_app_policy(ctx: &ReducerContext, game_key: String, no_ad_ids: bool) -> Result<(), String> {
+    let who = crate::access::require_game(ctx, purser_core::roles::Cap::Configure, &game_key)?;
+    crate::access::audit(ctx, &who, "admin_set_app_policy", &game_key, &format!("no_ad_ids={no_ad_ids}"));
+    if !ctx.db.game_app().iter().any(|a| a.game_key == game_key) {
+        return Err(format!("[ERR_UNKNOWN_APP] No app {game_key}"));
+    }
+    ctx.db.app_policy().game_key().delete(&game_key);
+    if no_ad_ids {
+        ctx.db.app_policy().insert(AppPolicy { game_key, no_ad_ids });
     }
     Ok(())
 }
