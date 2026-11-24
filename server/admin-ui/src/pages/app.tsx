@@ -111,21 +111,32 @@ function BuildChip({ app, level }: { app: GameApp; level?: Level }) {
   )
 }
 
-/** Edits the app's display name (`app_profile`); the key stays as it is. */
+/** Edits the app's display name (`app_profile`, the key stays as it is) and its privacy policy
+ * (`app_policy`: no advertising ids for child-directed apps). */
 function RenameButton({ group }: { group: AppGroup }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
+  const [noAdIds, setNoAdIds] = useState(false)
+  const [storedNoAdIds, setStoredNoAdIds] = useState(false)
   const [busy, setBusy] = useState(false)
   const start = () => {
     setName(group.name === group.key ? "" : group.name)
     setOpen(true)
+    select<{ game_key: string; no_ad_ids: boolean }>({ table: "app_policy", where: { column: "game_key", equals: group.key } })
+      .then((rows) => {
+        const v = rows.some((r) => r.no_ad_ids)
+        setNoAdIds(v)
+        setStoredNoAdIds(v)
+      })
+      .catch(() => {})
   }
   const save = async () => {
     setBusy(true)
     const done = await tryAct(async () => {
       await call("admin_set_app_name", group.key, name.trim())
+      if (noAdIds !== storedNoAdIds) await call("admin_set_app_policy", group.key, noAdIds)
       return true
-    }, name.trim() ? "Renamed" : "Name removed")
+    }, "Saved")
     setBusy(false)
     if (done) {
       setOpen(false)
@@ -140,7 +151,7 @@ function RenameButton({ group }: { group: AppGroup }) {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Rename the app</DialogTitle>
+            <DialogTitle>App settings</DialogTitle>
             <DialogDescription>
               The name shown in the admin panel. The app key <Mono>{group.key}</Mono> stays the same: paywalls, revenue and
               shared entitlements are keyed by it.
@@ -150,6 +161,16 @@ function RenameButton({ group }: { group: AppGroup }) {
             <Input value={name} maxLength={80} placeholder={group.key} autoFocus
               onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !busy) save() }} />
           </Field>
+          <div className="flex items-start gap-2">
+            <Checkbox id="no-ad-ids" checked={noAdIds} onCheckedChange={(v) => setNoAdIds(v === true)} className="mt-0.5" />
+            <div className="min-w-0">
+              <label htmlFor="no-ad-ids" className="text-sm">Child-directed app: keep no advertising ids</label>
+              <p className="text-xs text-muted-foreground">
+                Google Play Families, Apple Kids Category, COPPA: advertising ids the client sends (GAID, IDFA, OAID, Apple Ads,
+                Meta) are dropped, so they are neither stored nor sent to integrations.
+              </p>
+            </div>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
             <Button onClick={save} disabled={busy}>Save</Button>

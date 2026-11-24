@@ -25,7 +25,7 @@ const REVENUE_MODES = [
 ]
 /** Integrations that get every amount in the event instead of one revenue figure. */
 const ALL_AMOUNTS: Kind[] = ["webhook", "gcs"]
-const EVENT_KINDS = ["purchase", "subscription_start", "renewal", "refund", "expire", "cancel", "uncancel", "billing_issue", "billing_recovered", "product_change"]
+const EVENT_KINDS = ["purchase", "subscription_start", "renewal", "refund", "expire", "cancel", "uncancel", "billing_issue", "billing_recovered", "product_change", "pause", "resume"]
 const AF_EVENTS: [string, string][] = [["purchase", "af_purchase"], ["subscription_start", "af_subscribe"], ["renewal", "subscription_renew"], ["refund", "refund"], ["expire", "(off)"]]
 const ANY = "__all__"
 
@@ -264,7 +264,6 @@ function IntegrationForm({ kind, row, apps, onClose, onSaved }: {
                 <Field label="Bucket"><Input value={s.bucket || ""} onChange={(e) => set("bucket", e.target.value.trim())} placeholder="my-billing-events" className="font-mono text-xs" /></Field>
                 <Field label="Folder"><Input value={s.folder || ""} onChange={(e) => set("folder", e.target.value.trim())} placeholder="billing/events" className="font-mono text-xs" /></Field>
               </div>
-              {eventFilter}
               <p className="text-xs text-muted-foreground">
                 Files: <code>{s.folder ? `${s.folder}/` : ""}dt=YYYY-MM-DD/&lt;time&gt;-&lt;event&gt;-&lt;transaction&gt;.json</code>, one JSON line each.
                 In BigQuery: an external table over <code>gs://{s.bucket || "bucket"}/{s.folder ? `${s.folder}/` : ""}*</code> with format NEWLINE_DELIMITED_JSON and hive partitioning on <code>dt</code>.
@@ -276,7 +275,6 @@ function IntegrationForm({ kind, row, apps, onClose, onSaved }: {
               <Field label="URL (https)">
                 <Input value={s.url || ""} onChange={(e) => set("url", e.target.value.trim())} placeholder="https://example.com/billing-events" className="font-mono text-xs" />
               </Field>
-              {eventFilter}
               <p className="text-xs text-muted-foreground">
                 POST with the event as JSON and the headers <code>X-Billing-Event</code> and <code>X-Billing-Signature: hex(HMAC-SHA256(key, body))</code>.
               </p>
@@ -320,6 +318,15 @@ function IntegrationForm({ kind, row, apps, onClose, onSaved }: {
 
           <div className="rounded-lg bg-muted/50 p-3 text-xs">
             <span className="font-medium">The client sends in <code>attribution</code>: </span>{def.client}
+          </div>
+
+          <div className="space-y-3 rounded-lg border p-3">
+            {eventFilter}
+            {check("skip_client_purchases", "Leave out first purchases of Google Play, App Store and Amazon: the game's SDKs report them")}
+            <p className="text-xs text-muted-foreground">
+              For games whose Tenjin / Firebase / AppMetrica SDK already reports purchases: renewals, refunds, cancellations
+              and purchases through Xsolla, Stripe and Steam still go out from the server, so nothing is counted twice.
+            </p>
           </div>
 
           <div className="flex flex-wrap gap-6">
