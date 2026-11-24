@@ -31,6 +31,25 @@
       }
     },
     {
+      "route": "/verify/google",
+      "body": {
+        "app_id": "com.studio.game",
+        "user_id": "player-1",
+        "product_id": "gems",
+        "purchase_token": "tok-observed",
+        "order_id": "GPA.5555-6666-7777-88888",
+        "price_micros": 990000,
+        "currency": "USD",
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.9.0"
+        },
+        "client_finished": true
+      }
+    },
+    {
       "route": "/verify/apple",
       "body": {
         "app_id": "com.studio.game.ios",
@@ -102,6 +121,21 @@
           "app_version": "1.2.1",
           "sdk_version": "0.9.0"
         }
+      }
+    },
+    {
+      "route": "/restore",
+      "body": {
+        "app_id": "com.studio.game",
+        "user_id": "player-1",
+        "purchases": [
+          {
+            "product_id": "no_ads",
+            "purchase_token": "tok-old",
+            "order_id": "GPA.1"
+          }
+        ],
+        "client_finished": true
       }
     },
     {

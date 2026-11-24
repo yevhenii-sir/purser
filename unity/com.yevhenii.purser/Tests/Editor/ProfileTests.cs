@@ -103,7 +103,7 @@ namespace Purser.Tests
             CollectionAssert.AreEqual(new[]
             {
                 "androidStore", "bindPurchasesToUser", "builds", "collectAppleAdsAttribution", "developmentProfile", "editorMode",
-                "editorProfile", "entitlementsMaxAgeDays", "logLevel", "products", "profiles", "refreshEntitlementsOnInit",
+                "editorProfile", "entitlementsMaxAgeDays", "failOpenAfterSeconds", "logLevel", "products", "profiles", "refreshEntitlementsOnInit",
                 "releaseProfile", "requestTimeoutSeconds", "responseSigningPublicKey", "retryDelaysSeconds", "serverBaseUrl",
             }, fields.ToArray());
             m_Config.androidStore = AndroidStore.AmazonAppstore;
@@ -111,6 +111,7 @@ namespace Purser.Tests
             m_Config.collectAppleAdsAttribution = true;
             m_Config.editorMode = EditorVerificationMode.CallServer;
             m_Config.entitlementsMaxAgeDays = 3;
+            m_Config.failOpenAfterSeconds = 8;
             m_Config.refreshEntitlementsOnInit = false;
             m_Config.requestTimeoutSeconds = 9;
             m_Config.retryDelaysSeconds = new[] { 1, 2 };

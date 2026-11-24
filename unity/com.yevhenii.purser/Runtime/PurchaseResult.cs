@@ -49,17 +49,25 @@ namespace Purser
         public bool IsSuccess => Status == PurchaseStatus.Success || Status == PurchaseStatus.PendingDelivery;
 
         /// <summary>
+        /// Granted before the server answered: it could not be reached for <see cref="BillingConfig.failOpenAfterSeconds"/>.
+        /// The purchase is verified later; a refusal raises <see cref="IBillingService.PurchaseRejected"/> with this flag
+        /// set, and the game may take the reward back.
+        /// </summary>
+        public bool Provisional { get; }
+
+        /// <summary>
         /// The game has no backend and must grant the reward itself (server <c>delivery = none</c>).
         /// Grant it inside <see cref="IBillingService.PurchaseSucceeded"/>, once per <see cref="TransactionId"/>:
         /// the store purchase is finished only after the handlers ran, so a crash in between makes the
         /// store deliver the same purchase again.
         /// </summary>
-        public bool GrantOnClient => Server?.Delivery == VerifyDelivery.Client;
+        public bool GrantOnClient => Server?.Delivery == VerifyDelivery.Client || (Provisional && Status == PurchaseStatus.Success);
 
         /// <summary>Creates a result (custom adapters, tests).</summary>
         public PurchaseResult(PurchaseStatus status, string productId, string storeProductId = null,
-            string transactionId = null, string message = null, VerifyResponse server = null)
+            string transactionId = null, string message = null, VerifyResponse server = null, bool provisional = false)
         {
+            Provisional = provisional;
             Status = status;
             ProductId = productId;
             StoreProductId = storeProductId;
@@ -69,6 +77,6 @@ namespace Purser
         }
 
         /// <inheritdoc/>
-        public override string ToString() => $"{Status} {ProductId} {TransactionId} {Message}".Trim();
+        public override string ToString() => $"{Status}{(Provisional ? " (provisional)" : "")} {ProductId} {TransactionId} {Message}".Trim();
     }
 }

@@ -46,7 +46,7 @@ namespace Purser
     /// </summary>
     internal sealed partial class OrderProcessor
     {
-        private enum Outcome
+        internal enum Outcome
         {
             Success,
             PendingDelivery,
@@ -95,6 +95,8 @@ namespace Purser
         private readonly IStoreAdapter m_Store;
         private readonly IBillingApi m_Api;
         private readonly BillingLog m_Log;
+        /// <summary>Where purchases granted before the server answered (fail-open) wait for it.</summary>
+        private readonly ObservedPurchases m_Observed;
 
         /// <summary>Keys (<see cref="StoreOrder.Key"/>) of orders being verified.</summary>
         private readonly HashSet<string> m_InFlightKeys = new HashSet<string>();
@@ -115,8 +117,10 @@ namespace Purser
 
         /// <param name="refresher">Refreshed after a purchase that changes what the player has; holds the local grants
         /// of the Editor without the server.</param>
-        public OrderProcessor(BillingContext context, IOrderProcessorHost host, CustomerInfoRefresher refresher)
+        public OrderProcessor(BillingContext context, IOrderProcessorHost host, CustomerInfoRefresher refresher,
+            ObservedPurchases observed = null)
         {
+            m_Observed = observed;
             m_Context = context;
             m_Host = host;
             m_Refresher = refresher;

@@ -45,12 +45,22 @@ namespace Purser
                 var attempt = 0;
                 var rateLimited = 0;
                 var reported = false;
+                var failOpenAt = CanFailOpen(config) ? m_Context.UtcNow() + TimeSpan.FromSeconds(m_Config.failOpenAfterSeconds) : (DateTime?)null;
                 while (true)
                 {
                     // Webhook stores (Stripe, Xsolla) have no receipt: the adapter asks the server about the order.
-                    var response = m_Store is IWebhookStoreAdapter webhookStore
-                        ? await webhookStore.CheckOrderAsync(order, request, m_Context.Lifetime)
-                        : await m_Api.VerifyAsync(m_Store.Store, request, m_Context.Lifetime);
+                    var call = m_Store is IWebhookStoreAdapter webhookStore
+                        ? webhookStore.CheckOrderAsync(order, request, m_Context.Lifetime)
+                        : m_Api.VerifyAsync(m_Store.Store, request, m_Context.Lifetime);
+                    if (failOpenAt.HasValue && !await AnsweredBeforeAsync(call, failOpenAt.Value))
+                    {
+                        // The server did not answer in time: grant now, verify later from the kept purchases.
+                        if (m_Context.IsDisposed)
+                            return;
+                        FailOpen(order, config, productId, user, request, context);
+                        return;
+                    }
+                    var response = await call;
                     if (m_Context.IsDisposed)
                         return;
                     var outcome = Classify(response);
@@ -121,6 +131,72 @@ namespace Purser
             }
         }
 
+        /// <summary>Fail-open applies to the order: <see cref="BillingConfig.failOpenAfterSeconds"/> is set, the product is
+        /// known and not <see cref="BillingProductConfig.strictVerification"/>, and the store's purchase can be verified
+        /// after it was finished (receipt stores, not webhook stores).</summary>
+        private bool CanFailOpen(BillingProductConfig config) =>
+            m_Observed != null && m_Config.failOpenAfterSeconds > 0 && config != null && !config.strictVerification &&
+            !(m_Store is IWebhookStoreAdapter) &&
+            (m_Store.Store == BillingStores.Google || m_Store.Store == BillingStores.Apple || m_Store.Store == BillingStores.Amazon);
+
+        /// <summary>Waits for <paramref name="call"/> until <paramref name="deadline"/>; false when it did not end by then.</summary>
+        private async Task<bool> AnsweredBeforeAsync(Task call, DateTime deadline)
+        {
+            var left = deadline - m_Context.UtcNow();
+            if (call.IsCompleted)
+                return true;
+            if (left <= TimeSpan.Zero)
+                return false;
+            using (var cts = CancellationTokenSource.CreateLinkedTokenSource(m_Context.Lifetime))
+            {
+                var first = await Task.WhenAny(call, m_Context.Delay(left, cts.Token));
+                cts.Cancel();
+                return first == call;
+            }
+        }
+
+        /// <summary>
+        /// Grants a purchase the server could not be asked about in time (<see cref="BillingConfig.failOpenAfterSeconds"/>):
+        /// a provisional success for the game, the order finished in the store like after a success, and the purchase kept
+        /// in <see cref="ObservedPurchases"/>, which verifies it later (with <c>client_finished</c>) and raises
+        /// <see cref="IBillingService.PurchaseRejected"/> if the server refuses it.
+        /// </summary>
+        private void FailOpen(StoreOrder order, BillingProductConfig config, string productId, string user, VerifyRequest request,
+            PurchaseContext context)
+        {
+            var purchase = new ExternalPurchase
+            {
+                Store = m_Store.Store,
+                StoreProductId = order.StoreProductId,
+                TransactionId = order.TransactionId,
+                PurchaseToken = order.PurchaseToken,
+                StoreUserId = order.StoreUserId,
+                Price = request.PriceMicros / 1_000_000m,
+                Currency = request.Currency,
+            };
+            m_Log.Warning($"The server did not answer about {order} within {m_Config.failOpenAfterSeconds} s: granted provisionally, " +
+                          "verified later.");
+            m_Observed.Add(purchase, provisional: true);
+            ReleaseContext(order, context);
+            m_Refresher.GrantLocally(user, config);
+            var result = new PurchaseResult(PurchaseStatus.Success, productId, order.StoreProductId, order.TransactionId,
+                "granted before the server answered: verified later", provisional: true);
+            switch (m_Host.Report(result, order))
+            {
+                case ReportOutcome.HandlerFailed:
+                    // Not finished: the store delivers it again and the game gets another chance.
+                    m_Log.Error($"PurchaseSucceeded handler failed for {order}, not finishing it so the store delivers it again.");
+                    break;
+                case ReportOutcome.NoReceiver:
+                    m_Held[order.Key] = new HeldResult { Order = order, Result = result };
+                    break;
+                default:
+                    m_Store.Finish(order, true);
+                    break;
+            }
+            _ = m_Observed.VerifyAsync(purchase.Key);
+        }
+
         /// <summary>An order that arrives while the products are being fetched (the store delivers unfinished purchases
         /// right after it connects) waits for them, at most <see cref="ProductsWait"/>: its price goes to <c>/verify</c>.</summary>
         private async Task WaitForProductsAsync()
@@ -163,7 +239,7 @@ namespace Purser
 
         private static string NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
 
-        private static Outcome Classify(ApiResult<VerifyResponse> response)
+        internal static Outcome Classify(ApiResult<VerifyResponse> response)
         {
             if (response == null || response.IsTransportError || response.IsRateLimited)
                 return Outcome.Retry;

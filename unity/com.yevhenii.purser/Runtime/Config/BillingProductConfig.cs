@@ -65,6 +65,10 @@ namespace Purser
                  "from here. Comes with the admin panel's config.")]
         public string[] access = new string[0];
 
+        [Tooltip("Never granted before the server verified it, even with BillingConfig.failOpenAfterSeconds (expensive " +
+                 "products).")]
+        public bool strictVerification;
+
         public BillingProductConfig() { }
 
         public BillingProductConfig(string id, BillingProductType type, params StoreProductId[] storeIds)
@@ -87,6 +91,7 @@ namespace Purser
                 fallbackCurrency = fallbackCurrency,
                 fallbackPeriod = fallbackPeriod,
                 access = (string[])access?.Clone(),
+                strictVerification = strictVerification,
             };
         }
 

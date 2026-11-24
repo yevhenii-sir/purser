@@ -89,6 +89,12 @@ namespace Purser
                  "After the last one the purchase stays pending and is retried on the next launch.")]
         public int[] retryDelaysSeconds = { 5, 30, 120, 600 };
 
+        [Tooltip("When the server cannot be reached for this many seconds after a purchase, grant it anyway and verify " +
+                 "it later (PurchaseResult.Provisional). Only for games that grant purchases on the client (delivery " +
+                 "none). Products with strictVerification always wait. 0 = always wait for the server.")]
+        [Min(0)]
+        public int failOpenAfterSeconds;
+
         [Header("Products")]
         public List<BillingProductConfig> products = new List<BillingProductConfig>();
 
@@ -216,6 +222,7 @@ namespace Purser
             c.requestTimeoutSeconds = requestTimeoutSeconds;
             c.responseSigningPublicKey = responseSigningPublicKey;
             c.retryDelaysSeconds = (int[])retryDelaysSeconds?.Clone();
+            c.failOpenAfterSeconds = failOpenAfterSeconds;
             c.products = (products ?? new List<BillingProductConfig>()).Select(p => p?.Clone()).ToList();
             c.bindPurchasesToUser = bindPurchasesToUser;
             c.refreshEntitlementsOnInit = refreshEntitlementsOnInit;

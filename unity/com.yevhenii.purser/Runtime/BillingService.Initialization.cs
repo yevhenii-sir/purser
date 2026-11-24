@@ -96,6 +96,7 @@ namespace Purser
             }
 
             m_Orders.ProcessWaitingOrders();
+            m_Observed.RetryAll();
             if (m_Config.refreshEntitlementsOnInit && m_Context.User != null)
                 m_Refresher.RefreshInBackground();
         }
@@ -281,6 +282,8 @@ namespace Purser
             m_Refresher.LoadCached(current);
             BindAccount();
             m_Orders.ProcessWaitingOrders();
+            if (IsInitialized)
+                m_Observed.RetryAll();
             if (refreshOnChange && IsInitialized && current != null)
                 m_Refresher.RefreshInBackground();
             return current;
@@ -308,6 +311,7 @@ namespace Purser
             if (!IsInitialized || user == null || SkipServer)
                 return;
             m_Orders.RetryGivenUp();
+            m_Observed.RetryAll();
             // One refresh: a new player's right away, the same player's unless the server answered one lately.
             if (user != previous)
                 m_Refresher.RefreshInBackground();

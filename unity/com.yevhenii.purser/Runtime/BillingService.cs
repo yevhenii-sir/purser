@@ -89,6 +89,9 @@ namespace Purser
         private readonly OrderProcessor m_Orders;
         /// <summary>Holds and refreshes the customer info.</summary>
         private readonly CustomerInfoRefresher m_Refresher;
+        /// <summary>Purchases finished in the store before the server answered (observer mode, fail-open), kept until it
+        /// does.</summary>
+        private readonly ObservedPurchases m_Observed;
 
         /// <summary>The <c>PurchaseAsync</c> calls waiting for their result, by store product id.</summary>
         private readonly Dictionary<string, PurchaseWaiter> m_Waiters = new Dictionary<string, PurchaseWaiter>();
@@ -199,7 +202,8 @@ namespace Purser
             m_Context = new BillingContext(m_Config, m_Store, m_Api, m_Storage, m_Log, m_UtcNow, m_Delay, m_IsEditor, m_Client,
                 deps.AnalyticsIdProvider, attribution);
             m_Refresher = new CustomerInfoRefresher(m_Context, this);
-            m_Orders = new OrderProcessor(m_Context, this, m_Refresher);
+            m_Observed = new ObservedPurchases(m_Context, this, m_Refresher);
+            m_Orders = new OrderProcessor(m_Context, this, m_Refresher, m_Observed);
 
             m_Store.OrderPending += m_Orders.OnOrderPending;
             m_Store.OrderDeferred += OnOrderDeferred;

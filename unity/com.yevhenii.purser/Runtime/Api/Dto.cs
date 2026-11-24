@@ -55,6 +55,9 @@ namespace Purser
         [JsonProperty("offer_id", NullValueHandling = NullValueHandling.Ignore)] public string OfferId;
         /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
         [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
+        /// <summary>The game's own store code already finished the purchase (observer mode, a provisional grant): the
+        /// server records it and leaves the store alone (builds where the client grants).</summary>
+        [JsonProperty("client_finished", DefaultValueHandling = DefaultValueHandling.Ignore)] public bool ClientFinished;
     }
 
     /// <summary>The device a request comes from: model, OS, app and SDK version.</summary>
@@ -117,6 +120,8 @@ namespace Purser
         [JsonProperty("purchases")] public List<RestoreItem> Purchases = new List<RestoreItem>();
         /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
         [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
+        /// <summary>The game's own store code finished these purchases (observer mode).</summary>
+        [JsonProperty("client_finished", DefaultValueHandling = DefaultValueHandling.Ignore)] public bool ClientFinished;
     }
 
     public sealed class RestoreItemResult

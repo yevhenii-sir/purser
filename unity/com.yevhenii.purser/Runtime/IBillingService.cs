@@ -54,6 +54,36 @@ namespace Purser
         /// <summary>The store is connected again after <see cref="StoreDisconnected"/>; the customer info is refreshed.</summary>
         event Action StoreReconnected;
 
+        /// <summary>The server accepted a purchase the game reported (<see cref="ReportPurchaseAsync"/>) or one granted
+        /// provisionally (<see cref="PurchaseResult.Provisional"/>); also for purchases verified after a restart.</summary>
+        event Action<PurchaseResult> PurchaseVerified;
+
+        /// <summary>The server definitively refused a purchase the game reported (<see cref="ReportPurchaseAsync"/>) or one
+        /// granted provisionally: invalid, refunded, belongs to another player. The game may take back what it gave.</summary>
+        event Action<PurchaseResult> PurchaseRejected;
+
+        /// <summary>
+        /// Observer mode: the game buys with its own store code (Unity IAP 4 or 5, a store SDK) and reports each
+        /// purchase here, in <c>ProcessPurchase</c> / <c>OnPurchasePending</c>, before it finishes the purchase in the
+        /// store. Purser keeps the purchase on the device until the server answered (it survives a restart), verifies
+        /// it with <c>client_finished</c> (the server leaves the store alone) and raises <see cref="PurchaseVerified"/>
+        /// or <see cref="PurchaseRejected"/>. Use it with <see cref="ExternalStoreAdapter"/> and a build whose delivery
+        /// is <c>none</c>. See docs/observer-mode.md.
+        /// </summary>
+        /// <returns><see cref="ReportMode.RecordOnly"/>: the server's answer when it came (the game need not wait).
+        /// <see cref="ReportMode.VerifyFirst"/>: the answer, or a provisional success after
+        /// <see cref="BillingConfig.failOpenAfterSeconds"/>. <see cref="PurchaseStatus.PendingVerification"/> while the
+        /// server cannot be reached (the purchase stays kept), <see cref="PurchaseStatus.Failed"/> for a purchase the
+        /// server cannot verify (no token / transaction id).</returns>
+        Task<PurchaseResult> ReportPurchaseAsync(ExternalPurchase purchase, ReportMode mode = ReportMode.RecordOnly, CancellationToken ct = default);
+
+        /// <summary>
+        /// Observer mode: tells the server about purchases the player already owns (the store's restore / fetched
+        /// purchases, e.g. on the first launch with Purser), so they show up in the customer info and the server
+        /// follows their renewals and refunds. Returns the customer info after it.
+        /// </summary>
+        Task<CustomerInfo> ReportRestoredAsync(IEnumerable<ExternalPurchase> purchases, CancellationToken ct = default);
+
         /// <summary>Connects to the store and loads products. Safe to call once; later calls return the same task.
         /// When the store or the network fails, the task fails and the service keeps trying by itself (with backoff,
         /// and when the app returns to the foreground) until <see cref="Initialized"/>; calling it again tries now.</summary>
