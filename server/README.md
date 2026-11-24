@@ -297,7 +297,8 @@ A paywall view for A/B test results (counted per day and variant).
 For the game's backend, with `Authorization: Bearer psk_…` (a server key of the app, table `server_key`: only the
 SHA-256 of the key, its scopes `read` / `grant` / `revoke` and its app). See docs/game-integration.md, "Your backend:
 server keys". `admin_add_server_key` (`{"game_key", "name", "scopes", "key_id", "key_hash"}`, Secrets capability) and
-`admin_revoke_server_key(key_id)` manage them; the admin page makes the key in the browser.
+`admin_revoke_server_key(key_id)` manage them; the admin page makes the key in the browser, `seed.py --server-key`
+in the terminal.
 
 `/verify`, `/restore`, `/entitlements`, `/paywall` and `/attributes` also take an optional
 `client: {device, os, app_version, sdk_version}` (the Unity package sends it). The server keeps, per player and build

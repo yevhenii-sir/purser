@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `seed.py --server-key <game_key>` (`--key-name`, `--key-scopes read,grant,revoke`) makes a key for the game's backend in the terminal, as the admin page does, and prints it once.
+
 ### Security
 
 - Dependency updates. In the module: `bytes` 1.12 (RUSTSEC-2026-0007), `anyhow`, `rand`, `keccak`, `spin`, `chrono`. In the native test host only: `openssl`, `rustls`, `rustls-webpki`, `h2`, `rkyv`, `time`, `zstd` and others. The admin page: `recharts` 3.11, `lucide-react`, `vite` 8.3.8.

@@ -73,6 +73,23 @@ namespace Purser
         }
 
         public long PriceMicros => (long)decimal.Round(Price * 1_000_000m);
+
+        /// <summary>Subscriptions: the price for one <paramref name="unit"/> of time (a yearly $49.99 is about $4.17 a
+        /// month, $0.96 a week), not rounded; null when <see cref="SubscriptionPeriod"/> is unknown. A month is a twelfth
+        /// of a year (30.42 days).</summary>
+        public decimal? PricePer(BillingPeriodUnit unit) => BillingPeriods.PricePer(Price, SubscriptionPeriod, unit);
+
+        /// <summary><see cref="PricePer"/> formatted like <see cref="LocalizedPrice"/> (<c>$4.17</c>, <c>4,17 €</c>), for a
+        /// paywall's "per month" line; null when the period is unknown.</summary>
+        public string LocalizedPricePer(BillingPeriodUnit unit)
+        {
+            var amount = PricePer(unit);
+            return amount.HasValue ? FormatPrice(amount.Value) : null;
+        }
+
+        /// <summary>Formats an amount in this product's currency like the store formatted <see cref="LocalizedPrice"/>:
+        /// the same currency sign, separators and decimals. For a discount, a total or a price per period.</summary>
+        public string FormatPrice(decimal amount) => PriceFormat.Format(LocalizedPrice, Price, amount, Currency);
     }
 
     /// <summary>A subscription offer of a store product (<see cref="StoreProduct.Offers"/>).</summary>
@@ -130,6 +147,18 @@ namespace Purser
         /// <summary>The phase is free.</summary>
         public bool IsFreeTrial => Price == 0m;
 
+        /// <summary>The phase's price for one <paramref name="unit"/> of time (see <see cref="StoreProduct.PricePer"/>);
+        /// null when <see cref="Period"/> is unknown.</summary>
+        public decimal? PricePer(BillingPeriodUnit unit) => BillingPeriods.PricePer(Price, Period, unit);
+
+        /// <summary><see cref="PricePer"/> formatted like <see cref="LocalizedPrice"/>; null when the period is unknown.
+        /// A free phase is formatted as a zero amount, so check <see cref="IsFreeTrial"/> first.</summary>
+        public string LocalizedPricePer(BillingPeriodUnit unit)
+        {
+            var amount = PricePer(unit);
+            return amount.HasValue ? PriceFormat.Format(LocalizedPrice, Price, amount.Value, Currency) : null;
+        }
+
         /// <summary>Creates a phase (store adapters, tests).</summary>
         public PricingPhase(decimal price, string localizedPrice, string currency, string period, int cycles)
         {
@@ -141,9 +170,68 @@ namespace Purser
         }
     }
 
+    /// <summary>A unit of a subscription period (<see cref="BillingPeriods.TryParse"/>).</summary>
+    public enum BillingPeriodUnit
+    {
+        Day,
+        Week,
+        Month,
+        Year,
+    }
+
     /// <summary>ISO 8601 subscription periods (<c>P1M</c>) as stores and the admin panel write them.</summary>
     public static class BillingPeriods
     {
+        /// <summary>Splits a period into its count and unit (<c>P3M</c>: 3, <see cref="BillingPeriodUnit.Month"/>), for
+        /// a localized "3 months" label. False when it is not a period.</summary>
+        public static bool TryParse(string iso, out int count, out BillingPeriodUnit unit)
+        {
+            count = 0;
+            unit = BillingPeriodUnit.Day;
+            var p = (iso ?? "").Trim().ToUpperInvariant();
+            if (p.Length < 3 || p[0] != 'P' || !int.TryParse(p.Substring(1, p.Length - 2), out var n) || n <= 0)
+                return false;
+            switch (p[p.Length - 1])
+            {
+                case 'D': unit = BillingPeriodUnit.Day; break;
+                case 'W': unit = BillingPeriodUnit.Week; break;
+                case 'M': unit = BillingPeriodUnit.Month; break;
+                case 'Y': unit = BillingPeriodUnit.Year; break;
+                default: return false;
+            }
+            count = n;
+            return true;
+        }
+
+        /// <summary>A price paid every <paramref name="period"/> converted to one <paramref name="unit"/> of time, not
+        /// rounded; null when <paramref name="period"/> is not a period. Years and months convert exactly (12), weeks and
+        /// days too (7); between the two a month is a twelfth of 365 days.</summary>
+        public static decimal? PricePer(decimal price, string period, BillingPeriodUnit unit)
+        {
+            if (!TryParse(period, out var count, out var periodUnit))
+                return null;
+            var dayBased = periodUnit <= BillingPeriodUnit.Week;
+            if (dayBased == unit <= BillingPeriodUnit.Week)
+                return price * Plain(unit) / (count * Plain(periodUnit));
+            return price * Months(unit) / (count * Months(periodUnit));
+        }
+
+        /// <summary>One unit in days (day, week) or months (month, year): exact within each pair.</summary>
+        private static decimal Plain(BillingPeriodUnit unit) =>
+            unit == BillingPeriodUnit.Week ? 7m : unit == BillingPeriodUnit.Year ? 12m : 1m;
+
+        /// <summary>One unit in months (a day is 12 / 365 of a month).</summary>
+        private static decimal Months(BillingPeriodUnit unit)
+        {
+            switch (unit)
+            {
+                case BillingPeriodUnit.Day: return 12m / 365m;
+                case BillingPeriodUnit.Week: return 7m * 12m / 365m;
+                case BillingPeriodUnit.Month: return 1m;
+                default: return 12m;
+            }
+        }
+
         /// <summary>The trimmed, upper-case period when it looks like <c>P&lt;n&gt;D|W|M|Y</c>; empty otherwise.</summary>
         public static string Normalize(string iso)
         {
@@ -296,5 +384,16 @@ namespace Purser
         /// <summary>A change with <see cref="ReplacementMode.Deferred"/> was accepted: it takes effect at the next
         /// renewal and has no transaction now (the store product id of the new subscription).</summary>
         event Action<string> ChangeDeferred;
+    }
+
+    /// <summary>
+    /// Optional <see cref="IStoreAdapter"/> capability: the store's own sheet where players redeem offer codes
+    /// (<see cref="IBillingService.PresentOfferCodeRedemption"/>). A redeemed code arrives as a purchase through
+    /// <see cref="IStoreAdapter.OrderPending"/>. Implemented by <see cref="UnityIapStoreAdapter"/> on the App Store.
+    /// </summary>
+    public interface IOfferCodeRedemptionStore
+    {
+        /// <summary>Shows the sheet; false when the store cannot show it.</summary>
+        bool PresentOfferCodeRedemption();
     }
 }

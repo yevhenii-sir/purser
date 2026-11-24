@@ -13,7 +13,8 @@ namespace Purser
     /// connection (<see cref="IStoreConnectionEvents"/>) and changes Google Play subscriptions
     /// (<see cref="ISubscriptionChangeStore"/>).
     /// </summary>
-    public sealed partial class UnityIapStoreAdapter : IStoreAdapter, IStoreConnectionEvents, ISubscriptionChangeStore
+    public sealed partial class UnityIapStoreAdapter : IStoreAdapter, IStoreConnectionEvents, ISubscriptionChangeStore,
+        IOfferCodeRedemptionStore
     {
         private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(30);
 
@@ -109,6 +110,27 @@ namespace Purser
                 m_Store.AppleStoreExtendedService?.SetAppAccountToken(AccountIds.AppleAccountToken(userId));
             else
                 m_Store.GooglePlayStoreExtendedService?.SetObfuscatedAccountId(AccountIds.GoogleAccountId(userId));
+        }
+
+        /// <summary>App Store: StoreKit's offer code redemption sheet (iOS 14 and later); false on Google Play and
+        /// when Unity IAP has no App Store connection (the Editor's fake store).</summary>
+        public bool PresentOfferCodeRedemption()
+        {
+            if (Platform != BillingPlatform.Apple)
+                return false;
+            var apple = m_Store.AppleStoreExtendedPurchaseService;
+            if (apple == null)
+                return false;
+            try
+            {
+                apple.PresentCodeRedemptionSheet();
+                return true;
+            }
+            catch (Exception e)
+            {
+                m_Log.Warning("Offer code redemption sheet failed: " + e.Message);
+                return false;
+            }
         }
 
         public void Purchase(string storeProductId)

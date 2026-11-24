@@ -24,6 +24,7 @@ namespace Purser.Tests
         {
             m_Attribution = null;
             m_Storage = null;
+            m_OpenedUrls.Clear();
             m_Config = BillingConfig.Create("https://billing.example.com/route",
                 new BillingProductConfig("gems_100", BillingProductType.Consumable),
                 new BillingProductConfig("vip", BillingProductType.NonConsumable),
@@ -47,6 +48,7 @@ namespace Purser.Tests
 
         private IAttributionProvider m_Attribution;
         private IBillingStorage m_Storage;
+        private readonly List<string> m_OpenedUrls = new List<string>();
 
         private BillingService CreateService(string user = User, bool isEditor = false)
         {
@@ -64,6 +66,7 @@ namespace Purser.Tests
                     return Task.CompletedTask;
                 },
                 IsEditor = isEditor,
+                OpenUrl = m_OpenedUrls.Add,
             });
             m_Succeeded = new List<PurchaseResult>();
             m_Pending = new List<PurchaseResult>();
@@ -544,6 +547,65 @@ namespace Purser.Tests
             Assert.AreEqual(("P1M", 30, true), (premium.SubscriptionPeriod, premium.SubscriptionPeriodDays, premium.IsFallbackPeriod));
             Assert.IsFalse(premium.IsFallbackPrice, "the store's price stays");
             Assert.AreEqual(("", false), (m_Service.GetProduct("gems_100").SubscriptionPeriod, m_Service.GetProduct("gems_100").IsFallbackPeriod));
+        }
+
+        [Test]
+        public void OpenManageSubscriptions_OpensTheStoresPage()
+        {
+            CreateService();
+            Assert.IsTrue(m_Service.OpenManageSubscriptions("premium"));
+            Assert.IsTrue(m_Service.OpenManageSubscriptions());
+            Assert.IsTrue(m_Service.OpenManageSubscriptions("gems_100"), "not a subscription: the whole list");
+            CollectionAssert.AreEqual(new[]
+            {
+                "https://play.google.com/store/account/subscriptions?sku=premium_android&package=com.test.game",
+                "https://play.google.com/store/account/subscriptions",
+                "https://play.google.com/store/account/subscriptions",
+            }, m_OpenedUrls);
+        }
+
+        [Test]
+        public void OpenManageSubscriptions_AppStore()
+        {
+            m_Store.Platform = BillingPlatform.Apple;
+            CreateService();
+            Assert.IsTrue(m_Service.OpenManageSubscriptions("premium"));
+            CollectionAssert.AreEqual(new[] { "https://apps.apple.com/account/subscriptions" }, m_OpenedUrls);
+        }
+
+        [Test]
+        public void ManageSubscriptionsUrl_IsNullForStoresWithoutAPage()
+        {
+            foreach (var store in new[] { BillingStores.Amazon, BillingStores.Steam, BillingStores.Stripe, BillingStores.Xsolla })
+                Assert.IsNull(BillingService.ManageSubscriptionsUrl(store, "com.test.game", "premium"), store);
+            Assert.AreEqual("https://play.google.com/store/account/subscriptions?sku=a%20b&package=com.test.game",
+                BillingService.ManageSubscriptionsUrl(BillingStores.Google, "com.test.game", "a b"));
+        }
+
+        [Test]
+        public void PresentOfferCodeRedemption_OnlyOnTheAppStoreAfterInitialization()
+        {
+            m_Store.Platform = BillingPlatform.Apple;
+            m_Store.HoldProducts = new TaskCompletionSource<bool>();
+            m_Service = new BillingService(m_Config, new BillingDependencies
+            {
+                Store = m_Store, Api = m_Api, Storage = new MemoryBillingStorage(), UtcNow = () => Now,
+                Delay = (delay, ct) => Task.CompletedTask, IsEditor = false, OpenUrl = m_OpenedUrls.Add,
+            });
+            var init = m_Service.InitializeAsync();
+            Assert.IsFalse(m_Service.PresentOfferCodeRedemption(), "not initialized yet");
+            m_Store.HoldProducts.SetResult(true);
+            Sync.Run(init);
+            Assert.IsTrue(m_Service.PresentOfferCodeRedemption());
+            Assert.AreEqual(1, m_Store.OfferCodeSheets);
+        }
+
+        [Test]
+        public void PresentOfferCodeRedemption_IsFalseOnGooglePlay()
+        {
+            CreateService();
+            Assert.IsFalse(m_Service.PresentOfferCodeRedemption());
+            Assert.AreEqual(1, m_Store.OfferCodeSheets, "asked the store, which said no");
         }
 
         [Test]

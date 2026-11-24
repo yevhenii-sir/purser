@@ -254,6 +254,25 @@ subscription; with `ReplacementMode.Deferred` nothing is charged now, the purcha
 customer info shows `RenewsTo`. On the App Store a purchase in the same subscription group replaces the old one by
 itself. Other stores fail the purchase.
 
+### Prices per period, managing subscriptions, offer codes
+
+`PricePer(unit)` converts a subscription's price to a day, week, month or year, and `LocalizedPricePer(unit)` formats
+it like the store formatted `LocalizedPrice` (the same currency sign, separators and decimals; `FormatPrice(amount)`
+does that for any amount). Pricing phases have the same two. `BillingPeriods.TryParse` splits a period into its count
+and unit for your own localized label:
+
+```csharp
+var yearly = billing.GetProduct("premium_yearly");                     // $49.99, P1Y
+label.text = $"{yearly.LocalizedPrice} / year, only {yearly.LocalizedPricePer(BillingPeriodUnit.Month)} a month";
+if (BillingPeriods.TryParse(yearly.SubscriptionPeriod, out var count, out var unit))
+    periodLabel.text = Localize(unit, count);                         // "1 year"
+```
+
+Stores require a way to manage a subscription from the app: `OpenManageSubscriptions(productId)` opens Google Play's
+page for that subscription or the App Store's subscriptions page, and returns false for stores without such a page
+(Amazon Appstore, Steam, web stores). `PresentOfferCodeRedemption()` shows the App Store's sheet for redeeming an
+offer code (iOS 14 and later; false elsewhere); a redeemed code arrives as a purchase and is verified like any other.
+
 ## Amazon Appstore, Steam, web
 
 Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `BillingDependencies.Store`:

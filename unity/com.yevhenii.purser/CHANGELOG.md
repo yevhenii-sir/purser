@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- `IBillingService.OpenManageSubscriptions(productId)`: opens Google Play's page of a subscription (or of all of
+  them) or the App Store's subscriptions page; false for stores without one. `BillingDependencies.OpenUrl` replaces
+  `Application.OpenURL`.
+- `IBillingService.PresentOfferCodeRedemption()`: the App Store's offer code redemption sheet (through Unity IAP);
+  `IOfferCodeRedemptionStore` for store adapters.
+- Prices per period: `StoreProduct.PricePer(unit)`, `LocalizedPricePer(unit)` (formatted like the store's
+  `LocalizedPrice`), `FormatPrice(amount)`; the same `PricePer` / `LocalizedPricePer` on `PricingPhase`;
+  `BillingPeriods.TryParse` and `BillingPeriods.PricePer`, `BillingPeriodUnit`.
+
 ## [0.9.0] - 2026-11-24
 
 ### Added

@@ -112,8 +112,9 @@ var token = new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(
 
 ## Your backend: server keys
 
-A game with its own backend calls `/server/*` with a **server key** of the app (Delivery tab → Server keys → New key;
-the key is made in the browser and shown once, the server keeps only its SHA-256). Send it as
+A game with its own backend calls `/server/*` with a **server key** of the app (Delivery tab → Server keys → New key,
+or `python seed.py --server-key <game_key> --key-scopes read,grant`; the key is made on your side and shown once, the
+server keeps only its SHA-256). Send it as
 `Authorization: Bearer psk_…`; it works for every build of the app and has scopes:
 
 | Route | Scope | Body | What it does |

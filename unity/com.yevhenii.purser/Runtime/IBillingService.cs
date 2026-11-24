@@ -112,6 +112,21 @@ namespace Purser
         DateTime? GetExpiration(string productId);
 
         /// <summary>
+        /// Opens the store's page where the player cancels or changes subscriptions (stores require apps to offer
+        /// one): Google Play's subscriptions page, for one subscription when <paramref name="productId"/> names it,
+        /// or the App Store's. Returns false for stores without such a page (Amazon Appstore, Steam, web stores:
+        /// players manage those in the store's app or on their account page).
+        /// </summary>
+        bool OpenManageSubscriptions(string productId = null);
+
+        /// <summary>
+        /// App Store: shows StoreKit's sheet where the player redeems an offer code (iOS 14 and later). A redeemed code
+        /// arrives as a purchase and is verified like any other (<see cref="PurchaseSucceeded"/>). Returns false on other
+        /// stores, before initialization and in the Editor.
+        /// </summary>
+        bool PresentOfferCodeRedemption();
+
+        /// <summary>
         /// App Store only: buys a subscription with a promotional offer (a discount for current or lapsed
         /// subscribers set up in App Store Connect). The server signs the offer for the current player
         /// (<c>POST /offers/apple/sign</c>), then the purchase goes through Unity IAP and the server as usual (with the

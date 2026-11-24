@@ -124,10 +124,10 @@ Console. The purchase is verified by `/verify/google` like any other.
 
 ## Offer codes and win-back offers
 
-- **Offer codes**: Unity IAP shows Apple's redemption sheet with
-  `StoreController.AppleStoreExtendedPurchaseService.PresentCodeRedemptionSheet()`. Codes redeemed there or in
-  the App Store arrive as ordinary transactions and are verified by the package and `/verify/apple`;
-  App Store Server Notifications cover renewals.
+- **Offer codes**: `billing.PresentOfferCodeRedemption()` shows Apple's redemption sheet (Unity IAP's
+  `PresentCodeRedemptionSheet()`). Codes redeemed there or in the App Store arrive as ordinary transactions and are
+  verified by the package and `/verify/apple` (the offer type is `code`); App Store Server Notifications cover
+  renewals.
 - **Win-back offers** need no signature. The App Store shows them to eligible lapsed subscribers itself (in the
   App Store and through StoreKit messages); the purchase reaches the app as a normal transaction. Offering one
   from inside the app needs StoreKit 2 `Product.PurchaseOption.winBackOffer(_:)` (iOS 18+), which Unity IAP 5

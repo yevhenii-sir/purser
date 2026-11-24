@@ -300,6 +300,19 @@ namespace Purser.Tests
         }
     }
 
+    // ---- Offer codes ----
+
+    internal sealed partial class FakeStore : IOfferCodeRedemptionStore
+    {
+        public int OfferCodeSheets;
+
+        public bool PresentOfferCodeRedemption()
+        {
+            OfferCodeSheets++;
+            return Platform == BillingPlatform.Apple;
+        }
+    }
+
     // ---- App Store promotional offers ----
 
     internal sealed partial class FakeStore : IApplePromotionalOfferStore

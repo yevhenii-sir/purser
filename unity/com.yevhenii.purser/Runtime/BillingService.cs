@@ -40,6 +40,10 @@ namespace Purser
         /// <summary>Custom log output; default is <c>Debug.Log*</c>.</summary>
         public Action<BillingLogLevel, string> LogSink;
 
+        /// <summary>Opens a store page (<see cref="IBillingService.OpenManageSubscriptions"/>); default:
+        /// <c>Application.OpenURL</c>.</summary>
+        public Action<string> OpenUrl;
+
         // Test hooks.
         internal Func<DateTime> UtcNow;
         internal Func<TimeSpan, CancellationToken, Task> Delay;
@@ -74,6 +78,7 @@ namespace Purser
         private readonly Func<TimeSpan, CancellationToken, Task> m_Delay;
         private readonly bool m_IsEditor;
         private readonly bool m_CreateLifecycleHook;
+        private readonly Action<string> m_OpenUrl;
         /// <summary>The device, read once on the main thread (Unity APIs).</summary>
         private readonly ClientInfoDto m_Client;
 
@@ -168,6 +173,7 @@ namespace Purser
             m_Delay = deps.Delay ?? ((delay, ct) => Task.Delay(delay, ct));
             m_IsEditor = deps.IsEditor ?? Application.isEditor;
             m_CreateLifecycleHook = deps.CreateLifecycleHook ?? Application.isPlaying;
+            m_OpenUrl = deps.OpenUrl ?? Application.OpenURL;
             m_Client = new ClientInfoDto
             {
                 Device = SystemInfo.deviceModel,

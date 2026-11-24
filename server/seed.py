@@ -10,6 +10,7 @@ Usage (from server/, after `spacetime login` as the database owner, or with PURS
     python seed.py --check-only --offline --json
     python seed.py --export backup      # write the database's configuration to ./backup/ (no secrets)
     python seed.py --init               # guided first setup: asks questions, writes ./secrets/, uploads
+    python seed.py --server-key mygame --key-scopes read,grant   # a key for the game's backend (/server/*)
 
 Files in --dir (all optional), loaded in this order:
     spacetime_hosts.json  array of self-hosted SpacetimeDB hosts -> admin_add_spacetime_host
@@ -44,6 +45,7 @@ Secret values are never read: credentials.json lists the keys that are set, with
 """
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import pathlib
@@ -657,6 +659,38 @@ def init(a):
 
 # ---------------------------------------------------------------------------------------------
 
+SERVER_KEY_SCOPES = ("read", "grant", "revoke")
+
+
+def new_server_key():
+    """A server key as the admin page makes it: `psk_<key_id>_<secret>`, the id public, only the SHA-256 of
+    the whole key stored on the server. Returns (key_id, key, key_hash)."""
+    key_id = secrets.token_hex(6)
+    key = f"psk_{key_id}_{secrets.token_urlsafe(32)}"
+    return key_id, key, hashlib.sha256(key.encode()).hexdigest()
+
+
+def server_key_scopes(text):
+    """`read, grant` -> `read,grant`; exits on an unknown or missing scope."""
+    scopes = [s.strip() for s in text.split(",") if s.strip()]
+    bad = [s for s in scopes if s not in SERVER_KEY_SCOPES]
+    if bad or not scopes:
+        sys.exit(f"--key-scopes: {', '.join(bad) or 'none given'}; use {', '.join(SERVER_KEY_SCOPES)}")
+    return ",".join(dict.fromkeys(scopes))
+
+
+def add_server_key(a):
+    """Makes a key for the game's backend (/server/entitlements, /server/grant, /server/revoke) and prints it
+    once: the server keeps only its hash."""
+    scopes = server_key_scopes(a.key_scopes)
+    key_id, key, key_hash = new_server_key()
+    call(a, "admin_add_server_key", json.dumps({
+        "game_key": a.server_key, "name": a.key_name, "scopes": scopes, "key_id": key_id, "key_hash": key_hash,
+    }))
+    print(f"Server key {key_id} ({a.key_name}, {scopes}) for {a.server_key}. It is shown once: store it in your backend's secrets.")
+    print(key)
+
+
 def main():
     # Windows consoles may not encode every character of the server's hints.
     if hasattr(sys.stdout, "reconfigure"):
@@ -673,6 +707,9 @@ def main():
     p.add_argument("--export", metavar="DIR", help="write the database's configuration to DIR (no secret values)")
     p.add_argument("--force", action="store_true", help="--export: overwrite files in a non-empty DIR")
     p.add_argument("--init", action="store_true", help="guided first setup: writes --dir and uploads it")
+    p.add_argument("--server-key", metavar="GAME_KEY", help="make a key for the game's backend (/server/*) and print it")
+    p.add_argument("--key-name", default="backend", help="--server-key: a name to tell keys apart")
+    p.add_argument("--key-scopes", default="read", help="--server-key: comma-separated read, grant, revoke")
     a = p.parse_args()
     if a.init:
         init(a)
@@ -681,6 +718,9 @@ def main():
         sys.exit("No database: pass --database or copy spacetime.example.json to spacetime.json and set it")
     if a.export:
         export(a, (ROOT / a.export).resolve(), a.force)
+        return
+    if a.server_key:
+        add_server_key(a)
         return
     d = (ROOT / a.dir).resolve()
     if not d.is_dir():
