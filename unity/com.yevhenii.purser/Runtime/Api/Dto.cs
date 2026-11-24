@@ -156,6 +156,20 @@ namespace Purser
         [JsonProperty("subscriptions")] public Dictionary<string, EntitlementStateDto> Subscriptions;
         /// <summary>Owned non-consumable catalog product ids.</summary>
         [JsonProperty("non_consumables")] public List<string> NonConsumables;
+        /// <summary>Catalog product id → a subscription the player paused (Google Play): it gives no access until it
+        /// resumes. Left out when there is none.</summary>
+        [JsonProperty("paused", NullValueHandling = NullValueHandling.Ignore)] public Dictionary<string, PausedStateDto> Paused;
+    }
+
+    /// <summary>A paused subscription in <see cref="CustomerInfoDto"/>.</summary>
+    public sealed class PausedStateDto
+    {
+        /// <summary>Catalog product id of the subscription.</summary>
+        [JsonProperty("product_id")] public string ProductId;
+        /// <summary>Store of the subscription (<c>google</c>).</summary>
+        [JsonProperty("store")] public string Store;
+        /// <summary>When the store resumes it, Unix ms; 0 = unknown.</summary>
+        [JsonProperty("resumes_at_ms")] public long ResumesAtMs;
     }
 
     /// <summary>State of an access level or subscription in <see cref="CustomerInfoDto"/>.</summary>
@@ -172,6 +186,8 @@ namespace Purser
         [JsonProperty("in_grace")] public bool InGrace;
         [JsonProperty("billing_issue")] public bool BillingIssue;
         [JsonProperty("trial")] public bool Trial;
+        /// <summary>The access is shared by a family member (Apple Family Sharing), not bought by this player.</summary>
+        [JsonProperty("family_shared")] public bool FamilyShared;
         /// <summary>Catalog id the subscription changes to at the next renewal (a pending downgrade).</summary>
         [JsonProperty("renews_to", NullValueHandling = NullValueHandling.Ignore)] public string RenewsTo;
     }

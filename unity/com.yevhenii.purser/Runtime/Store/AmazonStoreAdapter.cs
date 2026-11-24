@@ -440,6 +440,7 @@ namespace Purser
             try
             {
                 m_Storage.Save(FulfilledKey, JsonConvert.SerializeObject(m_Fulfilled));
+                (m_Storage as IFlushableBillingStorage)?.Flush();
             }
             catch (Exception e)
             {

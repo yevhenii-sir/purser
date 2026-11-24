@@ -90,7 +90,7 @@ namespace Purser
             if (string.IsNullOrEmpty(sessionId))
                 return;
             var order = Remember(sessionId, storeProductId, string.IsNullOrEmpty(userId) ? CurrentUser : userId);
-            RaisePending(ToOrder(order));
+            RaiseResumed(ToOrder(order));
         }
 
         /// <summary>Stops waiting for the payment of a purchase (e.g. the player came back through the cancel page):
@@ -145,7 +145,7 @@ namespace Purser
                 TestId = request?.TestId,
                 PaywallId = request?.PaywallId,
             };
-            return PollAsync(token => m_Api.VerifyStripeSessionAsync(session, token), m_Options.PollInterval, m_Options.PaymentTimeout,
+            return CheckAsync(order, token => m_Api.VerifyStripeSessionAsync(session, token), m_Options.PollInterval, m_Options.PaymentTimeout,
                 () => !string.IsNullOrEmpty(order.StoreProductId) && m_Cancelled.Remove(order.StoreProductId), ct);
         }
 

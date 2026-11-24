@@ -21,6 +21,10 @@ namespace Purser
             m_Sink = sink ?? DefaultSink;
         }
 
+        /// <summary>Whether a message of <paramref name="level"/> would be written: check it before building a message
+        /// that is costly to build.</summary>
+        public bool IsEnabled(BillingLogLevel level) => level <= Level && Level != BillingLogLevel.None;
+
         /// <summary>Something failed and needs attention.</summary>
         public void Error(string message) => Write(BillingLogLevel.Error, message);
 
@@ -35,7 +39,7 @@ namespace Purser
 
         private void Write(BillingLogLevel level, string message)
         {
-            if (level <= Level && Level != BillingLogLevel.None)
+            if (IsEnabled(level))
                 m_Sink(level, message);
         }
 

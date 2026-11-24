@@ -32,8 +32,14 @@ namespace Purser
         }
 
         /// <inheritdoc/>
-        public StoreProduct GetProduct(string productId) =>
-            m_Products.FirstOrDefault(p => p.Id == productId) ?? m_Products.FirstOrDefault(p => p.StoreId == productId);
+        public StoreProduct GetProduct(string productId)
+        {
+            if (productId == null)
+                return null;
+            return m_ProductsById.TryGetValue(productId, out var product) || m_ProductsByStoreId.TryGetValue(productId, out product)
+                ? product
+                : null;
+        }
 
         /// <inheritdoc/>
         public Task<PurchaseResult> PurchaseAsync(string productId, CancellationToken ct = default) =>
@@ -180,7 +186,8 @@ namespace Purser
                     m_Orders.ClearPurchaseContext(result.StoreProductId);
             }
 
-            m_Log.Info("Purchase " + result);
+            if (m_Log.IsEnabled(BillingLogLevel.Info))
+                m_Log.Info("Purchase " + result);
             Action<PurchaseResult> handlers;
             string name;
             switch (result.Status)

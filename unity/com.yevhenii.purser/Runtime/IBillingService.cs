@@ -95,7 +95,9 @@ namespace Purser
         Task<CustomerInfo> RestoreAsync(CancellationToken ct = default);
 
         /// <summary>Asks the server for the customer info; the cached copy (<see cref="CustomerInfo.IsFromCache"/>) when it
-        /// cannot be reached or its answer is not trusted (signed responses).</summary>
+        /// cannot be reached or its answer is not trusted (signed responses). One request runs at a time: calls made
+        /// while it runs share the one request that follows it. Cancelling <paramref name="ct"/> stops waiting for the
+        /// answer; the request goes on and its answer is still applied.</summary>
         Task<CustomerInfo> RefreshCustomerInfoAsync(CancellationToken ct = default);
 
         /// <summary>The player has this access level (e.g. <c>premium</c>) now: check levels rather than product ids.

@@ -90,7 +90,7 @@ namespace Purser
                     UserId = SyncUser(),
                     Event = PaywallEventRequest.View,
                 }, ct);
-                if (!response.IsHttpSuccess)
+                if (!response.IsHttpSuccess && m_Log.IsEnabled(BillingLogLevel.Verbose))
                     m_Log.Verbose($"Paywall view of {paywall} not recorded: {response}");
                 return response.IsHttpSuccess;
             }

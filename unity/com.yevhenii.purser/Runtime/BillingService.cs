@@ -99,6 +99,9 @@ namespace Purser
         /// for the prices).</summary>
         private TaskCompletionSource<bool> m_ProductsFetch;
         private List<StoreProduct> m_Products = new List<StoreProduct>();
+        /// <summary><see cref="m_Products"/> by the config's product id and by store product id (<see cref="GetProduct"/>).</summary>
+        private Dictionary<string, StoreProduct> m_ProductsById = new Dictionary<string, StoreProduct>();
+        private Dictionary<string, StoreProduct> m_ProductsByStoreId = new Dictionary<string, StoreProduct>();
         private string m_BoundUser;
         private bool m_EverInitialized;
         private bool m_Reconnecting;
@@ -213,6 +216,19 @@ namespace Purser
 
         private static string NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
 
+        /// <summary>Writes what the storage batched to disk (<see cref="IFlushableBillingStorage"/>).</summary>
+        private void FlushStorage()
+        {
+            try
+            {
+                (m_Storage as IFlushableBillingStorage)?.Flush();
+            }
+            catch (Exception e)
+            {
+                m_Log.Warning("Could not save the billing storage: " + e.Message);
+            }
+        }
+
         private void ThrowIfDisposed()
         {
             if (m_Context.IsDisposed)
@@ -227,6 +243,7 @@ namespace Purser
             m_Context.Dispose();
             IsInitialized = false;
             m_InitWake?.TrySetResult(false);
+            FlushStorage();
             m_Hook?.Release();
             m_Hook = null;
             m_Store.OrderPending -= m_Orders.OnOrderPending;

@@ -48,11 +48,11 @@ namespace Purser
         /// Sends <paramref name="body"/> as JSON for the player <paramref name="userId"/> (signed with a player token
         /// when <see cref="Tokens"/> is set and the user is known); a 4xx/5xx answer keeps its parsed body.
         /// <paramref name="check"/> sees every 2xx answer and returns why it must not be trusted (the answer then has no
-        /// value and that error), or null.
+        /// value and that error), or null; an answer it accepts keeps its signed bytes (<see cref="ApiResult{T}.RawBody"/>).
         /// </summary>
         /// <exception cref="BillingException">The server URL is not https outside the Editor.</exception>
         public async Task<ApiResult<T>> PostAsync<T>(string path, object body, string userId, CancellationToken ct,
-            Func<HttpResponse, string> check = null) where T : class
+            Func<HttpResponse, Task<string>> check = null) where T : class
         {
             ThrowIfRefused();
             var json = JsonConvert.SerializeObject(body);
@@ -76,7 +76,7 @@ namespace Purser
                     return new ApiResult<T>(0, null, error);
                 res = await SendAsync(path, json, fresh, ct);
             }
-            return Parse<T>(res, check);
+            return await ParseAsync<T>(res, check);
         }
 
         public async Task<HttpResponse> GetAsync(string path, CancellationToken ct)
@@ -119,15 +119,16 @@ namespace Purser
                 throw new BillingException(m_Refusal);
         }
 
-        private static ApiResult<T> Parse<T>(HttpResponse res, Func<HttpResponse, string> check) where T : class
+        private static async Task<ApiResult<T>> ParseAsync<T>(HttpResponse res, Func<HttpResponse, Task<string>> check) where T : class
         {
             if (res.IsTransportError)
                 return new ApiResult<T>(0, null, res.Error);
             var retryAfter = res.Status == 429 ? RetryAfter(res.GetHeader("Retry-After")) : null;
             var code = res.Status >= 200 && res.Status < 300 ? null : ErrorCode(res.Body);
+            var signature = check != null && res.Status >= 200 && res.Status < 300 ? res.GetHeader(ResponseSignature.Header) : null;
             if (check != null && res.Status >= 200 && res.Status < 300)
             {
-                var problem = check(res);
+                var problem = await check(res);
                 if (problem != null)
                     return new ApiResult<T>(res.Status, null, problem, code, retryAfter);
             }
@@ -146,7 +147,13 @@ namespace Purser
             }
             if (error == null && (res.Status < 200 || res.Status >= 300))
                 error = $"HTTP {res.Status}: {Truncate(res.Body)}";
-            return new ApiResult<T>(res.Status, value, error, code, retryAfter);
+            var result = new ApiResult<T>(res.Status, value, error, code, retryAfter);
+            if (!string.IsNullOrEmpty(signature) && value != null)
+            {
+                result.RawBody = res.RawBody;
+                result.Signature = signature;
+            }
+            return result;
         }
 
         /// <summary>The <c>code</c> of an error body (<see cref="ErrorCodes"/>), or null.</summary>

@@ -154,7 +154,7 @@ namespace Purser
             if (user == null)
                 return Task.FromResult(Answer(VerifyStatus.PendingOrCanceled, "the order belongs to another user"));
             var status = new StatusRequest { AppId = m_AppId, UserId = user, OrderId = order.TransactionId };
-            return PollAsync(token => m_Http.PostAsync<VerifyResponse>("/checkout/xsolla/status", status, user, token),
+            return CheckAsync(order, token => m_Http.PostAsync<VerifyResponse>("/checkout/xsolla/status", status, user, token),
                 m_Options.PollInterval, m_Options.PaymentTimeout, null, ct);
         }
 

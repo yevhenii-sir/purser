@@ -39,6 +39,9 @@ namespace Purser
         /// <summary>Catalog id the subscription changes to at the next renewal (a pending downgrade); null when none.</summary>
         public string RenewsTo { get; }
 
+        /// <summary>A family member shares it with the player (Apple Family Sharing); the player did not buy it.</summary>
+        public bool IsFamilyShared { get; }
+
         /// <summary><see cref="ExpiresAt"/> as Unix milliseconds, 0 = never.</summary>
         internal long ExpiresAtMs { get; }
 
@@ -46,8 +49,9 @@ namespace Purser
 
         /// <summary>Creates the state (tests, custom caches). Times are Unix milliseconds, 0 = never / unknown.</summary>
         protected EntitlementInfo(string productId, string store, long expiresAtMs, long purchasedAtMs, bool willRenew,
-            bool isInGracePeriod, bool hasBillingIssue, bool isTrial, string renewsTo)
+            bool isInGracePeriod, bool hasBillingIssue, bool isTrial, string renewsTo, bool isFamilyShared = false)
         {
+            IsFamilyShared = isFamilyShared;
             ProductId = productId ?? "";
             Store = store ?? "";
             ExpiresAtMs = Math.Max(0, expiresAtMs);
@@ -67,7 +71,8 @@ namespace Purser
         internal bool SameAs(EntitlementInfo other) =>
             other != null && ProductId == other.ProductId && Store == other.Store && ExpiresAtMs == other.ExpiresAtMs &&
             PurchasedAtMs == other.PurchasedAtMs && WillRenew == other.WillRenew && IsInGracePeriod == other.IsInGracePeriod &&
-            HasBillingIssue == other.HasBillingIssue && IsTrial == other.IsTrial && RenewsTo == other.RenewsTo;
+            HasBillingIssue == other.HasBillingIssue && IsTrial == other.IsTrial && RenewsTo == other.RenewsTo &&
+            IsFamilyShared == other.IsFamilyShared;
 
         internal EntitlementStateDto ToDto() => new EntitlementStateDto
         {
@@ -80,6 +85,7 @@ namespace Purser
             BillingIssue = HasBillingIssue,
             Trial = IsTrial,
             RenewsTo = RenewsTo,
+            FamilyShared = IsFamilyShared,
         };
 
         /// <inheritdoc/>
@@ -92,14 +98,17 @@ namespace Purser
     {
         /// <inheritdoc/>
         public AccessInfo(string productId, string store, long expiresAtMs, long purchasedAtMs = 0, bool willRenew = false,
-            bool isInGracePeriod = false, bool hasBillingIssue = false, bool isTrial = false, string renewsTo = null)
-            : base(productId, store, expiresAtMs, purchasedAtMs, willRenew, isInGracePeriod, hasBillingIssue, isTrial, renewsTo)
+            bool isInGracePeriod = false, bool hasBillingIssue = false, bool isTrial = false, string renewsTo = null,
+            bool isFamilyShared = false)
+            : base(productId, store, expiresAtMs, purchasedAtMs, willRenew, isInGracePeriod, hasBillingIssue, isTrial, renewsTo,
+                isFamilyShared)
         {
         }
 
         internal static AccessInfo From(EntitlementStateDto d) => d == null
             ? null
-            : new AccessInfo(d.ProductId, d.Store, d.ExpiresAtMs, d.PurchasedAtMs, d.WillRenew, d.InGrace, d.BillingIssue, d.Trial, d.RenewsTo);
+            : new AccessInfo(d.ProductId, d.Store, d.ExpiresAtMs, d.PurchasedAtMs, d.WillRenew, d.InGrace, d.BillingIssue, d.Trial, d.RenewsTo,
+                d.FamilyShared);
     }
 
     /// <summary>A subscription that gives access now, keyed by its catalog product id.</summary>
@@ -107,14 +116,53 @@ namespace Purser
     {
         /// <inheritdoc/>
         public SubscriptionInfo(string productId, string store, long expiresAtMs, long purchasedAtMs = 0, bool willRenew = false,
-            bool isInGracePeriod = false, bool hasBillingIssue = false, bool isTrial = false, string renewsTo = null)
-            : base(productId, store, expiresAtMs, purchasedAtMs, willRenew, isInGracePeriod, hasBillingIssue, isTrial, renewsTo)
+            bool isInGracePeriod = false, bool hasBillingIssue = false, bool isTrial = false, string renewsTo = null,
+            bool isFamilyShared = false)
+            : base(productId, store, expiresAtMs, purchasedAtMs, willRenew, isInGracePeriod, hasBillingIssue, isTrial, renewsTo,
+                isFamilyShared)
         {
         }
 
         internal static SubscriptionInfo From(EntitlementStateDto d) => d == null
             ? null
-            : new SubscriptionInfo(d.ProductId, d.Store, d.ExpiresAtMs, d.PurchasedAtMs, d.WillRenew, d.InGrace, d.BillingIssue, d.Trial, d.RenewsTo);
+            : new SubscriptionInfo(d.ProductId, d.Store, d.ExpiresAtMs, d.PurchasedAtMs, d.WillRenew, d.InGrace, d.BillingIssue, d.Trial, d.RenewsTo,
+                d.FamilyShared);
+    }
+
+    /// <summary>A subscription the player paused (Google Play): it gives no access until the store resumes it, so it is
+    /// not in <see cref="CustomerInfo.Subscriptions"/>. Show it as "paused until <see cref="ResumesAt"/>".</summary>
+    public sealed class PausedSubscriptionInfo
+    {
+        /// <summary>Catalog product id (the config's product <c>id</c>) of the subscription.</summary>
+        public string ProductId { get; }
+
+        /// <summary>Store of the subscription (<c>google</c>).</summary>
+        public string Store { get; }
+
+        /// <summary>When the store resumes the subscription (UTC); null when the server does not know.</summary>
+        public DateTime? ResumesAt { get; }
+
+        internal long ResumesAtMs { get; }
+
+        /// <summary>Creates the state (tests, custom caches). <paramref name="resumesAtMs"/>: Unix milliseconds, 0 = unknown.</summary>
+        public PausedSubscriptionInfo(string productId, string store, long resumesAtMs)
+        {
+            ProductId = productId ?? "";
+            Store = store ?? "";
+            ResumesAtMs = Math.Max(0, resumesAtMs);
+            ResumesAt = ResumesAtMs == 0 ? (DateTime?)null : DateTimeOffset.FromUnixTimeMilliseconds(ResumesAtMs).UtcDateTime;
+        }
+
+        internal bool SameAs(PausedSubscriptionInfo other) =>
+            other != null && ProductId == other.ProductId && Store == other.Store && ResumesAtMs == other.ResumesAtMs;
+
+        internal static PausedSubscriptionInfo From(PausedStateDto d) =>
+            d == null ? null : new PausedSubscriptionInfo(d.ProductId, d.Store, d.ResumesAtMs);
+
+        internal PausedStateDto ToDto() => new PausedStateDto { ProductId = ProductId, Store = Store, ResumesAtMs = ResumesAtMs };
+
+        /// <inheritdoc/>
+        public override string ToString() => $"{ProductId} ({Store}) paused until {(ResumesAt?.ToString("u") ?? "it is resumed")}";
     }
 
     /// <summary>
@@ -143,6 +191,10 @@ namespace Purser
         /// <summary>Owned non-consumable catalog product ids.</summary>
         public IReadOnlyCollection<string> NonConsumables { get; }
 
+        /// <summary>Catalog product id → a subscription the player paused (Google Play). It gives no access until the
+        /// store resumes it; empty when nothing is paused.</summary>
+        public IReadOnlyDictionary<string, PausedSubscriptionInfo> Paused { get; }
+
         /// <summary>Server clock when the data was produced (Unix ms).</summary>
         public long ServerTimeMs { get; }
 
@@ -156,8 +208,15 @@ namespace Purser
 
         /// <summary>Creates customer info (tests, custom caches).</summary>
         public CustomerInfo(string userId, IDictionary<string, AccessInfo> access, IDictionary<string, SubscriptionInfo> subscriptions,
-            IEnumerable<string> nonConsumables, long serverTimeMs, DateTime fetchedAtUtc, bool isFromCache)
+            IEnumerable<string> nonConsumables, long serverTimeMs, DateTime fetchedAtUtc, bool isFromCache,
+            IDictionary<string, PausedSubscriptionInfo> paused = null)
         {
+            var kept = new Dictionary<string, PausedSubscriptionInfo>();
+            if (paused != null)
+                foreach (var kv in paused)
+                    if (!string.IsNullOrEmpty(kv.Key) && kv.Value != null)
+                        kept[kv.Key] = kv.Value;
+            Paused = kept;
             UserId = userId;
             Access = Clean(access);
             Subscriptions = Clean(subscriptions);
@@ -232,6 +291,11 @@ namespace Purser
         {
             if (other == null || UserId != other.UserId || !m_NonConsumables.SetEquals(other.m_NonConsumables))
                 return false;
+            if (Paused.Count != other.Paused.Count)
+                return false;
+            foreach (var kv in Paused)
+                if (!other.Paused.TryGetValue(kv.Key, out var paused) || !kv.Value.SameAs(paused))
+                    return false;
             return SameItems(Access, other.Access) && SameItems(Subscriptions, other.Subscriptions);
         }
 
@@ -247,13 +311,14 @@ namespace Purser
 
         internal CustomerInfo AsCached() =>
             new CustomerInfo(UserId, Access.ToDictionary(kv => kv.Key, kv => kv.Value), Subscriptions.ToDictionary(kv => kv.Key, kv => kv.Value),
-                m_NonConsumables, ServerTimeMs, FetchedAtUtc, true);
+                m_NonConsumables, ServerTimeMs, FetchedAtUtc, true, Paused.ToDictionary(kv => kv.Key, kv => kv.Value));
 
         internal static CustomerInfo FromDto(string userId, CustomerInfoDto dto, DateTime fetchedAtUtc, bool fromCache) =>
             new CustomerInfo(userId,
                 dto.Access?.ToDictionary(kv => kv.Key, kv => AccessInfo.From(kv.Value)),
                 dto.Subscriptions?.ToDictionary(kv => kv.Key, kv => SubscriptionInfo.From(kv.Value)),
-                dto.NonConsumables, dto.ServerTimeMs, fetchedAtUtc, fromCache);
+                dto.NonConsumables, dto.ServerTimeMs, fetchedAtUtc, fromCache,
+                dto.Paused?.ToDictionary(kv => kv.Key, kv => PausedSubscriptionInfo.From(kv.Value)));
 
         internal CustomerInfoDto ToDto() => new CustomerInfoDto
         {
@@ -262,6 +327,7 @@ namespace Purser
             Access = Access.ToDictionary(kv => kv.Key, kv => kv.Value.ToDto()),
             Subscriptions = Subscriptions.ToDictionary(kv => kv.Key, kv => kv.Value.ToDto()),
             NonConsumables = m_NonConsumables.ToList(),
+            Paused = Paused.Count == 0 ? null : Paused.ToDictionary(kv => kv.Key, kv => kv.Value.ToDto()),
         };
 
         /// <summary>
@@ -292,7 +358,8 @@ namespace Purser
             foreach (var level in product.AccessLevels())
                 if (!access.TryGetValue(level, out var current) || (!current.IsLifetime && (expires == 0 || expires > current.ExpiresAtMs)))
                     access[level] = new AccessInfo(product.id, "local", expires, nowMs, willRenew: expires != 0);
-            return new CustomerInfo(userId, access, subs, owned, nowMs, utcNow, false);
+            return new CustomerInfo(userId, access, subs, owned, nowMs, utcNow, false,
+                keep ? Paused.ToDictionary(kv => kv.Key, kv => kv.Value) : null);
         }
     }
 }

@@ -1,0 +1,50 @@
+<!--
+  Managed code stripping (IL2CPP, "Managed Stripping Level" above Minimal) removes what no code calls directly.
+  Newtonsoft.Json creates and fills the types below by reflection, and the App Store promotional offer bridge
+  (UnityIapApplePromotionalOffers) calls Unity IAP internals by reflection: they are preserved here.
+  The EditMode test LinkXml_PreservesEveryTypeJsonCreatesByReflection fails when a type with [JsonProperty] is
+  missing from this file.
+-->
+<linker>
+  <assembly fullname="Purser.Runtime">
+    <type fullname="Purser.AppleAdsAttributionProvider/State" preserve="all" />
+    <type fullname="Purser.ApplePromotionalOfferRequest" preserve="all" />
+    <type fullname="Purser.ApplePromotionalOfferResponse" preserve="all" />
+    <type fullname="Purser.AttributesRequest" preserve="all" />
+    <type fullname="Purser.AttributesResponse" preserve="all" />
+    <type fullname="Purser.CacheIndex/Index" preserve="all" />
+    <type fullname="Purser.ClientInfoDto" preserve="all" />
+    <type fullname="Purser.CustomerInfoCache/Snapshot" preserve="all" />
+    <type fullname="Purser.CustomerInfoDto" preserve="all" />
+    <type fullname="Purser.EntitlementStateDto" preserve="all" />
+    <type fullname="Purser.EntitlementsRequest" preserve="all" />
+    <type fullname="Purser.PausedStateDto" preserve="all" />
+    <type fullname="Purser.PaywallCache/Snapshot" preserve="all" />
+    <type fullname="Purser.PaywallEventRequest" preserve="all" />
+    <type fullname="Purser.PaywallProductDto" preserve="all" />
+    <type fullname="Purser.PaywallRequest" preserve="all" />
+    <type fullname="Purser.PaywallResponse" preserve="all" />
+    <type fullname="Purser.RestoreItem" preserve="all" />
+    <type fullname="Purser.RestoreItemResult" preserve="all" />
+    <type fullname="Purser.RestoreRequest" preserve="all" />
+    <type fullname="Purser.RestoreResponse" preserve="all" />
+    <type fullname="Purser.ServerCheckoutStoreAdapter/CheckoutOrder" preserve="all" />
+    <type fullname="Purser.StatusResponse" preserve="all" />
+    <type fullname="Purser.SteamCheckoutResponse" preserve="all" />
+    <type fullname="Purser.SteamStoreAdapter/CheckoutRequest" preserve="all" />
+    <type fullname="Purser.StripeCheckoutRequest" preserve="all" />
+    <type fullname="Purser.StripeCheckoutResponse" preserve="all" />
+    <type fullname="Purser.StripeSessionRequest" preserve="all" />
+    <type fullname="Purser.VerifyRequest" preserve="all" />
+    <type fullname="Purser.VerifyResponse" preserve="all" />
+    <type fullname="Purser.XsollaCheckoutResponse" preserve="all" />
+    <type fullname="Purser.XsollaStoreAdapter/CheckoutRequest" preserve="all" />
+    <type fullname="Purser.XsollaStoreAdapter/StatusRequest" preserve="all" />
+  </assembly>
+  <assembly fullname="Unity.Purchasing.Stores" ignoreIfMissing="1">
+    <type fullname="UnityEngine.Purchasing.AppleStoreImpl" preserve="all" />
+  </assembly>
+  <assembly fullname="Unity.Purchasing.Utilities" ignoreIfMissing="1">
+    <type fullname="Purchasing.Utilities.StoreKitSelector" preserve="all" />
+  </assembly>
+</linker>

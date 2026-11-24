@@ -162,13 +162,34 @@ namespace Purser
             [JsonProperty("fetched_at_ticks")] public long FetchedAtTicks;
         }
 
+        /// <summary>An answer that is the same as the cached one is written again at most this often.</summary>
+        internal static readonly TimeSpan RewriteInterval = TimeSpan.FromHours(1);
+
+        /// <summary>Caches the answer; null forgets the cached one. An answer equal to the cached one is not written
+        /// again for <see cref="RewriteInterval"/> (only its fetch time would change).</summary>
         public static void Save(IBillingStorage storage, string appId, string userId, string placement, PaywallResponse response,
             DateTime fetchedAtUtc, BillingLog log)
         {
             try
             {
-                var json = response == null ? "" : JsonConvert.SerializeObject(new Snapshot { Response = response, FetchedAtTicks = fetchedAtUtc.Ticks });
-                storage.Save(Key(appId, userId, placement), json);
+                var key = Key(appId, userId, placement);
+                var existing = storage.Load(key);
+                if (response == null)
+                {
+                    if (!string.IsNullOrEmpty(existing))
+                        storage.Save(key, "");
+                    return;
+                }
+                if (!string.IsNullOrEmpty(existing))
+                {
+                    var cached = JsonConvert.DeserializeObject<Snapshot>(existing);
+                    var age = fetchedAtUtc - new DateTime(cached?.FetchedAtTicks ?? 0, DateTimeKind.Utc);
+                    if (cached?.Response != null && age >= TimeSpan.Zero && age < RewriteInterval &&
+                        JsonConvert.SerializeObject(cached.Response) == JsonConvert.SerializeObject(response))
+                        return;
+                }
+                CacheIndex.Track(storage, appId, userId, key, log);
+                storage.Save(key, JsonConvert.SerializeObject(new Snapshot { Response = response, FetchedAtTicks = fetchedAtUtc.Ticks }));
             }
             catch (Exception e)
             {

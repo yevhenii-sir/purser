@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- Paused subscriptions and Family Sharing (needs a server that reports them): `CustomerInfo.Paused` (catalog product
+  id → `PausedSubscriptionInfo`: `ProductId`, `Store`, `ResumesAt`) lists subscriptions the player paused on Google
+  Play; they give no access until they resume, so `IsActive` / `HasAccess` are false for them. `IsFamilyShared` on
+  `SubscriptionInfo` and `AccessInfo`: Apple Family Sharing, a family member shares the purchase. DTOs:
+  `CustomerInfoDto.Paused` (`paused`, `PausedStateDto`), `EntitlementStateDto.FamilyShared` (`family_shared`). Both
+  count for `CustomerInfoChanged` and are kept in the cache.
+- `IFlushableBillingStorage` (`Flush()`): a storage that batches its writes. `PlayerPrefsBillingStorage` implements it.
+- `ApiResult.RawBody` / `ApiResult.Signature`: the signed bytes of a `/entitlements` or `/restore` answer, for the
+  customer info cache.
+- `BillingLog.IsEnabled(level)`.
+- `ServerCheckoutStoreAdapter` (for adapters derived from it): `RaiseResumed`, `CheckAsync`, `ResumeAttempts`,
+  `MaxFailedRequests`.
+- `Runtime/link.xml` (and `PurserLinkerProcessor` in the Editor assembly, which gives it to the Unity linker): the
+  types Newtonsoft.Json creates by reflection and the Unity IAP types of the promotional offer bridge survive managed
+  code stripping.
+
 ### Fixed
 
 - A purchase the game grants itself (`delivery: "client"`, `PurchaseResult.GrantOnClient`) was finished in the store
@@ -37,6 +55,28 @@
   fails, but the service keeps trying in the background (5 s doubling to 5 minutes, and right away when the app returns
   to the foreground) and raises `Initialized` when it succeeds. Configuration problems (server URL without https,
   unsupported platform) are not retried. The hidden lifecycle object is created at the first `InitializeAsync`.
+- Checking a signed response takes about a third less time (one interleaved double-scalar multiplication, a decoded
+  public key that is kept, a cheaper modular reduction) and, in a running game, is done off the main thread (not on
+  WebGL).
+- With `responseSigningPublicKey`, the customer info cache holds the signed answer and its signature, and the
+  signature is checked again when the cache is read: a cache edited on the device, saved without a signature or
+  signed for another player is ignored. Caches written by earlier versions with a key set are not read (the first
+  answer of the server replaces them). The cache is read once at startup, not twice.
+- `RefreshCustomerInfoAsync`: one `/entitlements` request runs at a time; calls made while it runs share one request
+  that follows it. An answer older than the customer info already shown (by server time), from `/entitlements` or
+  `/restore`, is dropped. Cancelling the token stops waiting; the request goes on.
+- The customer info is refreshed a few seconds after something in it expired or a paused subscription was due to
+  resume (checked once a second in play mode, at most one such refresh a minute).
+- `PlayerPrefsBillingStorage` no longer calls `PlayerPrefs.Save()` on every write: the service flushes it when the app
+  is paused or quits and when it is disposed, and right after a started web / Steam order, a fulfilled Amazon receipt
+  and the refund data consent. A customer info or paywall answer equal to the cached one is written again at most once
+  an hour. When another player's data is cached, the previous player's cache entries are emptied.
+- Web checkout (Stripe, Xsolla): an order resumed from an earlier launch, by `ResumePendingOrders()` or by
+  `StripeStoreAdapter.ResumeSession` is asked about three times with backoff instead of being polled for the whole
+  payment timeout. Three failed requests in a row (no network, 5xx) end a poll with that error, which the service
+  retries on its `retryDelaysSeconds`.
+- `GetProduct`, `IsActive` and `GetExpiration` use lookups built at initialization instead of searching the product
+  lists on every call; log messages below the configured level are no longer built.
 
 ## [0.8.1] - 2026-11-20
 

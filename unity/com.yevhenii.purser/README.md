@@ -94,11 +94,19 @@ starts, `IsFromCache`):
 - `Access` — access level → `AccessInfo`; `Subscriptions` — catalog product id → `SubscriptionInfo`; both have
   `ProductId`, `Store`, `ExpiresAt` (UTC, grace period included; null = never), `PurchasedAt`, `WillRenew`,
   `IsInGracePeriod`, `HasBillingIssue` (ask the player to fix the payment method), `IsTrial`, `RenewsTo` (a pending
-  downgrade).
+  downgrade), `IsFamilyShared` (Apple Family Sharing: a family member bought it and shares it with the player).
 - `NonConsumables` — owned catalog product ids.
+- `Paused` — catalog product id → `PausedSubscriptionInfo` (`ProductId`, `Store`, `ResumesAt`): a subscription the
+  player paused on Google Play. It gives no access until it resumes, so it is not in `Subscriptions` and
+  `IsActive` / `HasAccess` are false for it; show "paused until ..." instead of the offer to subscribe. (On the server
+  the game events of a pause and of its end carry the reasons `paused` and `resumed`; the SDK reads the customer
+  info, not those events.)
 
 `RefreshCustomerInfoAsync()` asks the server again. The package refreshes by itself after initialization, after
-purchases, when the app returns to the foreground (at most every 5 minutes), and after the store reconnects.
+purchases, when the app returns to the foreground (at most every 5 minutes), after the store reconnects, and a few
+seconds after something in the customer info expired or a paused subscription was due to resume (while the game runs;
+at most once a minute). One `/entitlements` request runs at a time: calls made meanwhile share one request that
+follows it, and an answer older than the one already shown (by the server's clock) is dropped.
 `CustomerInfoChanged` fires only when the items changed, not on every refresh. In the Editor without the server
 (`editorMode = SkipServer`) purchases grant the config's `access` levels locally and keep them for the next session.
 
@@ -261,7 +269,9 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
   Pay Station with `Application.OpenURL` and polls `/checkout/xsolla/status` until Xsolla's webhook reached the
   server; then `PurchaseSucceeded` fires as for any store (with `GrantOnClient` for builds without a backend).
   A payment not finished within `XsollaOptions.PaymentTimeout` (10 minutes) is reported as `PendingPayment`;
-  the order is remembered and checked again at the next launch, or now with `ResumePendingOrders()`.
+  the order is remembered and checked again at the next launch, or now with `ResumePendingOrders()`. Such a
+  resumed order is asked about three times (after `PollInterval`, then twice as long), not polled for the whole
+  payment timeout; this goes for Stripe sessions too.
 
   ```csharp
   var xsolla = new XsollaStoreAdapter(config, new XsollaOptions
@@ -401,7 +411,26 @@ With the build's response signing key on the admin page, the server signs `/enti
 (`X-Purser-Signature`: base64 Ed25519 over the exact body bytes). Put the public key (base64, 32 bytes) into
 `BillingConfig.responseSigningPublicKey`: answers without a valid signature are then treated as errors and the cached
 customer info is kept, so a proxy on the device's network cannot grant access. The check is built into
-`BillingApiClient` (Ed25519 per RFC 8032 in C#, no native code); a custom `IBillingApi` has to do its own.
+`BillingApiClient` (Ed25519 per RFC 8032 in C#, no native code; in a running game it is computed off the main thread,
+except on WebGL); a custom `IBillingApi` has to do its own.
+
+With a key, the customer info cache holds the signed answer itself (`ApiResult.RawBody` and `ApiResult.Signature`) and
+its signature is checked again at every start: a cache that was edited on the device, saved without a signature or
+signed for another player is ignored, and nothing is shown until the server answers. A custom `IBillingApi` that
+does not fill `RawBody` / `Signature` therefore has no offline cache while a key is set.
+
+## Storage and code stripping
+
+`IBillingStorage` (default: `PlayerPrefsBillingStorage`) keeps the customer info and paywall caches, started web and
+Steam orders and the refund data consent. Cache writes are batched: a storage that implements
+`IFlushableBillingStorage` (PlayerPrefs does) is flushed to disk when the app is paused or quits and when the service is
+disposed, and at once after a write that must not be lost (a started order, the consent). An answer equal to the
+cached one is written again at most once an hour, and the device keeps the cache of the last player only.
+
+`Runtime/link.xml` keeps the types Newtonsoft.Json creates by reflection and the Unity IAP internals of the App Store
+promotional offer bridge from managed code stripping (IL2CPP, a stripping level above Minimal). Unity reads `link.xml`
+files from `Assets` only, so the package's Editor assembly hands this one to the linker during a build; nothing to set
+up.
 
 ## GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Apple Ads
 

@@ -45,7 +45,7 @@ namespace Purser
             if (items.Count == 0)
                 return await RefreshCustomerInfoAsync(ct);
 
-            CustomerInfoDto latest = null;
+            ApiResult<RestoreResponse> latest = null;
             var appInstanceId = await m_Context.AppInstanceIdAsync();
             var attribution = await m_Context.AttributionAsync();
             for (var i = 0; i < items.Count; i += RestoreRequest.MaxItems)
@@ -61,14 +61,14 @@ namespace Purser
                 };
                 var response = await m_Api.RestoreAsync(request, ct);
                 if (response.IsHttpSuccess && response.Value?.CustomerInfo != null)
-                    latest = response.Value.CustomerInfo;
+                    latest = response;
                 else
                     m_Log.Warning("Restore request failed: " + response);
             }
 
             if (latest == null)
                 return await RefreshCustomerInfoAsync(ct);
-            m_Refresher.Set(user, latest);
+            m_Refresher.Set(user, latest.Value.CustomerInfo, new SignedAnswer(latest.RawBody, latest.Signature, true));
             return m_Refresher.Current;
         }
 

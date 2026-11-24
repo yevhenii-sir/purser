@@ -223,7 +223,8 @@ namespace Purser
             if (m_Host.SyncUser() == null)
             {
                 m_WaitingForUser[key] = order;
-                m_Log.Info($"Order {order} waits for a user id.");
+                if (m_Log.IsEnabled(BillingLogLevel.Info))
+                    m_Log.Info($"Order {order} waits for a user id.");
                 return;
             }
             var verification = ProcessOrderAsync(order, TakeGivenUp(order));
@@ -287,7 +288,8 @@ namespace Purser
                 held.Delivering = true;
                 try
                 {
-                    m_Log.Info("Purchase " + held.Result + " (kept until a PurchaseSucceeded handler was added)");
+                    if (m_Log.IsEnabled(BillingLogLevel.Info))
+                        m_Log.Info("Purchase " + held.Result + " (kept until a PurchaseSucceeded handler was added)");
                     handler(held.Result);
                 }
                 catch (Exception e)
@@ -307,7 +309,7 @@ namespace Purser
         /// <summary>The store confirmed (or refused to confirm) an order (<see cref="IStoreAdapter.OrderFinished"/>).</summary>
         public void OnOrderFinished(StoreOrder order, bool success, string error)
         {
-            if (!success)
+            if (!success && m_Log.IsEnabled(BillingLogLevel.Verbose))
                 m_Log.Verbose($"Store confirmation of {order} reported: {error} " +
                               "(expected when the server already consumed the purchase).");
         }

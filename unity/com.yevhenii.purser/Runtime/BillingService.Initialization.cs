@@ -70,16 +70,18 @@ namespace Purser
                 ThrowIfDisposed();
                 var products = m_Config.products.Where(p => p != null && !string.IsNullOrEmpty(p.id)).ToList();
                 m_Products = (await m_Store.FetchProductsAsync(products, ct)).Select(WithFallbacks).ToList();
+                IndexProducts();
             }
             finally
             {
                 fetch.TrySetResult(true);
             }
             ThrowIfDisposed();
-            m_Log.Info($"Initialized: {m_Products.Count} products, store {m_Store.Store} ({AppId})");
+            if (m_Log.IsEnabled(BillingLogLevel.Info))
+                m_Log.Info($"Initialized: {m_Products.Count} products, store {m_Store.Store} ({AppId})");
 
+            // A player who appeared meanwhile; their cached customer info is loaded when the player changes.
             SyncUser(refreshOnChange: false);
-            m_Refresher.LoadCached(m_Context.User);
             if (m_Context.Attribution is AppleAdsAttributionProvider appleAds)
                 LogFailure(appleAds.WarmUpAsync(), "Apple Ads attribution");
             IsInitialized = true;
@@ -162,6 +164,26 @@ namespace Purser
             }
         }
 
+        /// <summary>Builds the lookups of <see cref="GetProduct"/>, <see cref="IsActive"/> and
+        /// <see cref="GetExpiration"/> once, instead of searching the lists for every question.</summary>
+        private void IndexProducts()
+        {
+            var byId = new Dictionary<string, StoreProduct>();
+            var byStoreId = new Dictionary<string, StoreProduct>();
+            foreach (var product in m_Products)
+            {
+                if (product == null)
+                    continue;
+                if (product.Id != null && !byId.ContainsKey(product.Id))
+                    byId[product.Id] = product;
+                if (product.StoreId != null && !byStoreId.ContainsKey(product.StoreId))
+                    byStoreId[product.StoreId] = product;
+            }
+            m_ProductsById = byId;
+            m_ProductsByStoreId = byStoreId;
+            m_Refresher.IndexProducts();
+        }
+
         /// <summary>The config's fallback price and subscription period where the store gave none.</summary>
         private StoreProduct WithFallbacks(StoreProduct p)
         {
@@ -199,6 +221,7 @@ namespace Purser
         public void SetRefundDataConsent(bool consented)
         {
             m_Storage.Save(BillingContext.RefundConsentKey, consented ? "true" : "false");
+            FlushStorage();
         }
 
         /// <inheritdoc/>
@@ -253,7 +276,8 @@ namespace Purser
             if (current == m_Context.User)
                 return current;
             m_Context.User = current;
-            m_Log.Info(current == null ? "The player signed out." : "Player " + current);
+            if (m_Log.IsEnabled(BillingLogLevel.Info))
+                m_Log.Info(current == null ? "The player signed out." : "Player " + current);
             m_Refresher.LoadCached(current);
             BindAccount();
             m_Orders.ProcessWaitingOrders();
@@ -291,11 +315,23 @@ namespace Purser
                 m_Refresher.RefreshOnResume();
         }
 
-        /// <summary>Once a second in play mode: notices a changed user id of the provider.</summary>
-        internal void OnTick()
+        /// <summary>The app goes to the background or quits (<see cref="BillingLifecycleHook"/>): what the storage
+        /// batched is written to disk, as the app may not come back.</summary>
+        internal void OnAppPaused()
         {
             if (!m_Context.IsDisposed)
-                SyncUser();
+                FlushStorage();
+        }
+
+        /// <summary>Once a second in play mode: notices a changed user id of the provider, and asks the server what the
+        /// player has when something in the customer info just expired.</summary>
+        internal void OnTick()
+        {
+            if (m_Context.IsDisposed)
+                return;
+            var user = SyncUser();
+            if (IsInitialized && user != null && !SkipServer)
+                m_Refresher.RefreshAfterExpiry();
         }
     }
 }

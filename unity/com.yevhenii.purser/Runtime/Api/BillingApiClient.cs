@@ -24,6 +24,14 @@ namespace Purser
         /// <summary>A 429 answer's <c>Retry-After</c> (at most 60 seconds); null otherwise.</summary>
         public TimeSpan? RetryAfter { get; }
 
+        /// <summary>The exact bytes of a signed answer (<c>/entitlements</c>, <c>/restore</c> with
+        /// <see cref="BillingConfig.responseSigningPublicKey"/>): what <see cref="Signature"/> signs. They are kept in
+        /// the customer info cache, which is checked again when it is read. Null for an answer without a signature.</summary>
+        public byte[] RawBody { get; internal set; }
+
+        /// <summary>The <c>X-Purser-Signature</c> of <see cref="RawBody"/> (base64 Ed25519); null without one.</summary>
+        public string Signature { get; internal set; }
+
         /// <summary>The server was not reached (<see cref="HttpStatus"/> is 0): worth retrying.</summary>
         public bool IsTransportError => HttpStatus == 0;
 
@@ -76,6 +84,10 @@ namespace Purser
     {
         private readonly JsonHttp m_Http;
         private readonly string m_SigningKey;
+
+        /// <summary>Test hook: whether signatures are checked on a thread of the pool. Default: in play mode on a
+        /// thread that has a <see cref="SynchronizationContext"/> to come back to (Unity's main thread); never on WebGL.</summary>
+        internal bool? VerifyOffThread;
 
         /// <param name="baseUrl">Billing server, <c>https://&lt;host&gt;/v1/database/&lt;db&gt;/route</c>.</param>
         /// <param name="responseSigningPublicKey">Base64 Ed25519 public key of signed responses
@@ -130,8 +142,14 @@ namespace Purser
             return new ApiResult<string>(res.Status, res.Body, res.Error);
         }
 
-        /// <summary>Null when signed responses are off or the answer's signature is valid.</summary>
-        private string CheckSignature(HttpResponse res) =>
-            m_SigningKey == null ? null : ResponseSignature.Problem(m_SigningKey, res.RawBody, res.GetHeader(ResponseSignature.Header));
+        /// <summary>Null when signed responses are off or the answer's signature is valid. The check takes a few
+        /// milliseconds: in a running game it is done off the main thread.</summary>
+        private Task<string> CheckSignature(HttpResponse res)
+        {
+            if (m_SigningKey == null)
+                return Task.FromResult<string>(null);
+            var offThread = VerifyOffThread ?? (UnityEngine.Application.isPlaying && SynchronizationContext.Current != null);
+            return ResponseSignature.ProblemAsync(m_SigningKey, res.RawBody, res.GetHeader(ResponseSignature.Header), offThread);
+        }
     }
 }

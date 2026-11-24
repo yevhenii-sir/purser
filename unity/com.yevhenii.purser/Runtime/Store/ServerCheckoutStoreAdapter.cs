@@ -71,6 +71,16 @@ namespace Purser
         /// <summary>Cancelled, never disposed: callbacks arriving after <see cref="Dispose"/> may still read the token.</summary>
         private readonly CancellationTokenSource m_Lifetime = new CancellationTokenSource();
         private List<CheckoutOrder> m_Pending;
+        /// <summary>Orders raised again (<see cref="RaiseResumed"/>), not started by a checkout of this run.</summary>
+        private readonly HashSet<string> m_Resumed = new HashSet<string>();
+
+        /// <summary>How many times the server is asked about a resumed order (an earlier run's, or one the player comes
+        /// back to) before it is reported as not paid yet: nobody is paying right now, unlike after a checkout.</summary>
+        protected const int ResumeAttempts = 3;
+
+        /// <summary>Requests in a row that may fail (no network, 5xx) before a check gives its last answer back: the
+        /// billing service retries on its own schedule instead of this adapter asking every few seconds.</summary>
+        protected const int MaxFailedRequests = 3;
 
         /// <summary>Test hook: waits between polls.</summary>
         internal Func<TimeSpan, CancellationToken, Task> Delay = (d, ct) => Task.Delay(d, ct);
@@ -139,7 +149,7 @@ namespace Purser
         public void ResumePendingOrders()
         {
             foreach (var o in Pending.ToList())
-                OrderPending?.Invoke(ToOrder(o));
+                RaiseResumed(ToOrder(o));
         }
 
         /// <summary>Products from the config: prices are shown by the store's own page or overlay.</summary>
@@ -235,8 +245,23 @@ namespace Purser
             return order;
         }
 
-        /// <summary>Raises <see cref="OrderPending"/>: the billing service checks the order with the server.</summary>
-        protected void RaisePending(StoreOrder order) => OrderPending?.Invoke(order);
+        /// <summary>Raises <see cref="OrderPending"/> for an order whose checkout just started: the billing service
+        /// checks it with the server until it is paid (<see cref="CheckAsync"/> polls for the whole payment timeout).</summary>
+        protected void RaisePending(StoreOrder order)
+        {
+            if (!string.IsNullOrEmpty(order?.TransactionId))
+                m_Resumed.Remove(order.TransactionId);
+            OrderPending?.Invoke(order);
+        }
+
+        /// <summary>Raises <see cref="OrderPending"/> for an order that was started earlier (a previous run, or a page
+        /// the player comes back from): <see cref="CheckAsync"/> asks about it a few times only.</summary>
+        protected void RaiseResumed(StoreOrder order)
+        {
+            if (!string.IsNullOrEmpty(order?.TransactionId))
+                m_Resumed.Add(order.TransactionId);
+            OrderPending?.Invoke(order);
+        }
 
         /// <summary>Whether the payment page the server returned may be opened: only an absolute https URL. Otherwise
         /// the purchase of <paramref name="sku"/> fails.</summary>
@@ -267,23 +292,47 @@ namespace Purser
             return user;
         }
 
-        /// <summary>Asks the server until the order is no longer unpaid or <paramref name="timeout"/> passes (then the
-        /// last answer, usually <c>pending_or_canceled</c>). <paramref name="stop"/>: the player gave up. A rate-limited
-        /// answer (429) waits for its <c>Retry-After</c> when that is longer than <paramref name="interval"/>.</summary>
-        protected async Task<ApiResult<VerifyResponse>> PollAsync(Func<CancellationToken, Task<ApiResult<VerifyResponse>>> ask,
+        /// <summary>
+        /// The server's answer for <paramref name="order"/> (<see cref="IWebhookStoreAdapter.CheckOrderAsync"/>). An
+        /// order whose checkout just started is polled until it is paid or <paramref name="timeout"/> passes
+        /// (<see cref="PollAsync"/>). A resumed one (<see cref="RaiseResumed"/>) is asked <see cref="ResumeAttempts"/>
+        /// times, waiting <paramref name="interval"/>, then twice as long: it is paid already or not being paid now.
+        /// </summary>
+        protected Task<ApiResult<VerifyResponse>> CheckAsync(StoreOrder order, Func<CancellationToken, Task<ApiResult<VerifyResponse>>> ask,
             TimeSpan interval, TimeSpan timeout, Func<bool> stop, CancellationToken ct)
         {
+            var resumed = !string.IsNullOrEmpty(order?.TransactionId) && m_Resumed.Contains(order.TransactionId);
+            return PollAsync(ask, interval, timeout, stop, resumed ? ResumeAttempts : 0, ct);
+        }
+
+        /// <summary>Asks the server until the order is no longer unpaid or <paramref name="timeout"/> passes (then the
+        /// last answer, usually <c>pending_or_canceled</c>). <paramref name="stop"/>: the player gave up. A rate-limited
+        /// answer (429) waits for its <c>Retry-After</c> when that is longer than <paramref name="interval"/>.
+        /// <see cref="MaxFailedRequests"/> failed requests in a row end it with the last one (a transport error, which
+        /// the billing service retries later).</summary>
+        protected Task<ApiResult<VerifyResponse>> PollAsync(Func<CancellationToken, Task<ApiResult<VerifyResponse>>> ask,
+            TimeSpan interval, TimeSpan timeout, Func<bool> stop, CancellationToken ct) =>
+            PollAsync(ask, interval, timeout, stop, 0, ct);
+
+        /// <param name="maxAttempts">Above 0: at most this many requests, each wait twice the previous one.</param>
+        private async Task<ApiResult<VerifyResponse>> PollAsync(Func<CancellationToken, Task<ApiResult<VerifyResponse>>> ask,
+            TimeSpan interval, TimeSpan timeout, Func<bool> stop, int maxAttempts, CancellationToken ct)
+        {
             var deadline = UtcNow() + timeout;
-            while (true)
+            var failures = 0;
+            for (var attempt = 1; ; attempt++)
             {
                 if (stop != null && stop())
                     return Answer(VerifyStatus.PendingOrCanceled, "checkout cancelled");
                 var res = await ask(ct);
-                var unpaid = res == null || res.IsTransportError || res.HttpStatus >= 500 || res.IsRateLimited ||
-                             res.Value?.Status == VerifyStatus.PendingOrCanceled;
-                if (!unpaid || UtcNow() >= deadline)
+                var failed = res == null || res.IsTransportError || res.HttpStatus >= 500;
+                failures = failed ? failures + 1 : 0;
+                var unpaid = failed || res.IsRateLimited || res.Value?.Status == VerifyStatus.PendingOrCanceled;
+                if (!unpaid || UtcNow() >= deadline || failures >= MaxFailedRequests || (maxAttempts > 0 && attempt >= maxAttempts))
                     return res;
-                var wait = res?.RetryAfter is TimeSpan retryAfter && retryAfter > interval ? retryAfter : interval;
+                var wait = maxAttempts > 0 ? TimeSpan.FromTicks(interval.Ticks << (attempt - 1)) : interval;
+                if (res?.RetryAfter is TimeSpan retryAfter && retryAfter > wait)
+                    wait = retryAfter;
                 await Delay(wait, ct);
             }
         }
@@ -332,6 +381,8 @@ namespace Purser
             try
             {
                 m_Storage.Save(key, JsonConvert.SerializeObject(orders));
+                // A started order that is forgotten cannot be checked again: on disk at once.
+                (m_Storage as IFlushableBillingStorage)?.Flush();
             }
             catch (Exception e)
             {
