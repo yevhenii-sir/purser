@@ -1,0 +1,34 @@
+{
+    "name": "Purser.Tests.UnityIap",
+    "rootNamespace": "Purser.Tests",
+    "references": [
+        "Purser.Runtime",
+        "Purser.UnityIap",
+        "Unity.Purchasing",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "nunit.framework.dll",
+        "Newtonsoft.Json.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "PURSER_UNITY_IAP5"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.purchasing",
+            "expression": "5.4.0",
+            "define": "PURSER_UNITY_IAP5"
+        }
+    ],
+    "noEngineReferences": false
+}

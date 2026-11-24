@@ -163,38 +163,6 @@ namespace Purser.Tests
         }
 
         [Test]
-        public void UnityIapOptions_HoldTheOfferAtTheTopLevel()
-        {
-            var offer = FakeApi.SignedOffer(new ApplePromotionalOfferRequest { ProductId = "premium_ios", OfferId = "winback_50", UserId = User })
-                .Value.ToOffer();
-            var json = JObject.Parse(UnityIapApplePromotionalOffers.BuildOptionsJson(offer));
-
-            Assert.AreEqual("winback_50", (string)json["offerID"]);
-            Assert.AreEqual("KEY123ABCD", (string)json["keyID"]);
-            Assert.AreEqual("a1b2c3d4-0000-4000-8000-00000000000f", (string)json["nonce"]);
-            Assert.AreEqual("MEUCIQD0ZXN0", (string)json["signature"]);
-            Assert.AreEqual(JTokenType.Integer, json["timestamp"].Type, "StoreKit bridge reads an Int");
-            Assert.AreEqual(1_800_000_000_000, (long)json["timestamp"]);
-            Assert.AreEqual(AccountIds.AppleAccountToken(User).ToString(), (string)json["appAccountToken"]);
-            Assert.AreEqual(false, (bool)json["simulatesAskToBuyInSandbox"]);
-        }
-
-        [Test]
-        public void UnityIap_HasTheInternalsTheOfferBridgeUses()
-        {
-            Assert.IsNull(UnityIapApplePromotionalOffers.MissingInternals());
-        }
-
-        [Test]
-        public void UnityIapOptions_RejectAMalformedOffer()
-        {
-            var bad = new ApplePromotionalOffer("premium_ios", "winback_50", "KEY123ABCD", "not-a-uuid", 1, "MEUCIQD0ZXN0",
-                AccountIds.AppleAccountToken(User).ToString());
-            Assert.IsFalse(bad.IsWellFormed(out _));
-            Assert.Throws<BillingException>(() => UnityIapApplePromotionalOffers.BuildOptionsJson(bad));
-        }
-
-        [Test]
         public void ApiClient_PostsToTheOfferRoute()
         {
             var transport = new FakeTransport

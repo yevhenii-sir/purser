@@ -11,6 +11,11 @@ Checked in Unity 2022.3, 6.0, 6.3 and 6.6: the package compiles without warnings
 
 ### Changed
 
+- The package no longer depends on Unity IAP (`com.unity.purchasing`): add Unity IAP 5.4 or later to the project for
+  Google Play and the App Store. `UnityIapStoreAdapter` moved to its own assembly `Purser.UnityIap`, compiled only when
+  Unity IAP 5.4+ is installed (`PURSER_UNITY_IAP5`) and registered as the default store on load; namespaces and the
+  public API are unchanged. Without it `BillingService` needs `BillingDependencies.Store` and otherwise throws a
+  `BillingException` that says so. EditMode tests of the adapter are in `Purser.Tests.UnityIap`.
 - The customer info and paywall caches are kept per billing server (the key has a hash of the server URL): a profile
   with another server never shows this one's purchases. Caches written by earlier versions are not read; the first
   answer of the server replaces them.

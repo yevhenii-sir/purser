@@ -15,7 +15,7 @@ namespace Purser
         /// provider whose id changes (<see cref="FuncUserIdProvider"/>) works like <see cref="IBillingService.SetUserId"/>.</summary>
         public IUserIdProvider UserIdProvider;
 
-        /// <summary>Default: <see cref="UnityIapStoreAdapter"/> (Google Play, App Store). Other stores:
+        /// <summary>Default: <c>UnityIapStoreAdapter</c> (Google Play, App Store; needs Unity IAP 5.4 or later). Other stores:
         /// <see cref="AmazonStoreAdapter"/>, <see cref="SteamStoreAdapter"/>, <see cref="StripeStoreAdapter"/>,
         /// <see cref="XsollaStoreAdapter"/> or your own.</summary>
         public IStoreAdapter Store;
@@ -222,7 +222,11 @@ namespace Purser
                 log.Warning("Installed by the Amazon Appstore, but no AmazonStoreAdapter was given in BillingDependencies.Store: using Google Play.");
                 platform = BillingPlatform.Google;
             }
-            return new UnityIapStoreAdapter(platform, log);
+            var factory = Billing.DefaultStoreFactory
+                          ?? throw new BillingException("No store adapter: install Unity IAP (com.unity.purchasing) 5.4 or later for " +
+                                                        "the default UnityIapStoreAdapter, or pass a store in BillingDependencies.Store " +
+                                                        "(e.g. observer mode when the game keeps its own Unity IAP code)");
+            return factory(platform, log);
         }
 
         private static string NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;

@@ -95,6 +95,23 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void NoStore_WithoutUnityIap_SaysWhatIsMissing()
+        {
+            var factory = Billing.DefaultStoreFactory;
+            Billing.DefaultStoreFactory = null;
+            try
+            {
+                var e = Assert.Throws<BillingException>(() => new BillingService(m_Config));
+                StringAssert.Contains("Unity IAP", e.Message);
+                StringAssert.Contains("BillingDependencies.Store", e.Message);
+            }
+            finally
+            {
+                Billing.DefaultStoreFactory = factory;
+            }
+        }
+
+        [Test]
         public void Purchase_Success_VerifiesThenConfirms()
         {
             CreateService();

@@ -32,7 +32,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 | `server/seed.py`, `server/stdb.py`, `server/backup.py`, `server/migrate.py`, `server/import_revenuecat.py`, `server/seed.example/`, `server/tests/` | CLI setup from JSON files, setup check from the terminal (`seed.py --check`), backups through the owner's `/sql` (`backup.py backup|restore`, also for `--delete-data` releases), a copy of a database to another server (`migrate.py`), RevenueCat history import (`import_revenuecat.py`), unit tests of the scripts (`server/tests`). |
 | `server/setup_google.py` | Google Play setup from the terminal: gets a `gcloud` access token and calls the `admin_setup_google` procedure (APIs, service account + key, Pub/Sub topic, RTDN push subscriptions). |
 | `server/mcp_server.py` | MCP server (stdlib JSON-RPC over stdio) over the admin procedures; see docs/mcp.md. |
-| `unity/com.yevhenii.purser` | UPM package: `BillingService`, `BillingConfig`, providers, Unity IAP adapter, Editor inspector, EditMode tests, native iOS plugin (`Runtime/Plugins/iOS`). |
+| `unity/com.yevhenii.purser` | UPM package: `BillingService`, `BillingConfig`, providers, Editor inspector, EditMode tests, native iOS plugin (`Runtime/Plugins/iOS`). The core (`Purser.Runtime`) does not reference Unity IAP; the Unity IAP 5 adapter is the assembly `Purser.UnityIap` (`Runtime/UnityIap`, compiled only with `com.unity.purchasing` 5.4+ via the `PURSER_UNITY_IAP5` version define, registers `Billing.DefaultStoreFactory` on load), its tests are `Purser.Tests.UnityIap` (`Tests/Editor/UnityIap`). |
 | `docs/` | store setup, game integration contract, analytics, self-hosting, migrating from Adapty. |
 | `tools/generate_unity_meta.py` | Creates `.meta` files for new Unity package files (deterministic GUIDs). |
 | `tools/e2e.py` | End-to-end check of a built module on a real SpacetimeDB server (CI runs it in a container). |
@@ -158,10 +158,11 @@ python -m unittest discover -s server/tests   # unit tests of the scripts
 
 Unity package tests in a real editor (CI does not run them): a local project in `unity/TestProject/` (gitignored)
 with `Packages/manifest.json` = `{"dependencies": {"com.yevhenii.purser": "file:../../com.yevhenii.purser",
-"com.unity.test-framework": "1.1.33"}, "testables": ["com.yevhenii.purser"]}` and `ProjectSettings/ProjectVersion.txt`
+"com.unity.purchasing": "5.4.4", "com.unity.test-framework": "1.1.33"}, "testables": ["com.yevhenii.purser"]}` and `ProjectSettings/ProjectVersion.txt`
 naming the oldest supported editor (`m_EditorVersion: 2022.3.62f3`); Unity 6 gets projects of its own
 (`unity/TestProject6.0`, `6.3`, `6.6`: opening a project in a newer editor upgrades it) with the test framework the
-editor bundles (`1.6.0` on 6.0 / 6.3, `1.8.0` on 6.6). Then:
+editor bundles (`1.6.0` on 6.0 / 6.3, `1.8.0` on 6.6). `unity/TestProjectNoIap` (2022.3, no `com.unity.purchasing`) checks
+that the core compiles and its tests pass without Unity IAP. Then:
 
 ```bash
 "<Unity 2022.3>/Editor/Unity.exe" -batchmode -nographics -projectPath unity/TestProject -runTests \

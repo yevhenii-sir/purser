@@ -9,7 +9,10 @@ In-app purchases in Unity on top of Unity IAP 5. Every purchase is verified by y
 
 All the client has to do is show the store and react to the result.
 
-- Unity 2022.3+, `com.unity.purchasing` 5.4.4+, Newtonsoft JSON.
+- Unity 2022.3+, Newtonsoft JSON. Google Play and the App Store through the package (the default store adapter)
+  need Unity IAP (`com.unity.purchasing`) 5.4 or later: add it to the project yourself, the package does not depend on
+  it. Without Unity IAP 5.4+ the adapter (assembly `Purser.UnityIap`) is not compiled and `BillingDependencies.Store`
+  must name a store (Amazon, Steam, Stripe, Xsolla or your own).
 - The core is not tied to any DI: the `IBillingService` interface and the `BillingService` class. There's a ready-made `BillingBootstrap` component and optional adapters for VContainer and Zenject.
 
 ## Installation
@@ -20,7 +23,12 @@ All the client has to do is show the store and react to the result.
 "com.yevhenii.purser": "https://github.com/yevhenii-sir/purser.git?path=/unity/com.yevhenii.purser"
 ```
 
-To pin a specific version, append `#<tag or commit>` to the URL.
+To pin a specific version, append `#<tag or commit>` to the URL. For Google Play and the App Store add Unity IAP too
+(Package Manager → Unity Registry → In-App Purchasing, 5.4 or later):
+
+```json
+"com.unity.purchasing": "5.4.4"
+```
 
 ## Setup
 

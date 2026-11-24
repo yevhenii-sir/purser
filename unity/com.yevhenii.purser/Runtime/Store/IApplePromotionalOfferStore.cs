@@ -3,7 +3,7 @@ namespace Purser
     /// <summary>
     /// Optional <see cref="IStoreAdapter"/> capability: an App Store purchase with a signed promotional offer.
     /// The result arrives like any purchase: <see cref="IStoreAdapter.OrderPending"/> or
-    /// <see cref="IStoreAdapter.PurchaseFailed"/>. Implemented by <see cref="UnityIapStoreAdapter"/>.
+    /// <see cref="IStoreAdapter.PurchaseFailed"/>. Implemented by <c>UnityIapStoreAdapter</c>.
     /// </summary>
     public interface IApplePromotionalOfferStore
     {

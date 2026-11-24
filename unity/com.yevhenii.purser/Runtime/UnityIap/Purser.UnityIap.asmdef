@@ -1,0 +1,25 @@
+{
+    "name": "Purser.UnityIap",
+    "rootNamespace": "Purser",
+    "references": [
+        "Purser.Runtime",
+        "Unity.Purchasing"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "PURSER_UNITY_IAP5"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.purchasing",
+            "expression": "5.4.0",
+            "define": "PURSER_UNITY_IAP5"
+        }
+    ],
+    "noEngineReferences": false
+}

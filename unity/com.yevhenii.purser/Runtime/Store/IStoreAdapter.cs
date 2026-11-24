@@ -306,7 +306,7 @@ namespace Purser
 
     /// <summary>
     /// Store abstraction used by <see cref="BillingService"/>. The default implementation is
-    /// <see cref="UnityIapStoreAdapter"/> (Google Play, App Store); <see cref="AmazonStoreAdapter"/>,
+    /// <c>UnityIapStoreAdapter</c> (Google Play, App Store); <see cref="AmazonStoreAdapter"/>,
     /// <see cref="SteamStoreAdapter"/>, <see cref="StripeStoreAdapter"/> and <see cref="XsollaStoreAdapter"/> serve the
     /// other stores. Pass one in <see cref="BillingDependencies.Store"/>. Another store whose purchase starts on the
     /// billing server derives from <see cref="ServerCheckoutStoreAdapter"/>. Events must be raised on the Unity main
@@ -361,7 +361,7 @@ namespace Purser
     /// Optional <see cref="IStoreAdapter"/> capability: the store connection can drop after
     /// <see cref="IStoreAdapter.ConnectAsync"/> succeeded. <see cref="BillingService"/> then reconnects with
     /// <see cref="IStoreAdapter.ConnectAsync"/> (with backoff) and raises <see cref="IBillingService.StoreDisconnected"/>.
-    /// Implemented by <see cref="UnityIapStoreAdapter"/>.
+    /// Implemented by <c>UnityIapStoreAdapter</c>.
     /// </summary>
     public interface IStoreConnectionEvents
     {
@@ -373,7 +373,7 @@ namespace Purser
     /// <summary>
     /// Optional <see cref="IStoreAdapter"/> capability: a subscription purchase that replaces the player's current
     /// subscription (upgrade, downgrade). The result arrives like any purchase. Implemented by
-    /// <see cref="UnityIapStoreAdapter"/> (Google Play; on the App Store a purchase in the same subscription group
+    /// <c>UnityIapStoreAdapter</c> (Google Play; on the App Store a purchase in the same subscription group
     /// replaces the old one by itself).
     /// </summary>
     public interface ISubscriptionChangeStore
@@ -389,7 +389,7 @@ namespace Purser
     /// <summary>
     /// Optional <see cref="IStoreAdapter"/> capability: the store's own sheet where players redeem offer codes
     /// (<see cref="IBillingService.PresentOfferCodeRedemption"/>). A redeemed code arrives as a purchase through
-    /// <see cref="IStoreAdapter.OrderPending"/>. Implemented by <see cref="UnityIapStoreAdapter"/> on the App Store.
+    /// <see cref="IStoreAdapter.OrderPending"/>. Implemented by <c>UnityIapStoreAdapter</c> on the App Store.
     /// </summary>
     public interface IOfferCodeRedemptionStore
     {

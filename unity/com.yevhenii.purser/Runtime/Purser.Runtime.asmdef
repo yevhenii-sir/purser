@@ -1,9 +1,7 @@
 {
     "name": "Purser.Runtime",
     "rootNamespace": "Purser",
-    "references": [
-        "Unity.Purchasing"
-    ],
+    "references": [],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,

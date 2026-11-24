@@ -7,7 +7,7 @@ namespace Purser
     /// <summary>
     /// Creates the store adapter for <see cref="BillingBootstrap"/> (a component implementing it), e.g. a
     /// <see cref="SteamStoreAdapter"/> with the game's Steamworks bridge. Return null to use the default
-    /// (<see cref="UnityIapStoreAdapter"/>).
+    /// (<c>UnityIapStoreAdapter</c>, with Unity IAP 5.4 or later).
     /// </summary>
     public interface IStoreAdapterFactory
     {
@@ -25,6 +25,13 @@ namespace Purser
     /// <summary>Entry point for code-first setup and DI containers.</summary>
     public static class Billing
     {
+        /// <summary>
+        /// Creates the default store adapter when <see cref="BillingDependencies.Store"/> is null: the
+        /// <c>Purser.UnityIap</c> assembly (compiled with Unity IAP 5.4 or later) registers
+        /// <c>UnityIapStoreAdapter</c> here on load. Null without Unity IAP.
+        /// </summary>
+        internal static Func<BillingPlatform, BillingLog, IStoreAdapter> DefaultStoreFactory;
+
         /// <summary>
         /// Creates a billing service. Call <see cref="IBillingService.InitializeAsync"/> once the app starts
         /// (it is fine before the player logs in) and <see cref="IBillingService.SetUserId"/> or pass a
