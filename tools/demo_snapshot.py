@@ -336,6 +336,12 @@ def main():
         integrate(app, "gcs", {"bucket": "galaxy-miner-events", "folder": "purchases"}, "gcs_service_account_json")
     for app in ("com.example.wordgarden", "com.example.wordgarden.ios"):
         integrate(app, "ga4", {"firebase_app_id": "1:210987654321:%s:9f8e7d6c5b4a3f2e" % ("ios" if "ios" in app else "android")}, "ga4_api_secret")
+    integrate("com.example.wordgarden.web", "amplitude", {"region": "eu"}, "amplitude_api_key")
+    # A server key of the game's backend (only its hash is stored; the key itself is thrown away).
+    key_id = "%012x" % rnd.getrandbits(48)
+    key = "psk_%s_%s" % (key_id, "%064x" % rnd.getrandbits(256))
+    srv.call("admin_add_server_key", json.dumps({"game_key": "word-garden", "name": "Game backend", "scopes": "read,grant",
+                                                 "key_id": key_id, "key_hash": hashlib.sha256(key.encode()).hexdigest()}))
     srv.call("admin_upsert_paywall", json.dumps({"game_key": "galaxy-miner", "paywall_id": "shop_gems", "name": "Gems first", "product_ids": ["gems_small", "gems_medium", "gems_large", "vip_monthly"]}))
     srv.call("admin_upsert_paywall", json.dumps({"game_key": "galaxy-miner", "paywall_id": "shop_vip_first", "name": "VIP first",
                                                   "product_ids": ["vip_monthly", "vip_yearly", "gems_medium"], "remote_config": {"title": "Become a VIP", "highlight": "vip_yearly"}}))
@@ -415,6 +421,7 @@ def main():
               "app_profile", "admin_audit"]:
         tables[t] = srv.sql(f"SELECT * FROM {t}")
     tables["credential"] = srv.sql("SELECT key FROM credential")  # names only, never values
+    tables["server_key"] = [{k: v for k, v in r.items() if k != "key_hash"} for r in srv.sql("SELECT * FROM server_key")]
     # The purchase history is only opened for recent purchases: keep 90 days of it.
     recent = {r["id"] for r in tables["purchase"] if int(r["created_at_micros"]) > (now_ms - 90 * DAY_MS) * 1000}
     tables["purchase_log"] = [r for r in tables["purchase_log"] if r["purchase_id"] in recent]
