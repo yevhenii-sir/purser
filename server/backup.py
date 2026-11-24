@@ -44,6 +44,9 @@ SKIP = {
     "retry_schedule",
     "revenue_rebuild_tick",
     "store_create_tick",
+    # Queue drainers running now and their next runs (the worker starts them again).
+    "drain_lane",
+    "drain_schedule",
     # Derived from the ledger: rebuilt after a restore (`admin_reindex_ledger`).
     "pending_purchase",
     "owned_purchase",

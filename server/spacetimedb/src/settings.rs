@@ -49,6 +49,9 @@ pub mod key {
     pub const WORKER_CURSOR: &str = "worker_cursor";
     /// A running rebuild of the ledger's derived tables (`ledger_index`); absent while idle.
     pub const LEDGER_REINDEX: &str = "ledger_reindex";
+    /// Queue drainers that may run at once (default `drain::DEFAULT_LANES`): each holds one module
+    /// instance while it waits for a store, and calls the stores one at a time.
+    pub const WORKER_LANES: &str = "worker_lanes";
 }
 
 /// A worker that has not run for this long has stopped (it runs every minute).
@@ -67,6 +70,7 @@ pub const ADMIN_KEYS: &[&str] = &[
     key::STORE_COMMISSION_BY_APP,
     key::STORE_COMMISSION_AFTER_YEAR_PERCENT,
     key::RETENTION_DAYS,
+    key::WORKER_LANES,
 ];
 
 pub fn get(ctx: &ReducerContext, key: &str) -> Option<String> {
@@ -117,6 +121,10 @@ pub fn admin_set_setting(ctx: &ReducerContext, key: String, value: String) -> Re
         key::RETENTION_DAYS => match value.parse::<i64>() {
             Ok(d) if (crate::retention::MIN_DAYS..=3650).contains(&d) => d.to_string(),
             _ => return Err(format!("[ERR_BAD_SETTING] {key}: whole days from {} to 3650", crate::retention::MIN_DAYS)),
+        },
+        key::WORKER_LANES => match value.parse::<u32>() {
+            Ok(n) if (1..=crate::drain::MAX_LANES).contains(&n) => n.to_string(),
+            _ => return Err(format!("[ERR_BAD_SETTING] {key}: a whole number from 1 to {}", crate::drain::MAX_LANES)),
         },
         key::STORE_COMMISSION_BY_APP => {
             let by_app = purser_core::revenue::parse_percent_by_app(&value).map_err(|e| format!("[ERR_BAD_SETTING] {key}: {e}"))?;

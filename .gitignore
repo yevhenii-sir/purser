@@ -71,3 +71,7 @@ site/
 
 # ---- Agent worktrees ----
 .claude/worktrees/
+
+# tools/loadtest.py state (an owner token of a throwaway local database)
+loadtest-state.json
+loadtest-delay.txt

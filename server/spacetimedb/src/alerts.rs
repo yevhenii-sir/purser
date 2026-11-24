@@ -432,6 +432,13 @@ pub fn check_tx(tx: &ReducerContext) {
     // Resolutions of event rules.
     let active: Vec<AlertState> = tx.db.alert_state().iter().filter(|s| s.active).collect();
     let mut stuck: Option<std::collections::BTreeSet<String>> = None;
+    // Builds with a purchase due longer than the rule allows, with their rows due now.
+    let lagging: BTreeMap<String, u64> = if rules.queue_behind {
+        let before = now - rules.queue_behind_minutes as i64 * 60_000_000;
+        crate::ledger_index::lagging_builds(tx, before, now).into_iter().collect()
+    } else {
+        BTreeMap::new()
+    };
     for s in &active {
         if !rules.enabled(&s.rule) {
             // Rule switched off: forget the problem quietly.
@@ -446,6 +453,7 @@ pub fn check_tx(tx: &ReducerContext) {
             rule::DELIVERY_FAILING => !stuck.get_or_insert_with(|| builds_with_stuck_purchases(tx, rules.delivery_attempts)).contains(&s.app_id),
             rule::STORE_AUTH => health().last_verify_ok_at_micros > s.last_at_micros,
             rule::NOTIFICATION_REJECTED => store_health::get(tx, &s.app_id).last_at_micros > s.last_at_micros,
+            rule::QUEUE_BEHIND => !lagging.contains_key(&s.app_id),
             _ => false,
         };
         if gone {
@@ -478,6 +486,16 @@ pub fn check_tx(tx: &ReducerContext) {
                 resolve(tx, rule::NOTIFICATIONS_SILENT, &app.app_id);
             }
         }
+    }
+
+    // The worker's queue.
+    for (app_id, due) in &lagging {
+        let detail = format!(
+            "{due} purchase(s) wait in the queue, the oldest for more than {} minutes ({} queue drainer(s) allowed).",
+            rules.queue_behind_minutes,
+            crate::drain::lanes(tx)
+        );
+        begin(tx, rule::QUEUE_BEHIND, app_id, &detail);
     }
 
     // Exchange rates (the last success only matters while refreshes fail).

@@ -7,8 +7,20 @@
 use spacetimedb::http::{Body, HttpClient, Timeout};
 use spacetimedb::TimeDuration;
 
-/// Time limit of one outbound request.
+/// Time limit of one outbound request; a request or worker run bound by a deadline
+/// (`ctx::Budget::bound_calls`) cuts it shorter.
 pub const TIMEOUT_SECS: i64 = 10;
+
+// Outbound calls on this thread that got no reply (timeout, refused connection).
+thread_local! {
+    static TRANSPORT_FAILURES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Calls on this thread so far that got no reply: the worker compares it around a step to leave a
+/// build whose host does not answer for its next run.
+pub fn transport_failures() -> u64 {
+    TRANSPORT_FAILURES.with(|c| c.get())
+}
 
 pub struct HttpResult {
     pub status: u16,
@@ -34,16 +46,17 @@ pub fn send(
     headers: &[(&str, &str)],
     body: impl Into<Body>,
 ) -> Result<HttpResult, String> {
-    let mut builder = http::Request::builder()
-        .method(method)
-        .uri(url)
-        .extension(Timeout::from(TimeDuration::from_micros(TIMEOUT_SECS * 1_000_000)));
+    let timeout = crate::ctx::call_timeout_micros(TIMEOUT_SECS * 1_000_000);
+    let mut builder = http::Request::builder().method(method).uri(url).extension(Timeout::from(TimeDuration::from_micros(timeout)));
     for (k, v) in headers {
         builder = builder.header(*k, *v);
     }
     let shown = shown_url(url);
     let request = builder.body(body.into()).map_err(|e| format!("bad request {shown}: {}", hide_query(&e.to_string(), url)))?;
-    let response = http.send(request).map_err(|e| format!("{method} {shown} failed: {}", hide_query(&e.to_string(), url)))?;
+    let response = http.send(request).map_err(|e| {
+        TRANSPORT_FAILURES.with(|c| c.set(c.get() + 1));
+        format!("{method} {shown} failed: {}", hide_query(&e.to_string(), url))
+    })?;
     let (parts, body) = response.into_parts();
     Ok(HttpResult { status: parts.status.as_u16(), body: body.into_string_lossy() })
 }

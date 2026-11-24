@@ -458,8 +458,8 @@ struct RestoreRequest {
     client_finished: bool,
 }
 
-/// Seconds a `/restore` call may spend starting the checks of its purchases.
-const RESTORE_BUDGET_SECS: i64 = 15;
+/// Seconds a `/restore` call may spend on the checks of its purchases (every call is cut at it).
+const RESTORE_BUDGET_SECS: i64 = 5;
 
 /// Verifies every purchase the store SDK reported on "Restore purchases", then returns entitlements.
 /// The build, the products and the store credential are read once for all items.
@@ -498,6 +498,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
     // Every item costs store and delivery calls: past the budget the rest is not started (the
     // client restores again; purchases already recorded answer from the ledger then).
     let budget = Budget::new(ctx, RESTORE_BUDGET_SECS);
+    let _calls = budget.bound_calls();
     let mut results = Vec::new();
     for (i, (item, (product, environment))) in r.purchases.iter().zip(items).enumerate() {
         if !budget.left() {
@@ -1166,32 +1167,40 @@ fn healthz(ctx: &mut HandlerContext, _req: Request) -> Response {
 }
 
 /// `/healthz`: the database answers and the ledger worker runs (503 when it has not run for
-/// `settings::WORKER_STALE_MICROS`; right after a publish it has not run yet: `starting`).
+/// `settings::WORKER_STALE_MICROS`; right after a publish it has not run yet: `starting`). `backlog`
+/// (200): a purchase has been due for `drain::BACKLOG_AFTER_MICROS`, the queue is not keeping up.
 fn health_report(ctx: &mut impl Ctx) -> Outcome {
-    let (age, pending, stuck, outbox) = ctx.tx(|tx| {
+    let (now, age, pending, stuck, outbox, queue, drainers) = ctx.tx(|tx| {
         use crate::integrations::integration_outbox;
         use crate::ledger_index::pending_purchase;
         use spacetimedb::Table;
+        let now = crate::ctx::tx_now_micros(tx);
         (
+            now,
             crate::settings::worker_age_secs(tx),
             tx.db.pending_purchase().count(),
             tx.db.pending_purchase().attempts().filter(crate::doctor::STUCK_ATTEMPTS..).count(),
             tx.db.integration_outbox().count(),
+            crate::ledger_index::queue(tx, now),
+            crate::drain::busy_lanes(tx, now),
         )
     });
     let stale = crate::settings::WORKER_STALE_MICROS / 1_000_000;
+    let oldest_due_secs = if queue.due > 0 { (now - queue.oldest_due_micros).max(0) / 1_000_000 } else { 0 };
     let (http, status) = match age {
         None => (200, "starting"),
         Some(a) if a > stale => (503, "worker_stopped"),
+        Some(_) if oldest_due_secs >= crate::drain::BACKLOG_AFTER_MICROS / 1_000_000 => (200, "backlog"),
         Some(_) => (200, "healthy"),
     };
-    // The backlog, for a monitor that alerts on numbers: purchases the worker has to continue, those
-    // it keeps retrying, queued integration events.
+    // The backlog, for a monitor that alerts on numbers: purchases the worker has to continue (due
+    // now, and how long the oldest has waited), those it keeps retrying, queued integration events.
     Outcome::new(
         http,
         json!({
             "status": status, "version": env!("CARGO_PKG_VERSION"), "worker_age_secs": age,
-            "pending_purchases": pending, "stuck_purchases": stuck, "queued_integration_events": outbox,
+            "pending_purchases": pending, "due_purchases": queue.due, "oldest_due_secs": oldest_due_secs,
+            "queue_drainers": drainers, "stuck_purchases": stuck, "queued_integration_events": outbox,
         }),
     )
 }

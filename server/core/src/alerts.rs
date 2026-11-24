@@ -20,17 +20,20 @@ pub mod rule {
     pub const NOTIFICATION_REJECTED: &str = "notification_rejected";
     /// Exchange rates could not be refreshed for `fx_failing_hours`.
     pub const FX_FAILING: &str = "fx_failing";
+    /// A purchase of the app has been due for `queue_behind_minutes`: the worker's queue is not
+    /// keeping up (a store or the game answers slowly, or more is due than the drainers take).
+    pub const QUEUE_BEHIND: &str = "queue_behind";
     /// A test message from the admin page.
     pub const TEST: &str = "test";
     /// Alerts a channel's flood cap held back, summed up when its window ends.
     pub const HELD: &str = "alerts_held";
 
     pub const ALL: &[&str] =
-        &[DELIVERY_FAILING, STORE_AUTH, INTEGRATION_FAILED, NOTIFICATIONS_SILENT, NOTIFICATION_REJECTED, FX_FAILING];
+        &[DELIVERY_FAILING, STORE_AUTH, INTEGRATION_FAILED, NOTIFICATIONS_SILENT, NOTIFICATION_REJECTED, FX_FAILING, QUEUE_BEHIND];
 
     /// Rules that have a "resolved" state (the others are one-off events).
     pub fn resolves(rule: &str) -> bool {
-        matches!(rule, DELIVERY_FAILING | STORE_AUTH | NOTIFICATIONS_SILENT | NOTIFICATION_REJECTED | FX_FAILING)
+        matches!(rule, DELIVERY_FAILING | STORE_AUTH | NOTIFICATIONS_SILENT | NOTIFICATION_REJECTED | FX_FAILING | QUEUE_BEHIND)
     }
 }
 
@@ -75,6 +78,9 @@ pub struct Rules {
     pub notification_rejected: bool,
     pub fx_failing: bool,
     pub fx_failing_hours: u32,
+    pub queue_behind: bool,
+    /// Minutes a purchase may wait in the worker's queue after it became due.
+    pub queue_behind_minutes: u32,
     /// At most one message per rule and app in this many hours; repeats are counted and reported
     /// in the next message.
     pub window_hours: u32,
@@ -94,6 +100,8 @@ impl Default for Rules {
             notification_rejected: true,
             fx_failing: true,
             fx_failing_hours: 24,
+            queue_behind: true,
+            queue_behind_minutes: 15,
             window_hours: 6,
             send_resolved: true,
         }
@@ -116,6 +124,9 @@ impl Rules {
         if !(1..=720).contains(&r.fx_failing_hours) {
             return Err("fx_failing_hours must be 1..720".into());
         }
+        if !(5..=1440).contains(&r.queue_behind_minutes) {
+            return Err("queue_behind_minutes must be 5..1440".into());
+        }
         if !(1..=168).contains(&r.window_hours) {
             return Err("window_hours must be 1..168".into());
         }
@@ -135,6 +146,7 @@ impl Rules {
             rule::NOTIFICATIONS_SILENT => self.notifications_silent,
             rule::NOTIFICATION_REJECTED => self.notification_rejected,
             rule::FX_FAILING => self.fx_failing,
+            rule::QUEUE_BEHIND => self.queue_behind,
             rule::TEST => true,
             _ => false,
         }
@@ -240,6 +252,7 @@ pub fn rule_title(rule: &str) -> &'static str {
         rule::NOTIFICATIONS_SILENT => "No store notifications",
         rule::NOTIFICATION_REJECTED => "Store notification rejected",
         rule::FX_FAILING => "Exchange rates are not updating",
+        rule::QUEUE_BEHIND => "Purchase queue is behind",
         rule::TEST => "Test alert",
         rule::HELD => "More alerts were held back",
         _ => "Billing alert",
@@ -253,6 +266,7 @@ fn resolved_title(rule: &str) -> &'static str {
         rule::NOTIFICATIONS_SILENT => "Store notifications arrive again",
         rule::NOTIFICATION_REJECTED => "Store notifications are accepted again",
         rule::FX_FAILING => "Exchange rates are updating again",
+        rule::QUEUE_BEHIND => "Purchase queue caught up",
         _ => "Resolved",
     }
 }
@@ -273,6 +287,9 @@ pub fn rule_hint(rule: &str) -> &'static str {
             "The secret in the notification URL does not match google_rtdn_secret / apple_notification_secret. Copy the URL from the app's Setup tab into the store console."
         }
         rule::FX_FAILING => "The ECB rates source (api.frankfurter.dev) is unreachable; revenue in USD uses older rates meanwhile.",
+        rule::QUEUE_BEHIND => {
+            "Players wait for their rewards. Check the errors of the waiting purchases on the Overview page: a slow store or game server, or more due than the queue drainers take (raise the worker_lanes setting)."
+        }
         rule::TEST => "Alerts reach this channel.",
         _ => "",
     }
@@ -380,6 +397,7 @@ pub fn admin_hash(rule: &str, game_key: &str) -> String {
         rule::STORE_AUTH | rule::NOTIFICATIONS_SILENT | rule::NOTIFICATION_REJECTED => app("setup"),
         rule::INTEGRATION_FAILED => app("integrations"),
         rule::FX_FAILING => "revenue".into(),
+        rule::QUEUE_BEHIND => "overview".into(),
         _ => "alerts".into(),
     }
 }

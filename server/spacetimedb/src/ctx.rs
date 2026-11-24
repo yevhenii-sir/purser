@@ -83,6 +83,7 @@ thread_local! {
 pub fn start_test_call() {
     TEST_ELAPSED_MICROS.with(|c| c.set(0));
     LAST_TX_MICROS.with(|c| c.set(0));
+    CALL_DEADLINE.with(|c| c.set(None));
 }
 
 fn seen(tx: &TxContext) {
@@ -90,8 +91,10 @@ fn seen(tx: &TxContext) {
     LAST_TX_MICROS.with(|c| c.set(c.get().max(now)));
 }
 
-/// Seconds a client request may spend starting store and delivery calls; the worker finishes the rest.
-pub const REQUEST_BUDGET_SECS: i64 = 5;
+/// Seconds a client request may spend on store and delivery calls, counted from its start; the
+/// worker finishes the rest. Every call it makes is cut at this deadline ([`Budget::bound_calls`]):
+/// a waiting call holds a module instance, and requests share the host's pool of them.
+pub const REQUEST_BUDGET_SECS: i64 = 3;
 /// Seconds one worker run may spend starting outbound calls; the next run (a minute later) goes on.
 pub const WORKER_BUDGET_SECS: i64 = 40;
 
@@ -105,12 +108,28 @@ pub fn last_tx_micros() -> i64 {
 /// left to the next worker run. Time is read from the transactions the run opens anyway.
 #[derive(Clone, Copy, Debug)]
 pub struct Budget {
+    start_micros: i64,
     deadline_micros: i64,
 }
 
 impl Budget {
     pub fn new(ctx: &impl Ctx, secs: i64) -> Self {
-        Budget { deadline_micros: ctx.now_micros() + secs * 1_000_000 }
+        let start_micros = ctx.now_micros();
+        Budget { start_micros, deadline_micros: start_micros + secs * 1_000_000 }
+    }
+
+    /// Cuts every outbound call on this thread (`net::send`) at this deadline until the guard is
+    /// dropped. The outermost bound wins: a store look-up inside a worker run keeps the run's.
+    #[must_use = "the bound ends when the guard is dropped"]
+    pub fn bound_calls(&self) -> CallBound {
+        let armed = CALL_DEADLINE.with(|c| {
+            if c.get().is_some() {
+                return false;
+            }
+            c.set(Some((self.start_micros, self.deadline_micros)));
+            true
+        });
+        CallBound { armed }
     }
 
     /// Time is left, judged by the latest transaction of this thread.
@@ -121,5 +140,32 @@ impl Budget {
     /// Time is left at `at_micros` (a transaction's time).
     pub fn allows(&self, at_micros: i64) -> bool {
         at_micros < self.deadline_micros
+    }
+}
+
+// (start, deadline) of the outermost `Budget::bound_calls` guard alive on this thread.
+thread_local! {
+    static CALL_DEADLINE: std::cell::Cell<Option<(i64, i64)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Ends a [`Budget::bound_calls`] bound when dropped.
+pub struct CallBound {
+    armed: bool,
+}
+
+impl Drop for CallBound {
+    fn drop(&mut self) {
+        if self.armed {
+            CALL_DEADLINE.with(|c| c.set(None));
+        }
+    }
+}
+
+/// Time limit of the next outbound call: what is left of the bound request or run (time judged by
+/// the latest transaction, at least the bound's start), between 1 s and `max_micros`.
+pub fn call_timeout_micros(max_micros: i64) -> i64 {
+    match CALL_DEADLINE.with(|c| c.get()) {
+        None => max_micros,
+        Some((start, deadline)) => purser_core::time::call_timeout_micros(deadline - last_tx_micros().max(start), max_micros),
     }
 }

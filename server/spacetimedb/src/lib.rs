@@ -25,6 +25,7 @@ mod consumption;
 mod ctx;
 mod delivery_client;
 mod doctor;
+mod drain;
 mod handlers;
 mod health;
 mod integrations;

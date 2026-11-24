@@ -98,6 +98,8 @@ interface Rules {
   notification_rejected: boolean
   fx_failing: boolean
   fx_failing_hours: number
+  queue_behind: boolean
+  queue_behind_minutes: number
   window_hours: number
   send_resolved: boolean
 }
@@ -112,6 +114,8 @@ const DEFAULT_RULES: Rules = {
   notification_rejected: true,
   fx_failing: true,
   fx_failing_hours: 24,
+  queue_behind: true,
+  queue_behind_minutes: 15,
   window_hours: 6,
   send_resolved: true,
 }
@@ -194,6 +198,12 @@ const RULES: { key: keyof Rules; title: string; description: string; threshold?:
     title: "Exchange rates are not updating",
     description: "The ECB rates could not be fetched for this many hours (revenue in USD).",
     threshold: { key: "fx_failing_hours", label: "Hours", min: 1, max: 720 },
+  },
+  {
+    key: "queue_behind",
+    title: "Purchase queue is behind",
+    description: "A purchase of an app has waited in the worker's queue this many minutes after it became due: players wait for rewards. Resolved when the app's queue caught up.",
+    threshold: { key: "queue_behind_minutes", label: "Minutes", min: 5, max: 1440 },
   },
 ]
 

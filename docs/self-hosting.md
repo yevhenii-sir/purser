@@ -108,7 +108,31 @@ python backup.py restore --server maincloud --database <your-billing-db> --dir b
 
 Tables whose rows pile up keep only what is used in memory (SpacetimeDB tiered storage): the purchase log, the admin audit and the daily revenue aggregates may leave memory, purchases and player data stay at least on the server's disk, and settings, queues and worker state stay in memory. Maincloud limits a database to 24 GiB of resident memory; the ledger stays far below it, even with millions of purchases.
 
+## Capacity
+
+Measured on a local SpacetimeDB 2.16.1 (32 threads; `tools/loadtest.py`, the store replaced by a local proxy):
+
+| Load | Answers per second | Latency (median / p99) |
+|---|---|---|
+| `/entitlements` (reads) | ~7,500 | 2 / 3 ms |
+| a purchase without outbound calls (`delivery: none`, `/server/grant`) | ~2,500 | 6 / 8 ms |
+| a purchase whose store or game answers in 300 ms | ~105 | 310 ms (more at once: waits in line) |
+| a store that does not answer | ~3 s per request, the purchase is retried | |
+| a queue of 18,800 due purchases (calls that succeed at once) | emptied ~5 s after the drainers started | |
+
+The limit that matters is the store's latency. SpacetimeDB runs HTTP routes and procedures on a pool of module instances, one per CPU thread by default, and a route that waits for a store keeps its instance for the whole wait: purchases per second ≈ pool size ÷ the store's answer time, and while every instance waits, the other routes (`/entitlements` at a game's start) wait in line behind them. Nothing is lost meanwhile: requests queue, and a purchase the client did not get an answer for stays unfinished in the store and is sent again.
+
+- On your own server, raise the pool in the server's `config.toml` (in its data directory) when the stores are slow: the instances mostly wait for the network, so more than one per thread is fine (2-4 × the threads, memory permitting):
+
+  ```toml
+  [wasm]
+  procedure-instance-pool-size = 64
+  ```
+
+- On maincloud the pool is not configurable.
+- A request spends at most 3 s on outbound calls (a store that hangs cannot hold an instance longer), and the queue drainers hold at most `worker_lanes` instances (server setting, default 2, up to 8). With a store answering in 300 ms, 2 drainers finish ~6 queued purchases a second, 8 about 25: raise it when `/healthz` says `backlog` although the calls succeed.
+
 ## Backups and monitoring
 
 - **Backups:** `python backup.py backup --dir backups/$(date +%F)` from a scheduled job (cron, a CI schedule) with the owner token in `PURSER_TOKEN`. Keep the files private: they hold the store keys and secrets in `credential`.
-- **Monitoring:** watch `GET <route>/healthz` with any uptime monitor. It answers `200 {"status": "healthy"}` while the ledger worker runs, `503 {"status": "worker_stopped"}` when it has not run for 5 minutes (purchases, renewals and alerts wait until it runs again; the admin page's Overview offers to restart it), `starting` right after a publish.
+- **Monitoring:** watch `GET <route>/healthz` with any uptime monitor. It answers `200 {"status": "healthy"}` while the ledger worker runs, `503 {"status": "worker_stopped"}` when it has not run for 5 minutes (purchases, renewals and alerts wait until it runs again; the admin page's Overview offers to restart it), `starting` right after a publish, and `200 {"status": "backlog"}` when a purchase has waited in the queue for 15 minutes (`due_purchases`, `oldest_due_secs`; see [Capacity](#capacity)). A monitor that alerts on numbers can watch `oldest_due_secs`.

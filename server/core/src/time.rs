@@ -120,9 +120,28 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// Shortest time limit of an outbound call: a call that starts at all gets this much.
+pub const MIN_CALL_MICROS: i64 = 1_000_000;
+
+/// Time limit of an outbound call with `remaining` micros left of its request or worker run, at
+/// most `max`: a slow store must not hold a request past its deadline.
+pub fn call_timeout_micros(remaining: i64, max: i64) -> i64 {
+    remaining.clamp(MIN_CALL_MICROS, max.max(MIN_CALL_MICROS))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn call_timeout_follows_the_deadline_within_bounds() {
+        let max = 10_000_000;
+        assert_eq!(call_timeout_micros(2_500_000, max), 2_500_000);
+        assert_eq!(call_timeout_micros(60_000_000, max), max);
+        assert_eq!(call_timeout_micros(200_000, max), MIN_CALL_MICROS);
+        assert_eq!(call_timeout_micros(-5_000_000, max), MIN_CALL_MICROS);
+        assert_eq!(call_timeout_micros(5_000_000, 0), MIN_CALL_MICROS);
+    }
 
     #[test]
     fn parses_utc() {

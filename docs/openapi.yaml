@@ -70,23 +70,20 @@ paths:
       operationId: healthz
       security: []
       summary: Health check
-      description: Answers as long as the database and its module are running.
+      description: |
+        Answers as long as the database and its module are running, with the worker's state and queue for
+        monitors. `backlog`: a purchase has been due for 15 minutes (the queue is not keeping up).
       responses:
         "200":
-          description: The module is running.
+          description: The module and its worker are running.
           content:
             application/json:
-              schema:
-                type: object
-                required: [status, version]
-                properties:
-                  status:
-                    type: string
-                    const: healthy
-                  version:
-                    type: string
-                    description: Version of the published module (`purser` crate).
-                    examples: ["0.1.0"]
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: The ledger worker has not run for 5 minutes (`worker_stopped`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
 
   /verify/google:
     post:
@@ -948,6 +945,37 @@ paths:
 
 components:
   schemas:
+    Health:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          enum: [healthy, starting, backlog, worker_stopped]
+        version:
+          type: string
+          description: Version of the published module (`purser` crate).
+          examples: ["0.9.0"]
+        worker_age_secs:
+          type: [integer, "null"]
+          description: Seconds since the minute worker last ran (null before its first run).
+        pending_purchases:
+          type: integer
+          description: Ledger rows the worker still has to finish, including those waiting for a later retry.
+        due_purchases:
+          type: integer
+          description: Rows due now.
+        oldest_due_secs:
+          type: integer
+          description: How long the oldest due row has waited (0 when none is due).
+        queue_drainers:
+          type: integer
+          description: Queue drainers running or scheduled (at most the `worker_lanes` setting).
+        stuck_purchases:
+          type: integer
+          description: Rows retried 5 times or more.
+        queued_integration_events:
+          type: integer
     ClientInfo:
       type: object
       description: |

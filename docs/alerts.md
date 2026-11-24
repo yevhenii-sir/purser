@@ -17,6 +17,7 @@ Every rule can be switched off; thresholds are in brackets with their defaults.
 | `notifications_silent` | The app had production store purchases in the last **3** days (`silent_days`) but no Google RTDN / App Store notification for that long (or never). Checked by the worker from the revenue aggregates. | A notification arrives. |
 | `notification_rejected` | A store notification came with a wrong or missing secret in its URL (`google_rtdn_secret`, `apple_notification_secret`). | A notification is accepted. |
 | `fx_failing` | The ECB exchange rates could not be refreshed for **24** hours (`fx_failing_hours`). Server-wide. | A refresh succeeds. |
+| `queue_behind` | A purchase of the app has waited in the worker's queue for **15** minutes after it became due (`queue_behind_minutes`, 5-1440): players wait for rewards. Usually a store or the game's server answers slowly or not at all; or more is due than the queue drainers take (`worker_lanes`). Checked every minute. | Nothing of the app has been due that long. |
 
 `notifications_silent` assumes that the store notifies about every sale. Google Play sends RTDN for
 one-time products only when the real-time developer notifications in Play Console are set to
@@ -124,7 +125,7 @@ and the scheduled `send_alert` procedure sends them. Network errors, 408, 429 an
 |---|---|
 | `admin_upsert_alert_channel(json)` | `{"id": 0, "name": "ops", "kind": "telegram", "enabled": true, "settings": {"chat_id": "-1001234567890"}, "secret": "<bot token>", "game_keys": ["mygame"], "rules": ["delivery_failing", "store_auth"]}`. `id` 0 or missing: a new channel, or the one with that `name`; `name` defaults to the kind; `enabled` defaults to true; an empty `secret` keeps the stored one; empty `game_keys` / `rules` = all. The kind of an existing channel cannot change. Errors: `[ERR_BAD_ALERT]` (unknown kind, rule or app, bad settings, a name taken by another channel), `[ERR_ALERT_SECRET_MISSING]` (an enabled channel without its secret; the webhook's is optional) |
 | `admin_delete_alert_channel(id)` | removes the channel and its secret |
-| `admin_set_alert_rules(json)` | `{"delivery_failing": true, "delivery_attempts": 3, "store_auth": true, "integration_failed": true, "notifications_silent": true, "silent_days": 3, "notification_rejected": true, "fx_failing": true, "fx_failing_hours": 24, "window_hours": 6, "send_resolved": true}`; missing fields take these defaults. Stored in `server_state` (`alert_rules`) |
+| `admin_set_alert_rules(json)` | `{"delivery_failing": true, "delivery_attempts": 3, "store_auth": true, "integration_failed": true, "notifications_silent": true, "silent_days": 3, "notification_rejected": true, "fx_failing": true, "fx_failing_hours": 24, "queue_behind": true, "queue_behind_minutes": 15, "window_hours": 6, "send_resolved": true}`; missing fields take these defaults. Stored in `server_state` (`alert_rules`) |
 | `admin_test_alert(id)` (procedure) | sends a test message to the channel now, even when it is disabled; returns `{"ok": true}` or `{"error": "..."}` |
 | `admin_dismiss_alert(key)` | forgets an open problem (`alert_state.key` = `{rule}/{app_id}`, or `store_auth/@{account}`) |
 

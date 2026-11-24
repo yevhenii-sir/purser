@@ -101,11 +101,20 @@ pub fn overview(tx: &spacetimedb::ReducerContext, only: Option<&std::collections
     let builds: Vec<_> = tx.db.game_app().iter().filter(|a| visible(&a.app_id)).collect();
     let games: std::collections::BTreeSet<&str> = builds.iter().map(|a| a.game_key.as_str()).collect();
     let products: usize = builds.iter().map(|a| tx.db.product().app_id().filter(a.app_id.as_str()).count()).sum();
+    let now = crate::ctx::tx_now_micros(tx);
     let mut pending_total = 0u64;
+    let mut due_total = 0u64;
+    let mut oldest_due_micros = 0i64;
     let mut pending: Vec<Value> = Vec::new();
-    // The worker's queue (in memory); only the listed rows are read from the ledger.
+    // The worker's queue (in memory), soonest first; only the listed rows are read from the ledger.
     for q in tx.db.pending_purchase().next_attempt_at_micros().filter(1..=i64::MAX).filter(|q| visible(&q.app_id)) {
         pending_total += 1;
+        if q.next_attempt_at_micros <= now {
+            due_total += 1;
+            if oldest_due_micros == 0 {
+                oldest_due_micros = q.next_attempt_at_micros;
+            }
+        }
         if pending.len() < OVERVIEW_PENDING_ROWS {
             let Some(p) = tx.db.purchase().id().find(&q.purchase_id) else { continue };
             pending.push(json!({
@@ -122,6 +131,11 @@ pub fn overview(tx: &spacetimedb::ReducerContext, only: Option<&std::collections
         "by_status": by_status,
         "pending": pending,
         "pending_total": pending_total,
+        "due_total": due_total,
+        "oldest_due_micros": oldest_due_micros,
+        "backlog_after_secs": crate::drain::BACKLOG_AFTER_MICROS / 1_000_000,
+        "drainers": crate::drain::busy_lanes(tx, now),
+        "lanes": crate::drain::lanes(tx),
         "apps": games.len(),
         "builds": builds.len(),
         "products": products,

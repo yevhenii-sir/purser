@@ -114,7 +114,7 @@ pub fn limits(route: &str) -> (Option<Limit>, Option<Limit>) {
     let l = |per_minute, burst| Some(Limit { per_minute, burst });
     match route {
         "verify" => (l(30, 20), l(600, 300)),
-        "restore" => (l(6, 3), l(120, 60)),
+        "restore" => (l(6, 3), l(600, 300)),
         "entitlements" => (l(60, 30), None),
         "attributes" => (l(20, 10), None),
         "paywall" => (l(60, 30), None),

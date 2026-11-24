@@ -2,7 +2,18 @@
 
 ## Unreleased
 
+### Changed
+
+- Purchases left for later (a slow store or game, a failed step) are worked through by queue drainers instead of 5 a minute per build: up to `worker_lanes` (new server setting, default 2, at most 8) run at once, builds taking turns, each going on a second later while purchases are due. A purchase left due (a request out of time, an admin grant, an import) starts them at once instead of at the next minute. A load test emptied a queue of 18,800 purchases in seconds; before, a build drained 7,200 a day.
+- A client request spends at most 3 s on store and delivery calls (was: started calls for 5 s, each waiting up to 10 s), `/restore` 5 s (was 15). A call that waits keeps one of the host's module instances, which every route shares: a store that hangs no longer stalls `/entitlements`. A look-up that does not answer in time is `502` (the SDK sends the purchase again); a delivery that does not fit is `pending` and a drainer finishes it at once.
+- A build whose store or game does not answer is left for a minute by the drainers (was: when a call took 10 s).
+- `/restore` per build: 600 a minute (was 120).
+
 ### Added
+
+- The queue in `/healthz`: `due_purchases`, `oldest_due_secs`, `queue_drainers`, and `status: backlog` (200) when a purchase has been due for 15 minutes. Alert rule `queue_behind` (`queue_behind_minutes`, default 15). The Overview shows due purchases, the drainers and a warning when the queue is behind.
+- `tools/loadtest.py`: a load test on a local SpacetimeDB with a local proxy as a slow store; docs/self-hosting.md "Capacity" has the numbers and how to size the host's instance pool (`procedure-instance-pool-size`).
+- New tables `drain_lane` and `drain_schedule`: publish in place, no `--delete-data`.
 
 - `POST /manage/stripe`: a Stripe customer portal session for the player's subscription (cancel, change the card, invoices), for builds with player tokens; others answer `ERR_PLAYER_TOKENS_REQUIRED` and link Stripe's portal login page. Publish in place: no `--delete-data`.
 - `seed.py --server-key <game_key>` (`--key-name`, `--key-scopes read,grant,revoke`) makes a key for the game's backend in the terminal, as the admin page does, and prints it once.

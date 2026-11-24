@@ -32,10 +32,13 @@ export function OverviewPage({ go }: PageProps) {
   if (!data) return null
   const { health, stats, overview: ov } = data
   const stopped = ov.worker_age_secs !== null && ov.worker_age_secs > ov.worker_stale_after_secs
+  const waitedSecs = ov.due_total > 0 ? Math.max(0, Math.round((Date.now() * 1000 - Number(ov.oldest_due_micros)) / 1e6)) : 0
+  const behind = !stopped && waitedSecs >= ov.backlog_after_secs
   return (
     <>
       <PageHeader title="Overview" description="Server status, the ledger and what the worker still has to finish." />
       {stopped && <WorkerStopped minutes={Math.round(Number(ov.worker_age_secs) / 60)} onRestarted={reload} />}
+      {behind && <QueueBehind due={ov.due_total} minutes={Math.round(waitedSecs / 60)} drainers={ov.drainers} lanes={ov.lanes} />}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat
           label="Server"
@@ -44,7 +47,7 @@ export function OverviewPage({ go }: PageProps) {
         />
         <Stat label="Net revenue, 30 days" value={stats ? usd(stats.totals.net_usd_micros) : "—"} hint={stats?.rebuilding ? "USD, totals are being rebuilt" : "USD, without sandbox"} onClick={() => go("revenue")} />
         <Stat label="Apps / builds" value={`${ov.apps} / ${ov.builds}`} onClick={() => go("apps")} />
-        <Stat label="Purchases" value={Number(ov.total).toLocaleString()} hint={`${ov.pending_total} waiting · ${ov.outbox} events queued`} onClick={() => go("purchases")} />
+        <Stat label="Purchases" value={Number(ov.total).toLocaleString()} hint={`${ov.pending_total} waiting (${ov.due_total} due) · ${ov.outbox} events queued`} onClick={() => go("purchases")} />
       </div>
       <div className="grid gap-6 lg:grid-cols-[1fr_2fr]">
         <Section title="Purchases by status">
@@ -58,7 +61,7 @@ export function OverviewPage({ go }: PageProps) {
         </Section>
         <Section
           title="Waiting for processing or retry"
-          description="Every minute the worker finishes reward delivery, consume / acknowledge and revocations. This is what is stuck and why."
+          description={`Queue drainers (${ov.drainers} of ${ov.lanes} running) finish reward delivery, consume / acknowledge and revocations a request left, and retry failed steps. This is what waits and why.`}
         >
           <DataTable
             rows={ov.pending}
@@ -79,6 +82,20 @@ export function OverviewPage({ go }: PageProps) {
       </div>
       <PurchaseSheet id={open} onClose={(changed) => { setOpen(null); if (changed) reload() }} />
     </>
+  )
+}
+
+/** Purchases have waited in the queue longer than `backlog_after_secs` after they became due. */
+function QueueBehind({ due, minutes, drainers, lanes }: { due: number; minutes: number; drainers: number; lanes: number }) {
+  return (
+    <Alert>
+      <TriangleAlertIcon />
+      <AlertTitle>The purchase queue is behind: {due.toLocaleString()} due, the oldest for {minutes} minutes</AlertTitle>
+      <AlertDescription>
+        Players wait for their rewards. The errors below say why: usually a slow store or game server. {drainers} of {lanes} queue
+        drainers run; the worker_lanes setting allows more at once.
+      </AlertDescription>
+    </Alert>
   )
 }
 

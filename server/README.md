@@ -32,8 +32,9 @@ Google RTDN / App Store Notifications V2 / Amazon RTN ──▶ /notify/<store> 
 
 ## SpacetimeDB limitations to keep in mind
 
-- An outgoing HTTP request from the module waits up to 10 s (`net::TIMEOUT_SECS`) and can fail or time out. That's why a ledger row is written first and every external step is retryable: whatever didn't finish is completed by the `process_pending` worker (once a minute) with backoff 1m → 5m → 15m → 1h → 3h → 6h → 12h.
-- A client request starts outbound calls for at most 5 s and a worker run for at most 40 s (`ctx::Budget`); what is left waits for the next worker run. With a slow store `/verify` still answers `success` once the reward is delivered, and the consume / acknowledge follows a minute later.
+- An outgoing HTTP request from the module can fail or time out. That's why a ledger row is written first and every external step is retryable: whatever didn't finish is completed by the queue drainers (`drain.rs`) with backoff 1m → 5m → 15m → 1h → 3h → 6h → 12h.
+- A client request spends at most 3 s on store and delivery calls, counted from its start, and a worker run at most 40 s (`ctx::Budget`): every call is cut at that deadline (and at 10 s, `net::TIMEOUT_SECS`). A request that waits for a call holds one of the host's module instances, which every route shares, so a store that hangs must not hold them for long. What a request leaves is due at once and wakes a drainer: `/verify` answers `success` once the reward is delivered and the consume / acknowledge follows seconds later, or `pending` when the delivery did not fit; a store look-up that does not answer in time is `502`, and the SDK sends the purchase again.
+- Queue drainers: up to `worker_lanes` (server setting, default 2, at most 8) run at once, each calling the stores and games one at a time, builds taking turns, so a slow store holds at most that many instances. A ledger write that leaves a purchase due (a request out of time, an admin grant, an import) starts them at once, the minute worker (`process_pending`) when retries come due; a build whose host does not answer is left for a minute. `/healthz` reports the queue (`due_purchases`, `oldest_due_secs`), says `backlog` when a purchase has waited 15 minutes, and the `queue_behind` alert names the build.
 - HTTP to private addresses (`127.0.0.1`, `10.x`, …) is forbidden: the webhook and the game database must be publicly reachable.
 - HTTP handlers are in beta. If the API breaks, the same logic can be called as procedures through the stable `POST /v1/database/<db>/call/<procedure>`.
 
@@ -213,7 +214,7 @@ Base: `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route`
 Client routes (`/verify/*`, `/restore`, `/entitlements`, `/attributes`, `/paywall`, `/paywall/event`, `/offers/apple/sign`, `/checkout/*`) go through one guard (`client_guard.rs`, rules in `purser_core::client_api`):
 
 - **Player tokens.** A build with `client_auth = signed` refuses requests without `Authorization: Bearer <token>`: an HS256 JWT `{"sub": <user_id>, "exp": <unix seconds>, "aud": <game_key>}` (`aud` optional) signed by the game's backend with the build's `client_auth_secret` (at least 32 characters; the Delivery tab creates one). The answer is `401 {"status": "error", "code": "ERR_CLIENT_AUTH"}`. An open build (the default) takes any `user_id`, so player ids must be hard to guess, and `/attributes` refuses personal keys (`email`, `phone`, `name`, `first_name`, `last_name`) there.
-- **Rate limits.** Token buckets per player of a build and, for routes that call the stores, per build (`client_api::limits`: `/verify` 30 a minute per player and 600 per build, `/restore` 6 and 120, `/entitlements` and `/paywall` 60 per player, ...). Over a limit: `429 {"code": "ERR_RATE_LIMITED"}` with `Retry-After: <seconds>`. Buckets live in `rate_bucket`; the worker deletes idle ones.
+- **Rate limits.** Token buckets per player of a build and, for routes that call the stores, per build (`client_api::limits`: `/verify` 30 a minute per player and 600 per build, `/restore` 6 and 600, `/entitlements` and `/paywall` 60 per player, ...). Over a limit: `429 {"code": "ERR_RATE_LIMITED"}` with `Retry-After: <seconds>`. Buckets live in `rate_bucket`; the worker deletes idle ones.
 - **Signed answers.** With a `response_signing_key` (Ed25519 seed, 32 bytes base64; the Delivery tab creates one in the browser), `/entitlements` and `/restore` answers carry `X-Purser-Signature: <base64 signature of the exact body>`; `admin_response_public_key(app_id)` shows the public key games check it with.
 
 ### `POST /verify/<store>`: `/verify/google`, `/verify/apple`, `/verify/amazon`, `/verify/steam`
@@ -373,6 +374,8 @@ Stripe webhooks of one build (an endpoint per build, its signing secret in `stri
 Prices come from the event (minor units, zero- and three-decimal currencies handled); test-mode events (`livemode: false`) are sandbox purchases; the country is the customer's billing address. Retried and duplicate events are idempotent (the ledger id is the store transaction), and an event never makes a refunded or ended purchase active again. Events without our metadata (Payment Links, other integrations) are acknowledged and ignored.
 
 ### `GET /healthz`
+
+For uptime monitors. `200` with `status`: `healthy`; `starting` right after a publish (the worker has not run yet); `backlog` when a purchase has been due for 15 minutes (the queue is not keeping up: a slow store or game, or more due than the drainers take). `503 worker_stopped` when the minute worker has not run for 5 minutes. The numbers: `pending_purchases` (rows the worker still has to finish, including those waiting for a later retry), `due_purchases` and `oldest_due_secs` (due now, and how long the oldest has waited), `queue_drainers` (running or scheduled), `stuck_purchases` (retried 5 times or more), `queued_integration_events`, `worker_age_secs`, `version`.
 
 ## Delivery to the game
 

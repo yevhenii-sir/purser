@@ -470,6 +470,8 @@ pub fn missing_field(store_id: &str, r: &ReceiptRef) -> Option<&'static str> {
 /// read beforehand ([`Auth::cached`]) or on first use, and kept for the next calls.
 pub fn fetch(ctx: &mut impl Ctx, app: &GameApp, product: &Product, r: &ReceiptRef, auth: &mut Auth) -> Result<StoreTx, StoreError> {
     use purser_core::model::store;
+    // A request's look-up ends at its deadline (a worker run keeps its own bound).
+    let _calls = crate::ctx::Budget::new(ctx, crate::ctx::REQUEST_BUDGET_SECS).bound_calls();
     match config::app_store(app).id {
         store::GOOGLE => google_fetch(ctx, app, product, r.purchase_token, auth),
         store::APPLE => apple_fetch(ctx, app, r.order_id, r.environment, auth),

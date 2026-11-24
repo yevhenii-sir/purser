@@ -26,7 +26,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 | Path | What |
 |---|---|
 | `server/core` (`purser-core`) | Pure logic, no SpacetimeDB: the platform / store registry (`registry.rs`), store API URLs and parsers (`google.rs`, `apple.rs`, `amazon.rs`), SNS envelopes and signatures (`sns.rs`), JWT (`jwt.rs`), ledger model constants (`model.rs`), delivery contract (`event.rs`), integration payload builders (`integrations.rs`), setup-check rules (`doctor.rs`), catalog diff (`catalog.rs`), store product creation steps (`store_create.rs`), answers to Apple refund requests (`consumption.rs`), revenue rules (`revenue.rs`), FX (`fx.rs`), dates (`time.rs`), URL / form encodings, Basic auth and constant-time comparison (`encoding.rs`), amounts in micros (`money.rs`), X.509 / ECDSA chain checks for App Store signed payloads (`x509.rs`; the root is `apple_root_ca_g3.der`), Google Cloud setup requests (`google_setup.rs`), alert rules, throttle and messages (`alerts.rs`), paywall assignment and A/B results (`paywall.rs`). Native unit tests. |
-| `server/spacetimedb` (`purser`) | The module: tables and reducers (`lib.rs`), HTTP routes (`handlers.rs`), product creation in the stores (`store_create.rs`, jobs run by a scheduled worker), one-click store setup: App Store notification URLs, Stripe webhook endpoint, Google Cloud with a one-time token (`store_setup.rs`), ledger state machine and worker (`ledger.rs`), the worker's queue and the owned purchases derived from the ledger (`ledger_index.rs`), store clients, token cache and the dispatch by store (`stores.rs`), subscription re-checks (`poll.rs`), store notification health of every build (`store_health.rs`), secret resolution (`config.rs`), delivery (`delivery_client.rs`), integrations outbox and per-build health (`integrations.rs`), Apple refund request answers (`consumption.rs`), setup check (`doctor.rs`), health (`health.rs`), revenue (`revenue.rs`), paywalls, placements and A/B tests (`paywalls.rs`), catalog import (`catalog.rs`), settings (`settings.rs`), owner alerts and their outbox (`alerts.rs`), HTTP wrapper (`net.rs`; errors never show query strings), request plumbing: answers, body limit, query parameters (`web.rs`), `Ctx` trait and the time `Budget` of a request or worker run (`ctx.rs`), tests (`tests.rs`). |
+| `server/spacetimedb` (`purser`) | The module: tables and reducers (`lib.rs`), HTTP routes (`handlers.rs`), product creation in the stores (`store_create.rs`, jobs run by a scheduled worker), one-click store setup: App Store notification URLs, Stripe webhook endpoint, Google Cloud with a one-time token (`store_setup.rs`), ledger state machine and the minute worker (`ledger.rs`), the worker's queue and the owned purchases derived from the ledger (`ledger_index.rs`), the queue drainers that work through it, `worker_lanes` at once (`drain.rs`), store clients, token cache and the dispatch by store (`stores.rs`), subscription re-checks (`poll.rs`), store notification health of every build (`store_health.rs`), secret resolution (`config.rs`), delivery (`delivery_client.rs`), integrations outbox and per-build health (`integrations.rs`), Apple refund request answers (`consumption.rs`), setup check (`doctor.rs`), health (`health.rs`), revenue (`revenue.rs`), paywalls, placements and A/B tests (`paywalls.rs`), catalog import (`catalog.rs`), settings (`settings.rs`), owner alerts and their outbox (`alerts.rs`), HTTP wrapper (`net.rs`; errors never show query strings), request plumbing: answers, body limit, query parameters (`web.rs`), `Ctx` trait and the time `Budget` of a request or worker run (`ctx.rs`), tests (`tests.rs`). |
 | `server/spacetimedb/admin/index.html`, `admin/csp.txt` | **Generated** admin page and its Content-Security-Policy (script hash), both committed and embedded with `include_str!`. Never edit by hand. |
 | `server/admin-ui` | Admin page sources: Vite, React 19, TypeScript, Tailwind v4, shadcn/ui, recharts, cmdk. |
 | `server/seed.py`, `server/stdb.py`, `server/backup.py`, `server/migrate.py`, `server/import_revenuecat.py`, `server/seed.example/`, `server/tests/` | CLI setup from JSON files, setup check from the terminal (`seed.py --check`), backups through the owner's `/sql` (`backup.py backup|restore`, also for `--delete-data` releases), a copy of a database to another server (`migrate.py`), RevenueCat history import (`import_revenuecat.py`), unit tests of the scripts (`server/tests`). |
@@ -36,6 +36,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 | `docs/` | store setup, game integration contract, analytics, self-hosting, migrating from Adapty. |
 | `tools/generate_unity_meta.py` | Creates `.meta` files for new Unity package files (deterministic GUIDs). |
 | `tools/e2e.py` | End-to-end check of a built module on a real SpacetimeDB server (CI runs it in a container). |
+| `tools/loadtest.py` | Load test of a built module on a local SpacetimeDB, with a local proxy standing in for a slow store (not in CI). |
 | `.github/workflows/` | `ci.yml` (tests, wasm, end to end on SpacetimeDB, admin page freshness, scripts, personal-infra grep guard), `release.yml` (tag `v*`), `audit.yml` (weekly `cargo deny` of the module's wasm dependencies, configured in `server/deny.toml`, and `npm audit`); `dependabot.yml`. |
 
 ## Domain model (names used everywhere)
@@ -101,8 +102,14 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   for the reply. `net::send` sets a 10 s timeout (`net::TIMEOUT_SECS`; the host allows up to 180 s and
   uses 30 s by default: the 500 ms in the `spacetimedb` crate docs is outdated). Private addresses
   are blocked. Keep calls idempotent (a timeout on our side may still have reached the store) and
-  check `ctx::Budget::left()` before starting more work in a loop: a request starts calls for 5 s,
-  a worker run for 40 s, and the next worker run continues the rest. Delivery to self-hosted SpacetimeDB hosts needs them in the `spacetime_host` allowlist.
+  check `ctx::Budget::left()` before starting more work in a loop: a request spends 3 s on calls, a
+  worker run or queue drainer 40 s, and a drainer continues the rest. `Budget::bound_calls` cuts every
+  call at the deadline (`net::send` reads it); requests, `ledger::run_within` and the worker set it.
+- HTTP routes and procedures run on a pool of module instances (one per CPU thread by default,
+  `[wasm] procedure-instance-pool-size` in the server's `config.toml`; not configurable on maincloud);
+  reducers run on one. A call waiting for a store keeps its instance, and every route shares the pool:
+  purchases per second ≈ pool ÷ the store's latency, and a slow store slows `/entitlements` too. Keep
+  waits short and bounded (the request deadline, `worker_lanes` drainers). Delivery to self-hosted SpacetimeDB hosts needs them in the `spacetime_host` allowlist.
 - The module RNG is seeded by the timestamp: never use it for secrets.
 - Maincloud tokens have no `hex_identity` claim; the UI asks the `whoami` procedure.
 - Open transactions through `Ctx::tx` (see `ctx.rs`), not `with_tx` directly: it records the time the
@@ -154,6 +161,7 @@ npm run dev        # proxies to a local `spacetime start` on :3000 (SPACETIME_UR
 python tools/generate_unity_meta.py          # after adding files to the Unity package
 python -m py_compile server/*.py tools/*.py
 python -m unittest discover -s server/tests   # unit tests of the scripts
+python tools/loadtest.py --help               # load test on a local SpacetimeDB (see its docstring)
 ```
 
 Unity package tests in a real editor (CI does not run them): a local project in `unity/TestProject/` (gitignored)

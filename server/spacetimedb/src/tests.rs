@@ -38,12 +38,16 @@ struct Fake {
     overrides: Vec<(String, u16, String)>,
     /// Seconds every call takes (moves the clock of `ctx::Budget`).
     call_secs: i64,
+    /// The time limit of every call, in micros (`net::send`).
+    timeouts: Vec<i64>,
 }
 
 impl Fake {
     /// A scripted status 0 is a transport failure (no reply), like a timeout.
     fn respond(&mut self, req: Request) -> Result<Response, spacetimedb::http::Error> {
         let url = req.uri().to_string();
+        let timeout = req.extensions().get::<spacetimedb::http::Timeout>().map(|t| t.0.to_micros()).unwrap_or(-1);
+        self.timeouts.push(timeout);
         crate::ctx::TEST_ELAPSED_MICROS.with(|c| c.set(c.get() + self.call_secs * 1_000_000));
         let mut call = format!("{} {}", req.method(), req.uri());
         let store_write = call.starts_with("PATCH ")
@@ -123,6 +127,7 @@ impl World {
             failing_reducer: String::new(),
             overrides: Vec::new(),
             call_secs: 0,
+            timeouts: Vec::new(),
         };
         let world = World { test, fake: Rc::new(RefCell::new(fake)) };
         world.seed();
@@ -264,9 +269,28 @@ impl World {
         get_entitlements(&mut self.ctx(), &r).unwrap_or_else(|o| o).body
     }
 
+    /// The minute worker, then the queue drainers it scheduled (as the host would start them).
     fn run_worker(&self) {
         let schedule = RetrySchedule { id: 1, scheduled_at: ScheduleAt::Interval(Duration::from_secs(60).into()) };
         ledger::process_pending(&mut self.ctx(), schedule);
+        self.run_drainers();
+    }
+
+    /// Runs the scheduled queue drainers once each (the host deletes a one-shot row as it starts it).
+    fn run_drainers(&self) -> usize {
+        use crate::drain::drain_schedule;
+        let runs: Vec<crate::drain::DrainSchedule> = self.read(|tx| {
+            let rows: Vec<_> = tx.db.drain_schedule().iter().collect();
+            for r in &rows {
+                tx.db.drain_schedule().id().delete(r.id);
+            }
+            rows
+        });
+        let n = runs.len();
+        for run in runs {
+            crate::drain::drain_pending(&mut self.ctx(), run);
+        }
+        n
     }
 
     fn script(&self, needle: &str, status: u16, body: &str) {
@@ -2005,11 +2029,13 @@ fn delivery_that_keeps_failing_is_alerted_and_resolved() {
     assert!(msgs[0].detail.contains(LEDGER_ID) && msgs[0].detail.contains("503"), "{}", msgs[0].detail);
     assert_eq!(alert_outbox(&w)[0].channel, "telegram");
 
-    // The game is back: the purchase completes and the worker reports the recovery.
+    // The game is back: a queue drainer completes the purchase, the next worker pass reports the recovery.
     w.fake.borrow_mut().game_status = 200;
     w.advance_clock(901);
     w.run_worker();
     assert_eq!(w.purchase().status, status::COMPLETED);
+    w.advance_clock(60);
+    w.run_worker();
     let states: Vec<String> = alert_messages(&w).iter().map(|m| format!("{} {}", m.rule, m.state)).collect();
     assert_eq!(states, ["delivery_failing alert", "delivery_failing resolved"]);
 }
@@ -6269,11 +6295,12 @@ fn a_worker_run_stops_starting_calls_after_its_budget() {
     w.fake.borrow_mut().call_secs = 25;
     let before = w.calls("/call/billing_grant");
     w.run_worker();
-    assert_eq!(w.calls("/call/billing_grant") - before, 1, "one 25 s delivery uses up the purchases' part of the run");
+    assert_eq!(w.calls("/call/billing_grant") - before, 2, "two 25 s deliveries use up the drainer's 40 s");
     w.fake.borrow_mut().call_secs = 0;
+    // The 50 s the calls took (the fake moves only the run's own clock).
     w.advance_clock(60);
-    w.run_worker();
-    assert_eq!(w.calls("/call/billing_grant") - before, 3, "the next run delivers the others");
+    assert_eq!(w.run_drainers(), 1, "rows remain: the drainer runs again");
+    assert_eq!(w.calls("/call/billing_grant") - before, 3, "the next run delivers the rest");
 }
 
 #[test]
@@ -6305,12 +6332,14 @@ fn a_build_whose_calls_time_out_does_not_hold_up_the_others() {
     buy(OTHER, "p5");
     w.fake.borrow_mut().game_status = 200;
     w.advance_clock(3600);
-    w.fake.borrow_mut().call_secs = 11;
+    // The first build's game database does not answer (no reply: a timeout).
+    w.script(&format!("\"app_id\":\"{APP}\""), 0, "");
     w.run_worker();
+    let tried = |app: &str| w.read(|tx| tx.db.purchase().app_created().filter((app, i64::MIN..)).filter(|p| p.attempts > 1).count());
     let delivered = |app: &str| {
         w.read(|tx| tx.db.purchase().app_created().filter((app, i64::MIN..)).filter(|p| p.status != status::VERIFIED).count())
     };
-    assert_eq!(delivered(APP), 1, "after a call past the timeout the build waits for the next run");
+    assert_eq!(tried(APP), 1, "after a call without a reply the build waits for a later run");
     assert_eq!(delivered(OTHER), 1, "the other build is served in the same run");
 }
 
@@ -7425,10 +7454,17 @@ fn a_build_with_a_huge_backlog_does_not_starve_the_others() {
         let product = Product::new("com.studio.other", "gems", kind::CONSUMABLE);
         ledger::insert_purchase(tx, Purchase::new("google", "new-1", "com.studio.other", &product, "player-2", NOW_MICROS));
     });
-    let picked = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 5, 25));
-    assert_eq!(picked.iter().filter(|(_, app)| app == "com.studio.broken").count(), 5);
-    assert!(picked.contains(&("google:new-1".to_string(), "com.studio.other".to_string())), "{picked:?}");
-    assert_eq!(picked[0].0, "google:old-0000", "oldest first within a build");
+    let none = std::collections::BTreeSet::new();
+    let picked = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 10, &none));
+    assert_eq!(picked.len(), 10);
+    assert!(picked[..2].contains(&("google:new-1".to_string(), "com.studio.other".to_string())), "builds take turns: {picked:?}");
+    assert_eq!(picked.iter().filter(|(_, app)| app == "com.studio.broken").count(), 9, "the rest of the batch goes to the build with work");
+    let broken: Vec<&str> = picked.iter().filter(|(_, app)| app == "com.studio.broken").map(|(id, _)| id.as_str()).collect();
+    assert_eq!(broken[0], "google:old-0000", "oldest first within a build");
+    // A build left out (its host did not answer in this run).
+    let skip: std::collections::BTreeSet<String> = ["com.studio.broken".to_string()].into();
+    let picked = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 10, &skip));
+    assert_eq!(picked, vec![("google:new-1".to_string(), "com.studio.other".to_string())]);
 }
 
 #[test]
@@ -7441,8 +7477,9 @@ fn builds_take_turns_when_more_have_work_than_a_run_takes() {
             ledger::insert_purchase(tx, Purchase::new("google", &format!("t-{b}"), &app, &product, "player-1", NOW_MICROS));
         }
     });
-    let first = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 5, 25));
-    let second = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 5, 25));
+    let none = std::collections::BTreeSet::new();
+    let first = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 25, &none));
+    let second = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 25, &none));
     assert_eq!((first.len(), second.len()), (25, 25));
     let served: std::collections::BTreeSet<String> = first.iter().chain(&second).map(|(_, app)| app.clone()).collect();
     assert_eq!(served.len(), 30, "the second run starts after the last build the first one reached");
@@ -7782,4 +7819,162 @@ fn server_keys_are_rate_limited_and_need_an_admin_with_the_secrets_capability() 
     let ((http, _), retry_after) = entitlements(&mut w.ctx(), &bearer(SERVER_KEY), &q);
     assert_eq!(http, 429);
     assert!(retry_after.is_some());
+}
+
+
+// --- Queue drainers, call time limits, the queue in /healthz and alerts ---
+
+/// Ledger rows of `app` due now (consumables of `player-1`).
+fn queue_rows(w: &World, app: &str, n: usize) {
+    w.write(|tx| {
+        let product = Product::new(app, "gems", kind::CONSUMABLE);
+        for i in 0..n {
+            let p = Purchase::new("google", &format!("{app}-{i:04}"), app, &product, "player-1", NOW_MICROS - 1_000_000 + i as i64);
+            ledger::insert_purchase(tx, p);
+        }
+    });
+}
+
+/// Every lane taken by a drainer that never runs (one that died): the rows stay due.
+fn jam_lanes(w: &World) {
+    use crate::drain::{drain_lane, drain_schedule};
+    w.write(|tx| {
+        for id in tx.db.drain_schedule().iter().map(|r| r.id).collect::<Vec<_>>() {
+            tx.db.drain_schedule().id().delete(id);
+        }
+        for lane in 0..crate::drain::DEFAULT_LANES {
+            tx.db.drain_lane().lane().delete(lane);
+            tx.db.drain_lane().insert(crate::drain::DrainLane { lane, until_micros: i64::MAX });
+        }
+    });
+}
+
+#[test]
+fn rows_written_due_wake_the_drainers_at_once() {
+    use crate::drain::drain_schedule;
+    let w = World::new();
+    queue_rows(&w, APP, 3);
+    assert_eq!(w.read(|tx| tx.db.drain_schedule().count()), 2, "an admin grant or import needs no minute tick");
+    w.run_drainers();
+    assert_eq!(w.read(|tx| tx.db.drain_schedule().count()), 0);
+    assert!(!w.read(|tx| crate::ledger_index::any_due(tx, NOW_MICROS + 1_000_000)));
+}
+
+#[test]
+fn drainers_running_at_once_never_take_the_same_row() {
+    let w = World::new();
+    queue_rows(&w, APP, 25);
+    let none = std::collections::BTreeSet::new();
+    let claim = || -> Vec<String> {
+        w.ctx().tx(|tx| crate::drain::claim(tx, 10, &none).into_iter().map(|(_, l)| l.leased_id().unwrap().to_string()).collect())
+    };
+    let (first, second) = (claim(), claim());
+    assert_eq!((first.len(), second.len()), (10, 10));
+    assert!(first.iter().all(|id| !second.contains(id)), "{first:?} {second:?}");
+}
+
+#[test]
+fn the_worker_starts_one_drainer_per_free_lane_and_they_stop_when_the_queue_is_empty() {
+    use crate::drain::{drain_lane, drain_schedule};
+    use crate::ledger_index::pending_purchase;
+    let w = World::new();
+    w.run_worker();
+    assert_eq!(w.read(|tx| tx.db.drain_schedule().count()), 0, "nothing due: no drainer");
+
+    w.write(|tx| crate::settings::set(tx, crate::settings::key::WORKER_LANES, "3"));
+    queue_rows(&w, APP, 30);
+    let schedule = || RetrySchedule { id: 1, scheduled_at: ScheduleAt::Interval(Duration::from_secs(60).into()) };
+    ledger::process_pending(&mut w.ctx(), schedule());
+    assert_eq!(w.read(|tx| (tx.db.drain_schedule().count(), tx.db.drain_lane().count())), (3, 3));
+    // Every lane is taken: the next pass starts none.
+    ledger::process_pending(&mut w.ctx(), schedule());
+    assert_eq!(w.read(|tx| tx.db.drain_schedule().count()), 3);
+
+    assert_eq!(w.run_drainers(), 3);
+    let left = w.read(|tx| tx.db.pending_purchase().count());
+    assert_eq!(left, 0, "the drainers completed the queue");
+    assert_eq!(w.read(|tx| (tx.db.drain_schedule().count(), tx.db.drain_lane().count())), (0, 0), "and freed their lanes");
+}
+
+#[test]
+fn a_request_that_leaves_work_wakes_a_drainer() {
+    use crate::drain::drain_schedule;
+    let w = World::new();
+    w.fake.borrow_mut().call_secs = 2;
+    // Look-up (2 s) and delivery (4 s): past the 3 s of the request, consume is left due.
+    assert_eq!(w.verify("player-1", "gems").body["status"], "success");
+    assert_eq!(w.purchase().status, status::GRANTED);
+    assert_eq!(w.read(|tx| tx.db.drain_schedule().count()), 2, "both lanes woken");
+    w.fake.borrow_mut().call_secs = 0;
+    w.advance_clock(10);
+    w.run_drainers();
+    assert_eq!(w.purchase().status, status::COMPLETED);
+}
+
+#[test]
+fn calls_of_a_request_end_at_its_deadline_and_the_worker_keeps_the_long_limit() {
+    let w = World::new();
+    w.fake.borrow_mut().call_secs = 2;
+    w.verify("player-1", "gems");
+    let limits = std::mem::take(&mut w.fake.borrow_mut().timeouts);
+    // Look-up with the whole 3 s, delivery with the 1 s left (the shortest limit).
+    assert_eq!(limits[..2], [3_000_000, 1_000_000], "{limits:?}");
+
+    w.fake.borrow_mut().call_secs = 0;
+    w.advance_clock(10);
+    w.run_drainers();
+    let limits = std::mem::take(&mut w.fake.borrow_mut().timeouts);
+    assert_eq!(limits, [crate::net::TIMEOUT_SECS * 1_000_000], "a drainer's call (consume)");
+}
+
+#[test]
+fn healthz_and_the_overview_report_a_queue_that_falls_behind() {
+    let w = World::new();
+    w.run_worker();
+    queue_rows(&w, APP, 4);
+    w.advance_clock(60);
+    let o = health_report(&mut w.ctx());
+    assert_eq!((o.body["status"].as_str(), o.body["due_purchases"].as_u64(), o.body["oldest_due_secs"].as_i64()), (Some("healthy"), Some(4), Some(61)));
+    // The worker keeps running, but the rows stay due (every lane is taken by a drainer that died).
+    jam_lanes(&w);
+    for _ in 0..15 {
+        w.advance_clock(60);
+        w.run_worker();
+    }
+    let o = health_report(&mut w.ctx());
+    assert_eq!((o.http, o.body["status"].as_str(), o.body["due_purchases"].as_u64()), (200, Some("backlog"), Some(4)));
+    w.as_admin(false);
+    let ov = w.read(|tx| crate::admin_views::overview(tx, None));
+    assert_eq!((ov["due_total"].as_u64(), ov["lanes"].as_u64(), ov["drainers"].as_u64()), (Some(4), Some(2), Some(2)));
+}
+
+#[test]
+fn a_queue_that_falls_behind_is_alerted_and_resolved() {
+    use crate::drain::drain_lane;
+    let w = World::new();
+    setup_alerts(&w, false);
+    w.run_worker();
+    queue_rows(&w, APP, 3);
+    jam_lanes(&w);
+    w.advance_clock(10 * 60);
+    w.run_worker();
+    assert!(alert_messages(&w).iter().all(|m| m.rule != "queue_behind"), "10 minutes: below the 15 of the rule");
+    w.advance_clock(6 * 60);
+    w.run_worker();
+    let msgs: Vec<_> = alert_messages(&w).into_iter().filter(|m| m.rule == "queue_behind").collect();
+    assert_eq!(msgs.len(), 1);
+    assert!(msgs[0].detail.contains("3 purchase(s)"), "{}", msgs[0].detail);
+
+    // The lanes are free again: the drainers catch up, the next pass reports it.
+    w.write(|tx| {
+        for lane in 0..crate::drain::DEFAULT_LANES {
+            tx.db.drain_lane().lane().delete(lane);
+        }
+    });
+    w.advance_clock(60);
+    w.run_worker();
+    w.advance_clock(60);
+    w.run_worker();
+    let states: Vec<String> = alert_messages(&w).iter().filter(|m| m.rule == "queue_behind").map(|m| m.state.clone()).collect();
+    assert_eq!(states, ["alert", "resolved"]);
 }

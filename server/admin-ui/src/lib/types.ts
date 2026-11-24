@@ -246,6 +246,14 @@ export interface Overview {
   /** Rows the worker still has to process, soonest retry first (at most 200). */
   pending: Pick<Purchase, "id" | "app_id" | "product_id" | "user_id" | "status" | "attempts" | "next_attempt_at_micros" | "last_error" | "updated_at_micros">[]
   pending_total: number
+  /** Rows due now (the rest wait for a later retry) and when the longest waiting one became due (0: none). */
+  due_total: number
+  oldest_due_micros: number
+  /** Due this long: the queue is behind (`/healthz` says `backlog`). */
+  backlog_after_secs: number
+  /** Queue drainers running or scheduled, and how many may run at once (`worker_lanes`). */
+  drainers: number
+  lanes: number
   /** Apps (`game_key` groups) and their builds. */
   apps: number
   builds: number

@@ -25,7 +25,8 @@ problems before they reach players; the Logs page shows what the module did.
 
 A purchase that stays *pending* on the Overview has a `last_error`: a store or delivery call that keeps failing
 (credentials, the game's reducer or webhook). The worker retries with backoff; fix the cause and it goes on by itself,
-or use **Retry now**. `GET /healthz` reports `pending_purchases` and `stuck_purchases` for monitors.
+or use **Retry now**. `GET /healthz` reports `pending_purchases`, `due_purchases`, `oldest_due_secs` and
+`stuck_purchases` for monitors.
 
 ## Server keys (`/server/*`)
 
@@ -73,6 +74,11 @@ or use **Retry now**. `GET /healthz` reports `pending_purchases` and `stuck_purc
 
 - **`/healthz` answers `503 worker_stopped`**: the ledger worker has not run for 5 minutes. The Overview offers to
   restart it (`admin_ensure_worker`); after a publish it starts by itself.
+- **`/healthz` says `backlog`** (and the `queue_behind` alert fired): a purchase has waited 15 minutes after it became
+  due. The errors of the waiting purchases on the Overview say why: usually a store or the game's server that answers
+  slowly or not at all (its rows wait a minute after every call without a reply). When the calls succeed but there are
+  more purchases than the drainers take, raise `worker_lanes` (`admin_set_setting worker_lanes 4`, at most 8); each
+  drainer holds one module instance while it waits ([self-hosting.md](self-hosting.md#capacity)).
 - **An integration dropped events** (Integrations tab shows *The last event was dropped*): fix its key or settings,
   then send the dropped events again (`admin_replay_integration_events(app_id, kind)`; they are kept for 30 days).
 - **After restoring with SQL** (a backup, an import done by hand): `admin_reindex_ledger` rebuilds the worker's queue

@@ -21,14 +21,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// While a row is being processed it is hidden from the worker for this long.
 const LEASE_MICROS: i64 = 2 * 60 * 1_000_000;
-/// Rows handled per worker run.
-const WORKER_BATCH: usize = 25;
-/// Rows of one build per worker run, so one build's backlog cannot hold up the others.
-const WORKER_PER_APP: usize = 5;
 /// Steps of a derived-table rebuild (`ledger_index`) one worker run takes.
 const REINDEX_STEPS_PER_RUN: usize = 25;
-/// Part of the worker budget the purchases may use; the rest is for re-checks and Steam.
-const PURCHASE_BUDGET_SECS: i64 = 25;
 
 /// Ledger rows by build and status, kept in step with every write ([`insert_purchase`],
 /// [`save_purchase`]), so the Overview never counts the ledger.
@@ -657,6 +651,16 @@ pub enum Lease {
     Idle(Option<Purchase>),
 }
 
+impl Lease {
+    /// The ledger id of the row leased for a step (`None`: nothing to run).
+    pub fn leased_id(&self) -> Option<&str> {
+        match self {
+            Lease::Step(step) => Some(&step.row.id),
+            Lease::Idle(_) => None,
+        }
+    }
+}
+
 /// Reads what the step of a leased row needs.
 fn prepare(tx: &TxContext, app: GameApp, row: Purchase) -> Lease {
     let delivers = matches!(
@@ -788,6 +792,17 @@ fn billing_event(p: &Purchase, event: &str, why: &str, now_ms: i64) -> BillingEv
     }
 }
 
+/// Gives a leased row back to the queue, due at `at`: whoever leased it will not run it.
+pub fn release(tx: &TxContext, lease: &Lease, at: i64) {
+    let Some(id) = lease.leased_id() else { return };
+    if let Some(mut p) = tx.db.purchase().id().find(id.to_string()) {
+        if p.next_attempt_at_micros > at {
+            p.next_attempt_at_micros = at;
+            save_purchase(tx, p);
+        }
+    }
+}
+
 /// Runs the pending steps of a purchase as far as the budget allows and returns the resulting row.
 pub fn advance(ctx: &mut impl Ctx, id: &str, budget: Budget) -> Option<Purchase> {
     let first = ctx.tx(|tx| lease(tx, id, None));
@@ -802,9 +817,10 @@ pub fn run(ctx: &mut impl Ctx, lease: Lease) -> Option<Purchase> {
 
 /// Runs a leased purchase ([`lease`], [`record_and_lease`]) as far as possible and returns the
 /// resulting row. Every step's transition leases the row for the next one in the same transaction,
-/// while the budget lasts; after it the row waits for the worker's next run.
+/// while the budget lasts; after it the row is left due, which wakes a queue drainer (`drain`).
 pub fn run_within(ctx: &mut impl Ctx, lease: Lease, budget: Budget) -> Option<Purchase> {
     const STEPS: usize = 4;
+    let _calls = budget.bound_calls();
     let mut lease = lease;
     for i in 0..STEPS {
         let step = match lease {
@@ -874,42 +890,28 @@ fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease 
     }
 }
 
-/// Worker: continues purchases whose `next_attempt_at` has come (runs every minute), then the
-/// exchange rates, owner alerts, store re-checks and, last, the large revenue transactions (so a
-/// failing rebuild cannot hold up the rest). An idle run is two short transactions.
+/// Worker (runs every minute): starts the queue drainers when purchases are due (`drain`, they
+/// continue the rows), then the exchange rates, owner alerts, store re-checks and, last, the large
+/// revenue transactions (so a failing rebuild cannot hold up the rest). An idle run is two short
+/// transactions.
 #[spacetimedb::procedure]
 pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
-    let (picked, upkeep): (Vec<(String, String)>, _) = ctx.tx(|tx| {
+    let upkeep = ctx.tx(|tx| {
         let now = tx_now_micros(tx);
         crate::ledger_index::reindex_step(tx);
-        let picked = crate::ledger_index::due(tx, now, WORKER_PER_APP, WORKER_BATCH);
+        crate::drain::wake(tx);
         crate::settings::set(tx, crate::settings::key::WORKER_HEARTBEAT, &now.to_string());
         crate::access::prune_audit(tx);
         crate::retention::daily(tx);
         crate::client_guard::prune(tx);
         crate::integrations::prune_dead(tx);
-        (picked, crate::revenue::upkeep(tx))
+        crate::revenue::upkeep(tx)
     });
     let budget = Budget::new(ctx, crate::ctx::WORKER_BUDGET_SECS);
-    let purchases = Budget::new(ctx, PURCHASE_BUDGET_SECS);
-    // A build whose step ran into the call timeout is left for the next run.
-    let mut slow: BTreeSet<String> = BTreeSet::new();
-    for (id, app_id) in picked {
-        if !purchases.left() {
-            break;
-        }
-        if slow.contains(&app_id) {
-            continue;
-        }
-        let started = crate::ctx::last_tx_micros();
-        advance(ctx, &id, purchases);
-        if crate::ctx::last_tx_micros() - started >= crate::net::TIMEOUT_SECS * 1_000_000 {
-            slow.insert(app_id);
-        }
-    }
+    let _calls = budget.bound_calls();
     crate::revenue::refresh_rates(ctx, &upkeep);
     let due = ctx.tx(|tx| {
         crate::alerts::check_tx(tx);
