@@ -162,7 +162,8 @@ with `Packages/manifest.json` = `{"dependencies": {"com.yevhenii.purser": "file:
 naming the oldest supported editor (`m_EditorVersion: 2022.3.62f3`); Unity 6 gets projects of its own
 (`unity/TestProject6.0`, `6.3`, `6.6`: opening a project in a newer editor upgrades it) with the test framework the
 editor bundles (`1.6.0` on 6.0 / 6.3, `1.8.0` on 6.6). `unity/TestProjectNoIap` (2022.3, no `com.unity.purchasing`) checks
-that the core compiles and its tests pass without Unity IAP. Then:
+that the core compiles and its tests pass without Unity IAP. `unity/TestProjectIap4` (2022.3, `com.unity.purchasing` 4.13.0) checks the core with Unity IAP 4
+and the **Observer mode** sample (copy `Samples~/ObserverMode` into its `Assets/`). Then:
 
 ```bash
 "<Unity 2022.3>/Editor/Unity.exe" -batchmode -nographics -projectPath unity/TestProject -runTests \

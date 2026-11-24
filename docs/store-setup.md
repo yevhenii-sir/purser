@@ -130,11 +130,11 @@ Unity IAP 5 has no Amazon store: the Unity package uses `AmazonStoreAdapter` ove
 
 ## Xsolla
 
-[Xsolla](https://developers.xsolla.com/) sells on the web and on desktop (Pay Station / Web Shop). There is no client receipt: the server creates a payment token for one item, the player pays in Pay Station, and Xsolla tells the server with [webhooks](https://developers.xsolla.com/webhooks/overview/). Players never see the API key or the secret key.
+[Xsolla](https://developers.xsolla.com/) sells on the web and on desktop (Pay Station / Web Shop), and in mobile games next to the app store (for example to players Google Play cannot charge). There is no client receipt: the server creates a payment token for one item, the player pays in Pay Station, and Xsolla tells the server with [webhooks](https://developers.xsolla.com/webhooks/overview/). Players never see the API key or the secret key.
 
 ### The build
 
-Add a build with platform **Web** and store **Xsolla**. Its app id only has to be unique on the server, e.g. `com.example.mygame.web`; use the same value for the `xsolla` build in the Unity `BillingConfig`. Use **one Xsolla project per build**: a project has one webhook URL, and it names the build.
+Add a build with store **Xsolla**: platform **Web** for a web shop, **Android** or **iOS** for a mobile game that also sells through Pay Station (then the attribution integrations get the device ids, as for the app store build). Its app id only has to be unique on the server, e.g. `com.example.mygame.web` or `com.example.mygame.xsolla`; use the same value for the `xsolla` build in the Unity `BillingConfig`. Give it the same app as the app store build: the customer info covers both. Use **one Xsolla project per build**: a project has one webhook URL, and it names the build.
 
 Products use the **item SKUs** of the project's catalog (Publisher Account → the project → **Items catalog**, virtual items or currency packages): the SKU is the product id. Kinds: a consumable for currency packages and consumable items, a non-consumable for items bought once. Prices come from Xsolla's webhooks, so no default price is needed.
 
@@ -174,6 +174,34 @@ Xsolla needs the player's country to pick the currency: pass `country` (ISO 3166
 **From a website or launcher without Unity.** The same three calls work from any client: your page calls `/checkout/xsolla` (from your own backend or directly from the browser: only public ids travel), redirects to `url` or opens it in a new window, and either polls `/checkout/xsolla/status` or waits for `return_url`. Entitlements of non-consumables and subscriptions are in `POST /entitlements`, shared with the other builds of the game.
 
 **Unity.** `XsollaStoreAdapter` does steps 1–4 (see the package README).
+
+### In a mobile game, next to Google Play
+
+The Unity package routes some purchases to Xsolla and the rest to the app store with `CompositeStoreAdapter`, e.g.
+by the currency Google Play shows:
+
+```csharp
+var store = new CompositeStoreAdapter(Billing.CreateDefaultStore(config),
+    new CurrencyStoreRouter(BillingStores.Xsolla, "RUB"),
+    new XsollaStoreAdapter(config, new XsollaOptions { ReturnUrl = "mygame://purchase" }));
+```
+
+Pay Station opens in Chrome Custom Tabs on Android (`androidx.browser`, requested from the External Dependency
+Manager; without it the default browser) and in Safari on iOS. `return_url` may be an **app link** of the game
+(`mygame://...`, registered as the app's deep link): the server then adds a redirect policy that sends the player
+back right away, and the package checks the order as soon as the link opens the game. The routes do not change:
+`/checkout/xsolla` and `/checkout/xsolla/status` with the Xsolla build's app id.
+
+### Moving purchases of an old client-side integration
+
+Games that used the Xsolla SDK on the client alone (a device-id login, items in the Xsolla inventory) can move what
+players own to the server once: in a version that still has the old login, the client sends its Xsolla Login token
+to `POST /claim/xsolla`; the server reads the player's inventory from Xsolla with that token (Xsolla rejects a forged
+or expired one) and records the **non-consumables** of the build as owned by the billing user. They are not sales:
+no revenue, no integration events. A repeated claim changes nothing; the same Xsolla user claimed by another billing
+user (a reinstall with a new id) moves the items as a restore does, within the app's transfer limits. Optional key
+`xsolla_login_project_id` (Publisher Account → Login → the project ID): tokens of another login project are refused.
+Unity: `IBillingService.ClaimXsollaPurchasesAsync(xsollaToken)`.
 
 ### Testing
 

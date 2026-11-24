@@ -279,6 +279,53 @@ paths:
                 order_id: { type: string }
       responses: *verifyResponses
 
+  /claim/xsolla:
+    post:
+      tags: [Checkout]
+      operationId: claimXsolla
+      summary: Move the Xsolla inventory of an old client-side login to the player
+      description: >-
+        The server reads the player's Xsolla inventory with their Xsolla Login token and records the build's
+        non-consumables as owned (not as sales). Idempotent.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, user_id, xsolla_token]
+              properties:
+                app_id: { type: string }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                xsolla_token: { type: string, description: "Xsolla Login JWT of the player" }
+      responses:
+        "200":
+          description: Items moved and skipped.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+                  claimed:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id: { type: string }
+                        purchase_status: { type: string }
+                  skipped:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        product_id: { type: string }
+                        reason: { type: string }
+        "400": { description: "Invalid input, or Xsolla refused the token (`ERR_XSOLLA_TOKEN`)." }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/ServerError" }
+        "502": { $ref: "#/components/responses/StoreUnavailable" }
+
   /checkout/stripe:
     post:
       tags: [Checkout]

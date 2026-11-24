@@ -7,6 +7,13 @@
 - `POST /manage/stripe`: a Stripe customer portal session for the player's subscription (cancel, change the card, invoices), for builds with player tokens; others answer `ERR_PLAYER_TOKENS_REQUIRED` and link Stripe's portal login page. Publish in place: no `--delete-data`.
 - `seed.py --server-key <game_key>` (`--key-name`, `--key-scopes read,grant,revoke`) makes a key for the game's backend in the terminal, as the admin page does, and prints it once.
 - Bulk onboarding for hundreds of apps (docs/bulk-setup.md): `server/bulk_setup.py` creates or updates builds and products from `apps.csv` / `products.csv` (or JSON), checks every row first and reports errors per line, prints the diff with `--dry-run`, and with `--from-stores` adds the products Google Play and the App Store list with their prices and periods; a second run changes nothing. `seed.py --check-all` checks every enabled build and prints a summary table (exit code 1 on failures). `setup_google.py` sets up any number of Google Play builds, 20 per call, grouped by developer account, on one topic.
+- Games that keep their own IAP code (observer mode, docs/observer-mode.md): `/verify` and `/restore` take `client_finished` (the game finished the purchase in the store; honored for builds where the client grants), so the server records and follows the purchase without consuming or acknowledging it.
+- Every integration takes `events` (event kinds to send) and `skip_client_purchases` (leave out first purchases of Google Play, the App Store and Amazon that the game's own SDKs report): renewals, refunds, cancellations and web store purchases still go out, nothing is counted twice. Admin page: both on the integration form of every kind.
+- Child-directed apps: the app setting **Child-directed app** (`admin_set_app_policy`, table `app_policy`) drops advertising ids the client sends; they are neither stored nor sent to integrations.
+- Xsolla builds on Android and iOS next to the app store build (a mobile game that sells some players through Pay Station; attribution integrations get the device ids). `return_url` may be an app link of the game, with a redirect policy that returns the player at once.
+- `POST /claim/xsolla` moves the non-consumables of an old client-side Xsolla integration (device-id login, Xsolla inventory) to the billing user, read from Xsolla with the player's Login token; not counted as sales. Optional key `xsolla_login_project_id`.
+- Cloud Storage export: `attribution_json` (the device ids as a string) for a BigQuery `JSON` column; docs/bigquery.md with the table schema.
+- New table `app_policy`: publish in place, no `--delete-data`.
 
 ### Security
 
