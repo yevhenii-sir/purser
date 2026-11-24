@@ -6,6 +6,7 @@
 
 - `POST /manage/stripe`: a Stripe customer portal session for the player's subscription (cancel, change the card, invoices), for builds with player tokens; others answer `ERR_PLAYER_TOKENS_REQUIRED` and link Stripe's portal login page. Publish in place: no `--delete-data`.
 - `seed.py --server-key <game_key>` (`--key-name`, `--key-scopes read,grant,revoke`) makes a key for the game's backend in the terminal, as the admin page does, and prints it once.
+- Bulk onboarding for hundreds of apps (docs/bulk-setup.md): `server/bulk_setup.py` creates or updates builds and products from `apps.csv` / `products.csv` (or JSON), checks every row first and reports errors per line, prints the diff with `--dry-run`, and with `--from-stores` adds the products Google Play and the App Store list with their prices and periods; a second run changes nothing. `seed.py --check-all` checks every enabled build and prints a summary table (exit code 1 on failures). `setup_google.py` sets up any number of Google Play builds, 20 per call, grouped by developer account, on one topic.
 
 ### Security
 

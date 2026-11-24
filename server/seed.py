@@ -8,6 +8,8 @@ Usage (from server/, after `spacetime login` as the database owner, or with PURS
     python seed.py --check              # upload, then check every app in apps.json
     python seed.py --check-only         # only the check (exit code 1 if anything fails)
     python seed.py --check-only --offline --json
+    python seed.py --check-all          # every enabled build of the database: a summary table
+                                        # (--jobs 8 checks 8 at a time; exit code 1 if any failed)
     python seed.py --export backup      # write the database's configuration to ./backup/ (no secrets)
     python seed.py --init               # guided first setup: asks questions, writes ./secrets/, uploads
     python seed.py --server-key mygame --key-scopes read,grant   # a key for the game's backend (/server/*)
@@ -44,6 +46,7 @@ Values starting with `<` are placeholders and are skipped.
 Secret values are never read: credentials.json lists the keys that are set, with "<set me>".
 """
 import argparse
+import concurrent.futures
 import getpass
 import hashlib
 import json
@@ -111,6 +114,16 @@ def proc(a, name, *args):
 def sql(a, query):
     base, tok = conn(a)
     return stdb.select(base, a.database, tok, query)
+
+
+def pmap(fn, items, jobs):
+    """`fn` over `items`, `jobs` at a time, results in the order of `items`. Call `conn(a)` first:
+    the threads share the resolved connection."""
+    items = list(items)
+    if jobs <= 1 or len(items) <= 1:
+        return [fn(i) for i in items]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        return list(pool.map(fn, items))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -316,6 +329,79 @@ def check(a, d):
     ok, reports, _ = run_check(a, apps, quiet=a.json)
     if a.json:
         print(json.dumps(reports, indent=2))
+    return ok
+
+
+def list_builds(a):
+    """Every build: the owner reads `game_app` with /sql, other admins through `admin_select`."""
+    base, tok = conn(a)
+    try:
+        return stdb.select_raw(base, a.database, tok, "SELECT * FROM game_app")
+    except stdb.StdbError:
+        v = stdb.call(base, a.database, tok, "admin_select", json.dumps({"table": "game_app"}))
+        if isinstance(v, dict) and "error" in v:
+            sys.exit(f"admin_select game_app failed: {v['error']}")
+        return v or []
+
+
+def check_one(a, app_id, options):
+    """admin_check_app of one build; a failed call is `{"app_id", "error"}` (the other builds go on)."""
+    base, tok = conn(a)
+    try:
+        v = stdb.call_raw(base, a.database, tok, "admin_check_app", app_id, options)
+    except stdb.StdbError as e:
+        return {"app_id": app_id, "error": (e.body or str(e)).strip()}
+    if not isinstance(v, dict):
+        return {"app_id": app_id, "error": f"unexpected answer {str(v)[:200]}"}
+    if "error" in v:
+        return {"app_id": app_id, "error": str(v["error"])}
+    return v
+
+
+def check_table(builds, reports):
+    """The summary of --check-all: a line per build (ok / warnings / failures), the totals, then what
+    failed. Returns (text, ok)."""
+    rows = [("APP", "BUILD", "STORE", "RESULT", "OK", "WARN", "FAIL")]
+    failed = []
+    for b, r in zip(builds, reports):
+        n = r.get("counts") or {}
+        result = "ERROR" if "error" in r else str(r.get("summary", "")).upper()
+        rows.append((b["game_key"], b["app_id"], b.get("store", ""), result,
+                     str(n.get("ok", "")), str(n.get("warn", "")), str(n.get("fail", ""))))
+        if "error" in r or r.get("summary") == "fail":
+            failed.append(r)
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    lines = ["  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip() for row in rows]
+    total = {s: sum(1 for r in reports if r.get("summary") == s) for s in ("ok", "warn", "fail")}
+    errors = sum(1 for r in reports if "error" in r)
+    lines.append(f"\n{len(reports)} build(s): {total['ok']} ok, {total['warn']} with warnings, {total['fail']} failed"
+                 + (f", {errors} not checked" if errors else ""))
+    for r in failed:
+        lines.append(f"\n{r['app_id']}:")
+        if "error" in r:
+            lines.append(f"  [ERROR] {r['error']}")
+            continue
+        for c in r.get("checks") or []:
+            if c.get("level") == "fail":
+                lines.append(f"  [FAIL] {c['title']}: {c['detail']}")
+                if c.get("fix"):
+                    lines.append(f"         -> {c['fix']}")
+    return "\n".join(lines), not failed
+
+
+def check_all(a):
+    """Runs admin_check_app for every enabled build of the database. Returns True when nothing failed."""
+    builds = sorted(list_builds(a), key=lambda b: (b["game_key"], b["app_id"]))
+    disabled = [b for b in builds if not b.get("enabled", True)]
+    builds = [b for b in builds if b.get("enabled", True)]
+    if not builds:
+        sys.exit("no enabled builds in the database")
+    print(f"checking {len(builds)} build(s), {a.jobs} at a time"
+          + (f"; {len(disabled)} disabled build(s) skipped" if disabled else ""), file=sys.stderr)
+    options = json.dumps({"online": not a.offline, "apple_test": not a.offline})
+    reports = pmap(lambda b: check_one(a, b["app_id"], options), builds, a.jobs)
+    text, ok = check_table(builds, reports)
+    print(json.dumps(reports, indent=2) if a.json else text)
     return ok
 
 
@@ -691,7 +777,7 @@ def add_server_key(a):
     print(key)
 
 
-def main():
+def main(argv=None):
     # Windows consoles may not encode every character of the server's hints.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
@@ -702,6 +788,9 @@ def main():
     p.add_argument("--database", default=cfg.get("database"))
     p.add_argument("--check", action="store_true", help="run the setup check after uploading")
     p.add_argument("--check-only", action="store_true", help="only run the setup check")
+    p.add_argument("--check-all", action="store_true",
+                   help="check every enabled build of the database and print a summary (exit code 1 if any failed)")
+    p.add_argument("--jobs", type=int, default=4, help="--check-all: builds checked at once (default 4)")
     p.add_argument("--offline", action="store_true", help="check the configuration without calling stores")
     p.add_argument("--json", action="store_true", help="print check reports as JSON")
     p.add_argument("--export", metavar="DIR", help="write the database's configuration to DIR (no secret values)")
@@ -710,7 +799,7 @@ def main():
     p.add_argument("--server-key", metavar="GAME_KEY", help="make a key for the game's backend (/server/*) and print it")
     p.add_argument("--key-name", default="backend", help="--server-key: a name to tell keys apart")
     p.add_argument("--key-scopes", default="read", help="--server-key: comma-separated read, grant, revoke")
-    a = p.parse_args()
+    a = p.parse_args(argv)
     if a.init:
         init(a)
         return
@@ -722,6 +811,11 @@ def main():
     if a.server_key:
         add_server_key(a)
         return
+    if a.check_all:
+        if a.jobs < 1:
+            p.error("--jobs must be at least 1")
+        conn(a)  # resolved once, before the threads
+        sys.exit(0 if check_all(a) else 1)
     d = (ROOT / a.dir).resolve()
     if not d.is_dir():
         sys.exit(f"{d} not found (copy seed.example to secrets and fill it in, or run `python seed.py --init`)")

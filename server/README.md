@@ -145,6 +145,11 @@ After `integrations.json` it loads, when present: `paywalls.json` (`admin_upsert
 
 - `python seed.py --export DIR` writes the configuration of the database to `DIR` in the same format (owner only; it refuses a non-empty `DIR` without `--force`). Secret values are never read: `credentials.json` lists the keys that are set with the value `<set me>`, which `seed.py` skips until you fill it in.
 - `python seed.py --init` is a guided first setup: it asks for the database, the app and its Google Play / App Store / Amazon builds, the delivery and the store keys (the questions come from the store registry), generates the notification secrets, writes the answers to `--dir` (default `secrets/`), uploads them, offers the Google Play catalog import, runs the setup check and prints the notification URLs and the Unity `BillingConfig` JSON.
+- `python seed.py --check-all` runs the setup check of every enabled build of the database (`--jobs` at a time, default 4) and prints a table: OK / WARN / FAIL per build, the totals and every failed check; the exit code is 1 when anything failed.
+
+### Many apps: `bulk_setup.py`
+
+`python bulk_setup.py --apps apps.csv --products products.csv [--from-stores] [--dry-run]` creates or updates builds (`game_key,platform,store,app_id,account,delivery`) and products (`app_id,product_id,kind,catalog_id`) from CSV or JSON tables through `admin_upsert_game_app` and batched `admin_upsert_products`. Every row is checked first and errors are reported per line; an empty cell keeps the stored value, so a second run changes nothing; `--dry-run` prints the diff (new / changed / unchanged); `--from-stores` adds the products `admin_list_store_products` finds in Google Play and the App Store with their prices and periods. `setup_google.py` sets up any number of Google Play builds, 20 per call. The order for hundreds of apps and the file formats: [docs/bulk-setup.md](../docs/bulk-setup.md).
 
 ### Setup check
 

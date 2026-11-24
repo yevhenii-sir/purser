@@ -17,7 +17,9 @@ PURSER_TOKEN set):
     python setup_google.py --project my-cloud-project --new-key    # replace the service account key
     python setup_google.py --project my-cloud-project --rotate-rtdn-secret
 
-The builds must exist already (admin page or seed.py). The access token is never printed or passed
+The builds must exist already (admin page, seed.py or bulk_setup.py). The module takes at most 20
+builds per call: more are set up 20 at a time, grouped by developer account (each account gets its
+key unless --scope names one), all on the same topic. The access token is never printed or passed
 on a command line; secret values never leave the database.
 """
 import argparse
@@ -33,6 +35,8 @@ import stdb
 ROOT = pathlib.Path(__file__).resolve().parent
 GOOGLE_STORE = "google"
 PROCEDURE = "admin_setup_google"
+BATCH = 20  # builds per admin_setup_google call (store_setup.rs: "name 1 to 20 Google Play builds")
+DEFAULT_ACCOUNT = "default"  # config::DEFAULT_SCOPE
 MARK = {"created": "do  ", "updated": "do  ", "exists": "ok  ", "skipped": "skip",
         "would_create": "would", "would_update": "would", "failed": "FAIL"}
 
@@ -60,16 +64,26 @@ def read(base, db, tok, table, column="", value=""):
 
 
 def google_builds(base, db, tok, wanted):
+    """The builds to set up, {app_id: developer account}."""
     rows = {r["app_id"]: r for r in read(base, db, tok, "game_app")}
     for app_id in wanted:
         if app_id not in rows:
             sys.exit(f"no build {app_id} in the database: add it first (admin page -> Add an app, or seed.py)")
         if rows[app_id]["store"] != GOOGLE_STORE:
             sys.exit(f"{app_id} is not a Google Play build")
-    ids = wanted or sorted(a for a, r in rows.items() if r["store"] == GOOGLE_STORE)
+    ids = list(dict.fromkeys(wanted)) or sorted(a for a, r in rows.items() if r["store"] == GOOGLE_STORE)
     if not ids:
         sys.exit("no Google Play builds in the database: add one first (admin page -> Add an app, or seed.py)")
-    return ids
+    return {i: rows[i].get("account") or DEFAULT_ACCOUNT for i in ids}
+
+
+def batches(builds, scope=""):
+    """`admin_setup_google` takes 1 to 20 builds of one developer account (the account is where the
+    key goes, unless `scope` names it): [(scope of the call, app_ids, first call of that scope)]."""
+    groups = {}
+    for app_id, account in builds.items():
+        groups.setdefault(scope or account, []).append(app_id)
+    return [(key, ids[i:i + BATCH], i == 0) for key, ids in groups.items() for i in range(0, len(ids), BATCH)]
 
 
 def route_base(base, db, tok):
@@ -78,10 +92,10 @@ def route_base(base, db, tok):
     return ((rows[0].get("value") if rows else "") or f"{base}/v1/database/{db}/route").rstrip("/")
 
 
-def print_result(r):
-    if r.get("service_account"):
+def print_result(r, header=True):
+    if header and r.get("service_account"):
         print(f"Service account: {r['service_account']}")
-    if r.get("topic"):
+    if header and r.get("topic"):
         print(f"Topic: {r['topic']}")
     print()
     for s in r.get("steps") or []:
@@ -90,11 +104,28 @@ def print_result(r):
         if s.get("detail"):
             line += f": {s['detail']}"
         print(line)
+
+
+def print_manual(r):
     manual = r.get("manual") or []
     if manual:
         print("\nLeft to do (no API for these):")
         for i, m in enumerate(manual, 1):
             print(f"  {i}. {m}")
+
+
+def setup(base, db, tok, request):
+    """One admin_setup_google call -> (result, error)."""
+    try:
+        # The token travels in the request body only; errors carry the URL and the server's answer.
+        r = stdb.call_raw(base, db, tok, PROCEDURE, json.dumps(request))
+    except stdb.StdbError as e:
+        return None, (e.body or str(e)).strip()
+    if not isinstance(r, dict):
+        return None, f"unexpected answer {str(r)[:200]}"
+    if "error" in r:
+        return None, str(r["error"])
+    return r, None
 
 
 def main(argv=None):
@@ -117,38 +148,49 @@ def main(argv=None):
         sys.exit("No database: pass --database or copy spacetime.example.json to spacetime.json and set it")
 
     base, tok = stdb.server_url(a.server), stdb.token()
-    app_ids = google_builds(base, a.database, tok, a.app_id)
+    builds = google_builds(base, a.database, tok, a.app_id)
     route = route_base(base, a.database, tok)
-    print(f"Google Cloud project {a.project}; builds: {', '.join(app_ids)}; route: {route}")
+    calls = batches(builds, a.scope or "")
+    print(f"Google Cloud project {a.project}; {len(builds)} build(s) in {len(calls)} call(s) of at most {BATCH}; "
+          f"topic {a.topic}; route: {route}")
     if a.dry_run:
         print("Dry run: nothing is changed.")
 
-    request = {"project": a.project, "app_ids": app_ids, "access_token": gcloud_token(), "topic": a.topic,
-               "route": route, "new_key": a.new_key, "rotate_rtdn_secret": a.rotate_rtdn_secret,
-               # Random bytes for new google_rtdn_secret values (the module RNG is not fit for secrets).
-               "entropy": secrets.token_hex(32),
-               "dry_run": a.dry_run}
-    if a.scope:
-        request["scope"] = a.scope
-    try:
-        # The token travels in the request body only; errors carry the URL and the server's answer.
-        r = stdb.call_raw(base, a.database, tok, PROCEDURE, json.dumps(request))
-    except stdb.StdbError as e:
-        sys.exit(f"{PROCEDURE} failed:\n{(e.body or str(e)).strip()}")
-    finally:
+    access_token = gcloud_token()
+    ok, last = True, None
+    for n, (scope, app_ids, first) in enumerate(calls, 1):
+        if len(calls) > 1:
+            print(f"\n== {n}/{len(calls)} (account {scope}): {', '.join(app_ids)}")
+        else:
+            print(f"Builds: {', '.join(app_ids)}")
+        request = {"project": a.project, "app_ids": app_ids, "access_token": access_token, "topic": a.topic,
+                   "route": route,
+                   # One new key per account: the later calls of the account find it.
+                   "new_key": a.new_key and first,
+                   "rotate_rtdn_secret": a.rotate_rtdn_secret,
+                   # Random bytes for new google_rtdn_secret values (the module RNG is not fit for secrets).
+                   "entropy": secrets.token_hex(32),
+                   "dry_run": a.dry_run}
+        if a.scope:
+            request["scope"] = a.scope
+        r, err = setup(base, a.database, tok, request)
         request.pop("access_token", None)
-    if not isinstance(r, dict):
-        sys.exit(f"{PROCEDURE}: unexpected answer {str(r)[:200]}")
-    if "error" in r:
-        sys.exit(f"{PROCEDURE} failed: {r['error']}")
+        if err:
+            left = [i for _, ids, _ in calls[n - 1:] for i in ids]
+            print(f"{PROCEDURE} failed:\n{err}")
+            print(f"\nNot set up: {', '.join(left)}. Fix it and run the script again: finished steps are skipped.")
+            sys.exit(1)
+        print_result(r, header=first)
+        ok = ok and bool(r.get("ok"))
+        last = r
 
-    print_result(r)
-    print("\nThen: python seed.py --check-only (or the app's Setup tab) should show \"Test notification received\".")
+    print_manual(last)
+    print("\nThen: python seed.py --check-all (or the app's Setup tab) should show \"Test notification received\".")
     print("If your seed files (credentials.json) hold google_service_account_json or google_rtdn_secret values,")
     print("replace them or remove those entries: seed.py without --check-only would upload the old values again.")
     if a.dry_run:
         print("\nDry run: nothing was changed.")
-    sys.exit(0 if r.get("ok") else 1)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
