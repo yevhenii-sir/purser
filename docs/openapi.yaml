@@ -825,7 +825,7 @@ paths:
                   purchase_id: { type: string, examples: ["manual:season-3-reward-c2005b4c"] }
                   purchase_status: { type: string }
                   repeated: { type: boolean }
-        "400": { description: Invalid input (unknown product, user id). }
+        "400": { description: "Invalid input (unknown product, user id)." }
         "401": { $ref: "#/components/responses/ServerKey" }
         "403": { $ref: "#/components/responses/ServerScope" }
         "409": { description: "`transaction_id` is used by another grant." }
