@@ -2,7 +2,8 @@
 
 ## [Unreleased]
 
-Checked in Unity 2022.3, 6.0, 6.3 and 6.6: the package compiles without warnings and the EditMode tests pass.
+Checked in Unity 2022.3, 6.0, 6.3 and 6.6: the package compiles without warnings and the EditMode tests pass. The core
+also compiles and passes its tests without Unity IAP and with Unity IAP 4.13.
 
 ### Fixed
 
@@ -22,6 +23,27 @@ Checked in Unity 2022.3, 6.0, 6.3 and 6.6: the package compiles without warnings
 
 ### Added
 
+- Observer mode for games that keep their own IAP code (Unity IAP 4 or 5, a shared wrapper): `ReportPurchaseAsync`
+  records a purchase the game made and verifies it on the server with `client_finished`, `ReportRestoredAsync` tells the
+  server what the player owns, `ExternalStoreAdapter` runs the service without Unity IAP, and
+  `ExternalPurchase.FromUnityReceipt` reads Unity IAP receipts of Google Play, the App Store and Amazon. Reported
+  purchases are kept on the device until the server answered (also across restarts); `PurchaseVerified` /
+  `PurchaseRejected` tell the game. `ReportMode.VerifyFirst` waits for the answer. Sample **Observer mode**,
+  docs/observer-mode.md.
+- Fail-open: `BillingConfig.failOpenAfterSeconds` grants a purchase when the server does not answer in time
+  (`PurchaseResult.Provisional`), finishes it in the store and verifies it later; a refusal raises `PurchaseRejected`.
+  `BillingProductConfig.strictVerification` always waits. For games that grant on the client.
+- Several stores in one build: `CompositeStoreAdapter` with `IStoreRouter` (`CurrencyStoreRouter`, e.g. RUB → Xsolla,
+  `FuncStoreRouter`); each order is verified at its own store's route with its own build. `StoreOrder.Store`,
+  `Billing.CreateDefaultStore(config)`.
+- Xsolla in mobile games: Pay Station opens in Chrome Custom Tabs on Android (`PurserBrowser`, `androidx.browser`
+  through the External Dependency Manager, else the default browser); `XsollaOptions.ReturnUrl` may be an app link
+  (`mygame://...`) and the order is checked as soon as it opens the game (`ServerCheckoutStoreAdapter.CheckNow`).
+- `IBillingService.ClaimXsollaPurchasesAsync(xsollaLoginToken)` / `XsollaStoreAdapter.ClaimInventoryAsync`: moves the
+  non-consumables of an old client-side Xsolla integration (device-id login, Xsolla inventory) to the player.
+- `BillingConfig.childDirected`: advertising ids (`AttributionKeys.Advertising`) are never sent.
+- Sample **Attribution ids (Tenjin, Firebase)**: Tenjin's `analytics_installation_id` and Firebase's
+  `app_instance_id` for the server's renewal, refund and Xsolla events.
 - `IBillingService.OpenManageSubscriptionsAsync(productId)`: opens Google Play's page of a subscription (or of all
   of them), the App Store's subscriptions page or Stripe's customer portal (needs a server with `/manage/stripe`);
   false for stores without one. `BillingDependencies.OpenUrl` replaces `Application.OpenURL`.

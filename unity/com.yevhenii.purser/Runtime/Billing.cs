@@ -32,6 +32,15 @@ namespace Purser
         /// </summary>
         internal static Func<BillingPlatform, BillingLog, IStoreAdapter> DefaultStoreFactory;
 
+        /// <summary>The store adapter <see cref="BillingService"/> uses when none is given (<c>UnityIapStoreAdapter</c>
+        /// for this device's store), e.g. as the main store of a <see cref="CompositeStoreAdapter"/>.</summary>
+        /// <exception cref="BillingException">Unity IAP 5.4 or later is not installed, or the build is for the Amazon Appstore.</exception>
+        public static IStoreAdapter CreateDefaultStore(BillingConfig config)
+        {
+            var resolved = config ? config.Resolved() : throw new ArgumentNullException(nameof(config));
+            return BillingService.CreateDefaultStore(resolved, new BillingLog(resolved.logLevel, null));
+        }
+
         /// <summary>
         /// Creates a billing service. Call <see cref="IBillingService.InitializeAsync"/> once the app starts
         /// (it is fine before the player logs in) and <see cref="IBillingService.SetUserId"/> or pass a

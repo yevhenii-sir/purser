@@ -14,7 +14,9 @@ namespace Purser
         /// <summary>Pay with the Xsolla sandbox (test cards). The build must allow sandbox purchases on the server.</summary>
         public bool Sandbox;
 
-        /// <summary>Where Pay Station sends the player after paying (optional, http(s)), e.g. the game's page.</summary>
+        /// <summary>Where Pay Station sends the player after paying (optional): the game's page (https), or in a mobile
+        /// game an app link of its own, e.g. <c>mygame://purchase</c> (register the scheme as the app's deep link): the
+        /// player comes back right away and the order is checked at once.</summary>
         public string ReturnUrl;
 
         /// <summary>ISO 3166-1 alpha-2 country of the player; Xsolla picks the currency from it and lets the player
@@ -34,8 +36,8 @@ namespace Purser
         /// <summary>Orders older than this are forgotten (never paid).</summary>
         public TimeSpan ForgetAfter = TimeSpan.FromDays(2);
 
-        /// <summary>Opens the Pay Station page (only https pages are opened). Default: <c>Application.OpenURL</c> (system browser on desktop, a new
-        /// tab on WebGL). On WebGL a page opened after an await may be blocked as a popup: open it from a jslib
+        /// <summary>Opens the Pay Station page (only https pages are opened). Default: <see cref="PurserBrowser.Open"/> (Chrome
+        /// Custom Tabs on Android, the browser on iOS and desktop, a new tab on WebGL). On WebGL a page opened after an await may be blocked as a popup: open it from a jslib
         /// (same tab, or a window opened in the click handler) instead.</summary>
         public Action<string> OpenUrl;
     }
@@ -53,8 +55,33 @@ namespace Purser
         [JsonProperty("product_id")] public string ProductId;
     }
 
+    /// <summary>An item moved from the inventory of the old client-side Xsolla integration.</summary>
+    public sealed class XsollaClaimedItem
+    {
+        [JsonProperty("product_id")] public string ProductId;
+        /// <summary>The ledger status of the moved item (<c>granted</c>, <c>completed</c>, ...).</summary>
+        [JsonProperty("purchase_status")] public string PurchaseStatus;
+    }
+
+    /// <summary>An inventory item that was not moved, and why.</summary>
+    public sealed class XsollaSkippedItem
+    {
+        [JsonProperty("product_id")] public string ProductId;
+        [JsonProperty("reason")] public string Reason;
+    }
+
+    /// <summary>Answer of <c>POST /claim/xsolla</c>.</summary>
+    public sealed class XsollaClaimResponse
+    {
+        [JsonProperty("status")] public string Status;
+        [JsonProperty("message")] public string Message;
+        [JsonProperty("claimed")] public List<XsollaClaimedItem> Claimed = new List<XsollaClaimedItem>();
+        [JsonProperty("skipped")] public List<XsollaSkippedItem> Skipped = new List<XsollaSkippedItem>();
+    }
+
     /// <summary>
-    /// <see cref="IStoreAdapter"/> for Xsolla Pay Station (web, desktop). Purchase: the billing server creates a payment
+    /// <see cref="IStoreAdapter"/> for Xsolla Pay Station (web, desktop, and mobile games next to the app store through
+    /// <see cref="CompositeStoreAdapter"/>). Purchase: the billing server creates a payment
     /// token (<c>/checkout/xsolla</c>), the adapter opens Pay Station, and the order is polled
     /// (<c>/checkout/xsolla/status</c>) until Xsolla's webhook reached the server and the reward was granted.
     /// Unpaid orders are remembered and checked again at the next launch. Xsolla has no client SDK dependency here.
@@ -76,6 +103,13 @@ namespace Purser
             [JsonProperty("country", NullValueHandling = NullValueHandling.Ignore)] public string Country;
             [JsonProperty("language", NullValueHandling = NullValueHandling.Ignore)] public string Language;
             [JsonProperty("attribution", NullValueHandling = NullValueHandling.Ignore)] public IReadOnlyDictionary<string, string> Attribution;
+        }
+
+        private sealed class ClaimRequest
+        {
+            [JsonProperty("app_id")] public string AppId;
+            [JsonProperty("user_id")] public string UserId;
+            [JsonProperty("xsolla_token")] public string XsollaToken;
         }
 
         private sealed class StatusRequest
@@ -115,6 +149,56 @@ namespace Purser
             m_Http = new JsonHttp(serverBaseUrl, timeoutSeconds, transport);
             m_AppId = appId;
             m_Options = options ?? new XsollaOptions();
+            m_AppLinkPrefix = AppLinkPrefix(m_Options.ReturnUrl);
+            if (m_AppLinkPrefix != null)
+                Application.deepLinkActivated += OnDeepLink;
+        }
+
+        private readonly string m_AppLinkPrefix;
+
+        /// <summary><c>scheme://</c> of an app link return URL; null for a web page or none.</summary>
+        internal static string AppLinkPrefix(string returnUrl)
+        {
+            if (string.IsNullOrEmpty(returnUrl) || returnUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                returnUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return null;
+            var i = returnUrl.IndexOf("://", StringComparison.Ordinal);
+            return i > 0 ? returnUrl.Substring(0, i + 3) : null;
+        }
+
+        /// <summary>Pay Station sent the player back to the game: check the order now.</summary>
+        internal void OnDeepLink(string url)
+        {
+            if (m_AppLinkPrefix != null && url != null && url.StartsWith(m_AppLinkPrefix, StringComparison.OrdinalIgnoreCase))
+                CheckNow();
+        }
+
+        /// <inheritdoc/>
+        public override void Dispose()
+        {
+            if (m_AppLinkPrefix != null)
+                Application.deepLinkActivated -= OnDeepLink;
+            base.Dispose();
+        }
+
+        /// <summary>
+        /// Moves the items of the old client-side Xsolla integration (device-id login, Xsolla inventory) to
+        /// <paramref name="userId"/>: the server reads the inventory with the player's Xsolla Login token and records
+        /// the non-consumables of this build as owned (not as new sales). Call it once in a version that still has the
+        /// old login; <see cref="IBillingService.ClaimXsollaPurchasesAsync"/> also refreshes the customer info.
+        /// </summary>
+        /// <exception cref="BillingException">The server refused the token or could not ask Xsolla.</exception>
+        public async Task<XsollaClaimResponse> ClaimInventoryAsync(string userId, string xsollaLoginToken, CancellationToken ct = default)
+        {
+            if (string.IsNullOrEmpty(userId))
+                throw new ArgumentException("user id is required", nameof(userId));
+            if (string.IsNullOrEmpty(xsollaLoginToken))
+                throw new ArgumentException("the Xsolla Login token is required", nameof(xsollaLoginToken));
+            var request = new ClaimRequest { AppId = m_AppId, UserId = userId, XsollaToken = xsollaLoginToken };
+            var res = await m_Http.PostAsync<XsollaClaimResponse>("/claim/xsolla", request, userId, ct);
+            if (!res.IsHttpSuccess || res.Value == null)
+                throw new BillingException("Xsolla inventory was not moved: " + (res.Value?.Message ?? res.Error ?? "no answer"));
+            return res.Value;
         }
 
         protected override bool IsSold(BillingProductConfig product) => product.type != BillingProductType.Subscription;
@@ -142,7 +226,7 @@ namespace Purser
             if (!IsSafePage(sku, checkout.Url))
                 return;
             var order = Remember(checkout.OrderId, sku, userId);
-            (m_Options.OpenUrl ?? Application.OpenURL)(checkout.Url);
+            (m_Options.OpenUrl ?? PurserBrowser.Open)(checkout.Url);
             RaisePending(ToOrder(order, checkout));
         }
 

@@ -247,11 +247,29 @@
       }
     },
     {
+      "route": "/checkout/xsolla",
+      "body": {
+        "app_id": "com.studio.game.xsolla",
+        "product_id": "no_ads",
+        "user_id": "player-1",
+        "sandbox": false,
+        "return_url": "mygame://purchase"
+      }
+    },
+    {
       "route": "/checkout/xsolla/status",
       "body": {
         "app_id": "com.studio.game.web",
         "user_id": "player-1",
         "order_id": "7001"
+      }
+    },
+    {
+      "route": "/claim/xsolla",
+      "body": {
+        "app_id": "com.studio.game.xsolla",
+        "user_id": "player-1",
+        "xsolla_token": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSJ9.c2ln"
       }
     },
     {

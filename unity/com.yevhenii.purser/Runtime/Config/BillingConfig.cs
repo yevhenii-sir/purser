@@ -116,6 +116,10 @@ namespace Purser
                  "and send its ids with purchases. They reach the webhook and Cloud Storage exports.")]
         public bool collectAppleAdsAttribution;
 
+        [Tooltip("Child-directed app (Google Play Families, Apple Kids Category, COPPA): advertising ids are never sent, " +
+                 "even when the attribution provider gives them (AttributionKeys.Advertising).")]
+        public bool childDirected;
+
         public EditorVerificationMode editorMode = EditorVerificationMode.SkipServer;
 
         public BillingLogLevel logLevel = BillingLogLevel.Warning;
@@ -228,6 +232,7 @@ namespace Purser
             c.refreshEntitlementsOnInit = refreshEntitlementsOnInit;
             c.entitlementsMaxAgeDays = entitlementsMaxAgeDays;
             c.collectAppleAdsAttribution = collectAppleAdsAttribution;
+            c.childDirected = childDirected;
             c.editorMode = editorMode;
             c.logLevel = logLevel;
             c.profiles = profiles;

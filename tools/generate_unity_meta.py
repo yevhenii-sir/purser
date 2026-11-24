@@ -24,6 +24,13 @@ TEMPLATES = {
             "      settings: {}\n  - first:\n      Editor: Editor\n    second:\n      enabled: 0\n      settings:\n"
             "        DefaultValueInitialized: true\n  - first:\n      iPhone: iOS\n    second:\n      enabled: 1\n"
             "      settings: {}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n"),
+    # Native Android source: compiled into the Gradle project on Android only.
+    ".java": ("PluginImporter:\n  externalObjects: {}\n  serializedVersion: 2\n  iconMap: {}\n  executionOrder: {}\n"
+              "  defineConstraints: []\n  isPreloaded: 0\n  isOverridable: 0\n  isExplicitlyReferenced: 0\n"
+              "  validateReferences: 1\n  platformData:\n  - first:\n      Android: Android\n    second:\n      enabled: 1\n"
+              "      settings: {}\n  - first:\n      Any: \n    second:\n      enabled: 0\n      settings: {}\n"
+              "  - first:\n      Editor: Editor\n    second:\n      enabled: 0\n      settings:\n"
+              "        DefaultValueInitialized: true\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n"),
     "text": "TextScriptImporter:\n  externalObjects: {}\n  userData: \n  assetBundleName: \n  assetBundleVariant: \n",
 }
 
@@ -38,7 +45,7 @@ def meta_for(path: pathlib.Path) -> str:
         body = "folderAsset: yes\n" + TEMPLATES["folder"]
     elif path.name == "package.json":
         body = TEMPLATES["package.json"]
-    elif path.suffix in (".cs", ".asmdef", ".mm"):
+    elif path.suffix in (".cs", ".asmdef", ".mm", ".java"):
         body = TEMPLATES[path.suffix]
     else:
         body = TEMPLATES["text"]

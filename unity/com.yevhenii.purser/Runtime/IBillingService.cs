@@ -84,6 +84,17 @@ namespace Purser
         /// </summary>
         Task<CustomerInfo> ReportRestoredAsync(IEnumerable<ExternalPurchase> purchases, CancellationToken ct = default);
 
+        /// <summary>
+        /// Moves the items the player bought through the old client-side Xsolla integration (device-id login, Xsolla
+        /// inventory) to the current player: <paramref name="xsollaLoginToken"/> is that login's token
+        /// (<c>XsollaToken.AccessToken</c> of the Xsolla SDK). The server reads the inventory from Xsolla and records the
+        /// non-consumables of the Xsolla build as owned. Call it once, in a version that still has the old login; the
+        /// customer info is refreshed after it. Needs an <see cref="XsollaStoreAdapter"/> (directly or in a
+        /// <see cref="CompositeStoreAdapter"/>).
+        /// </summary>
+        /// <exception cref="BillingException">No Xsolla store, no player id, or the server refused the token.</exception>
+        Task<XsollaClaimResponse> ClaimXsollaPurchasesAsync(string xsollaLoginToken, CancellationToken ct = default);
+
         /// <summary>Connects to the store and loads products. Safe to call once; later calls return the same task.
         /// When the store or the network fails, the task fails and the service keeps trying by itself (with backoff,
         /// and when the app returns to the foreground) until <see cref="Initialized"/>; calling it again tries now.</summary>

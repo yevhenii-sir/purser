@@ -9,7 +9,18 @@
     "name": "Yevhenii Sirenko",
     "url": "https://github.com/yevhenii-sir/purser"
   },
-  "keywords": ["iap", "billing", "in-app purchase", "spacetimedb", "google play", "app store", "amazon appstore", "steam", "stripe", "xsolla"],
+  "keywords": [
+    "iap",
+    "billing",
+    "in-app purchase",
+    "spacetimedb",
+    "google play",
+    "app store",
+    "amazon appstore",
+    "steam",
+    "stripe",
+    "xsolla"
+  ],
   "dependencies": {
     "com.unity.nuget.newtonsoft-json": "3.2.1",
     "com.unity.modules.unitywebrequest": "1.0.0"
@@ -29,6 +40,16 @@
       "displayName": "Steam",
       "description": "Bridge from SteamStoreAdapter to Steamworks.NET (MicroTxnAuthorizationResponse_t, SteamID, language).",
       "path": "Samples~/Steam"
+    },
+    {
+      "displayName": "Observer mode",
+      "description": "Keep the game's own Unity IAP 4 or 5 code and report its purchases to Purser (ReportPurchaseAsync).",
+      "path": "Samples~/ObserverMode"
+    },
+    {
+      "displayName": "Attribution ids (Tenjin, Firebase)",
+      "description": "Tenjin analytics_installation_id and Firebase app_instance_id for the server's renewal, refund and Xsolla events.",
+      "path": "Samples~/AttributionIds"
     }
   ]
 }

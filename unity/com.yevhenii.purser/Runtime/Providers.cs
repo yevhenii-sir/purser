@@ -129,6 +129,14 @@ namespace Purser
         /// "true" / "false". Set it with <see cref="IBillingService.SetRefundDataConsent"/>.
         /// </summary>
         public const string RefundDataConsent = "refund_data_consent";
+
+        /// <summary>Advertising identifiers and ad attribution: never sent for a child-directed app
+        /// (<see cref="BillingConfig.childDirected"/>).</summary>
+        public static readonly IReadOnlyList<string> Advertising = new[]
+        {
+            AdvertisingId, Oaid, Idfa, Att, AppleAdsOrgId, AppleAdsCampaignId, AppleAdsAdGroupId, AppleAdsKeywordId, AppleAdsAdId,
+            AppleAdsCountry, MetaAnonId,
+        };
     }
 
     /// <summary>

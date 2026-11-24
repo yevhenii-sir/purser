@@ -42,6 +42,10 @@
     <type fullname="Purser.VerifyRequest" preserve="all" />
     <type fullname="Purser.VerifyResponse" preserve="all" />
     <type fullname="Purser.XsollaCheckoutResponse" preserve="all" />
+    <type fullname="Purser.XsollaClaimResponse" preserve="all" />
+    <type fullname="Purser.XsollaClaimedItem" preserve="all" />
+    <type fullname="Purser.XsollaSkippedItem" preserve="all" />
+    <type fullname="Purser.XsollaStoreAdapter/ClaimRequest" preserve="all" />
     <type fullname="Purser.XsollaStoreAdapter/CheckoutRequest" preserve="all" />
     <type fullname="Purser.XsollaStoreAdapter/StatusRequest" preserve="all" />
   </assembly>

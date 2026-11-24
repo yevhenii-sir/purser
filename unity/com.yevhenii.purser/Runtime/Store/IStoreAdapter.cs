@@ -273,6 +273,10 @@ namespace Purser
         /// SteamID); for server checkouts, the billing user the order was started for.</summary>
         public string StoreUserId { get; }
 
+        /// <summary>Server store id of the order (<see cref="BillingStores"/>) when the service has several stores
+        /// (<see cref="CompositeStoreAdapter"/>); null: the service's store.</summary>
+        public string Store { get; internal set; }
+
         public StoreOrder(BillingPlatform platform, string storeProductId, string transactionId, string purchaseToken,
             object native = null, string storeUserId = null)
         {

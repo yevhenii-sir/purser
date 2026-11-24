@@ -102,7 +102,7 @@ namespace Purser.Tests
             var fields = typeof(BillingConfig).GetFields(BindingFlags.Public | BindingFlags.Instance).Select(f => f.Name).OrderBy(n => n);
             CollectionAssert.AreEqual(new[]
             {
-                "androidStore", "bindPurchasesToUser", "builds", "collectAppleAdsAttribution", "developmentProfile", "editorMode",
+                "androidStore", "bindPurchasesToUser", "builds", "childDirected", "collectAppleAdsAttribution", "developmentProfile", "editorMode",
                 "editorProfile", "entitlementsMaxAgeDays", "failOpenAfterSeconds", "logLevel", "products", "profiles", "refreshEntitlementsOnInit",
                 "releaseProfile", "requestTimeoutSeconds", "responseSigningPublicKey", "retryDelaysSeconds", "serverBaseUrl",
             }, fields.ToArray());
@@ -112,6 +112,7 @@ namespace Purser.Tests
             m_Config.editorMode = EditorVerificationMode.CallServer;
             m_Config.entitlementsMaxAgeDays = 3;
             m_Config.failOpenAfterSeconds = 8;
+            m_Config.childDirected = true;
             m_Config.refreshEntitlementsOnInit = false;
             m_Config.requestTimeoutSeconds = 9;
             m_Config.retryDelaysSeconds = new[] { 1, 2 };

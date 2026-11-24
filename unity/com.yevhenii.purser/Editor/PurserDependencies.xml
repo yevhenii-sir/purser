@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Read by the External Dependency Manager for Unity (EDM4U), when the project has it: Chrome Custom Tabs for
+     payment pages (PurserBrowser). Without it Purser opens payment pages in the default browser. -->
+<dependencies>
+  <androidPackages>
+    <androidPackage spec="androidx.browser:browser:1.8.0" />
+  </androidPackages>
+</dependencies>

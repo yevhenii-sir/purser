@@ -314,6 +314,18 @@ namespace Purser
             TimeSpan interval, TimeSpan timeout, Func<bool> stop, CancellationToken ct) =>
             PollAsync(ask, interval, timeout, stop, 0, ct);
 
+        /// <summary>Ends the waits of the orders being polled (<see cref="CheckNow"/>).</summary>
+        private TaskCompletionSource<bool> m_Wake = new TaskCompletionSource<bool>();
+
+        /// <summary>The player came back from the payment page (e.g. its app link opened the game): the orders being
+        /// checked are asked about now instead of after the poll interval.</summary>
+        public void CheckNow()
+        {
+            var wake = m_Wake;
+            m_Wake = new TaskCompletionSource<bool>();
+            wake.TrySetResult(true);
+        }
+
         /// <param name="maxAttempts">Above 0: at most this many requests, each wait twice the previous one.</param>
         private async Task<ApiResult<VerifyResponse>> PollAsync(Func<CancellationToken, Task<ApiResult<VerifyResponse>>> ask,
             TimeSpan interval, TimeSpan timeout, Func<bool> stop, int maxAttempts, CancellationToken ct)
@@ -333,7 +345,13 @@ namespace Purser
                 var wait = maxAttempts > 0 ? TimeSpan.FromTicks(interval.Ticks << (attempt - 1)) : interval;
                 if (res?.RetryAfter is TimeSpan retryAfter && retryAfter > wait)
                     wait = retryAfter;
-                await Delay(wait, ct);
+                var wake = m_Wake.Task;
+                using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+                {
+                    await Task.WhenAny(Delay(wait, cts.Token), wake);
+                    cts.Cancel();
+                }
+                ct.ThrowIfCancellationRequested();
             }
         }
 

@@ -61,7 +61,10 @@ namespace Purser
             var config = m_Config.FindById(productId) ?? m_Config.FindByStoreId(productId);
             if (config == null)
                 return new PurchaseResult(PurchaseStatus.Failed, productId, message: "unknown product");
-            var storeId = config.StoreId(m_Store.Store);
+            // Several stores (CompositeStoreAdapter): the router picks this purchase's store.
+            var composite = m_Store as CompositeStoreAdapter;
+            var store = composite?.StoreFor(config) ?? m_Store.Store;
+            var storeId = config.StoreId(store);
             if (SyncUser() == null)
                 return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: "user id is not set");
             if (m_Waiters.ContainsKey(storeId))
@@ -96,6 +99,8 @@ namespace Purser
                     return new PurchaseResult(PurchaseStatus.NotInitialized, config.id, storeId, message: "billing was disposed");
                 if (replacedStoreId != null)
                     ((ISubscriptionChangeStore)m_Store).PurchaseReplacing(storeId, replacedStoreId, options.ReplacementMode);
+                else if (composite != null)
+                    composite.PurchaseIn(store, storeId);
                 else
                     m_Store.Purchase(storeId);
             }

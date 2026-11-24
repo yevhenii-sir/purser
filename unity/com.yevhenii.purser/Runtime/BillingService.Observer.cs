@@ -106,6 +106,22 @@ namespace Purser
             return await RefreshCustomerInfoAsync(ct);
         }
 
+        /// <inheritdoc/>
+        public async Task<XsollaClaimResponse> ClaimXsollaPurchasesAsync(string xsollaLoginToken, CancellationToken ct = default)
+        {
+            ThrowIfDisposed();
+            var xsolla = m_Store as XsollaStoreAdapter ?? (m_Store as CompositeStoreAdapter)?.Find(BillingStores.Xsolla) as XsollaStoreAdapter;
+            if (xsolla == null)
+                throw new BillingException("ClaimXsollaPurchasesAsync needs an XsollaStoreAdapter (BillingDependencies.Store or a CompositeStoreAdapter)");
+            var user = SyncUser() ?? throw new BillingException("ClaimXsollaPurchasesAsync needs a player id (SetUserId)");
+            var claimed = await xsolla.ClaimInventoryAsync(user, xsollaLoginToken, ct);
+            if (m_Log.IsEnabled(BillingLogLevel.Info))
+                m_Log.Info($"Moved {claimed.Claimed.Count} Xsolla inventory item(s) to {user}; skipped {claimed.Skipped.Count}.");
+            if (claimed.Claimed.Count > 0)
+                await RefreshCustomerInfoAsync(ct);
+            return claimed;
+        }
+
         private static IEnumerable<List<T>> Chunks<T>(List<T> list, int size)
         {
             for (var i = 0; i < list.Count; i += size)

@@ -38,26 +38,29 @@ namespace Purser
                 await WaitForProductsAsync();
                 if (m_Context.IsDisposed)
                     return;
+                // With several stores (CompositeStoreAdapter) the order goes to its own store's route and build.
+                var owner = (m_Store as CompositeStoreAdapter)?.OwnerOf(order) ?? m_Store;
                 var request = await BuildVerifyRequestAsync(order, user, context);
                 if (m_Context.IsDisposed)
                     return;
+                request.AppId = m_Config.AppIdFor(owner.Store);
                 var delays = m_Config.retryDelaysSeconds ?? new int[0];
                 var attempt = 0;
                 var rateLimited = 0;
                 var reported = false;
-                var failOpenAt = CanFailOpen(config) ? m_Context.UtcNow() + TimeSpan.FromSeconds(m_Config.failOpenAfterSeconds) : (DateTime?)null;
+                var failOpenAt = CanFailOpen(owner, config) ? m_Context.UtcNow() + TimeSpan.FromSeconds(m_Config.failOpenAfterSeconds) : (DateTime?)null;
                 while (true)
                 {
                     // Webhook stores (Stripe, Xsolla) have no receipt: the adapter asks the server about the order.
-                    var call = m_Store is IWebhookStoreAdapter webhookStore
+                    var call = owner is IWebhookStoreAdapter webhookStore
                         ? webhookStore.CheckOrderAsync(order, request, m_Context.Lifetime)
-                        : m_Api.VerifyAsync(m_Store.Store, request, m_Context.Lifetime);
+                        : m_Api.VerifyAsync(owner.Store, request, m_Context.Lifetime);
                     if (failOpenAt.HasValue && !await AnsweredBeforeAsync(call, failOpenAt.Value))
                     {
                         // The server did not answer in time: grant now, verify later from the kept purchases.
                         if (m_Context.IsDisposed)
                             return;
-                        FailOpen(order, config, productId, user, request, context);
+                        FailOpen(owner, order, config, productId, user, request, context);
                         return;
                     }
                     var response = await call;
@@ -134,10 +137,10 @@ namespace Purser
         /// <summary>Fail-open applies to the order: <see cref="BillingConfig.failOpenAfterSeconds"/> is set, the product is
         /// known and not <see cref="BillingProductConfig.strictVerification"/>, and the store's purchase can be verified
         /// after it was finished (receipt stores, not webhook stores).</summary>
-        private bool CanFailOpen(BillingProductConfig config) =>
+        private bool CanFailOpen(IStoreAdapter owner, BillingProductConfig config) =>
             m_Observed != null && m_Config.failOpenAfterSeconds > 0 && config != null && !config.strictVerification &&
-            !(m_Store is IWebhookStoreAdapter) &&
-            (m_Store.Store == BillingStores.Google || m_Store.Store == BillingStores.Apple || m_Store.Store == BillingStores.Amazon);
+            !(owner is IWebhookStoreAdapter) &&
+            (owner.Store == BillingStores.Google || owner.Store == BillingStores.Apple || owner.Store == BillingStores.Amazon);
 
         /// <summary>Waits for <paramref name="call"/> until <paramref name="deadline"/>; false when it did not end by then.</summary>
         private async Task<bool> AnsweredBeforeAsync(Task call, DateTime deadline)
@@ -161,12 +164,12 @@ namespace Purser
         /// in <see cref="ObservedPurchases"/>, which verifies it later (with <c>client_finished</c>) and raises
         /// <see cref="IBillingService.PurchaseRejected"/> if the server refuses it.
         /// </summary>
-        private void FailOpen(StoreOrder order, BillingProductConfig config, string productId, string user, VerifyRequest request,
-            PurchaseContext context)
+        private void FailOpen(IStoreAdapter owner, StoreOrder order, BillingProductConfig config, string productId, string user,
+            VerifyRequest request, PurchaseContext context)
         {
             var purchase = new ExternalPurchase
             {
-                Store = m_Store.Store,
+                Store = owner.Store,
                 StoreProductId = order.StoreProductId,
                 TransactionId = order.TransactionId,
                 PurchaseToken = order.PurchaseToken,

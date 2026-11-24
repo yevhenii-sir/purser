@@ -111,7 +111,9 @@ namespace Purser
                         WarnOnce(ref m_AttributionTimedOut, "The attribution provider");
                     else if (values != null)
                         foreach (var kv in values.Where(kv => !string.IsNullOrEmpty(kv.Key) && !string.IsNullOrEmpty(kv.Value)))
-                            clean[kv.Key] = kv.Value;
+                            // A child-directed app never sends advertising ids, whatever the provider gives.
+                            if (!(Config.childDirected && AttributionKeys.Advertising.Contains(kv.Key)))
+                                clean[kv.Key] = kv.Value;
                 }
                 catch (Exception e)
                 {

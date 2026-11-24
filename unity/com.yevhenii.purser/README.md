@@ -216,6 +216,37 @@ If `IUserIdProvider` and `IAnalyticsIdProvider` are registered in the container,
 
 Add the `PURSER_ZENJECT` scripting define and put `PurserInstaller` on a context (or call `PurserInstaller.Install(Container, config)`).
 
+### Games that keep their own IAP code (observer mode)
+
+A game with its own Unity IAP 4 or 5 code (or a shared purchase wrapper) keeps it and reports each purchase:
+
+```csharp
+var billing = Billing.Create(config, new BillingDependencies { Store = ExternalStoreAdapter.ForThisDevice(), ... });
+
+// IAP 4 ProcessPurchase / IAP 5 OnPurchasePending, before the purchase is finished in the store:
+_ = billing.ReportPurchaseAsync(ExternalPurchase.FromUnityReceipt(product.definition.storeSpecificId, receipt,
+    product.metadata.localizedPrice, product.metadata.isoCurrencyCode));
+```
+
+The purchase is kept on the device until the server answered and verified with `client_finished` (the server does not
+consume it). `PurchaseVerified` / `PurchaseRejected` report the outcome; `ReportMode.VerifyFirst` waits for it, with
+`BillingConfig.failOpenAfterSeconds` as the limit. Builds of such games use delivery `none`. Sample **Observer mode**
+and docs/observer-mode.md have the details.
+
+### Google Play and Xsolla in one build
+
+```csharp
+var store = new CompositeStoreAdapter(Billing.CreateDefaultStore(config),
+    new CurrencyStoreRouter(BillingStores.Xsolla, "RUB"),            // or a FuncStoreRouter (remote config)
+    new XsollaStoreAdapter(config, new XsollaOptions { ReturnUrl = "mygame://purchase" }));
+var billing = Billing.Create(config, new BillingDependencies { Store = store, ... });
+```
+
+Prices come from Google Play; purchases of players the router sends to Xsolla open Pay Station (Chrome Custom Tabs on
+Android) and come back through the app link. The `xsolla` build in `BillingConfig.builds` is a build of the same app on
+the server (platform Android, store Xsolla), so the customer info covers both. Items bought earlier through a
+client-side Xsolla integration move once with `ClaimXsollaPurchasesAsync(xsollaLoginToken)`.
+
 ## How a purchase is processed
 
 The store reports an order: a new purchase, a redelivery after restart, or a restore. The order is sent to `POST /verify/{google|apple}`.

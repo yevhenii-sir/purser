@@ -215,7 +215,7 @@ namespace Purser
                 changes.ChangeDeferred += OnSubscriptionChangeDeferred;
         }
 
-        private static IStoreAdapter CreateDefaultStore(BillingConfig config, BillingLog log)
+        internal static IStoreAdapter CreateDefaultStore(BillingConfig config, BillingLog log)
         {
             var platform = BillingPlatforms.For(config);
             if (platform == BillingPlatform.Amazon)

@@ -1,0 +1,30 @@
+{
+    "name": "Purser.Samples.ObserverMode",
+    "rootNamespace": "Purser.Samples",
+    "references": [
+        "Purser.Runtime",
+        "Unity.Purchasing",
+        "UnityEngine.Purchasing",
+        "Purchasing.Common"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.purchasing",
+            "expression": "[4.0.0,5.0.0)",
+            "define": "PURSER_SAMPLE_IAP4"
+        },
+        {
+            "name": "com.unity.purchasing",
+            "expression": "5.0.0",
+            "define": "PURSER_SAMPLE_IAP5"
+        }
+    ],
+    "noEngineReferences": false
+}
