@@ -1,0 +1,22 @@
+[
+  {"name": "kind", "type": "STRING", "mode": "REQUIRED", "description": "purchase, subscription_start, renewal, refund, expire, cancel, uncancel, billing_issue, billing_recovered, product_change, pause, resume, test"},
+  {"name": "app_id", "type": "STRING", "mode": "REQUIRED", "description": "The build (Android package, iOS bundle, or the build's id)"},
+  {"name": "platform", "type": "STRING", "description": "android, ios, amazon, steam, web"},
+  {"name": "store", "type": "STRING", "description": "google, apple, amazon, steam, stripe, xsolla, manual"},
+  {"name": "environment", "type": "STRING", "description": "production or sandbox"},
+  {"name": "product_id", "type": "STRING", "description": "The store's product id"},
+  {"name": "product_kind", "type": "STRING", "description": "consumable, non_consumable, subscription"},
+  {"name": "transaction_id", "type": "STRING", "description": "The store's transaction id"},
+  {"name": "user_id", "type": "STRING", "description": "The billing user id the game uses"},
+  {"name": "price_micros", "type": "INTEGER", "description": "Gross price in micros of currency (positive also for refunds)"},
+  {"name": "gross_micros", "type": "INTEGER"},
+  {"name": "proceeds_micros", "type": "INTEGER", "description": "Gross minus the estimated store commission"},
+  {"name": "net_micros", "type": "INTEGER", "description": "Gross without the estimated tax, minus the store commission"},
+  {"name": "currency", "type": "STRING", "description": "ISO 4217"},
+  {"name": "at_ms", "type": "INTEGER", "description": "When it happened, Unix milliseconds"},
+  {"name": "app_instance_id", "type": "STRING", "description": "Firebase app_instance_id of the player's device, for joining with the GA4 export"},
+  {"name": "attribution_json", "type": "JSON", "description": "Device ids the client sent (tenjin_id, appsflyer_id, ...)"},
+  {"name": "country", "type": "STRING", "description": "Billing country, ISO 3166-1 alpha-2"},
+  {"name": "commission_percent", "type": "FLOAT"},
+  {"name": "previous_product_id", "type": "STRING", "description": "product_change: the product before"}
+]

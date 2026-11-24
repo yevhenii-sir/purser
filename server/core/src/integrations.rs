@@ -310,6 +310,9 @@ impl OutEvent {
         v["gross_micros"] = json!(a.gross_micros);
         v["proceeds_micros"] = json!(a.proceeds_micros);
         v["net_micros"] = json!(a.net_micros);
+        // The device ids as one string too: a BigQuery JSON column, while `attribution` (whose keys
+        // vary by player) would become a sparse RECORD.
+        v["attribution_json"] = json!(serde_json::to_string(&self.attribution).map_err(|e| e.to_string())?);
         Ok(v.to_string())
     }
     /// Mobile OS of the build (`android` | `ios`); `None` on Steam / web.
@@ -1878,6 +1881,8 @@ mod tests {
         assert!(call.body.ends_with('\n') && call.body.matches('\n').count() == 1, "one NDJSON line");
         let body: Value = serde_json::from_str(call.body.trim()).unwrap();
         assert_eq!(body["transaction_id"], "GPA.1");
+        let ids: Value = serde_json::from_str(body["attribution_json"].as_str().unwrap()).unwrap();
+        assert_eq!(ids, body["attribution"], "the same ids as a string for a BigQuery JSON column");
 
         let mut odd = event("refund", "ios");
         odd.transaction_id = "a/b c".into();
