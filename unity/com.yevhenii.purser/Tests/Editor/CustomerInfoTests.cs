@@ -12,6 +12,8 @@ namespace Purser.Tests
     internal sealed class ServiceHarness : IDisposable
     {
         public const string AppId = "com.test.game";
+        /// <summary>Key part of the player caches (customer info, paywalls) of <see cref="AppId"/> on the test server.</summary>
+        public static readonly string CacheScope = BillingContext.CacheScopeOf(AppId, "https://billing.example.com/route");
         public readonly BillingConfig Config;
         public readonly FakeStore Store = new FakeStore();
         public readonly FakeApi Api = new FakeApi();
@@ -219,7 +221,7 @@ namespace Purser.Tests
 
                 h.Answer(null, new Dictionary<string, double> { ["no_ads"] = 0 }, "no_ads");
                 Sync.Run(h.Service.RefreshCustomerInfoAsync());
-                var saved = JObject.Parse(storage.Load("purser.customer_info." + ServiceHarness.AppId + ".player-1"));
+                var saved = JObject.Parse(storage.Load("purser.customer_info." + ServiceHarness.CacheScope + ".player-1"));
                 Assert.AreEqual("no_ads", (string)saved["dto"]["non_consumables"][0]);
                 Assert.AreEqual(0, (long)saved["dto"]["access"]["no_ads"]["expires_at_ms"]);
 

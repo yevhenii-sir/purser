@@ -127,8 +127,8 @@ namespace Purser
         /// <param name="storage">Remembers authorized orders across launches (default: PlayerPrefs).</param>
         public SteamStoreAdapter(BillingConfig config, ISteamMicroTxnBridge bridge, SteamOptions options = null,
             IHttpTransport transport = null, IBillingStorage storage = null, BillingLog log = null)
-            : this(config ? config.serverBaseUrl : null, config ? config.AppIdFor(BillingStores.Steam) : null, bridge,
-                config ? config.requestTimeoutSeconds : BillingConfig.DefaultRequestTimeoutSeconds, options, transport, storage, log)
+            : this(config ? config.Resolved().serverBaseUrl : null, config ? config.Resolved().AppIdFor(BillingStores.Steam) : null, bridge,
+                config ? config.Resolved().requestTimeoutSeconds : BillingConfig.DefaultRequestTimeoutSeconds, options, transport, storage, log)
         {
         }
 

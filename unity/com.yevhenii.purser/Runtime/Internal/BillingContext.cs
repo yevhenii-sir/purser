@@ -71,6 +71,20 @@ namespace Purser
         /// <summary>The build's app id on the billing server.</summary>
         public string AppId => Config.AppIdFor(Store.Store);
 
+        /// <summary>Key of the player caches (customer info, paywalls): the app id on this server. Another server (a
+        /// dev profile) keeps caches of its own.</summary>
+        public string CacheScope => m_CacheScope ?? (m_CacheScope = CacheScopeOf(AppId, Config.serverBaseUrl));
+        private string m_CacheScope;
+
+        internal static string CacheScopeOf(string appId, string serverBaseUrl)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                var hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes((serverBaseUrl ?? "").Trim().TrimEnd('/')));
+                return appId + "@" + BitConverter.ToString(hash, 0, 4).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
         /// <summary>Editor without the server: purchases are confirmed and granted locally.</summary>
         public bool SkipServer => IsEditor && Config.editorMode == EditorVerificationMode.SkipServer;
 

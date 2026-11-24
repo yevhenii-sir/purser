@@ -102,7 +102,10 @@ namespace Purser
 
         /// <summary>Client for the config's server URL, request timeout and response signing key.</summary>
         public BillingApiClient(BillingConfig config, IHttpTransport transport = null)
-            : this(config.serverBaseUrl, config.requestTimeoutSeconds, transport, config.responseSigningPublicKey) { }
+            : this(config.Resolved(), transport, true) { }
+
+        private BillingApiClient(BillingConfig resolved, IHttpTransport transport, bool _)
+            : this(resolved.serverBaseUrl, resolved.requestTimeoutSeconds, transport, resolved.responseSigningPublicKey) { }
 
         /// <inheritdoc/>
         public void SetPlayerTokenProvider(IPlayerTokenProvider provider) => m_Http.Tokens = provider;

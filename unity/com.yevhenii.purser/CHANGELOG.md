@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The customer info and paywall caches are kept per billing server (the key has a hash of the server URL): a profile
+  with another server never shows this one's purchases. Caches written by earlier versions are not read; the first
+  answer of the server replaces them.
+
 ### Added
 
 - `IBillingService.OpenManageSubscriptionsAsync(productId)`: opens Google Play's page of a subscription (or of all
@@ -12,6 +18,14 @@
   `ISubscriptionManagementStore` for store adapters.
 - `IBillingService.PresentOfferCodeRedemption()`: the App Store's offer code redemption sheet (through Unity IAP);
   `IOfferCodeRedemptionStore` for store adapters.
+- Config profiles for environments (dev, staging, prod): `BillingConfig.profiles` (`BillingProfile`: server URL,
+  response signing key, builds and product ids per store that differ there, `isTest`), chosen by `editorProfile`,
+  `developmentProfile`, `releaseProfile` or `UseProfile(name)` at run time. `Resolved()` / `WithProfile(profile)` give
+  the config a run uses (a copy; the asset never changes); the service, `BillingApiClient` and the Steam, Stripe and
+  Xsolla adapters apply it themselves. `IBillingService.Profile`. `Validate` checks the profiles; a player build reports a
+  profile that does not exist and a release build on a test profile. The inspector copies, pastes, pings and opens the
+  admin panel for the Editor's profile; `PreviewJsonForProfile` / `MergeJsonIntoProfile` paste an environment's admin
+  panel config into its profile.
 - Prices per period: `StoreProduct.PricePer(unit)`, `LocalizedPricePer(unit)` (formatted like the store's
   `LocalizedPrice`), `FormatPrice(amount)`; the same `PricePer` / `LocalizedPricePer` on `PricingPhase`;
   `BillingPeriods.TryParse` and `BillingPeriods.PricePer`, `BillingPeriodUnit`.

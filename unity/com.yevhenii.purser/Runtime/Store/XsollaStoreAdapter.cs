@@ -98,8 +98,8 @@ namespace Purser
         /// <param name="storage">Remembers unpaid orders across launches (default: PlayerPrefs).</param>
         public XsollaStoreAdapter(BillingConfig config, XsollaOptions options = null, IHttpTransport transport = null,
             IBillingStorage storage = null, BillingLog log = null)
-            : this(config ? config.serverBaseUrl : null, config ? config.AppIdFor(BillingStores.Xsolla) : null,
-                config ? config.requestTimeoutSeconds : BillingConfig.DefaultRequestTimeoutSeconds, options, transport, storage, log)
+            : this(config ? config.Resolved().serverBaseUrl : null, config ? config.Resolved().AppIdFor(BillingStores.Xsolla) : null,
+                config ? config.Resolved().requestTimeoutSeconds : BillingConfig.DefaultRequestTimeoutSeconds, options, transport, storage, log)
         {
         }
 

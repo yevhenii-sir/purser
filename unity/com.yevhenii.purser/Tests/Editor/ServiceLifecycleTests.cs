@@ -60,7 +60,7 @@ namespace Purser.Tests
             using (var h = new ServiceHarness { Users = new FuncUserIdProvider(() => id) })
             {
                 var cached = FakeApi.Info(null, new Dictionary<string, long> { ["no_ads"] = 0 }, "no_ads");
-                CustomerInfoCache.Save(h.Storage, ServiceHarness.AppId, "player-2", cached, h.Now, null);
+                CustomerInfoCache.Save(h.Storage, ServiceHarness.CacheScope, "player-2", cached, h.Now, null);
                 h.Start();
                 h.Store.Deliver(FakeStore.GoogleOrder("no_ads"));
                 Assert.IsEmpty(h.Api.VerifyRequests, "the order waits for a player");

@@ -17,6 +17,10 @@ namespace Purser
 
         BillingPlatform Platform { get; }
 
+        /// <summary>The config profile this service runs with (<see cref="BillingConfig.ProfileName"/>); empty when
+        /// none.</summary>
+        string Profile { get; }
+
         /// <summary>Store id of the billing server the purchases go to (<see cref="BillingStores"/>).</summary>
         string Store { get; }
 

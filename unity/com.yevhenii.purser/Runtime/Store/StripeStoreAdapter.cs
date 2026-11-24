@@ -88,6 +88,7 @@ namespace Purser
             m_Options = options ?? throw new ArgumentNullException(nameof(options));
             if (string.IsNullOrEmpty(options.SuccessUrl) || string.IsNullOrEmpty(options.CancelUrl))
                 throw new ArgumentException("StripeCheckoutOptions needs SuccessUrl and CancelUrl", nameof(options));
+            config = config.Resolved();
             m_AppId = config.AppIdFor(BillingStores.Stripe);
             m_Api = api ?? new BillingApiClient(config);
         }

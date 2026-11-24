@@ -162,7 +162,7 @@ namespace Purser.Tests
         private string m_User;
         private readonly DateTime m_Now = DateTimeOffset.FromUnixTimeMilliseconds(1_800_000_000_000).UtcDateTime;
 
-        private string CacheKey => "purser.customer_info." + m_Config.AppIdFor(BillingStores.Google) + "." + m_User;
+        private string CacheKey => "purser.customer_info." + BillingContext.CacheScopeOf(m_Config.AppIdFor(BillingStores.Google), m_Config.serverBaseUrl) + "." + m_User;
 
         private static HttpResponse Signed(string body, string signature) =>
             new HttpResponse(200, body, null, new Dictionary<string, string> { ["x-purser-signature"] = signature });
@@ -489,7 +489,7 @@ namespace Purser.Tests
     /// <summary>What is written to the storage, and when it reaches the disk.</summary>
     public sealed class StorageTests
     {
-        private const string InfoKey = "purser.customer_info." + ServiceHarness.AppId + ".player-1";
+        private static readonly string InfoKey = "purser.customer_info." + ServiceHarness.CacheScope + ".player-1";
 
         private static PaywallResponse Paywall(string variant) =>
             new PaywallResponse { Status = "ok", Placement = "main", PaywallId = "pw_1", VariantId = variant, RemoteConfig = JToken.Parse("{\"title\":\"Hi\"}") };
@@ -603,7 +603,7 @@ namespace Purser.Tests
 
                 Assert.IsTrue(string.IsNullOrEmpty(storage.Peek(InfoKey)), "the previous player's customer info is gone");
                 Assert.IsTrue(string.IsNullOrEmpty(storage.Peek(paywallKey)), "and their paywalls");
-                Assert.IsFalse(string.IsNullOrEmpty(storage.Peek("purser.customer_info." + ServiceHarness.AppId + ".player-2")));
+                Assert.IsFalse(string.IsNullOrEmpty(storage.Peek("purser.customer_info." + ServiceHarness.CacheScope + ".player-2")));
 
                 // Back to the first player: nothing cached, so nothing is shown until the server answers.
                 id = "player-1";
@@ -873,7 +873,7 @@ namespace Purser.Tests
         {
             using (var h = new ServiceHarness())
             {
-                CustomerInfoCache.Save(h.Storage, ServiceHarness.AppId, "player-1",
+                CustomerInfoCache.Save(h.Storage, ServiceHarness.CacheScope, "player-1",
                     FakeApi.Info(new Dictionary<string, long> { ["premium"] = h.NowMs + 86_400_000 }, null), h.Now, null);
                 h.Start(initialize: false);
                 h.Service.SetUserId("player-1");

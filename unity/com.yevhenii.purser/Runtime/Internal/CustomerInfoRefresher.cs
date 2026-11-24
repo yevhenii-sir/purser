@@ -268,7 +268,7 @@ namespace Purser
             var cachedLately = m_CachedAtUtc is DateTime cachedAt && now >= cachedAt && now - cachedAt < CacheRewriteInterval;
             if (!cachedLately || current.UserId != user || !info.HasSameContent(current))
             {
-                CustomerInfoCache.Save(m_Storage, m_Context.AppId, user, dto, now, m_Log, signed);
+                CustomerInfoCache.Save(m_Storage, m_Context.CacheScope, user, dto, now, m_Log, signed);
                 m_CachedAtUtc = now;
             }
             Set(info);
@@ -308,7 +308,7 @@ namespace Purser
         /// cached copy that can be trusted (with signed responses: one whose signature is valid).</summary>
         public void LoadCached(string user)
         {
-            var cached = user == null ? null : CustomerInfoCache.Load(m_Storage, m_Context.AppId, user, m_Log, CacheKey);
+            var cached = user == null ? null : CustomerInfoCache.Load(m_Storage, m_Context.CacheScope, user, m_Log, CacheKey);
             m_CachedAtUtc = cached?.FetchedAtUtc;
             Set(cached ?? CustomerInfo.Empty);
         }
@@ -322,7 +322,7 @@ namespace Purser
             var info = m_CustomerInfo.WithLocalGrant(user, config, m_UtcNow());
             if (ReferenceEquals(info, m_CustomerInfo))
                 return;
-            CustomerInfoCache.Save(m_Storage, m_Context.AppId, user, info.ToDto(), info.FetchedAtUtc, m_Log);
+            CustomerInfoCache.Save(m_Storage, m_Context.CacheScope, user, info.ToDto(), info.FetchedAtUtc, m_Log);
             m_CachedAtUtc = info.FetchedAtUtc;
             Set(info);
         }

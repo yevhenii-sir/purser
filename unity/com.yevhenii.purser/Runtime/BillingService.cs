@@ -120,6 +120,8 @@ namespace Purser
         /// <inheritdoc/>
         public BillingPlatform Platform { get; }
         /// <inheritdoc/>
+        public string Profile => m_Config.ProfileName;
+        /// <inheritdoc/>
         public string Store => m_Store.Store;
         /// <inheritdoc/>
         public IReadOnlyList<StoreProduct> Products => m_Products;
@@ -158,14 +160,17 @@ namespace Purser
         /// <exception cref="BillingException">The store adapter names no store, or an Amazon build has no Amazon adapter.</exception>
         public BillingService(BillingConfig config, BillingDependencies dependencies = null)
         {
-            m_Config = config ? config : throw new ArgumentNullException(nameof(config));
+            // The profile of this run applied (dev / staging / prod); the asset itself never changes.
+            m_Config = config ? config.Resolved() : throw new ArgumentNullException(nameof(config));
             var deps = dependencies ?? new BillingDependencies();
-            m_Log = new BillingLog(config.logLevel, deps.LogSink);
-            m_Store = deps.Store ?? CreateDefaultStore(config, m_Log);
+            m_Log = new BillingLog(m_Config.logLevel, deps.LogSink);
+            if (m_Config.ProfileName.Length > 0)
+                m_Log.Info($"Profile {m_Config.ProfileName}: {m_Config.serverBaseUrl}");
+            m_Store = deps.Store ?? CreateDefaultStore(m_Config, m_Log);
             Platform = m_Store.Platform;
             if (string.IsNullOrEmpty(m_Store.Store))
                 throw new BillingException($"The store adapter {m_Store.GetType().Name} names no store (IStoreAdapter.Store)");
-            m_Api = deps.Api ?? new BillingApiClient(config);
+            m_Api = deps.Api ?? new BillingApiClient(m_Config);
             m_Users = deps.UserIdProvider ?? new StaticUserIdProvider();
             var attribution = deps.AttributionProvider;
             m_Storage = deps.Storage ?? new PlayerPrefsBillingStorage();
@@ -181,7 +186,7 @@ namespace Purser
                 AppVersion = Application.version,
                 SdkVersion = PurserInfo.Version,
             };
-            if (config.collectAppleAdsAttribution && Platform == BillingPlatform.Apple && !(attribution is AppleAdsAttributionProvider))
+            if (m_Config.collectAppleAdsAttribution && Platform == BillingPlatform.Apple && !(attribution is AppleAdsAttributionProvider))
                 attribution = new AppleAdsAttributionProvider(attribution, m_Storage, log: m_Log);
             if (deps.PlayerTokenProvider != null)
             {

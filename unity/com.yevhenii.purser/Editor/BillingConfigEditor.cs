@@ -19,6 +19,23 @@ namespace Purser.Editor
             var config = (BillingConfig)target;
             DrawDefaultInspector();
             EditorGUILayout.Space();
+            // What the Editor runs with: the editor profile applied (the copy, ping and admin page use it too). The copy
+            // is a ScriptableObject: destroyed after each repaint.
+            var effective = Effective(config, out var profileProblem);
+            try
+            {
+                DrawTools(config, effective, profileProblem);
+            }
+            finally
+            {
+                if (effective != config)
+                    DestroyImmediate(effective);
+            }
+        }
+
+        private void DrawTools(BillingConfig config, BillingConfig effective, string profileProblem)
+        {
+            DrawProfiles(config, effective, profileProblem);
 
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -27,12 +44,12 @@ namespace Purser.Editor
                 using (new EditorGUI.DisabledScope(m_Ping != null))
                 {
                     if (GUILayout.Button(m_Ping != null ? "Pinging..." : "Ping server"))
-                        StartPing(config);
+                        StartPing(effective);
                 }
-                using (new EditorGUI.DisabledScope(AdminUrl(config) == null))
+                using (new EditorGUI.DisabledScope(AdminUrl(effective) == null))
                 {
                     if (GUILayout.Button(new GUIContent("Open admin panel", "Opens the billing server's admin page in the browser")))
-                        Application.OpenURL(AdminUrl(config));
+                        Application.OpenURL(AdminUrl(effective));
                 }
             }
             using (new EditorGUILayout.HorizontalScope())
@@ -41,8 +58,9 @@ namespace Purser.Editor
                         "Copies the builds and products as JSON: paste them in the admin panel (Add an app → Paste from Unity, " +
                         "or an app's Products tab → Import from Unity)")))
                 {
-                    EditorGUIUtility.systemCopyBuffer = config.ToJson();
-                    m_Copied = $"Copied {config.builds?.Count ?? 0} builds and {config.products?.Count ?? 0} products.";
+                    EditorGUIUtility.systemCopyBuffer = effective.ToJson();
+                    m_Copied = $"Copied {effective.builds?.Count ?? 0} builds and {effective.products?.Count ?? 0} products" +
+                               (effective.ProfileName.Length > 0 ? $" of the profile '{effective.ProfileName}'." : ".");
                 }
                 if (GUILayout.Button(new GUIContent("Paste config from admin panel",
                         "Shows what the Unity config JSON copied from the admin panel changes, then applies it")))
@@ -61,13 +79,43 @@ namespace Purser.Editor
             if (!string.IsNullOrEmpty(m_PingResult))
                 EditorGUILayout.HelpBox(m_PingResult, m_PingResult.StartsWith("OK") ? MessageType.Info : MessageType.Error);
 
-            var builds = (config.builds ?? new List<BillingBuild>()).Where(b => b != null && !string.IsNullOrEmpty(b.store)).ToList();
+            var builds = (effective.builds ?? new List<BillingBuild>()).Where(b => b != null && !string.IsNullOrEmpty(b.store)).ToList();
             EditorGUILayout.HelpBox(builds.Count == 0
                     ? $"No builds: every store uses '{Application.identifier}' as its app id on the server."
-                    : "App ids sent to the server: " + string.Join(", ", builds.Select(b => $"{b.store} '{config.AppIdFor(b.store)}'")) +
+                    : "App ids sent to the server: " + string.Join(", ", builds.Select(b => $"{b.store} '{effective.AppIdFor(b.store)}'")) +
                       $". Other stores use '{Application.identifier}'. The builds and product ids must exist on the server: " +
                       "copy this config into the admin panel.",
                 MessageType.None);
+        }
+
+        /// <summary>The config with the editor profile applied; the config itself (and the problem) when that profile
+        /// does not exist.</summary>
+        internal static BillingConfig Effective(BillingConfig config, out string problem)
+        {
+            problem = null;
+            var profile = config.FindProfile(config.editorProfile?.Trim());
+            if (profile != null)
+                return config.WithProfile(profile);
+            if (!string.IsNullOrWhiteSpace(config.editorProfile))
+                problem = $"Editor profile '{config.editorProfile.Trim()}' does not exist: play mode fails to start billing.";
+            return config;
+        }
+
+        private static void DrawProfiles(BillingConfig config, BillingConfig effective, string problem)
+        {
+            if (config.profiles == null || config.profiles.Count == 0)
+                return;
+            if (problem != null)
+            {
+                EditorGUILayout.HelpBox(problem, MessageType.Error);
+                return;
+            }
+            string Name(string n) => string.IsNullOrWhiteSpace(n) ? "none" : n.Trim();
+            EditorGUILayout.HelpBox(
+                $"Editor: {Name(config.editorProfile)} ({effective.serverBaseUrl}). Development Builds: {Name(config.developmentProfile)}. " +
+                $"Release builds: {Name(config.releaseProfile)}. Copy, paste, ping and the admin panel use the Editor's profile; " +
+                "BillingConfig.UseProfile picks another at run time.",
+                MessageType.Info);
         }
 
         /// <summary>The admin page next to the HTTP API: <c>{serverBaseUrl}/admin</c>; null until the URL is set.</summary>
@@ -83,9 +131,13 @@ namespace Purser.Editor
         private void PasteConfig(BillingConfig config)
         {
             var json = EditorGUIUtility.systemCopyBuffer;
+            var profile = config.FindProfile(config.editorProfile?.Trim())?.name;
             try
             {
-                config.PreviewJson(json);
+                if (profile != null)
+                    config.PreviewJsonForProfile(json, profile);
+                else
+                    config.PreviewJson(json);
             }
             catch (System.Exception e)
             {
@@ -93,7 +145,7 @@ namespace Purser.Editor
                 return;
             }
             m_Copied = null;
-            ConfigSyncWindow.Open(config, json, problems =>
+            ConfigSyncWindow.Open(config, profile, json, problems =>
             {
                 m_Problems = problems;
                 Repaint();
@@ -125,6 +177,8 @@ namespace Purser.Editor
     internal sealed class ConfigSyncWindow : EditorWindow
     {
         private BillingConfig m_Config;
+        /// <summary>The profile the admin panel's environment belongs to; null = the config itself.</summary>
+        private string m_Profile;
         private string m_Json;
         private System.Action<List<string>> m_Done;
         private ConfigMergeMode m_Mode = ConfigMergeMode.Additive;
@@ -138,11 +192,12 @@ namespace Purser.Editor
             new GUIContent("Match the admin panel", "Also removes builds, products and store ids the admin panel does not have"),
         };
 
-        public static void Open(BillingConfig config, string json, System.Action<List<string>> done)
+        public static void Open(BillingConfig config, string profile, string json, System.Action<List<string>> done)
         {
             var w = CreateInstance<ConfigSyncWindow>();
-            w.titleContent = new GUIContent("Sync from admin panel");
+            w.titleContent = new GUIContent(profile == null ? "Sync from admin panel" : $"Sync profile {profile} from admin panel");
             w.m_Config = config;
+            w.m_Profile = profile;
             w.m_Json = json;
             w.m_Done = done;
             w.minSize = new Vector2(560, 340);
@@ -154,7 +209,7 @@ namespace Purser.Editor
         {
             try
             {
-                m_Changes = m_Config.PreviewJson(m_Json, m_Mode);
+                m_Changes = m_Profile == null ? m_Config.PreviewJson(m_Json, m_Mode) : m_Config.PreviewJsonForProfile(m_Json, m_Profile, m_Mode);
                 m_Error = null;
             }
             catch (System.Exception e)
@@ -184,6 +239,9 @@ namespace Purser.Editor
                       "Fallback prices stay where the admin panel has no price.",
                 m_Mode == ConfigMergeMode.Additive ? MessageType.Info : MessageType.Warning);
 
+            if (m_Profile != null)
+                EditorGUILayout.HelpBox($"The Editor runs with the profile '{m_Profile}': the server URL, builds and store ids that differ " +
+                                        "go to that profile, the catalog to the config every profile shares.", MessageType.None);
             if (m_Error != null)
                 EditorGUILayout.HelpBox(m_Error, MessageType.Error);
             else if (m_Changes.Count == 0)
@@ -229,7 +287,10 @@ namespace Purser.Editor
         private void Apply()
         {
             Undo.RecordObject(m_Config, "Sync billing config from admin panel");
-            m_Config.MergeJson(m_Json, m_Mode);
+            if (m_Profile == null)
+                m_Config.MergeJson(m_Json, m_Mode);
+            else
+                m_Config.MergeJsonIntoProfile(m_Json, m_Profile, m_Mode);
             EditorUtility.SetDirty(m_Config);
             m_Done?.Invoke(m_Config.Validate());
             Close();

@@ -75,6 +75,21 @@ namespace Purser
         }
 
         /// <summary>Sets the fallback price (fluent, for configs built in code).</summary>
+        /// <summary>A deep copy (<see cref="BillingConfig.WithProfile"/>).</summary>
+        public BillingProductConfig Clone()
+        {
+            return new BillingProductConfig
+            {
+                id = id,
+                type = type,
+                storeIds = (storeIds ?? new List<StoreProductId>()).Select(s => s == null ? null : new StoreProductId(s.store, s.id)).ToList(),
+                fallbackPrice = fallbackPrice,
+                fallbackCurrency = fallbackCurrency,
+                fallbackPeriod = fallbackPeriod,
+                access = (string[])access?.Clone(),
+            };
+        }
+
         public BillingProductConfig WithFallbackPrice(double price, string currency)
         {
             fallbackPrice = price;

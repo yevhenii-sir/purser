@@ -114,6 +114,123 @@ namespace Purser
 
         public BillingLogLevel logLevel = BillingLogLevel.Warning;
 
+        [Header("Profiles")]
+        [Tooltip("Environments (dev, staging, prod): each names its server and what differs there (builds, product ids). " +
+                 "Everything else comes from the fields above. Empty = no profiles.")]
+        public List<BillingProfile> profiles = new List<BillingProfile>();
+
+        [Tooltip("Profile used in the Editor (play mode, Editor tests). Empty = the fields above.")]
+        public string editorProfile = "";
+
+        [Tooltip("Profile of Development Builds. Empty = the fields above.")]
+        public string developmentProfile = "";
+
+        [Tooltip("Profile of release builds. Empty = the fields above.")]
+        public string releaseProfile = "";
+
+        /// <summary>The profile <see cref="UseProfile"/> chose; null = the rules.</summary>
+        [NonSerialized] private string m_RuntimeProfile;
+        /// <summary>This is a copy with its profile applied (<see cref="Resolved"/>).</summary>
+        [NonSerialized] private bool m_IsResolved;
+        [NonSerialized] private string m_ResolvedProfile = "";
+
+        /// <summary>
+        /// The profile this config is used with: on a copy from <see cref="Resolved"/>, the one applied; otherwise the
+        /// one <see cref="Resolved"/> would apply (<see cref="UseProfile"/>, else <see cref="editorProfile"/> in the
+        /// Editor, <see cref="developmentProfile"/> in Development Builds, <see cref="releaseProfile"/>). Empty: none.
+        /// </summary>
+        public string ProfileName => m_IsResolved
+            ? m_ResolvedProfile
+            : SelectProfile(m_RuntimeProfile, Application.isEditor, Debug.isDebugBuild, editorProfile, developmentProfile, releaseProfile);
+
+        /// <summary>
+        /// Picks the profile at run time, over the Editor / Development / release rules (a QA menu that switches to
+        /// staging). Call it before creating the billing service and the store adapters; <c>""</c> uses no profile,
+        /// null goes back to the rules. Not saved in the asset.
+        /// </summary>
+        public void UseProfile(string profileName) => m_RuntimeProfile = profileName;
+
+        /// <summary>The profile with this name, or null.</summary>
+        public BillingProfile FindProfile(string profileName) =>
+            string.IsNullOrEmpty(profileName) ? null : profiles?.Find(p => p != null && p.name == profileName);
+
+        /// <summary>
+        /// The config to run with: a copy with the <see cref="ProfileName"/> profile applied, or this config when no
+        /// profile is chosen. The billing service, the API client and the store adapters call it themselves, so pass
+        /// them the asset. The asset never changes.
+        /// </summary>
+        /// <exception cref="BillingException">The chosen profile does not exist.</exception>
+        public BillingConfig Resolved()
+        {
+            if (m_IsResolved)
+                return this;
+            var profileName = ProfileName;
+            if (string.IsNullOrEmpty(profileName))
+                return this;
+            var profile = FindProfile(profileName);
+            if (profile == null)
+                throw new BillingException($"Billing config {name} has no profile '{profileName}' " +
+                                          $"(profiles: {string.Join(", ", (profiles ?? new List<BillingProfile>()).Where(p => p != null).Select(p => p.name))})");
+            return WithProfile(profile);
+        }
+
+        /// <summary>A copy of this config with <paramref name="profile"/> applied: its server, signing key, builds and
+        /// product ids replace the config's where it sets them.</summary>
+        public BillingConfig WithProfile(BillingProfile profile)
+        {
+            if (profile == null)
+                throw new ArgumentNullException(nameof(profile));
+            var copy = Clone();
+            copy.name = $"{name} ({profile.name})";
+            if (!string.IsNullOrWhiteSpace(profile.serverBaseUrl))
+                copy.serverBaseUrl = profile.serverBaseUrl.Trim();
+            if (!string.IsNullOrWhiteSpace(profile.responseSigningPublicKey))
+                copy.responseSigningPublicKey = profile.responseSigningPublicKey.Trim();
+            foreach (var b in profile.builds ?? new List<BillingBuild>())
+                if (b != null && !string.IsNullOrEmpty(b.store) && !string.IsNullOrEmpty(b.appId))
+                    copy.WithBuild(b.store, b.appId);
+            foreach (var o in profile.productIds ?? new List<ProductIdOverride>())
+                if (o != null && !string.IsNullOrEmpty(o.store) && !string.IsNullOrEmpty(o.id))
+                    copy.FindById(o.product)?.WithStoreId(o.store, o.id);
+            copy.m_IsResolved = true;
+            copy.m_ResolvedProfile = profile.name ?? "";
+            return copy;
+        }
+
+        /// <summary>The Editor / Development / release rule (<paramref name="runtime"/>: <see cref="UseProfile"/>).</summary>
+        internal static string SelectProfile(string runtime, bool isEditor, bool isDebugBuild, string editor, string development,
+            string release)
+        {
+            var chosen = runtime ?? (isEditor ? editor : isDebugBuild ? development : release);
+            return chosen?.Trim() ?? "";
+        }
+
+        /// <summary>A deep copy of the settings, builds and products (profiles are shared).</summary>
+        internal BillingConfig Clone()
+        {
+            var c = CreateInstance<BillingConfig>();
+            c.name = name;
+            c.serverBaseUrl = serverBaseUrl;
+            c.builds = (builds ?? new List<BillingBuild>()).Select(b => b == null ? null : new BillingBuild(b.store, b.appId)).ToList();
+            c.androidStore = androidStore;
+            c.requestTimeoutSeconds = requestTimeoutSeconds;
+            c.responseSigningPublicKey = responseSigningPublicKey;
+            c.retryDelaysSeconds = (int[])retryDelaysSeconds?.Clone();
+            c.products = (products ?? new List<BillingProductConfig>()).Select(p => p?.Clone()).ToList();
+            c.bindPurchasesToUser = bindPurchasesToUser;
+            c.refreshEntitlementsOnInit = refreshEntitlementsOnInit;
+            c.entitlementsMaxAgeDays = entitlementsMaxAgeDays;
+            c.collectAppleAdsAttribution = collectAppleAdsAttribution;
+            c.editorMode = editorMode;
+            c.logLevel = logLevel;
+            c.profiles = profiles;
+            c.editorProfile = editorProfile;
+            c.developmentProfile = developmentProfile;
+            c.releaseProfile = releaseProfile;
+            c.m_RuntimeProfile = m_RuntimeProfile;
+            return c;
+        }
+
         /// <summary>Creates a config in code (no asset).</summary>
         public static BillingConfig Create(string serverBaseUrl, params BillingProductConfig[] products)
         {
@@ -143,6 +260,119 @@ namespace Purser
         /// </summary>
         /// <exception cref="FormatException">The JSON is not a Purser config.</exception>
         public List<ConfigChange> MergeJson(string json, ConfigMergeMode mode = ConfigMergeMode.Additive) => Merge(json, mode, true);
+
+        /// <summary>What <see cref="MergeJsonIntoProfile"/> would change, without changing anything.</summary>
+        /// <exception cref="FormatException">The JSON is not a Purser config.</exception>
+        /// <exception cref="ArgumentException">No profile with this name.</exception>
+        public List<ConfigChange> PreviewJsonForProfile(string json, string profileName, ConfigMergeMode mode = ConfigMergeMode.Additive) =>
+            MergeIntoProfile(json, profileName, mode, false);
+
+        /// <summary>
+        /// Merges the admin panel's config JSON of one environment (its own database) into a profile: the server URL,
+        /// the builds and the store ids that differ from this config's become the profile's; the catalog (new
+        /// products, types, access levels, fallback prices; with <see cref="ConfigMergeMode.Mirror"/> removals too)
+        /// goes to this config, which every profile shares. A build or product id equal to the config's needs no
+        /// profile row and loses it.
+        /// </summary>
+        /// <exception cref="FormatException">The JSON is not a Purser config.</exception>
+        /// <exception cref="ArgumentException">No profile with this name.</exception>
+        public List<ConfigChange> MergeJsonIntoProfile(string json, string profileName, ConfigMergeMode mode = ConfigMergeMode.Additive) =>
+            MergeIntoProfile(json, profileName, mode, true);
+
+        private List<ConfigChange> MergeIntoProfile(string json, string profileName, ConfigMergeMode mode, bool apply)
+        {
+            var profile = FindProfile(profileName) ?? throw new ArgumentException($"no profile '{profileName}'", nameof(profileName));
+            var o = ParseJson(json);
+            var incomingBuilds = o["builds"] is JArray b ? ParseBuilds(b) : new List<BillingBuild>();
+            var items = o["products"] as JArray;
+            if (items != null)
+                ParseProducts(items); // A bad product fails before anything changes.
+            var effective = WithProfile(profile);
+            var label = $"Profile {profile.name}: ";
+            var changes = new List<ConfigChange>();
+
+            var url = ((string)o["serverBaseUrl"])?.Trim().TrimEnd('/');
+            if (!string.IsNullOrEmpty(url) && url != effective.serverBaseUrl)
+            {
+                changes.Add(new ConfigChange(ConfigChangeKind.Updated, label + "Server URL", $"{effective.serverBaseUrl} → {url}"));
+                if (apply)
+                    profile.serverBaseUrl = url == serverBaseUrl ? "" : url;
+            }
+
+            foreach (var incoming in incomingBuilds)
+            {
+                var current = effective.builds.Find(x => x != null && x.store == incoming.store)?.appId;
+                if (current == incoming.appId)
+                    continue;
+                changes.Add(current == null
+                    ? new ConfigChange(ConfigChangeKind.Added, label + $"Build {incoming.store}", incoming.appId)
+                    : new ConfigChange(ConfigChangeKind.Updated, label + $"Build {incoming.store}", $"{current} → {incoming.appId}"));
+                if (!apply)
+                    continue;
+                profile.builds = profile.builds ?? new List<BillingBuild>();
+                profile.builds.RemoveAll(x => x?.store == incoming.store);
+                if (builds?.Find(x => x != null && x.store == incoming.store)?.appId != incoming.appId)
+                    profile.builds.Add(new BillingBuild(incoming.store, incoming.appId));
+            }
+
+            if (items == null)
+                return changes;
+            var catalog = new JArray();
+            foreach (var item in items)
+            {
+                var parsed = ParseProducts(new JArray(item.DeepClone())).FirstOrDefault();
+                var existing = parsed == null ? null
+                    : FindById(parsed.id)
+                      ?? products?.Find(x => x != null && parsed.AllIds().Any(x.Matches))
+                      ?? effective.products.Where(x => x != null && parsed.AllIds().Any(x.Matches)).Select(x => FindById(x.id)).FirstOrDefault();
+                if (existing == null)
+                {
+                    // A product the config does not have joins it with the ids the admin panel gave.
+                    catalog.Add(item.DeepClone());
+                    continue;
+                }
+                var effectiveProduct = effective.FindById(existing.id);
+                foreach (var s in parsed.storeIds ?? new List<StoreProductId>())
+                {
+                    var now = effectiveProduct.StoreId(s.store);
+                    if (now == s.id)
+                        continue;
+                    changes.Add(new ConfigChange(ConfigChangeKind.Updated, label + $"Product {existing.id}", $"{s.store} id {now} → {s.id}"));
+                    if (!apply)
+                        continue;
+                    profile.productIds = profile.productIds ?? new List<ProductIdOverride>();
+                    profile.productIds.RemoveAll(x => x?.product == existing.id && x.store == s.store);
+                    if (existing.StoreId(s.store) != s.id)
+                        profile.productIds.Add(new ProductIdOverride(existing.id, s.store, s.id));
+                }
+                // The catalog part: the config's own store ids stay as they are.
+                var copy = (JObject)item.DeepClone();
+                copy["id"] = existing.id;
+                var own = (existing.storeIds ?? new List<StoreProductId>())
+                    .Where(s => s != null && !string.IsNullOrEmpty(s.store) && !string.IsNullOrEmpty(s.id) && s.id != existing.id)
+                    .GroupBy(s => s.store)
+                    .ToList();
+                if (own.Count == 0)
+                    copy.Remove("storeIds");
+                else
+                    copy["storeIds"] = new JObject(own.Select(g => new JProperty(g.Key, g.First().id)));
+                catalog.Add(copy);
+            }
+            changes.AddRange(Merge(new JObject { ["products"] = catalog }.ToString(), mode, apply));
+            return changes;
+        }
+
+        private static JObject ParseJson(string json)
+        {
+            try
+            {
+                return JObject.Parse(json ?? "");
+            }
+            catch (Newtonsoft.Json.JsonException e)
+            {
+                throw new FormatException("not JSON: " + e.Message);
+            }
+        }
 
         private List<ConfigChange> Merge(string json, ConfigMergeMode mode, bool apply)
         {
@@ -422,14 +652,11 @@ namespace Purser
         public List<string> Validate()
         {
             var problems = new List<string>();
-            if (string.IsNullOrWhiteSpace(serverBaseUrl))
-                problems.Add("Server base URL is empty.");
-            else if (!UrlPolicy.IsAllowedServerUrl(serverBaseUrl))
-                problems.Add("Server base URL must use https:// (plain http only for localhost); player builds refuse other URLs.");
-            else if (serverBaseUrl.EndsWith("/"))
-                problems.Add("Server base URL must not end with '/'.");
-            else if (serverBaseUrl.Contains(ServerUrlPlaceholder))
-                problems.Add($"Set the server base URL to your billing database (replace {ServerUrlPlaceholder}).");
+            // The config's own URL matters when a game runs without a profile or with one that keeps it.
+            var chosen = new[] { editorProfile, developmentProfile, releaseProfile };
+            var usesOwnUrl = chosen.Any(n => string.IsNullOrWhiteSpace(FindProfile(n?.Trim())?.serverBaseUrl));
+            if (usesOwnUrl)
+                AddUrlProblem(problems, "Server base URL", serverBaseUrl);
 
             if (requestTimeoutSeconds < 1)
                 problems.Add("Request timeout must be at least 1 second.");
@@ -455,6 +682,8 @@ namespace Purser
                     problems.Add($"Unknown store '{b.store}' (known: {string.Join(", ", BillingStores.All)}).");
             }
 
+            ValidateProfiles(problems);
+
             if (products == null || products.Count == 0)
                 problems.Add("No products configured.");
             else
@@ -474,6 +703,66 @@ namespace Purser
                 }
             }
             return problems;
+        }
+
+        private static void AddUrlProblem(List<string> problems, string what, string url)
+        {
+            if (string.IsNullOrWhiteSpace(url))
+                problems.Add($"{what} is empty.");
+            else if (!UrlPolicy.IsAllowedServerUrl(url))
+                problems.Add($"{what} must use https:// (plain http only for localhost); player builds refuse other URLs.");
+            else if (url.EndsWith("/"))
+                problems.Add($"{what} must not end with '/'.");
+            else if (url.Contains(ServerUrlPlaceholder))
+                problems.Add($"Set the {what.ToLowerInvariant()} to your billing database (replace {ServerUrlPlaceholder}).");
+        }
+
+        private void ValidateProfiles(List<string> problems)
+        {
+            var names = new HashSet<string>();
+            foreach (var p in profiles ?? new List<BillingProfile>())
+            {
+                if (p == null || string.IsNullOrWhiteSpace(p.name))
+                {
+                    problems.Add("A profile has no name.");
+                    continue;
+                }
+                if (!names.Add(p.name))
+                {
+                    problems.Add($"Two profiles named '{p.name}': keep one.");
+                    continue;
+                }
+                if (!string.IsNullOrWhiteSpace(p.serverBaseUrl))
+                    AddUrlProblem(problems, $"Profile '{p.name}': server base URL", p.serverBaseUrl.Trim());
+                if (!string.IsNullOrWhiteSpace(p.responseSigningPublicKey) && ResponseSignature.DecodeKey(p.responseSigningPublicKey.Trim()) == null)
+                    problems.Add($"Profile '{p.name}': the response signing public key must be a base64 Ed25519 public key (32 bytes).");
+                var stores = new HashSet<string>();
+                foreach (var b in p.builds ?? new List<BillingBuild>())
+                {
+                    if (b == null || string.IsNullOrWhiteSpace(b.store) || string.IsNullOrWhiteSpace(b.appId))
+                        problems.Add($"Profile '{p.name}': a build needs a store and an app id.");
+                    else if (!stores.Add(b.store))
+                        problems.Add($"Profile '{p.name}': two builds for the store '{b.store}'.");
+                    else if (!BillingStores.All.Contains(b.store))
+                        problems.Add($"Profile '{p.name}': unknown store '{b.store}'.");
+                }
+                foreach (var o in p.productIds ?? new List<ProductIdOverride>())
+                {
+                    if (o == null || string.IsNullOrWhiteSpace(o.product) || string.IsNullOrWhiteSpace(o.store) || string.IsNullOrWhiteSpace(o.id))
+                        problems.Add($"Profile '{p.name}': a product id needs the product, a store and the id.");
+                    else if (FindById(o.product) == null)
+                        problems.Add($"Profile '{p.name}': no product '{o.product}' for its {o.store} id.");
+                    else if (!BillingStores.All.Contains(o.store))
+                        problems.Add($"Profile '{p.name}': unknown store '{o.store}' for product '{o.product}'.");
+                }
+            }
+            foreach (var (label, value) in new[] { ("Editor", editorProfile), ("Development", developmentProfile), ("Release", releaseProfile) })
+            {
+                if (!string.IsNullOrWhiteSpace(value) && FindProfile(value.Trim()) == null)
+                    problems.Add($"{label} profile '{value.Trim()}' does not exist.");
+            }
+            if (FindProfile(releaseProfile?.Trim())?.isTest == true)
+                problems.Add($"The release profile '{releaseProfile.Trim()}' is a test environment: release builds would use its server.");
         }
     }
 }

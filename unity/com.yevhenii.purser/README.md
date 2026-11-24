@@ -63,6 +63,41 @@ To pin a specific version, append `#<tag or commit>` to the URL.
 3. The **Validate** and **Ping server** buttons in the config inspector check the settings and whether the server is
    reachable; **Open admin panel** opens the server's admin page (`{serverBaseUrl}/admin`).
 
+### Profiles: dev, staging, prod
+
+One config serves several environments, each a billing database of its own. A **profile** names an environment and
+what differs there; everything else (the catalog, the behaviour) comes from the config and is written once:
+
+- `serverBaseUrl`, `responseSigningPublicKey`: empty = the config's;
+- `builds`: app ids per store for that environment (stores without a row use the config's builds);
+- `productIds`: product ids that differ there, e.g. a test-mode Stripe Price id (`vip` / `stripe` / `price_test_…`);
+- `isTest`: a test environment. **Validate** and release builds warn when the release profile is one.
+
+Which profile runs: `editorProfile` in the Editor, `developmentProfile` in Development Builds, `releaseProfile` in
+release builds (empty = the config's own fields). `config.UseProfile("staging")` picks one at run time, e.g. from a QA
+menu, before the service and the store adapters are created (`""` = no profile, `null` = back to the rules).
+`IBillingService.Profile` says which one runs; the log names it at startup.
+
+The service, the API client and the store adapters apply the profile themselves (`config.Resolved()`), so pass them
+the asset. The asset never changes at run time. A profile that does not exist stops the service with a
+`BillingException`; the build checks it before building. The customer info and paywall caches belong to one server, so
+switching profiles never shows another environment's purchases.
+
+In the inspector, copy, paste, ping and **Open admin panel** use the Editor's profile: **Copy config for admin panel**
+copies that environment's builds and ids, and **Paste config from admin panel** (from that environment's admin panel)
+puts the server URL, builds and store ids that differ into the profile and the catalog into the shared config
+(`PreviewJsonForProfile` / `MergeJsonIntoProfile` in code).
+
+```csharp
+var config = BillingConfig.Create("https://maincloud.spacetimedb.com/v1/database/mygame-billing/route", products);
+config.profiles.Add(new BillingProfile("dev")
+    .WithServer("https://maincloud.spacetimedb.com/v1/database/mygame-billing-dev/route")
+    .WithBuild(BillingStores.Stripe, "com.example.mygame.web.dev")
+    .WithProductId("vip", BillingStores.Stripe, "price_test_vip")
+    .AsTest());
+config.editorProfile = config.developmentProfile = "dev";
+```
+
 ## Usage
 
 ### Without DI

@@ -20,21 +20,21 @@ namespace Purser
             if (response.IsHttpSuccess && response.Value != null)
             {
                 var now = m_UtcNow();
-                PaywallCache.Save(m_Storage, AppId, user, placementId, response.Value, now, m_Log);
+                PaywallCache.Save(m_Storage, m_Context.CacheScope, user, placementId, response.Value, now, m_Log);
                 return ToPaywall(placementId, response.Value, false, now);
             }
 
             if (response.HttpStatus == 404)
             {
                 // The placement was removed or disabled on purpose: forget the cached answer.
-                PaywallCache.Save(m_Storage, AppId, user, placementId, null, m_UtcNow(), m_Log);
+                PaywallCache.Save(m_Storage, m_Context.CacheScope, user, placementId, null, m_UtcNow(), m_Log);
                 throw new PaywallNotFoundException(placementId, response.Value?.Code ?? "ERR_PLACEMENT_NOT_FOUND",
                     response.Value?.Message ?? $"no placement '{placementId}'");
             }
             if (response.HttpStatus >= 400 && response.HttpStatus < 500 && !response.IsRateLimited)
                 throw new BillingException($"Paywall request for '{placementId}' was refused: {response.Value?.Message ?? response.Error}");
 
-            var cached = PaywallCache.Load(m_Storage, AppId, user, placementId, m_Log);
+            var cached = PaywallCache.Load(m_Storage, m_Context.CacheScope, user, placementId, m_Log);
             if (cached.HasValue)
             {
                 m_Log.Warning($"Paywall request failed ({response}); using the cached answer for '{placementId}'.");
