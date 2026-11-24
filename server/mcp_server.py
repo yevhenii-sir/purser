@@ -431,7 +431,7 @@ TOOLS = [
      "target); offline only checks the configuration. Never asks Apple for a test notification.",
      schema({**SCOPE, "offline": B, "verbose": {"type": "boolean", "description": "Include passed checks"}})),
     ("integration_health", t_integration_health, READ,
-     "Outgoing integrations (GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, webhook, Cloud Storage) per "
+     "Outgoing integrations (GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Mixpanel, Meta, webhook, Cloud Storage) per "
      "build: enabled, events waiting or retrying in the outbox, and the last dropped-event failures.",
      schema(SCOPE)),
     ("paywall_results", t_paywall_results, READ,

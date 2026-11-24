@@ -18,7 +18,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 4. Store notifications (`/notify/<store>`: Google RTDN, Apple ASSN v2, Amazon RTN) drive renewals,
    refunds, expirations.
 5. Every significant event goes to **integrations** (GA4, AppsFlyer, Adjust, Tenjin, AppMetrica,
-   webhook, Google Cloud Storage export) and to **revenue analytics** (daily aggregates in USD).
+   Amplitude, Mixpanel, Meta Conversions API, webhook, Google Cloud Storage export) and to **revenue analytics** (daily aggregates in USD).
 6. An **admin page** (React, built into one HTML file embedded in the module) manages all of it.
 
 ## Repository map

@@ -19,6 +19,7 @@
 - `Runtime/link.xml` (and `PurserLinkerProcessor` in the Editor assembly, which gives it to the Unity linker): the
   types Newtonsoft.Json creates by reflection and the Unity IAP types of the promotional offer bridge survive managed
   code stripping.
+- `AttributionKeys.AmplitudeDeviceId`, `AttributionKeys.MetaAnonId` for the server's Amplitude and Meta Conversions API integrations.
 
 ### Fixed
 

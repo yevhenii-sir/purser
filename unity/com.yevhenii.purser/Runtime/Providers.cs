@@ -110,6 +110,13 @@ namespace Purser
         public const string AdjustId = "adjust_id";
         /// <summary>AppMetrica device id hash (<c>AppMetrica.RequestAppMetricaDeviceID</c>) — for AppMetrica events.</summary>
         public const string AppMetricaDeviceId = "appmetrica_device_id";
+        /// <summary>Amplitude SDK device id (<c>Amplitude.getDeviceId()</c>) — optional for Amplitude events, which go to the billing user id.</summary>
+        public const string AmplitudeDeviceId = "amplitude_device_id";
+        /// <summary>
+        /// Facebook SDK anonymous id (<c>AppEventsLogger.getAnonymousAppDeviceGUID</c> on Android,
+        /// <c>FBSDKBasicUtility.anonymousID</c> on iOS) — for Meta Conversions API events (or send an advertising id).
+        /// </summary>
+        public const string MetaAnonId = "meta_anon_id";
         /// <summary>Apple Ads attribution, filled by <see cref="AppleAdsAttributionProvider"/>.</summary>
         public const string AppleAdsOrgId = "asa_org_id";
         public const string AppleAdsCampaignId = "asa_campaign_id";

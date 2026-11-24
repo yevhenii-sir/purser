@@ -883,7 +883,7 @@ components:
     Attribution:
       type: object
       description: |
-        Device and attribution ids for the integrations (AppsFlyer, Adjust, Tenjin, AppMetrica, Apple Ads,
+        Device and attribution ids for the integrations (AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Meta, Apple Ads,
         ...). Unknown keys and invalid values are dropped; values are strings (booleans are accepted and
         turned into "true" / "false") of at most 128 characters: letters, digits, `-`, `_`, `.`, `:`.
         The server remembers the latest values per player for events without a client (renewals, refunds).
@@ -899,6 +899,8 @@ components:
         app_version: { type: string }
         adjust_id: { type: string, description: Adjust.getAdid() }
         appmetrica_device_id: { type: string }
+        amplitude_device_id: { type: string, description: Amplitude SDK device id }
+        meta_anon_id: { type: string, description: "Facebook SDK anonymous id (Meta Conversions API anon_id)" }
         asa_org_id: { type: string }
         asa_campaign_id: { type: string }
         asa_ad_group_id: { type: string }

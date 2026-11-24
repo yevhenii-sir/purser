@@ -53,6 +53,12 @@ pub mod secret_name {
     pub const APPMETRICA_POST_API_KEY: &str = "appmetrica_post_api_key";
     /// JSON key of a Google Cloud service account allowed to create objects in the export bucket.
     pub const GCS_SERVICE_ACCOUNT_JSON: &str = "gcs_service_account_json";
+    /// Amplitude → project settings → API key (sent in the HTTP API body).
+    pub const AMPLITUDE_API_KEY: &str = "amplitude_api_key";
+    /// Mixpanel → Organization settings → Service accounts: `username:secret` (Basic auth).
+    pub const MIXPANEL_SERVICE_ACCOUNT: &str = "mixpanel_service_account";
+    /// Meta Events Manager → dataset → Settings → Conversions API access token (`Authorization: Bearer`).
+    pub const META_ACCESS_TOKEN: &str = "meta_access_token";
     /// Alerts (server-wide, stored in the `default` scope): Telegram bot token from @BotFather.
     pub const ALERT_TELEGRAM_BOT_TOKEN: &str = "alert_telegram_bot_token";
     /// Alerts: Slack incoming webhook URL.
@@ -91,6 +97,9 @@ pub mod secret_name {
                 | ADJUST_S2S_TOKEN
                 | APPMETRICA_POST_API_KEY
                 | GCS_SERVICE_ACCOUNT_JSON
+                | AMPLITUDE_API_KEY
+                | MIXPANEL_SERVICE_ACCOUNT
+                | META_ACCESS_TOKEN
                 | CLIENT_AUTH_SECRET
                 | RESPONSE_SIGNING_KEY
                 | ALERT_TELEGRAM_BOT_TOKEN

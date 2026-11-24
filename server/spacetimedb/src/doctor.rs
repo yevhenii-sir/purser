@@ -14,7 +14,7 @@ use crate::stores::{self, StoreError};
 use crate::{game_app, health, integration, product, purchase, GameApp, Integration};
 use purser_core::doctor::{self as d, Level, Report, Verdict};
 use purser_core::event::{delivery, webhook_signature};
-use purser_core::integrations::{adjust, event_kind, gcs, ga4, integration_kind, webhook, Built, OutEvent};
+use purser_core::integrations::{adjust, event_kind, gcs, ga4, integration_kind, meta, mixpanel, webhook, Built, OutEvent};
 use purser_core::jwt::{self, AppleApiKey, GoogleServiceAccount};
 use purser_core::model::{environment, kind, store};
 use purser_core::registry::{self, StoreInfo};
@@ -663,6 +663,9 @@ const INTEGRATION_TITLES: &[(&str, &str)] =
         ("tenjin", "Tenjin"),
         ("adjust", "Adjust"),
         ("appmetrica", "AppMetrica"),
+        ("amplitude", "Amplitude"),
+        ("mixpanel", "Mixpanel"),
+        ("meta", "Meta Conversions API"),
         ("webhook", "Webhook integration"),
         ("gcs", "Cloud Storage export"),
     ];
@@ -715,6 +718,24 @@ fn check_integrations(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut 
                 }
             }
             integration_kind::APPMETRICA => v(Level::Ok, "configured; the client must send appmetrica_device_id", "Use Send test event to see it in AppMetrica"),
+            integration_kind::AMPLITUDE => v(
+                Level::Ok,
+                "configured; events go to the billing user id (the client may send amplitude_device_id)",
+                "Use Send test event to see purser_test in Amplitude",
+            ),
+            integration_kind::MIXPANEL => match mixpanel::auth_header(&secret) {
+                Ok(_) => v(Level::Ok, "configured; events go to the billing user id as distinct_id", "Use Send test event to see purser_test in Mixpanel"),
+                Err(e) => v(Level::Fail, e, "Paste the service account as username:secret"),
+            },
+            integration_kind::META => {
+                let test_code = meta::Settings::parse(&i.settings_json).map(|s| !s.test_event_code.is_empty()).unwrap_or(false);
+                let needs = "the client must send meta_anon_id or an advertising id (idfa with att = true on iOS), and os_version";
+                if test_code {
+                    v(Level::Warn, format!("test_event_code is set: events go to Test events only; {needs}"), "Clear the test code once the test event shows up")
+                } else {
+                    v(Level::Ok, format!("configured; {needs}"), "Set a test_event_code and use Send test event to see it in Events Manager")
+                }
+            }
             integration_kind::GCS if opts.online => match crate::stores::google_token(ctx, app, crate::config::secret_name::GCS_SERVICE_ACCOUNT_JSON, gcs::SCOPE, "gcs") {
                 Ok(_) => v(Level::Ok, "the service account key works", "Send a test event: it must appear in the bucket"),
                 Err(e) => v(Level::Fail, e.message().to_string(), "Paste the JSON key of a service account with Storage Object Creator on the bucket"),

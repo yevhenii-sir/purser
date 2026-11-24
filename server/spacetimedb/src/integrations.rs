@@ -1,5 +1,5 @@
 //! Outgoing integrations enabled in `integration`: GA4, AppsFlyer, Tenjin, Adjust, AppMetrica,
-//! webhook, Google Cloud Storage export. Ledger
+//! Amplitude, Mixpanel, Meta Conversions API, webhook, Google Cloud Storage export. Ledger
 //! transitions enqueue one outbox row per integration in the same transaction;
 //! `send_integration_event` delivers it with retries.
 
@@ -8,8 +8,8 @@ use crate::ctx::Ctx;
 use crate::net;
 use crate::{game_app, GameApp, Purchase};
 use purser_core::integrations::{
-    adjust, appmetrica, appsflyer, event_kind, gcs, ga4, integration_kind, is_retryable_status, revenue_mode, tenjin, webhook,
-    Built, HttpCall, OutEvent,
+    adjust, amplitude, appmetrica, appsflyer, event_kind, gcs, ga4, integration_kind, is_retryable_status, meta, mixpanel, revenue_mode,
+    tenjin, webhook, Built, HttpCall, OutEvent,
 };
 use purser_core::retry_delay_secs;
 use spacetimedb::{ProcedureContext, ReducerContext, ScheduleAt, Table, TxContext};
@@ -230,6 +230,9 @@ pub fn validate_settings(kind: &str, settings_json: &str) -> Result<(), String> 
         integration_kind::ADJUST => adjust::Settings::parse(settings_json).map(|_| ()),
         integration_kind::APPMETRICA => appmetrica::Settings::parse(settings_json).map(|_| ()),
         integration_kind::GCS => gcs::Settings::parse(settings_json).map(|_| ()),
+        integration_kind::AMPLITUDE => amplitude::Settings::parse(settings_json).map(|_| ()),
+        integration_kind::MIXPANEL => mixpanel::Settings::parse(settings_json).map(|_| ()),
+        integration_kind::META => meta::Settings::parse(settings_json).map(|_| ()),
         other => Err(format!("unknown integration kind '{other}'")),
     }
 }
@@ -244,6 +247,9 @@ pub fn secret_for(kind: &str) -> Option<&'static str> {
         integration_kind::ADJUST => Some(secret_name::ADJUST_S2S_TOKEN),
         integration_kind::APPMETRICA => Some(secret_name::APPMETRICA_POST_API_KEY),
         integration_kind::GCS => Some(secret_name::GCS_SERVICE_ACCOUNT_JSON),
+        integration_kind::AMPLITUDE => Some(secret_name::AMPLITUDE_API_KEY),
+        integration_kind::MIXPANEL => Some(secret_name::MIXPANEL_SERVICE_ACCOUNT),
+        integration_kind::META => Some(secret_name::META_ACCESS_TOKEN),
         _ => None,
     }
 }
@@ -330,6 +336,22 @@ fn build_call(tx: &TxContext, row: &IntegrationOutbox, event: &OutEvent, access_
             &secret(secret_name::APPMETRICA_POST_API_KEY)?,
         ),
         integration_kind::GCS => gcs::build(event, &gcs::Settings::parse(&integration.settings_json)?, access_token),
+        integration_kind::AMPLITUDE => amplitude::build(
+            event,
+            &amplitude::Settings::parse(&integration.settings_json)?,
+            &secret(secret_name::AMPLITUDE_API_KEY)?,
+        ),
+        integration_kind::MIXPANEL => mixpanel::build(
+            event,
+            &mixpanel::Settings::parse(&integration.settings_json)?,
+            &secret(secret_name::MIXPANEL_SERVICE_ACCOUNT)?,
+        ),
+        integration_kind::META => meta::build(
+            event,
+            &meta::Settings::parse(&integration.settings_json)?,
+            &secret(secret_name::META_ACCESS_TOKEN)?,
+            tx.timestamp.to_micros_since_unix_epoch() / 1000,
+        ),
         other => Err(format!("unknown integration '{other}'")),
     }
 }

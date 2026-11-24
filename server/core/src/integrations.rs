@@ -52,8 +52,14 @@ pub mod integration_kind {
     pub const APPMETRICA: &str = "appmetrica";
     /// Every event as a JSON file in a Google Cloud Storage bucket (BigQuery, a data warehouse).
     pub const GCS: &str = "gcs";
+    /// Amplitude HTTP V2 API: product analytics events with revenue.
+    pub const AMPLITUDE: &str = "amplitude";
+    /// Mixpanel Import API: product analytics events with revenue.
+    pub const MIXPANEL: &str = "mixpanel";
+    /// Meta (Facebook) Conversions API for app events: purchases for ads optimization.
+    pub const META: &str = "meta";
 
-    pub const ALL: &[&str] = &[GA4, APPSFLYER, TENJIN, ADJUST, APPMETRICA, WEBHOOK, GCS];
+    pub const ALL: &[&str] = &[GA4, APPSFLYER, TENJIN, ADJUST, APPMETRICA, AMPLITUDE, MIXPANEL, META, WEBHOOK, GCS];
 
     pub fn is_known(k: &str) -> bool {
         ALL.contains(&k)
@@ -89,6 +95,10 @@ pub mod attribution_key {
     /// The player consented to share consumption data with Apple when they ask for a refund:
     /// "true" / "false" (`consumption`).
     pub const REFUND_DATA_CONSENT: &str = "refund_data_consent";
+    /// Amplitude SDK device id (`Amplitude.getDeviceId()`): ties server events to the device's own.
+    pub const AMPLITUDE_DEVICE_ID: &str = "amplitude_device_id";
+    /// Facebook SDK anonymous install id (`AppEventsLogger.getAnonymousAppDeviceGUID`), Meta's `anon_id`.
+    pub const META_ANON_ID: &str = "meta_anon_id";
 
     pub const ALL: &[&str] = &[
         APPSFLYER_ID,
@@ -109,6 +119,8 @@ pub mod attribution_key {
         ASA_AD_ID,
         ASA_COUNTRY,
         REFUND_DATA_CONSENT,
+        AMPLITUDE_DEVICE_ID,
+        META_ANON_ID,
     ];
 }
 
@@ -994,6 +1006,386 @@ pub mod gcs {
     }
 }
 
+/// Events with money: a purchase, a subscription payment or a refund.
+fn is_money_kind(kind: &str) -> bool {
+    matches!(kind, event_kind::PURCHASE | event_kind::SUBSCRIPTION_START | event_kind::RENEWAL | event_kind::REFUND)
+}
+
+/// The analytics integrations below take every money event and expirations; the subscription
+/// changes of [`event_kind::LIFECYCLE`] are for the webhook and the export only.
+fn skip_lifecycle(ev: &OutEvent, integration: &str) -> Option<Built> {
+    event_kind::LIFECYCLE.contains(&ev.kind.as_str()).then(|| Built::Skip(format!("{integration} does not take '{}'", ev.kind)))
+}
+
+/// Lowercase hex SHA-256.
+fn sha256_hex(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(s.as_bytes()))
+}
+
+/// Deduplication id of one event: the same event retried is the same id.
+fn dedup_id(ev: &OutEvent) -> String {
+    format!("{}:{}", ev.transaction_id, ev.kind)
+}
+
+/// Data residency region of a settings field: empty = the default.
+fn region<'a>(integration: &str, value: &str, allowed: &[&'a str]) -> Result<&'a str, String> {
+    let v = if value.is_empty() { allowed[0] } else { value };
+    allowed.iter().find(|a| **a == v).copied().ok_or_else(|| format!("{integration} settings: region must be one of {}, not '{value}'", allowed.join(", ")))
+}
+
+// ---------------------------------------------------------------------
+// Amplitude HTTP V2 API
+// ---------------------------------------------------------------------
+
+pub mod amplitude {
+    use super::*;
+
+    pub const API_US: &str = "https://api2.amplitude.com/2/httpapi";
+    pub const API_EU: &str = "https://api.eu.amplitude.com/2/httpapi";
+    const REGIONS: &[&str] = &["us", "eu"];
+
+    /// Non-secret settings. The project API key is a credential (`amplitude_api_key`); the HTTP API
+    /// takes it in the body.
+    #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+    pub struct Settings {
+        /// `us` (default) or `eu` (EU data residency project).
+        #[serde(default)]
+        pub region: String,
+        /// Also report sandbox / license-tester purchases (default: no).
+        #[serde(default)]
+        pub send_sandbox: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            let s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid Amplitude settings: {e}"))?;
+            region("Amplitude", &s.region, REGIONS)?;
+            Ok(s)
+        }
+
+        pub fn api(&self) -> &'static str {
+            if self.region == "eu" {
+                API_EU
+            } else {
+                API_US
+            }
+        }
+    }
+
+    /// One event `purser_<kind>` for the billing user (plus the Amplitude device id when the client
+    /// sent it); money events carry Amplitude's revenue fields, refunds with a negative price.
+    pub fn build(ev: &OutEvent, settings: &Settings, api_key: &str) -> Result<Built, String> {
+        if api_key.is_empty() {
+            return Err("Amplitude API key is not configured".into());
+        }
+        if let Some(skip) = skip_lifecycle(ev, "Amplitude") {
+            return Ok(skip);
+        }
+        if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
+            return Ok(Built::Skip("sandbox purchase".into()));
+        }
+        let device_id = ev.attribution.get(attribution_key::AMPLITUDE_DEVICE_ID);
+        if ev.user_id.is_empty() && device_id.is_none() {
+            return Ok(Built::Skip(format!("{MISSING_CLIENT_ID} amplitude_device_id and the event has no user id")));
+        }
+        let mut event = json!({
+            "event_type": format!("purser_{}", ev.kind),
+            "time": ev.at_ms,
+            "insert_id": dedup_id(ev),
+            "platform": ev.platform,
+            "event_properties": {
+                "product_id": ev.product_id,
+                "product_kind": ev.product_kind,
+                "store": ev.store,
+                "environment": ev.environment,
+                "transaction_id": ev.transaction_id,
+            },
+        });
+        if !ev.user_id.is_empty() {
+            event["user_id"] = json!(ev.user_id);
+        }
+        if let Some(d) = device_id {
+            event["device_id"] = json!(d);
+        }
+        if !ev.country.is_empty() {
+            event["country"] = json!(ev.country);
+        }
+        if is_money_kind(&ev.kind) {
+            // Amplitude stores price × quantity: the price carries the sign of a refund.
+            let revenue = ev.revenue();
+            event["productId"] = json!(ev.product_id);
+            event["price"] = json!(revenue);
+            event["quantity"] = json!(1);
+            event["revenue"] = json!(revenue);
+            event["revenueType"] = json!(ev.kind);
+            event["currency"] = json!(ev.currency_or_usd());
+        }
+        // `min_id_length`: user ids shorter than Amplitude's default 5 characters are kept.
+        let body = json!({ "api_key": api_key, "events": [event], "options": { "min_id_length": 1 } });
+        Ok(Built::Send(HttpCall {
+            method: "POST",
+            url: settings.api().to_string(),
+            headers: vec![("Content-Type", "application/json".into()), ("Accept", "*/*".into())],
+            body: body.to_string(),
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------
+// Mixpanel Import API
+// ---------------------------------------------------------------------
+
+pub mod mixpanel {
+    use super::*;
+
+    const REGIONS: &[&str] = &["us", "eu", "in"];
+
+    /// Non-secret settings. The service account is a credential (`mixpanel_service_account`,
+    /// `username:secret`, Basic auth).
+    #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+    pub struct Settings {
+        /// Numeric project id (Project settings → Overview).
+        pub project_id: String,
+        /// `us` (default), `eu` or `in` (data residency of the project).
+        #[serde(default)]
+        pub region: String,
+        /// Also report sandbox / license-tester purchases (default: no).
+        #[serde(default)]
+        pub send_sandbox: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            let s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid Mixpanel settings: {e}"))?;
+            if s.project_id.is_empty() || s.project_id.len() > 20 || !s.project_id.chars().all(|c| c.is_ascii_digit()) {
+                return Err("Mixpanel settings: project_id must be the numeric project id".into());
+            }
+            region("Mixpanel", &s.region, REGIONS)?;
+            Ok(s)
+        }
+
+        pub fn api(&self) -> String {
+            let host = match self.region.as_str() {
+                "eu" => "api-eu.mixpanel.com",
+                "in" => "api-in.mixpanel.com",
+                _ => "api.mixpanel.com",
+            };
+            format!("https://{host}/import?strict=1&project_id={}", self.project_id)
+        }
+    }
+
+    /// `username:secret` of a service account; the Basic auth header of the Import API.
+    pub fn auth_header(service_account: &str) -> Result<String, String> {
+        match service_account.trim().split_once(':') {
+            Some((user, secret)) if !user.is_empty() && !secret.is_empty() => Ok(basic_auth(user, secret)),
+            _ => Err("Mixpanel service account must be username:secret".into()),
+        }
+    }
+
+    /// `$insert_id`: at most 36 characters of letters, digits and `-`, the same for a retried event.
+    pub fn insert_id(ev: &OutEvent) -> String {
+        sha256_hex(&dedup_id(ev))[..32].to_string()
+    }
+
+    /// One event `purser_<kind>` for `distinct_id` = the billing user id, with the signed revenue.
+    pub fn build(ev: &OutEvent, settings: &Settings, service_account: &str) -> Result<Built, String> {
+        if service_account.is_empty() {
+            return Err("Mixpanel service account is not configured".into());
+        }
+        let auth = auth_header(service_account)?;
+        if let Some(skip) = skip_lifecycle(ev, "Mixpanel") {
+            return Ok(skip);
+        }
+        if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
+            return Ok(Built::Skip("sandbox purchase".into()));
+        }
+        let mut properties = json!({
+            "time": ev.at_ms,
+            "distinct_id": ev.user_id,
+            "$insert_id": insert_id(ev),
+            // Without `ip` Mixpanel geolocates the request, i.e. this server: 0 turns that off.
+            "ip": "0",
+            "product_id": ev.product_id,
+            "product_kind": ev.product_kind,
+            "store": ev.store,
+            "environment": ev.environment,
+            "transaction_id": ev.transaction_id,
+            "platform": ev.platform,
+            "revenue": ev.revenue(),
+            "currency": ev.currency_or_usd(),
+        });
+        if !ev.country.is_empty() {
+            properties["mp_country_code"] = json!(ev.country);
+        }
+        let body = json!([{ "event": format!("purser_{}", ev.kind), "properties": properties }]);
+        Ok(Built::Send(HttpCall {
+            method: "POST",
+            url: settings.api(),
+            headers: vec![("Authorization", auth), ("Content-Type", "application/json".into())],
+            body: body.to_string(),
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------
+// Meta Conversions API (app events)
+// ---------------------------------------------------------------------
+
+pub mod meta {
+    use super::*;
+
+    pub const GRAPH: &str = "https://graph.facebook.com";
+    pub const DEFAULT_GRAPH_VERSION: &str = "v23.0";
+    /// Meta rejects the whole request when an event is older than 7 days.
+    pub const MAX_AGE_MS: i64 = 7 * 24 * 3600 * 1000;
+
+    fn default_graph_version() -> String {
+        DEFAULT_GRAPH_VERSION.to_string()
+    }
+
+    /// Non-secret settings. The Conversions API access token is a credential (`meta_access_token`).
+    #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+    pub struct Settings {
+        /// Dataset (pixel) id the app events go to (Events Manager → the app's dataset).
+        pub dataset_id: String,
+        /// Graph API version, e.g. `v23.0`.
+        #[serde(default = "default_graph_version")]
+        pub graph_version: String,
+        /// While set, every event goes to Events Manager → Test events only (not to ads reporting).
+        #[serde(default)]
+        pub test_event_code: String,
+        /// Also report sandbox / license-tester purchases (default: no).
+        #[serde(default)]
+        pub send_sandbox: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            let mut s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid Meta settings: {e}"))?;
+            if s.dataset_id.is_empty() || s.dataset_id.len() > 24 || !s.dataset_id.chars().all(|c| c.is_ascii_digit()) {
+                return Err("Meta settings: dataset_id must be the numeric dataset (pixel) id".into());
+            }
+            if s.graph_version.is_empty() {
+                s.graph_version = default_graph_version();
+            }
+            let valid_version = s.graph_version.strip_prefix('v').and_then(|v| v.split_once('.')).is_some_and(|(major, minor)| {
+                [major, minor].iter().all(|p| !p.is_empty() && p.len() <= 3 && p.chars().all(|c| c.is_ascii_digit()))
+            });
+            if !valid_version {
+                return Err(format!("Meta settings: graph_version must look like {DEFAULT_GRAPH_VERSION}"));
+            }
+            s.test_event_code = s.test_event_code.trim().to_string();
+            if s.test_event_code.len() > 64 || !s.test_event_code.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Err("Meta settings: test_event_code must be the code from Events Manager → Test events (letters and digits)".into());
+            }
+            Ok(s)
+        }
+
+        pub fn url(&self) -> String {
+            format!("{GRAPH}/{}/{}/events", self.graph_version, self.dataset_id)
+        }
+    }
+
+    /// Meta's standard event for a billing event; `None`: not sent.
+    pub fn event_name(ev: &OutEvent, test_code: bool) -> Option<&'static str> {
+        match ev.kind.as_str() {
+            event_kind::PURCHASE | event_kind::RENEWAL => Some("Purchase"),
+            event_kind::SUBSCRIPTION_START if ev.price_micros > 0 => Some("Subscribe"),
+            event_kind::SUBSCRIPTION_START => Some("StartTrial"),
+            event_kind::TEST if test_code => Some("Purchase"),
+            _ => None,
+        }
+    }
+
+    /// `now_ms`: the caller's clock (the builder has none); events older than 7 days are skipped.
+    pub fn build(ev: &OutEvent, settings: &Settings, access_token: &str, now_ms: i64) -> Result<Built, String> {
+        if access_token.is_empty() {
+            return Err("Meta access token is not configured".into());
+        }
+        if let Some(skip) = ev.skip_unless_mobile("Meta") {
+            return Ok(skip);
+        }
+        if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
+            return Ok(Built::Skip("sandbox purchase".into()));
+        }
+        let Some(name) = event_name(ev, !settings.test_event_code.is_empty()) else {
+            let why = if ev.kind == event_kind::TEST { " without a test_event_code" } else { "" };
+            return Ok(Built::Skip(format!("no Meta event for '{}'{why}", ev.kind)));
+        };
+        if now_ms - ev.at_ms > MAX_AGE_MS {
+            return Ok(Built::Skip("Meta takes no events older than 7 days".into()));
+        }
+        let ios = ev.os() == Some("ios");
+        let att = ev.attribution.get(attribution_key::ATT).is_some_and(|v| v == "true");
+        // The advertising id: GAID on Android, the IDFA on iOS only with App Tracking Transparency consent.
+        let madid = if ios {
+            ev.attribution.get(attribution_key::IDFA).filter(|_| att)
+        } else {
+            ev.attribution.get(attribution_key::ADVERTISING_ID)
+        };
+        let anon_id = ev.attribution.get(attribution_key::META_ANON_ID);
+        if madid.is_none() && anon_id.is_none() {
+            return Ok(Built::Skip(format!(
+                "{MISSING_CLIENT_ID} meta_anon_id or an advertising id ({})",
+                if ios { "idfa with att = true" } else { "advertising_id" }
+            )));
+        }
+        let mut user_data = json!({ "external_id": [sha256_hex(&ev.user_id)] });
+        if let Some(m) = madid {
+            user_data["madid"] = json!(m);
+        }
+        if let Some(a) = anon_id {
+            user_data["anon_id"] = json!(a);
+        }
+        let tracking = if ios { att } else { madid.is_some() };
+        let attr = |key: &str| ev.attribution.get(key).cloned().unwrap_or_default();
+        let app_version = attr(attribution_key::APP_VERSION);
+        // extinfo, all 16 positions in order: 0 version (`a2` Android / `i2` iOS), 1 package name,
+        // 2 short version, 3 long version, 4 OS version; the device details the server does not
+        // know stay empty: 5 device model, 6 locale, 7 timezone abbreviation, 8 carrier,
+        // 9 screen width, 10 screen height, 11 screen density, 12 CPU cores, 13 external storage
+        // size, 14 free external storage, 15 device timezone.
+        let mut extinfo: Vec<String> = vec![
+            if ios { "i2" } else { "a2" }.to_string(),
+            ev.app_id.clone(),
+            app_version.clone(),
+            app_version,
+            attr(attribution_key::OS_VERSION),
+        ];
+        extinfo.resize(16, String::new());
+        let value = if ev.kind == event_kind::TEST { 0.0 } else { ev.revenue() };
+        let event = json!({
+            "event_name": name,
+            "event_time": ev.at_ms / 1000,
+            "event_id": dedup_id(ev),
+            "action_source": "app",
+            "user_data": user_data,
+            "custom_data": {
+                "currency": ev.currency_or_usd(),
+                "value": value,
+                "content_ids": [ev.product_id],
+                "content_type": "product",
+            },
+            "app_data": {
+                "advertiser_tracking_enabled": tracking as u8,
+                "application_tracking_enabled": 1,
+                "extinfo": extinfo,
+            },
+        });
+        let mut body = json!({ "data": [event] });
+        if !settings.test_event_code.is_empty() {
+            body["test_event_code"] = json!(settings.test_event_code);
+        }
+        Ok(Built::Send(HttpCall {
+            method: "POST",
+            url: settings.url(),
+            headers: vec![("Authorization", format!("Bearer {access_token}")), ("Content-Type", "application/json".into())],
+            body: body.to_string(),
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1151,8 +1543,8 @@ mod tests {
         assert_eq!(tenjin::Settings::parse("").unwrap(), tenjin::Settings::default());
         assert!(webhook::Settings::parse(r#"{"url":"http://x.example"}"#).is_err());
         assert!(webhook::Settings::parse(r#"{"url":"https://x.example/hook"}"#).is_ok());
-        assert!(integration_kind::is_known("tenjin") && !integration_kind::is_known("mixpanel"));
-        assert!(["adjust", "appmetrica", "gcs"].iter().all(|k| integration_kind::is_known(k)));
+        assert!(integration_kind::is_known("tenjin") && !integration_kind::is_known("segment"));
+        assert!(["adjust", "appmetrica", "gcs", "amplitude", "mixpanel", "meta"].iter().all(|k| integration_kind::is_known(k)));
     }
 
     #[test]
@@ -1422,6 +1814,198 @@ mod tests {
         assert!(gcs::Settings::parse(r#"{"bucket":"Bad Bucket"}"#).is_err());
         assert!(gcs::Settings::parse(r#"{"bucket":"ok-bucket","folder":"../x"}"#).is_err());
         assert!(gcs::build(&event("purchase", "android"), &s, "").is_err());
+    }
+
+    fn json_body(call: &HttpCall) -> Value {
+        serde_json::from_str(&call.body).unwrap()
+    }
+
+    fn sandbox(mut ev: OutEvent) -> OutEvent {
+        ev.environment = "sandbox".into();
+        ev
+    }
+
+    #[test]
+    fn amplitude_purchase_payload() {
+        let mut ev = event("purchase", "android");
+        ev.attribution.insert(attribution_key::AMPLITUDE_DEVICE_ID.into(), "f2a1c3e4-5b6d-7e8f-9a0b-1c2d3e4f5a6bR".into());
+        ev.country = "DE".into();
+        let s = amplitude::Settings::parse("{}").unwrap();
+        let call = send(amplitude::build(&ev, &s, "AMPKEY").unwrap());
+        assert_eq!(call.url, "https://api2.amplitude.com/2/httpapi");
+        assert!(!call.url.contains("AMPKEY"));
+        let body = json_body(&call);
+        assert_eq!(body["api_key"], "AMPKEY");
+        assert_eq!(body["options"]["min_id_length"], 1);
+        let e = &body["events"][0];
+        assert_eq!((e["event_type"].as_str(), e["time"].as_i64()), (Some("purser_purchase"), Some(1_791_198_123_123)));
+        assert_eq!(e["user_id"].as_str().unwrap().len(), 64);
+        assert_eq!(e["device_id"], "f2a1c3e4-5b6d-7e8f-9a0b-1c2d3e4f5a6bR");
+        assert_eq!((e["insert_id"].as_str(), e["platform"].as_str(), e["country"].as_str()), (Some("GPA.1:purchase"), Some("android"), Some("DE")));
+        assert_eq!((e["productId"].as_str(), e["price"].as_f64(), e["quantity"].as_i64()), (Some("diamonds_150"), Some(4.99), Some(1)));
+        assert_eq!((e["revenue"].as_f64(), e["revenueType"].as_str(), e["currency"].as_str()), (Some(4.99), Some("purchase"), Some("EUR")));
+        assert_eq!(e["event_properties"]["transaction_id"], "GPA.1");
+        assert_eq!(e["event_properties"]["store"], "google");
+
+        let eu = amplitude::Settings::parse(r#"{"region":"eu"}"#).unwrap();
+        assert_eq!(send(amplitude::build(&event("purchase", "web"), &eu, "K").unwrap()).url, "https://api.eu.amplitude.com/2/httpapi");
+    }
+
+    #[test]
+    fn amplitude_refund_expire_and_skips() {
+        let s = amplitude::Settings::default();
+        let refund = json_body(&send(amplitude::build(&event("refund", "ios"), &s, "K").unwrap()));
+        let e = &refund["events"][0];
+        assert_eq!((e["price"].as_f64(), e["revenue"].as_f64()), (Some(-4.99), Some(-4.99)));
+        assert!(e.get("device_id").is_none() && e.get("country").is_none());
+
+        let expire = json_body(&send(amplitude::build(&event("expire", "android"), &s, "K").unwrap()));
+        assert_eq!(expire["events"][0]["event_type"], "purser_expire");
+        assert!(expire["events"][0].get("revenue").is_none(), "no money on expirations");
+
+        assert!(matches!(amplitude::build(&event("cancel", "android"), &s, "K").unwrap(), Built::Skip(_)));
+        assert!(matches!(amplitude::build(&sandbox(event("purchase", "android")), &s, "K").unwrap(), Built::Skip(_)));
+        let with_sandbox = amplitude::Settings { send_sandbox: true, ..s.clone() };
+        assert!(matches!(amplitude::build(&sandbox(event("purchase", "android")), &with_sandbox, "K").unwrap(), Built::Send(_)));
+        assert!(matches!(amplitude::build(&sandbox(event("test", "android")), &s, "K").unwrap(), Built::Send(_)));
+        let mut anonymous = event("purchase", "android");
+        anonymous.user_id.clear();
+        assert!(matches!(amplitude::build(&anonymous, &s, "K").unwrap(), Built::Skip(r) if is_missing_client_id(&r)));
+        assert!(amplitude::build(&event("purchase", "android"), &s, "").is_err());
+        assert!(amplitude::Settings::parse(r#"{"region":"asia"}"#).unwrap_err().contains("region"));
+    }
+
+    #[test]
+    fn mixpanel_import_payload() {
+        let s = mixpanel::Settings::parse(r#"{"project_id":"3456789"}"#).unwrap();
+        let mut ev = event("renewal", "web");
+        ev.country = "US".into();
+        let call = send(mixpanel::build(&ev, &s, "purser-sa.abc123.mp-service-account:S3CRET").unwrap());
+        assert_eq!(call.url, "https://api.mixpanel.com/import?strict=1&project_id=3456789");
+        assert!(!call.url.contains("S3CRET"));
+        assert!(call.headers.contains(&("Authorization", basic_auth("purser-sa.abc123.mp-service-account", "S3CRET"))));
+        let body = json_body(&call);
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        let p = &body[0]["properties"];
+        assert_eq!(body[0]["event"], "purser_renewal");
+        assert_eq!((p["time"].as_i64(), p["distinct_id"].as_str().map(str::len)), (Some(1_791_198_123_123), Some(64)));
+        let insert_id = p["$insert_id"].as_str().unwrap();
+        assert!(insert_id.len() <= 36 && insert_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'), "{insert_id}");
+        assert_eq!(insert_id, mixpanel::insert_id(&ev), "a retry has the same id");
+        assert_ne!(insert_id, mixpanel::insert_id(&event("purchase", "web")));
+        assert_eq!((p["revenue"].as_f64(), p["currency"].as_str(), p["mp_country_code"].as_str()), (Some(4.99), Some("EUR"), Some("US")));
+        assert_eq!((p["platform"].as_str(), p["transaction_id"].as_str(), p["ip"].as_str()), (Some("web"), Some("GPA.1"), Some("0")));
+
+        let refund = json_body(&send(mixpanel::build(&event("refund", "android"), &s, "u:s").unwrap()));
+        assert_eq!(refund[0]["properties"]["revenue"], -4.99);
+        assert!(refund[0]["properties"].get("mp_country_code").is_none());
+
+        let eu = mixpanel::Settings::parse(r#"{"project_id":"1","region":"eu"}"#).unwrap();
+        assert!(send(mixpanel::build(&event("purchase", "ios"), &eu, "u:s").unwrap()).url.starts_with("https://api-eu.mixpanel.com/import?"));
+        let india = mixpanel::Settings::parse(r#"{"project_id":"1","region":"in"}"#).unwrap();
+        assert!(india.api().starts_with("https://api-in.mixpanel.com/import?"));
+    }
+
+    #[test]
+    fn mixpanel_skips_and_validation() {
+        let s = mixpanel::Settings::parse(r#"{"project_id":"3456789"}"#).unwrap();
+        assert!(matches!(mixpanel::build(&sandbox(event("purchase", "android")), &s, "u:s").unwrap(), Built::Skip(_)));
+        assert!(matches!(mixpanel::build(&sandbox(event("test", "android")), &s, "u:s").unwrap(), Built::Send(_)));
+        assert!(matches!(mixpanel::build(&event("billing_issue", "android"), &s, "u:s").unwrap(), Built::Skip(_)));
+        assert!(mixpanel::build(&event("purchase", "android"), &s, "").is_err());
+        assert!(mixpanel::build(&event("purchase", "android"), &s, "no-colon").unwrap_err().contains("username:secret"));
+        assert!(mixpanel::build(&event("purchase", "android"), &s, "user:").is_err());
+        assert!(mixpanel::Settings::parse(r#"{"project_id":""}"#).unwrap_err().contains("project_id"));
+        assert!(mixpanel::Settings::parse(r#"{"project_id":"12a"}"#).is_err());
+        assert!(mixpanel::Settings::parse(r#"{"project_id":"1","region":"cn"}"#).unwrap_err().contains("region"));
+    }
+
+    fn meta_settings() -> meta::Settings {
+        meta::Settings::parse(r#"{"dataset_id":"123456789012345"}"#).unwrap()
+    }
+
+    const NOW_MS: i64 = 1_791_198_200_000;
+
+    #[test]
+    fn meta_android_purchase() {
+        let mut ev = event("purchase", "android");
+        ev.attribution.insert(attribution_key::META_ANON_ID.into(), "XZ1a2b3c4d-0000-1111-2222-333344445555".into());
+        ev.attribution.insert(attribution_key::OS_VERSION.into(), "14".into());
+        ev.attribution.insert(attribution_key::APP_VERSION.into(), "1.2.3".into());
+        let s = meta_settings();
+        assert_eq!(s.graph_version, "v23.0");
+        let call = send(meta::build(&ev, &s, "EAAtoken", NOW_MS).unwrap());
+        assert_eq!(call.url, "https://graph.facebook.com/v23.0/123456789012345/events");
+        assert!(!call.url.contains("EAAtoken"), "the token goes in the header");
+        assert!(call.headers.contains(&("Authorization", "Bearer EAAtoken".to_string())));
+        let body = json_body(&call);
+        assert!(body.get("test_event_code").is_none());
+        let e = &body["data"][0];
+        assert_eq!((e["event_name"].as_str(), e["event_time"].as_i64()), (Some("Purchase"), Some(1_791_198_123)));
+        assert_eq!((e["event_id"].as_str(), e["action_source"].as_str()), (Some("GPA.1:purchase"), Some("app")));
+        assert_eq!(e["user_data"]["madid"], "9c9a82fb-d5de-4cd1-90c3-527441c11828");
+        assert_eq!(e["user_data"]["anon_id"], "XZ1a2b3c4d-0000-1111-2222-333344445555");
+        assert_eq!(e["user_data"]["external_id"][0], sha256_hex(&ev.user_id));
+        assert_eq!(e["custom_data"], json!({ "currency": "EUR", "value": 4.99, "content_ids": ["diamonds_150"], "content_type": "product" }));
+        assert_eq!((e["app_data"]["advertiser_tracking_enabled"].as_i64(), e["app_data"]["application_tracking_enabled"].as_i64()), (Some(1), Some(1)));
+        let extinfo = e["app_data"]["extinfo"].as_array().unwrap();
+        assert_eq!(extinfo.len(), 16);
+        assert_eq!(extinfo[..5], [json!("a2"), json!("com.test.game"), json!("1.2.3"), json!("1.2.3"), json!("14")]);
+        assert!(extinfo[5..].iter().all(|v| v == ""));
+    }
+
+    #[test]
+    fn meta_ios_needs_att_for_the_idfa() {
+        let s = meta_settings();
+        let mut ev = event("renewal", "ios");
+        ev.attribution.insert(attribution_key::IDFA.into(), "AAAA-BBBB".into());
+        let e = json_body(&send(meta::build(&ev, &s, "T", NOW_MS).unwrap()))["data"][0].clone();
+        assert_eq!((e["user_data"]["madid"].as_str(), e["app_data"]["advertiser_tracking_enabled"].as_i64()), (Some("AAAA-BBBB"), Some(1)));
+        assert_eq!(e["app_data"]["extinfo"][0], "i2");
+        assert_eq!(e["app_data"]["extinfo"][4], "", "unknown OS version");
+
+        ev.attribution.insert(attribution_key::ATT.into(), "false".into());
+        assert!(matches!(meta::build(&ev, &s, "T", NOW_MS).unwrap(), Built::Skip(r) if is_missing_client_id(&r)), "no IDFA without consent");
+        ev.attribution.insert(attribution_key::META_ANON_ID.into(), "XZanon".into());
+        let e = json_body(&send(meta::build(&ev, &s, "T", NOW_MS).unwrap()))["data"][0].clone();
+        assert!(e["user_data"].get("madid").is_none());
+        assert_eq!((e["user_data"]["anon_id"].as_str(), e["app_data"]["advertiser_tracking_enabled"].as_i64()), (Some("XZanon"), Some(0)));
+    }
+
+    #[test]
+    fn meta_event_mapping_and_skips() {
+        let s = meta_settings();
+        let name = |ev: &OutEvent, s: &meta::Settings| match meta::build(ev, s, "T", NOW_MS).unwrap() {
+            Built::Send(c) => json_body(&c)["data"][0]["event_name"].as_str().unwrap().to_string(),
+            Built::Skip(r) => format!("skip: {r}"),
+        };
+        assert_eq!(name(&event("subscription_start", "android"), &s), "Subscribe");
+        let mut trial = event("subscription_start", "android");
+        trial.price_micros = 0;
+        assert_eq!(name(&trial, &s), "StartTrial");
+        assert!(name(&event("refund", "android"), &s).starts_with("skip"), "Meta has no refund event");
+        assert!(name(&event("expire", "android"), &s).starts_with("skip"));
+        assert!(name(&event("cancel", "android"), &s).starts_with("skip"));
+        assert!(name(&event("test", "android"), &s).contains("test_event_code"));
+        assert!(name(&event("purchase", "web"), &s).contains("mobile"));
+        assert!(name(&sandbox(event("purchase", "android")), &s).contains("sandbox"));
+        let mut old = event("purchase", "android");
+        old.at_ms = NOW_MS - meta::MAX_AGE_MS - 1;
+        assert!(name(&old, &s).contains("7 days"));
+
+        let testing = meta::Settings::parse(r#"{"dataset_id":"1","test_event_code":"TEST12345","graph_version":"v24.0"}"#).unwrap();
+        let call = send(meta::build(&sandbox(event("test", "android")), &testing, "T", NOW_MS).unwrap());
+        assert!(call.url.starts_with("https://graph.facebook.com/v24.0/1/events"));
+        let body = json_body(&call);
+        assert_eq!((body["test_event_code"].as_str(), body["data"][0]["event_name"].as_str()), (Some("TEST12345"), Some("Purchase")));
+        assert_eq!(body["data"][0]["custom_data"]["value"], 0.0);
+
+        assert!(meta::build(&event("purchase", "android"), &s, "", NOW_MS).is_err());
+        assert!(meta::Settings::parse(r#"{"dataset_id":"abc"}"#).unwrap_err().contains("dataset_id"));
+        assert!(meta::Settings::parse(r#"{"dataset_id":"1","graph_version":"23.0"}"#).unwrap_err().contains("graph_version"));
+        assert!(meta::Settings::parse(r#"{"dataset_id":"1","graph_version":"v23"}"#).is_err());
+        assert!(meta::Settings::parse(r#"{"dataset_id":"1","test_event_code":"a b"}"#).is_err());
+        assert_eq!(meta::Settings::parse(r#"{"dataset_id":"1","graph_version":""}"#).unwrap().graph_version, "v23.0");
     }
 
     #[test]

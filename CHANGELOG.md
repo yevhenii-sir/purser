@@ -8,6 +8,7 @@
 
 ### Added
 
+- Integrations: Amplitude (HTTP V2 API, `amplitude_api_key`), Mixpanel (Import API, service account `mixpanel_service_account`) and the Meta Conversions API for app events (`meta_access_token`). Amplitude and Mixpanel get `purser_<kind>` events with signed revenue for the billing user id on every platform; Meta gets `Purchase`, `Subscribe` and `StartTrial` from mobile builds, matched by `meta_anon_id` or the advertising id. New attribution keys `amplitude_device_id` and `meta_anon_id`. Publish in place: no `--delete-data`.
 - Server keys for the game's backend: `/server/entitlements` (read a player's customer info), `/server/grant` (give a product without a store purchase, idempotent by `transaction_id`) and `/server/revoke`, with `Authorization: Bearer psk_…`. Keys belong to an app, have scopes and their own rate limit; the server keeps only their SHA-256; the admin page makes and revokes them (Delivery tab), and grants and revokes are audited as `server-key:<id>`.
 
 - `server/import_revenuecat.py`: imports RevenueCat's transactions export (Scheduled Data Exports, CSV) into the ledger as history (docs/migrating-from-revenuecat.md). `admin_import_purchases` takes `family_shared`. CI runs the scripts' unit tests (`server/tests`).
