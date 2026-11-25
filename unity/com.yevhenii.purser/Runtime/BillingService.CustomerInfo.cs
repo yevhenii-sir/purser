@@ -27,36 +27,43 @@ namespace Purser
             // Orders being verified right now (e.g. re-delivered by RestoreTransactions) are not sent again.
             var orders = await m_Store.FetchPurchasesAsync(ct);
             ThrowIfDisposed();
-            var items = orders
+            // With several stores (CompositeStoreAdapter) each purchase goes to the build of its own store, as on verify.
+            var composite = m_Store as CompositeStoreAdapter;
+            var batches = orders
                 .Where(o => !string.IsNullOrEmpty(o.Key) && !m_Orders.IsInFlight(o))
                 .GroupBy(o => o.Key)
                 .Select(g => g.First())
-                .Select(o => new RestoreItem
-                {
-                    ProductId = o.StoreProductId,
-                    PurchaseToken = NullIfEmpty(o.PurchaseToken),
-                    OrderId = string.IsNullOrEmpty(o.TransactionId) ? null : o.TransactionId,
-                    StoreUserId = string.IsNullOrEmpty(o.StoreUserId) ? null : o.StoreUserId,
-                })
+                .GroupBy(o => (composite?.OwnerOf(o) ?? m_Store).Store)
+                .SelectMany(store => store
+                    .Select(o => new RestoreItem
+                    {
+                        ProductId = o.StoreProductId,
+                        PurchaseToken = NullIfEmpty(o.PurchaseToken),
+                        OrderId = string.IsNullOrEmpty(o.TransactionId) ? null : o.TransactionId,
+                        StoreUserId = string.IsNullOrEmpty(o.StoreUserId) ? null : o.StoreUserId,
+                    })
+                    .Select((item, i) => (item, i))
+                    .GroupBy(x => x.i / RestoreRequest.MaxItems, x => x.item)
+                    .Select(chunk => (AppId: m_Config.AppIdFor(store.Key), Items: chunk.ToList())))
                 .ToList();
             // ... but what the player gets from them belongs to the answer: wait for them, as long as one request may take.
             await m_Orders.WaitForInFlightAsync(TimeSpan.FromSeconds(Math.Max(1, m_Config.requestTimeoutSeconds)), ct);
             ThrowIfDisposed();
-            if (items.Count == 0)
+            if (batches.Count == 0)
                 return await RefreshCustomerInfoAsync(ct);
 
             ApiResult<RestoreResponse> latest = null;
             var appInstanceId = await m_Context.AppInstanceIdAsync();
             var attribution = await m_Context.AttributionAsync();
-            for (var i = 0; i < items.Count; i += RestoreRequest.MaxItems)
+            foreach (var batch in batches)
             {
                 var request = new RestoreRequest
                 {
-                    AppId = AppId,
+                    AppId = batch.AppId,
                     UserId = user,
                     AppInstanceId = appInstanceId,
                     Attribution = attribution,
-                    Purchases = items.Skip(i).Take(RestoreRequest.MaxItems).ToList(),
+                    Purchases = batch.Items,
                     Client = m_Client,
                 };
                 var response = await m_Api.RestoreAsync(request, ct);

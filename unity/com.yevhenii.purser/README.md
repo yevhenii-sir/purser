@@ -194,7 +194,7 @@ bool noAds = billing.HasAccess("no_ads");                 // access levels — v
 How this protects the reward:
 - The server responds with `delivery: "client"` (`PurchaseResult.GrantOnClient`). For Google consumables it only acknowledges, so Google won't refund after 3 days, and leaves the consume to the client.
 - The package fires `PurchaseSucceeded` first and finishes the purchase in the store only **after** the handlers: it consumes in Google or calls `finishTransaction` in Apple. If the game crashes before that, the store delivers the purchase again, the server answers `success` again, and the handler uses `TransactionId` to tell whether the reward was already granted.
-- Grant the reward in `PurchaseSucceeded` and save it there too. The continuation of `await PurchaseAsync(...)` may run after the purchase has already been finished in the store.
+- Grant the reward in `PurchaseSucceeded` and save it there too. A game without a handler may grant it in the code right after `await PurchaseAsync(...)`: the purchase is finished in the store only after that code has run up to its next `await`, so grant and save before awaiting anything else.
 - If a handler throws, the purchase isn't finished and the store delivers it again.
 - If nobody listens yet (no `PurchaseSucceeded` handler and no `PurchaseAsync` waiting, e.g. a purchase the store
   delivers at launch before the shop is created), the purchase is kept and not finished: the first handler added to

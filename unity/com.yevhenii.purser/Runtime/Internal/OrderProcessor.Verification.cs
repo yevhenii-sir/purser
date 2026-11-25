@@ -211,11 +211,35 @@ namespace Purser
                 case ReportOutcome.NoReceiver:
                     m_Held[order.Key] = new HeldResult { Order = order, Result = result };
                     break;
+                case ReportOutcome.Awaited:
+                    FinishAfterCaller(order);
+                    break;
                 default:
                     m_Store.Finish(order, true);
                     break;
             }
             _ = m_Observed.VerifyAsync(purchase.Key);
+        }
+
+        /// <summary>
+        /// Finishes a purchase the game grants itself after the code that follows <c>await PurchaseAsync(...)</c> ran
+        /// (up to its next await): that code is posted to the main thread when the result is set (or ran inline), and
+        /// this is posted behind it. If the app dies in between, the store delivers the purchase again.
+        /// </summary>
+        private void FinishAfterCaller(StoreOrder order)
+        {
+            var main = SynchronizationContext.Current;
+            if (main == null)
+            {
+                m_Store.Finish(order, true);
+                return;
+            }
+            main.Post(_ =>
+            {
+                // Disposed meanwhile: left unfinished, the store delivers it again on the next launch.
+                if (!m_Context.IsDisposed)
+                    m_Store.Finish(order, true);
+            }, null);
         }
 
         /// <summary>An order that arrives while the products are being fetched (the store delivers unfinished purchases
@@ -313,6 +337,10 @@ namespace Purser
                                 m_Log.Warning($"Nobody received {order} (no PurchaseSucceeded handler and no PurchaseAsync " +
                                               "waiting): it is not finished in the store until a handler is added.");
                                 m_Held[order.Key] = new HeldResult { Order = order, Result = result };
+                                break;
+                            case ReportOutcome.Awaited:
+                                // Only the caller of PurchaseAsync got it: it grants in its code after the await.
+                                FinishAfterCaller(order);
                                 break;
                             default:
                                 m_Store.Finish(order, true);

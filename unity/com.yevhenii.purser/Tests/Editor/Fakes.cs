@@ -284,6 +284,39 @@ namespace Purser.Tests
         }
     }
 
+    /// <summary>
+    /// The main thread's queue of posted callbacks, run when the test says so (Unity's context runs them on the next
+    /// editor update). <see cref="Install"/> makes it the current context until disposed.
+    /// </summary>
+    internal sealed class MainThreadQueue : SynchronizationContext, IDisposable
+    {
+        private readonly Queue<(SendOrPostCallback Callback, object State)> m_Posted = new Queue<(SendOrPostCallback, object)>();
+        private SynchronizationContext m_Previous;
+
+        public static MainThreadQueue Install()
+        {
+            var q = new MainThreadQueue { m_Previous = Current };
+            SetSynchronizationContext(q);
+            return q;
+        }
+
+        public override void Post(SendOrPostCallback d, object state) => m_Posted.Enqueue((d, state));
+
+        public override void Send(SendOrPostCallback d, object state) => d(state);
+
+        /// <summary>Runs what was posted, and what that posts, in order.</summary>
+        public void RunAll()
+        {
+            while (m_Posted.Count > 0)
+            {
+                var (callback, state) = m_Posted.Dequeue();
+                callback(state);
+            }
+        }
+
+        public void Dispose() => SetSynchronizationContext(m_Previous);
+    }
+
     internal static class Sync
     {
         /// <summary>With fakes everything completes synchronously; fail loudly if not.</summary>

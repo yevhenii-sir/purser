@@ -9,8 +9,12 @@ namespace Purser
     /// <summary>What happened to a purchase result handed to the game (<see cref="IOrderProcessorHost.Report"/>).</summary>
     internal enum ReportOutcome
     {
-        /// <summary>The purchase's waiter (<c>PurchaseAsync</c>) or a handler of its event got it.</summary>
+        /// <summary>A handler of its event got it (and the purchase's waiter, if any).</summary>
         Received,
+
+        /// <summary>Only the purchase's waiter got it: the caller of <c>PurchaseAsync</c>, whose code after the await
+        /// runs after this report (posted to the main thread, or inline).</summary>
+        Awaited,
 
         /// <summary>Nobody waited for the purchase and its event has no handler.</summary>
         NoReceiver,

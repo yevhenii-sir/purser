@@ -21,6 +21,13 @@ also compiles and passes its tests without Unity IAP and with Unity IAP 4.13.
   retried forever). Connecting to Unity IAP is bounded by the operation timeout.
 - Tools → Purser → Add Bootstrap To Scene used an API obsolete in Unity 6.6 (a compiler warning); it uses
   `FindAnyObjectByType` everywhere now.
+- A purchase the game grants itself (`GrantOnClient`) that only `await PurchaseAsync(...)` received (no
+  `PurchaseSucceeded` handler) is finished in the store after the caller's code that follows the await has run, not
+  before it: `PurchaseAsync` returns the purchase's own task and the finish is posted to the main thread behind that
+  code. A crash in between leaves the purchase for the store to deliver again. With a handler it is finished right
+  after the handler, as before.
+- `RestoreAsync` with several stores (`CompositeStoreAdapter`) sends each store's purchases to that store's build
+  (`BillingConfig.AppIdFor`), as verification does; all went to the main store's build.
 
 ### Changed
 

@@ -131,9 +131,10 @@ namespace Purser.Tests
         }
 
         [Test]
-        public void ClientGrant_AwaitedPurchaseWithoutSubscribers_IsFinished()
+        public void ClientGrant_AwaitedPurchaseWithoutSubscribers_IsFinishedAfterTheCallersCode()
         {
             using (var h = new ServiceHarness { Subscribe = false })
+            using (var main = MainThreadQueue.Install())
             {
                 h.Start();
                 h.Api.DefaultVerify = ClientGrant;
@@ -143,7 +144,54 @@ namespace Purser.Tests
 
                 Assert.AreEqual(PurchaseStatus.Success, result.Status);
                 Assert.IsTrue(result.GrantOnClient, "the caller grants it from the result");
+                Assert.IsEmpty(h.Store.Confirmed, "not finished before the caller's code ran");
+                main.RunAll();
                 Assert.AreEqual(1, h.Store.Confirmed.Count);
+            }
+        }
+
+        [Test]
+        public void ClientGrant_ThePurchaseIsFinishedOnlyAfterTheCodeAfterTheAwaitGranted()
+        {
+            using (var h = new ServiceHarness { Subscribe = false })
+            using (var main = MainThreadQueue.Install())
+            {
+                h.Start();
+                h.Api.DefaultVerify = ClientGrant;
+                var order = FakeStore.GoogleOrder("gems_100");
+                var confirmedWhenGranted = -1;
+                async Task BuyAndGrant()
+                {
+                    var r = await h.Service.PurchaseAsync("gems_100");
+                    if (r.GrantOnClient)
+                        confirmedWhenGranted = h.Store.Confirmed.Count;
+                }
+
+                var buying = BuyAndGrant();
+                Assert.IsFalse(buying.IsCompleted, "the store has not delivered yet");
+                h.Store.Deliver(order);
+                main.RunAll();
+
+                Assert.IsTrue(buying.IsCompleted);
+                Assert.AreEqual(0, confirmedWhenGranted, "the reward is granted before the store purchase is consumed");
+                Assert.AreEqual(1, h.Store.Confirmed.Count);
+            }
+        }
+
+        [Test]
+        public void ClientGrant_WithAHandler_IsFinishedRightAfterIt()
+        {
+            using (var h = new ServiceHarness { Subscribe = false })
+            using (MainThreadQueue.Install())
+            {
+                h.Start();
+                h.Api.DefaultVerify = ClientGrant;
+                h.Store.OnPurchase = id => FakeStore.GoogleOrder(id);
+                h.Service.PurchaseSucceeded += _ => { };
+
+                Sync.Run(h.Service.PurchaseAsync("gems_100"));
+
+                Assert.AreEqual(1, h.Store.Confirmed.Count, "the handler granted it");
             }
         }
 

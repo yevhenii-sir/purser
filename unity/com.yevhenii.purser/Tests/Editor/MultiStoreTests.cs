@@ -97,6 +97,34 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void Restore_SendsEachStoresPurchasesToItsOwnBuild()
+        {
+            m_Config.WithBuild(BillingStores.Amazon, "com.test.game.amazon");
+            var amazon = new FakeStore { Platform = BillingPlatform.Amazon };
+            m_Google.Owned.Add(FakeStore.GoogleOrder("no_ads", token: "google-token"));
+            amazon.Owned.Add(new StoreOrder(BillingPlatform.Amazon, "no_ads", "amzn-receipt-1", "amzn-receipt-1", storeUserId: "amzn-user"));
+            m_Service = new BillingService(m_Config, new BillingDependencies
+            {
+                Store = new CompositeStoreAdapter(m_Google, new FuncStoreRouter((product, loaded) => null), amazon),
+                Api = m_Api,
+                UserIdProvider = new StaticUserIdProvider("player-1"),
+                Storage = new MemoryBillingStorage(),
+                CreateLifecycleHook = false,
+                IsEditor = false,
+                Delay = (d, ct) => Task.CompletedTask,
+            });
+            Sync.Run(m_Service.InitializeAsync());
+            m_Api.RestoreResult = new ApiResult<RestoreResponse>(200, new RestoreResponse { CustomerInfo = FakeApi.Info(null, null) }, null);
+
+            Sync.Run(m_Service.RestoreAsync());
+
+            var byApp = m_Api.RestoreRequests.ToDictionary(r => r.AppId, r => r.Purchases.Single().PurchaseToken);
+            CollectionAssert.AreEquivalent(new[] { "com.test.game", "com.test.game.amazon" }, byApp.Keys);
+            Assert.AreEqual("google-token", byApp["com.test.game"]);
+            Assert.AreEqual("amzn-receipt-1", byApp["com.test.game.amazon"]);
+        }
+
+        [Test]
         public void CurrencyRouter_PicksXsollaForRublePrices()
         {
             var router = new CurrencyStoreRouter(BillingStores.Xsolla, "rub");

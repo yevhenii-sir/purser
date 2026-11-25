@@ -25,35 +25,41 @@ namespace Purser
             PurchaseWithPromotionalOfferAsync(productId, offerId, null, ct);
 
         /// <inheritdoc/>
-        public async Task<PurchaseResult> PurchaseWithPromotionalOfferAsync(string productId, string offerId, Paywall paywall,
-            CancellationToken ct = default)
+        public Task<PurchaseResult> PurchaseWithPromotionalOfferAsync(string productId, string offerId, Paywall paywall,
+            CancellationToken ct = default) =>
+            StartPromotionalPurchaseAsync(productId, offerId, paywall, ct).Unwrap();
+
+        /// <summary>Signs the offer and starts the purchase; the inner task is the waiter's (see <see cref="PurchaseWaiter"/>).</summary>
+        private async Task<Task<PurchaseResult>> StartPromotionalPurchaseAsync(string productId, string offerId, Paywall paywall,
+            CancellationToken ct)
         {
+            Task<PurchaseResult> Done(PurchaseResult r) => Task.FromResult(r);
             if (!IsInitialized || m_Context.IsDisposed)
-                return new PurchaseResult(PurchaseStatus.NotInitialized, productId, message: "billing is not initialized");
+                return Done(new PurchaseResult(PurchaseStatus.NotInitialized, productId, message: "billing is not initialized"));
             if (m_IsEditor && Platform != BillingPlatform.Apple)
             {
                 m_Log.Warning($"Promotional offer {offerId} needs an App Store device; buying {productId} without it in the Editor.");
-                return await PurchaseAsync(productId, new PurchaseOptions { Paywall = paywall }, ct);
+                return PurchaseAsync(productId, new PurchaseOptions { Paywall = paywall }, ct);
             }
             RequireAppStore();
 
             var config = m_Config.FindById(productId) ?? m_Config.FindByStoreId(productId);
             if (config == null)
-                return new PurchaseResult(PurchaseStatus.Failed, productId, message: "unknown product");
+                return Done(new PurchaseResult(PurchaseStatus.Failed, productId, message: "unknown product"));
             var storeId = config.StoreId(m_Store.Store);
             if (config.type != BillingProductType.Subscription)
-                return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId,
-                    message: "promotional offers apply to subscriptions only");
+                return Done(new PurchaseResult(PurchaseStatus.Failed, config.id, storeId,
+                    message: "promotional offers apply to subscriptions only"));
             if (string.IsNullOrEmpty(offerId))
-                return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: "offer id is empty");
+                return Done(new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: "offer id is empty"));
             var user = SyncUser();
             if (user == null)
-                return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: "user id is not set");
+                return Done(new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: "user id is not set"));
             if (!(m_Store is IApplePromotionalOfferStore offerStore))
-                return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId,
-                    message: "the store adapter does not support promotional offers");
+                return Done(new PurchaseResult(PurchaseStatus.Failed, config.id, storeId,
+                    message: "the store adapter does not support promotional offers"));
             if (m_Waiters.ContainsKey(storeId))
-                return new PurchaseResult(PurchaseStatus.AlreadyInProgress, config.id, storeId);
+                return Done(new PurchaseResult(PurchaseStatus.AlreadyInProgress, config.id, storeId));
 
             // Hold the product while the signature is fetched, so a second tap does not start another purchase.
             var waiter = StartWaiting(storeId);
@@ -63,8 +69,8 @@ namespace Purser
                 if (offer == null || m_Context.IsDisposed || SyncUser() != user)
                 {
                     m_Waiters.Remove(storeId);
-                    return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId,
-                        message: error ?? "the player changed while the offer was being signed");
+                    return Done(new PurchaseResult(PurchaseStatus.Failed, config.id, storeId,
+                        message: error ?? "the player changed while the offer was being signed"));
                 }
                 BindAccount();
                 // The offer id goes to /verify (revenue by offer), the paywall to the A/B test results.
@@ -77,10 +83,10 @@ namespace Purser
                 m_Orders.ClearPurchaseContext(storeId);
                 if (e is OperationCanceledException)
                     throw;
-                return new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: e.Message);
+                return Done(new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: e.Message));
             }
 
-            return await AwaitResultAsync(storeId, waiter, ct);
+            return AwaitResult(storeId, waiter, ct);
         }
 
         private void RequireAppStore()
