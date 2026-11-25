@@ -25,7 +25,7 @@ pub const LIST_MAX_LIMIT: usize = 1000;
 const FIRST_WINDOW_MICROS: i64 = 3_600_000_000;
 const WINDOW_GROWTH: i64 = 4;
 /// Ledger rows one `admin_list_purchases` call reads at most (the page goes on in the next call).
-pub const LIST_SCAN_LIMIT: usize = 20_000;
+pub const LIST_SCAN_LIMIT: usize = 5_000;
 
 /// A ledger row with the field names of the `purchase` columns, so the page reads it like `/sql` rows.
 pub fn purchase_row(p: &Purchase) -> Value {

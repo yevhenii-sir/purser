@@ -70,7 +70,10 @@ interface Profile {
   players: PlayerRow[]
   /** Billing country of the newest purchase that has one ("" if none). */
   store_country: string
+  /** The newest purchases, and older ones that back an entitlement or need attention. */
   purchases: ProfilePurchase[]
+  /** Every purchase of the player (`purchases` may list fewer). */
+  purchases_total: number
 }
 
 interface PlayerRow {
@@ -417,7 +420,14 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
         </Section>
       )}
 
-      <Section title="Purchases" description="Every ledger row of this player, newest first. Click a row for its history.">
+      <Section
+        title="Purchases"
+        description={
+          data.purchases_total > data.purchases.length
+            ? `The newest of ${data.purchases_total} ledger rows of this player, and older ones that back an entitlement or are not finished. Click a row for its history.`
+            : "Every ledger row of this player, newest first. Click a row for its history."
+        }
+      >
         <RichTable
           rows={data.purchases}
           onRowClick={(r) => setOpen(r.id)}

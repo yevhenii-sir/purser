@@ -1537,7 +1537,7 @@ fn numbers_of(mut r: Value) -> Value {
 
 #[test]
 fn the_full_report_counted_in_the_background_equals_one_counted_at_once() {
-    use crate::report_job::{revenue_report_job, revenue_report_row, revenue_report_visit};
+    use crate::report_job::{revenue_report_job, revenue_report_visit};
     let w = World::new();
     paying_players(&w);
     w.as_admin(false);
@@ -1553,7 +1553,7 @@ fn the_full_report_counted_in_the_background_equals_one_counted_at_once() {
         steps.set(steps.get() + 1);
     }
     assert!(steps.get() > 3, "several small steps ({})", steps.get());
-    assert_eq!(w.read(|tx| (tx.db.revenue_report_row().iter().count(), tx.db.revenue_report_visit().iter().count())), (0, 0), "cleaned up");
+    assert_eq!(w.read(|tx| tx.db.revenue_report_visit().iter().count()), 0, "cleaned up");
     let background = crate::revenue::kept_stats(&mut w.ctx(), "{}").unwrap();
     assert_eq!(background["kept"], true);
     assert_eq!(numbers_of(background), numbers_of(at_once));
@@ -2043,6 +2043,27 @@ fn admin_revoke(w: &World, purchase_id: &str) -> Value {
 
 fn profile(w: &World, user: &str) -> Value {
     serde_json::from_str(&crate::support::admin_user_profile(&mut w.ctx(), user.into())).unwrap()
+}
+
+#[test]
+fn the_player_page_lists_the_newest_purchases_and_every_owned_one() {
+    let w = World::new();
+    w.as_admin(false);
+    let product = w.read(|tx| tx.db.product().key().find(crate::product_key(APP, "no_ads")).unwrap());
+    w.write(|tx| {
+        let mut old = Purchase::new(store::GOOGLE, "GPA.old", APP, &product, "player-1", NOW_MICROS - 1000 * HOUR_MICROS);
+        old.status = status::COMPLETED.into();
+        old.was_granted = true;
+        old.next_attempt_at_micros = 0;
+        crate::ledger::insert_purchase(tx, old);
+    });
+    for i in 0..510 {
+        w.put_purchase(&format!("google:{i}"), APP, status::COMPLETED, 1 + i % 50);
+    }
+    let v = profile(&w, "player-1");
+    let ids: Vec<&str> = v["purchases"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!((v["purchases_total"].as_u64(), ids.len()), (Some(511), 501));
+    assert_eq!(ids.last(), Some(&"google:GPA.old"), "the old purchase behind an entitlement is listed");
 }
 
 fn find_player(w: &World, query: &str) -> Value {
@@ -9740,3 +9761,6 @@ fn a_subscription_code_lasts_its_duration_and_expired_codes_are_refused() {
     });
     assert!(left.len() == 1 && left[0].starts_with("erased:"), "{left:?}");
 }
+
+#[path = "profile.rs"]
+mod profile;

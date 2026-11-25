@@ -45,6 +45,7 @@ mod promo;
 mod refund_sweep;
 mod report_job;
 mod revenue;
+mod scan;
 mod server_api;
 mod settings;
 mod steam;

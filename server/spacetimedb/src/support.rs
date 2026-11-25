@@ -163,12 +163,17 @@ fn fx_table(tx: &TxContext, rows: &[Purchase]) -> FxTable {
     crate::revenue::fx_table(tx, from - 31, *to)
 }
 
+/// Purchases of a player the profile lists in full (newest first); older ones are listed only when
+/// they back an entitlement or the worker is not done with them. A player with thousands of
+/// purchases would otherwise hold the database for the whole list.
+const PROFILE_PURCHASES: usize = 500;
+
 /// Everything support needs about one `user_id`, across every app of the database.
 /// `only`: the builds an admin limited to some apps may see (`None` = all).
 pub fn profile(tx: &TxContext, user_id: &str, only: Option<&BTreeSet<String>>) -> Value {
     let visible = |app_id: &str| only.is_none_or(|o| o.contains(app_id));
     let mut rows: Vec<Purchase> = tx.db.purchase().user_id().filter(user_id).filter(|p| visible(&p.app_id)).collect();
-    rows.sort_by_key(|p| std::cmp::Reverse((p.created_at_micros, p.id.clone())));
+    rows.sort_by(|a, b| (b.created_at_micros, &b.id).cmp(&(a.created_at_micros, &a.id)));
     let apps: Vec<GameApp> = tx.db.game_app().iter().filter(|a| visible(&a.app_id)).collect();
 
     let attribution: Vec<Value> = apps
@@ -229,7 +234,14 @@ pub fn profile(tx: &TxContext, user_id: &str, only: Option<&BTreeSet<String>>) -
         "players": players,
         // Billing country of the newest purchase that has one.
         "store_country": rows.iter().find(|p| !p.country.is_empty()).map(|p| p.country.clone()).unwrap_or_default(),
-        "purchases": rows.iter().map(|p| purchase_json(tx, p)).collect::<Vec<_>>(),
+        // The newest ones, and every older one that backs an entitlement or needs attention.
+        "purchases": rows
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| *i < PROFILE_PURCHASES || crate::ledger_index::is_listed(p) || p.next_attempt_at_micros > 0)
+            .map(|(_, p)| purchase_json(tx, p))
+            .collect::<Vec<_>>(),
+        "purchases_total": rows.len(),
     })
 }
 

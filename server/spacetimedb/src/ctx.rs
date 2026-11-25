@@ -78,6 +78,23 @@ thread_local! {
     pub static TEST_ELAPSED_MICROS: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
 }
 
+// The profile (`profile.rs`) runs the batched jobs with the module's batch sizes.
+#[cfg(test)]
+thread_local! {
+    pub static REAL_BATCHES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The size of a batch of a stepped job: `test` in module tests (a few rows show the stepping),
+/// `real` in the module.
+pub fn batch(test: usize, real: usize) -> usize {
+    #[cfg(test)]
+    if !REAL_BATCHES.with(|c| c.get()) {
+        return test;
+    }
+    let _ = test;
+    real
+}
+
 /// A new request or worker run in tests: no time has passed in it yet.
 #[cfg(test)]
 pub fn start_test_call() {

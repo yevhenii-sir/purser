@@ -48,7 +48,6 @@ SKIP = {
     # Revenue reports being counted in the background, and what they read: counted again on request.
     "revenue_report_job",
     "revenue_report_tick",
-    "revenue_report_row",
     "revenue_report_visit",
     "store_create_tick",
     # Queue drainers running now and their next runs (the worker starts them again).

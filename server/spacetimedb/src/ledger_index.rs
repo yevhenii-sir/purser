@@ -274,6 +274,8 @@ pub fn start_reindex(tx: &ReducerContext) {
 pub fn reindex_step(tx: &ReducerContext) -> bool {
     let Some(state) = settings::get(tx, key::LEDGER_REINDEX) else { return false };
     if state == CLEARING {
+        // Each step reads these in-memory tables whole (a table scan), which costs little next to
+        // deleting a batch of their rows.
         let pending: Vec<String> = tx.db.pending_purchase().iter().take(REINDEX_BATCH).map(|r| r.purchase_id).collect();
         let owned: Vec<String> = tx.db.owned_purchase().iter().take(REINDEX_BATCH).map(|r| r.purchase_id).collect();
         let cleared = pending.len() < REINDEX_BATCH && owned.len() < REINDEX_BATCH;
@@ -289,22 +291,16 @@ pub fn reindex_step(tx: &ReducerContext) -> bool {
         return true;
     }
     let from: i64 = state.parse().unwrap_or(i64::MIN);
-    let rows: Vec<Purchase> = tx.db.purchase().created_at_micros().filter(from..).take(REINDEX_BATCH).collect();
-    let last = rows.last().map(|p| p.created_at_micros);
-    let full = rows.len() == REINDEX_BATCH;
-    for p in &rows {
+    // Whole windows of `created_at` (never part of one microsecond), read without the rest of the
+    // ledger (`crate::scan`).
+    let now = crate::ctx::tx_now_micros(tx);
+    let read = crate::scan::first_rows(from, now, REINDEX_BATCH, 3_600_000_000, |lo, hi| tx.db.purchase().created_at_micros().filter(lo..=hi).collect::<Vec<Purchase>>());
+    for p in &read.rows {
         sync(tx, p);
     }
-    match last {
-        Some(last) if full && last > from => settings::set(tx, key::LEDGER_REINDEX, &last.to_string()),
-        Some(last) if full => {
-            // A whole batch created in the same microsecond (an import): take all of them at once.
-            for p in tx.db.purchase().created_at_micros().filter(last) {
-                sync(tx, &p);
-            }
-            settings::set(tx, key::LEDGER_REINDEX, &last.saturating_add(1).to_string());
-        }
-        _ => {
+    match read.next {
+        Some(next) => settings::set(tx, key::LEDGER_REINDEX, &next.to_string()),
+        None => {
             settings::remove(tx, key::LEDGER_REINDEX);
             return false;
         }

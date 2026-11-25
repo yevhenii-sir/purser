@@ -15,7 +15,7 @@ use purser_core::fx::{self, FxTable, Rates};
 use purser_core::integrations::attribution_key;
 use purser_core::model::{kind, status, store};
 use purser_core::revenue::{
-    self as rv, ChainRow, Commission, CountryRow, Delta, DayRow, LedgerRow, PeriodFacts, Phase, Query, Rebuild, ReportInput, SubRow,
+    self as rv, ChainRow, Commission, CountryRow, Delta, DayRow, LedgerAcc, LedgerCtx, LedgerRow, PeriodFacts, Phase, Query, Rebuild, ReportInput, SubRow,
 };
 use purser_core::time::{day_of_micros, format_day, parse_day, MICROS_PER_DAY};
 use serde::{Deserialize, Serialize};
@@ -34,12 +34,16 @@ const FX_POINT_LOOKUP_DAYS: i32 = 1000;
 const MAX_RANGE_DAYS: i32 = 800;
 /// Rebuild: aggregate rows deleted, purchases counted per transaction, and transactions per worker
 /// run. Tiny in tests, so their small ledgers still take several batches.
-const REBUILD_CLEAR_BATCH: usize = if cfg!(test) { 4 } else { 5_000 };
-const REBUILD_BATCH: usize = if cfg!(test) { 7 } else { 2_500 };
+fn rebuild_clear_batch() -> usize {
+    crate::ctx::batch(4, 2_000)
+}
+fn rebuild_batch() -> usize {
+    crate::ctx::batch(7, 2_500)
+}
 /// Rebuild steps the worker runs itself in tests; on a server the steps run from
 /// [`revenue_rebuild_step`], one per `REBUILD_TICK`.
 const REBUILD_STEPS_PER_RUN: usize = 8;
-/// A step is one transaction of up to `REBUILD_BATCH` purchases (~0.1 s for 2,500). One per second
+/// A step is one transaction of up to [`rebuild_batch`] purchases (~0.1 s for 2,500). One per second
 /// rebuilds 200k purchases in about two minutes, and nothing waits longer than one step: a longer
 /// run inside the worker procedure would hold every other call for its whole length.
 const REBUILD_TICK: std::time::Duration = std::time::Duration::from_secs(1);
@@ -522,26 +526,77 @@ fn count_purchases(tx: &ReducerContext, rows: &[Purchase]) {
 
 /// Deletes a batch of old aggregates (of the rebuilt builds); the ledger is counted when none are left.
 fn clear_step(tx: &ReducerContext, apps: &[String]) {
-    let daily: Vec<String> = if apps.is_empty() {
-        tx.db.revenue_daily().iter().take(REBUILD_CLEAR_BATCH).map(|r| r.key).collect()
-    } else {
-        apps.iter().flat_map(|a| tx.db.revenue_daily().app_day().filter((a.as_str(), i32::MIN..)).map(|r| r.key)).take(REBUILD_CLEAR_BATCH).collect()
+    let today = today(tx);
+    let batch = rebuild_clear_batch();
+    // The oldest days first, in windows of days (a scan of the rest would read every row).
+    let first = |read: &dyn Fn(i32, i32) -> Vec<String>, n: usize| -> Vec<String> {
+        let mut keys = crate::scan::first_days(i32::MIN, today, n, 30, read).rows;
+        keys.truncate(n);
+        keys
     };
+    let all = apps.is_empty();
+    let daily = first(
+        &|lo, hi| {
+            if all {
+                tx.db.revenue_daily().day().filter(lo..=hi).map(|r| r.key).collect()
+            } else {
+                apps.iter().flat_map(|a| tx.db.revenue_daily().app_day().filter((a.as_str(), lo..=hi)).map(|r| r.key).collect::<Vec<_>>()).collect()
+            }
+        },
+        batch,
+    );
     for k in &daily {
         tx.db.revenue_daily().key().delete(k);
     }
-    let room = REBUILD_CLEAR_BATCH - daily.len();
-    let country: Vec<String> = if apps.is_empty() {
-        tx.db.revenue_country_daily().iter().take(room).map(|r| r.key).collect()
+    let room = batch - daily.len();
+    let country = if room == 0 {
+        Vec::new()
     } else {
-        apps.iter().flat_map(|a| tx.db.revenue_country_daily().app_day().filter((a.as_str(), i32::MIN..)).map(|r| r.key)).take(room).collect()
+        first(
+            &|lo, hi| {
+                if all {
+                    tx.db.revenue_country_daily().day().filter(lo..=hi).map(|r| r.key).collect()
+                } else {
+                    apps.iter().flat_map(|a| tx.db.revenue_country_daily().app_day().filter((a.as_str(), lo..=hi)).map(|r| r.key).collect::<Vec<_>>()).collect()
+                }
+            },
+            room,
+        )
     };
     for k in &country {
         tx.db.revenue_country_daily().key().delete(k);
     }
-    let phase = if daily.len() + country.len() < REBUILD_CLEAR_BATCH { Phase::Scanning(None) } else { Phase::Clearing };
+    let phase = if daily.len() + country.len() < batch { Phase::Scanning(None) } else { Phase::Clearing };
     set_rebuild_state(tx, &Rebuild::new(phase, apps.to_vec()));
 }
+
+/// The next `batch` purchases (of `apps`; empty: every build) from `start` on that `keep` lets
+/// through, in (created, id) order, and whether they are the last ones. Read in windows of
+/// `created_at` ([`crate::scan`]): a scan from `start` to the end would read the rest of the ledger
+/// in every step. The first `batch + 1` rows of each build hold the next batch of all of them.
+pub(crate) fn next_purchases(tx: &ReducerContext, start: i64, apps: &[String], batch: usize, keep: impl Fn(&Purchase) -> bool) -> (Vec<Purchase>, bool) {
+    let now = crate::ctx::tx_now_micros(tx);
+    let mut complete = true;
+    let mut read = |rows: crate::scan::Rows<Purchase>| {
+        complete &= rows.next.is_none();
+        rows.rows
+    };
+    let mut rows: Vec<Purchase> = if apps.is_empty() {
+        read(crate::scan::first_rows(start, now, batch + 1, HOUR_MICROS, |lo, hi| tx.db.purchase().created_at_micros().filter(lo..=hi).filter(|p| keep(p)).collect()))
+    } else {
+        apps.iter()
+            .flat_map(|a| read(crate::scan::first_rows(start, now, batch + 1, HOUR_MICROS, |lo, hi| tx.db.purchase().app_created().filter((a.as_str(), lo..=hi)).filter(|p| keep(p)).collect())))
+            .collect()
+    };
+    rows.sort_by(|a, b| (a.created_at_micros, a.id.as_str()).cmp(&(b.created_at_micros, b.id.as_str())));
+    if rows.len() > batch {
+        rows.truncate(batch);
+        complete = false;
+    }
+    (rows, complete)
+}
+
+const HOUR_MICROS: i64 = 3_600_000_000;
 
 /// Counts the next batch of the ledger (of the rebuilt builds) after `cursor`. True when the
 /// whole ledger is counted.
@@ -551,30 +606,7 @@ fn scan_step(tx: &ReducerContext, cursor: Option<(i64, String)>, apps: &[String]
         Some((created, last)) => !(p.created_at_micros == *created && p.id.as_str() <= last.as_str()),
         None => true,
     };
-    let mut rows: Vec<Purchase> = Vec::new();
-    let mut complete = true;
-    if apps.is_empty() {
-        // In `created_at_micros` order; rows of the same microsecond are ordered by id below, so a
-        // batch always ends after a whole group (read) and the cursor is exact.
-        for p in tx.db.purchase().created_at_micros().filter(start..).filter(|p| after_cursor(p)) {
-            if rows.len() >= REBUILD_BATCH && rows.last().is_some_and(|r| r.created_at_micros != p.created_at_micros) {
-                complete = false;
-                break;
-            }
-            rows.push(p);
-        }
-    } else {
-        // The first `REBUILD_BATCH + 1` rows of each build after the cursor hold the next batch of
-        // all of them in (created, id) order.
-        for a in apps {
-            rows.extend(tx.db.purchase().app_created().filter((a.as_str(), start..)).filter(|p| after_cursor(p)).take(REBUILD_BATCH + 1));
-        }
-    }
-    rows.sort_by(|a, b| (a.created_at_micros, a.id.as_str()).cmp(&(b.created_at_micros, b.id.as_str())));
-    if rows.len() > REBUILD_BATCH {
-        rows.truncate(REBUILD_BATCH);
-        complete = false;
-    }
+    let (rows, complete) = next_purchases(tx, start, apps, rebuild_batch(), after_cursor);
     count_purchases(tx, &rows);
     match rows.last().filter(|_| !complete) {
         Some(last) => {
@@ -747,12 +779,17 @@ pub fn admin_delete_fx_override(ctx: &ReducerContext, currency: String) -> Resul
 
 /// Subscriptions running now per (app, product, environment, currency): paid ones, free trials
 /// and the monthly price of the paid ones. Renewals of one subscription are counted once (latest row).
-fn active_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> BTreeMap<(String, String, String, String), Running> {
+/// The subscriptions players own now (of `apps`; empty: all), read once for every count of a
+/// report: an in-memory list, not every row whose period has not ended.
+fn owned_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> Vec<Purchase> {
+    crate::ledger_index::owned_in(tx, apps).into_iter().filter(|p| p.kind == kind::SUBSCRIPTION && !not_a_sale(p)).collect()
+}
+
+fn active_subscriptions(tx: &ReducerContext, owned: &[Purchase]) -> BTreeMap<(String, String, String, String), Running> {
     let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
-    let mut latest: BTreeMap<(String, String), Purchase> = BTreeMap::new();
-    // What players own now (an in-memory list), not every row whose period has not ended.
-    for p in crate::ledger_index::owned_in(tx, apps) {
-        if p.kind != kind::SUBSCRIPTION || not_a_sale(&p) || p.expires_at_ms <= now_ms {
+    let mut latest: BTreeMap<(String, String), &Purchase> = BTreeMap::new();
+    for p in owned {
+        if p.expires_at_ms <= now_ms {
             continue;
         }
         let k = (p.app_id.clone(), p.original_transaction_id.clone());
@@ -769,7 +806,7 @@ fn active_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> BTreeMa
             tx.db.product().key().find(crate::product_key(&p.app_id, &p.product_id)).map(|pr| purser_core::catalog::period_days(&pr.period)).unwrap_or(0)
         });
         let period = if catalog > 0 { catalog } else { rv::guess_period_days(p.expires_at_ms - p.created_at_micros / 1000) };
-        let e = out.entry((p.app_id, p.product_id, p.environment, p.currency)).or_default();
+        let e = out.entry((p.app_id.clone(), p.product_id.clone(), p.environment.clone(), p.currency.clone())).or_default();
         if p.trial {
             e.trials += 1;
         } else {
@@ -790,13 +827,11 @@ struct Running {
 
 /// Subscriptions that give access now, by renewal state: (auto-renew off, in a grace period,
 /// billing issue). One per subscription (its latest row).
-fn subscription_states(tx: &ReducerContext, apps: &BTreeSet<String>, include_sandbox: bool) -> (u32, u32, u32) {
+fn subscription_states(tx: &ReducerContext, owned: &[Purchase], include_sandbox: bool) -> (u32, u32, u32) {
     let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
-    let mut latest: BTreeMap<(String, String), Purchase> = BTreeMap::new();
-    for p in crate::ledger_index::owned_in(tx, apps) {
-        let skip = p.kind != kind::SUBSCRIPTION
-            || not_a_sale(&p)
-            || (p.access_until_ms() != 0 && p.access_until_ms() <= now_ms)
+    let mut latest: BTreeMap<(String, String), &Purchase> = BTreeMap::new();
+    for p in owned {
+        let skip = (p.access_until_ms() != 0 && p.access_until_ms() <= now_ms)
             || (!include_sandbox && p.environment == purser_core::model::environment::SANDBOX);
         if skip {
             continue;
@@ -820,7 +855,7 @@ fn snapshot_subscriptions(tx: &ReducerContext, day: i32) {
         settings::set(tx, key::SUB_SNAPSHOT_DAY, &day.to_string());
         return;
     }
-    for ((app_id, product_id, environment, currency), Running { active, trials, monthly_micros }) in active_subscriptions(tx, &BTreeSet::new()) {
+    for ((app_id, product_id, environment, currency), Running { active, trials, monthly_micros }) in active_subscriptions(tx, &owned_subscriptions(tx, &BTreeSet::new())) {
         let row = SubscriptionDaily {
             key: row_key(day, &app_id, &product_id, &environment, &currency),
             day,
@@ -1019,7 +1054,7 @@ pub(crate) struct StatsQuery {
     #[serde(default)]
     game_key: String,
     #[serde(default)]
-    include_sandbox: bool,
+    pub(crate) include_sandbox: bool,
     /// Only the totals, daily series and per-app numbers, from the aggregates alone.
     #[serde(default)]
     summary: bool,
@@ -1050,48 +1085,122 @@ fn month_start(month: i32) -> i32 {
     parse_day(&format!("{}-01", rv::format_month(month))).unwrap_or(0)
 }
 
-/// Store purchases of the kept apps that `purser_core::revenue::ledger_metrics` needs for the
-/// range, read through indexes instead of the whole ledger:
-///
-/// - every purchase from the first day of the month of `from` on (the payer cohorts of the range
-///   count revenue up to now, Apple Ads campaigns and trials are from the range);
-/// - the earlier purchases of the users who paid in the cohort months (their first payment decides
-///   their cohort);
-/// - the earlier periods of the subscriptions whose trial started in the range.
-///
-/// The Apple Ads campaign is looked up (once per user) only for purchases in the range.
-fn ledger_rows(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32) -> Vec<LedgerRow> {
-    let (start_micros, window_end) = window(from, to);
-    let mut reader = RowReader::new(tx, from, to);
+/// The ledger part of the report counted in this call (`analytics` = `full`, a report small
+/// enough to count at once): see [`LedgerPass`].
+fn ledger_acc(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32, include_sandbox: bool) -> LedgerAcc {
+    let (start_micros, _) = window(from, to);
+    let mut pass = LedgerPass::new(tx, apps, from, to, include_sandbox);
+    let mut acc = LedgerAcc::default();
     // Selected builds through `(app_id, created_at)`; the whole server through `created_at`.
     let recent: Vec<Purchase> = if apps.is_empty() {
-        tx.db.purchase().created_at_micros().filter(start_micros..).filter(|p| is_sale_of(apps, p)).collect()
+        tx.db.purchase().created_at_micros().filter(start_micros..).collect()
     } else {
-        apps.iter().flat_map(|a| tx.db.purchase().app_created().filter((a.as_str(), start_micros..)).filter(|p| is_sale_of(apps, p)).collect::<Vec<_>>()).collect()
+        apps.iter().flat_map(|a| tx.db.purchase().app_created().filter((a.as_str(), start_micros..)).collect::<Vec<_>>()).collect()
     };
-    let mut payers: BTreeSet<String> = BTreeSet::new();
-    let mut trial_chains: BTreeSet<String> = BTreeSet::new();
-    for p in &recent {
-        if let Some(payer) = payer_of(p, window_end) {
-            payers.insert(payer);
-        }
-        if let Some(chain) = trial_chain_of(p, from, to) {
-            trial_chains.insert(chain);
-        }
+    let (mut payers, mut chains) = (BTreeSet::new(), BTreeSet::new());
+    for p in recent {
+        pass.window_row(&mut acc, p, |chain, value| {
+            if chain {
+                chains.insert(value);
+            } else {
+                payers.insert(value);
+            }
+        });
     }
-    // Earlier rows (created before the window) of those users and subscriptions.
-    let mut earlier: BTreeMap<String, Purchase> = BTreeMap::new();
     for user in &payers {
-        for p in earlier_of_payer(tx, apps, user, start_micros) {
-            earlier.insert(p.id.clone(), p);
+        pass.payer(&mut acc, user);
+    }
+    for chain in &chains {
+        pass.chain(&mut acc, chain);
+    }
+    acc
+}
+
+/// Counts the ledger part of a report (`purser_core::revenue::LedgerAcc`: payer cohorts, LTV,
+/// ARPPU, Apple Ads campaigns, trials), at once ([`ledger_acc`]) or a batch per call
+/// (`report_job`):
+///
+/// - the purchases of the window (from the first day of the month of `from` on) name the payers and
+///   the subscriptions with a trial in the range ([`LedgerPass::window_row`]);
+/// - each payer's purchases are read whole through the `user_id` index ([`LedgerPass::payer`]: the
+///   first payment decides the cohort), each such subscription's through `original_transaction_id`
+///   ([`LedgerPass::chain`]).
+pub(crate) struct LedgerPass<'a> {
+    tx: &'a ReducerContext,
+    apps: &'a BTreeSet<String>,
+    from: i32,
+    to: i32,
+    window_end: i32,
+    reader: RowReader<'a>,
+    fx: FxTable,
+    q: Query,
+    now_micros: i64,
+}
+
+impl<'a> LedgerPass<'a> {
+    pub(crate) fn new(tx: &'a ReducerContext, apps: &'a BTreeSet<String>, from: i32, to: i32, include_sandbox: bool) -> Self {
+        let today = today(tx);
+        LedgerPass {
+            tx,
+            apps,
+            from,
+            to,
+            window_end: window(from, to).1,
+            reader: RowReader::new(tx, from, to),
+            // Cohorts reach up to today: they need the rates after `to` too.
+            fx: load_fx(tx, from, to.max(today)),
+            q: Query { from, to, include_sandbox },
+            now_micros: crate::ctx::tx_now_micros(tx),
         }
     }
-    for chain in &trial_chains {
-        for p in earlier_of_chain(tx, apps, chain, start_micros) {
-            earlier.insert(p.id.clone(), p);
+
+    fn ctx(&self) -> LedgerCtx<'_> {
+        LedgerCtx { fx: &self.fx, q: &self.q, now_micros: self.now_micros }
+    }
+
+    /// A purchase of the window: its payer and its subscription (when it is a trial of the range)
+    /// are to be read whole (`visit(is_subscription, user id or original transaction id)`); a trial
+    /// of no subscription is counted now.
+    pub(crate) fn window_row(&mut self, acc: &mut LedgerAcc, p: Purchase, mut visit: impl FnMut(bool, String)) {
+        if !is_sale_of(self.apps, &p) {
+            return;
+        }
+        if let Some(user) = payer_of(&p, self.window_end) {
+            visit(false, user);
+        }
+        let day = day_of_micros(p.created_at_micros);
+        if p.trial && day >= self.from && day <= self.to {
+            if p.original_transaction_id.is_empty() {
+                let row = self.reader.row(p);
+                acc.add_chain(&[row], &self.ctx());
+            } else {
+                visit(true, p.original_transaction_id);
+            }
         }
     }
-    recent.into_iter().chain(earlier.into_values()).map(|p| reader.row(p)).collect()
+
+    /// Every sale of a payer, per app (a player of one app is one payer).
+    pub(crate) fn payer(&mut self, acc: &mut LedgerAcc, user: &str) {
+        let mut by_payer: BTreeMap<String, Vec<LedgerRow>> = BTreeMap::new();
+        for p in self.tx.db.purchase().user_id().filter(user).filter(|p| is_sale_of(self.apps, p)) {
+            let row = self.reader.row(p);
+            by_payer.entry(rv::payer_key(&row)).or_default().push(row);
+        }
+        for rows in by_payer.values() {
+            acc.add_payer(rows, &self.ctx());
+        }
+    }
+
+    /// Every period of a subscription, per build.
+    pub(crate) fn chain(&mut self, acc: &mut LedgerAcc, chain: &str) {
+        let mut by_app: BTreeMap<String, Vec<LedgerRow>> = BTreeMap::new();
+        for p in self.tx.db.purchase().original_transaction_id().filter(chain).filter(|p| is_sale_of(self.apps, p)) {
+            by_app.entry(p.app_id.clone()).or_default().push(self.reader.row(p));
+        }
+        for rows in by_app.values() {
+            acc.add_chain(rows, &self.ctx());
+        }
+    }
 }
 
 /// The first micro of the month of `from` and the last day of the month of `to`: the window of
@@ -1109,22 +1218,6 @@ pub(crate) fn is_sale_of(apps: &BTreeSet<String>, p: &Purchase) -> bool {
 /// The user of a paid purchase of the window: their first payment decides their cohort.
 pub(crate) fn payer_of(p: &Purchase, window_end: i32) -> Option<String> {
     (p.was_granted && !p.trial && day_of_micros(p.created_at_micros) <= window_end).then(|| p.user_id.clone())
-}
-
-/// The subscription of a trial that started in the range: its earlier periods are read too.
-pub(crate) fn trial_chain_of(p: &Purchase, from: i32, to: i32) -> Option<String> {
-    let day = day_of_micros(p.created_at_micros);
-    (p.trial && day >= from && day <= to && !p.original_transaction_id.is_empty()).then(|| p.original_transaction_id.clone())
-}
-
-/// A payer's sales before the window.
-pub(crate) fn earlier_of_payer(tx: &ReducerContext, apps: &BTreeSet<String>, user: &str, start_micros: i64) -> Vec<Purchase> {
-    tx.db.purchase().user_id().filter(user).filter(|p| p.created_at_micros < start_micros && is_sale_of(apps, p)).collect()
-}
-
-/// A subscription's periods before the window.
-pub(crate) fn earlier_of_chain(tx: &ReducerContext, apps: &BTreeSet<String>, chain: &str, start_micros: i64) -> Vec<Purchase> {
-    tx.db.purchase().original_transaction_id().filter(chain).filter(|p| p.created_at_micros < start_micros && is_sale_of(apps, p)).collect()
 }
 
 /// Turns purchases into report rows; the Apple Ads campaign is looked up once per user, only for
@@ -1282,8 +1375,8 @@ fn report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<serde_js
 pub(crate) enum Heavy {
     /// Read now, in this transaction.
     Live,
-    /// Read before, a batch at a time (`report_job`).
-    Rows(Vec<LedgerRow>),
+    /// Counted before, a batch at a time (`report_job`).
+    Acc(LedgerAcc),
     /// Not counted (`analytics` = `light`): those parts are empty.
     Skip,
 }
@@ -1387,7 +1480,8 @@ pub(crate) fn report_in(
         })
         .collect();
     let skip = matches!(heavy, Heavy::Skip);
-    let active_now: Vec<rv::ActiveNow> = if skip { BTreeMap::new() } else { active_subscriptions(tx, &apps) }
+    let owned = if skip { Vec::new() } else { owned_subscriptions(tx, &apps) };
+    let active_now: Vec<rv::ActiveNow> = active_subscriptions(tx, &owned)
         .into_iter()
         .map(|((_, _, environment, currency), r)| rv::ActiveNow {
             environment,
@@ -1409,19 +1503,17 @@ pub(crate) fn report_in(
         today,
     });
     report["fx"]["overrides"] = json!(tx.db.fx_override().iter().map(|o| (o.currency, o.units_per_usd)).collect::<BTreeMap<_, _>>());
-    let (auto_renew_off, in_grace, billing_issue) = if skip { (0, 0, 0) } else { subscription_states(tx, &apps, q.include_sandbox) };
+    let (auto_renew_off, in_grace, billing_issue) = subscription_states(tx, &owned, q.include_sandbox);
     report["subscriptions"]["auto_renew_off_now"] = json!(auto_renew_off);
     report["subscriptions"]["in_grace_now"] = json!(in_grace);
     report["subscriptions"]["billing_issue_now"] = json!(billing_issue);
 
-    // Cohorts reach up to today: they need the rates after `to` too.
-    let ledger_fx = if to >= today { table } else { load_fx(tx, from, today) };
-    let purchases = match heavy {
-        Heavy::Live => ledger_rows(tx, &apps, from, to),
-        Heavy::Rows(rows) => rows,
-        Heavy::Skip => Vec::new(),
-    };
-    let ledger = rv::ledger_metrics(&purchases, &ledger_fx, &query, crate::ctx::tx_now_micros(tx));
+    let ledger = match heavy {
+        Heavy::Live => ledger_acc(tx, &apps, from, to, q.include_sandbox),
+        Heavy::Acc(acc) => acc,
+        Heavy::Skip => LedgerAcc::default(),
+    }
+    .finish();
     if let (Some(r), Some(l)) = (report.as_object_mut(), ledger.as_object()) {
         r.extend(l.clone());
     }

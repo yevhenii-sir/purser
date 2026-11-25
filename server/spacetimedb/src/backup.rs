@@ -67,6 +67,20 @@ fn take<T: spacetimedb::sats::ser::Serialize>(rows: impl Iterator<Item = T>, key
     (out, None)
 }
 
+/// [`take`] of the rows from `from` on, read in windows of the column (a scan from `from` to the
+/// end would read the rest of the table for every page, `crate::scan`). `end`: the largest value
+/// the column normally holds (now, today); `window`: the first window.
+fn paged<T: spacetimedb::sats::ser::Serialize>(from: i64, end: i64, window: i64, limit: usize, read: impl FnMut(i64, i64) -> Vec<T>, key: impl Fn(&T) -> i64) -> (Vec<Value>, Option<i64>) {
+    let r = crate::scan::first_rows(from, end, limit, window, read);
+    let (rows, next) = take(r.rows.into_iter(), key, limit);
+    (rows, next.or(r.next))
+}
+
+/// A day of a window bound (`i32` columns read through [`paged`]).
+fn day_bound(v: i64) -> i32 {
+    v.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
 fn page(tx: &ReducerContext, table: &str, from: i64, limit: usize) -> Result<Value, String> {
     use crate::access::admin_audit;
     use crate::integrations::user_attribution;
@@ -74,17 +88,21 @@ fn page(tx: &ReducerContext, table: &str, from: i64, limit: usize) -> Result<Val
     use crate::players::player_profile;
     use crate::revenue::{revenue_country_daily, revenue_daily, subscription_daily};
     use crate::{purchase, purchase_log};
-    let day = i32::try_from(from.clamp(i32::MIN as i64, i32::MAX as i64)).unwrap_or(i32::MAX);
+    const HOUR: i64 = 3_600_000_000;
+    let now = crate::ctx::tx_now_micros(tx);
+    let today = purser_core::time::day_of_micros(now) as i64;
+    // A day window past the last day reads nothing (its bound would wrap).
+    let days = |lo: i64, hi: i64| (lo <= i32::MAX as i64).then(|| day_bound(lo)..=day_bound(hi));
     let (rows, next) = match table {
-        "purchase" => take(tx.db.purchase().created_at_micros().filter(from..), |r| r.created_at_micros, limit),
-        "admin_audit" => take(tx.db.admin_audit().at_micros().filter(from..), |r| r.at_micros, limit),
-        "user_attribution" => take(tx.db.user_attribution().updated_at_micros().filter(from..), |r| r.updated_at_micros, limit),
-        "player_profile" => take(tx.db.player_profile().last_seen_micros().filter(from..), |r| r.last_seen_micros, limit),
-        "revenue_daily" => take(tx.db.revenue_daily().day().filter(day..), |r| r.day as i64, limit),
-        "revenue_country_daily" => take(tx.db.revenue_country_daily().day().filter(day..), |r| r.day as i64, limit),
-        "subscription_daily" => take(tx.db.subscription_daily().day().filter(day..), |r| r.day as i64, limit),
-        "paywall_daily" => take(tx.db.paywall_daily().day().filter(day..), |r| r.day as i64, limit),
-        "paywall_viewer" => take(tx.db.paywall_viewer().last_day().filter(day..), |r| r.last_day as i64, limit),
+        "purchase" => paged(from, now, HOUR, limit, |lo, hi| tx.db.purchase().created_at_micros().filter(lo..=hi).collect(), |r| r.created_at_micros),
+        "admin_audit" => paged(from, now, HOUR, limit, |lo, hi| tx.db.admin_audit().at_micros().filter(lo..=hi).collect(), |r| r.at_micros),
+        "user_attribution" => paged(from, now, HOUR, limit, |lo, hi| tx.db.user_attribution().updated_at_micros().filter(lo..=hi).collect(), |r| r.updated_at_micros),
+        "player_profile" => paged(from, now, HOUR, limit, |lo, hi| tx.db.player_profile().last_seen_micros().filter(lo..=hi).collect(), |r| r.last_seen_micros),
+        "revenue_daily" => paged(from, today, 7, limit, |lo, hi| days(lo, hi).map_or_else(Vec::new, |d| tx.db.revenue_daily().day().filter(d).collect()), |r| r.day as i64),
+        "revenue_country_daily" => paged(from, today, 7, limit, |lo, hi| days(lo, hi).map_or_else(Vec::new, |d| tx.db.revenue_country_daily().day().filter(d).collect()), |r| r.day as i64),
+        "subscription_daily" => paged(from, today, 7, limit, |lo, hi| days(lo, hi).map_or_else(Vec::new, |d| tx.db.subscription_daily().day().filter(d).collect()), |r| r.day as i64),
+        "paywall_daily" => paged(from, today, 7, limit, |lo, hi| days(lo, hi).map_or_else(Vec::new, |d| tx.db.paywall_daily().day().filter(d).collect()), |r| r.day as i64),
+        "paywall_viewer" => paged(from, today, 7, limit, |lo, hi| days(lo, hi).map_or_else(Vec::new, |d| tx.db.paywall_viewer().last_day().filter(d).collect()), |r| r.last_day as i64),
         "purchase_log" => {
             // Its primary key has no range index: ids are dense (auto_inc, append only; a restart
             // skips at most a block of the sequence), so look them up one by one until a long run

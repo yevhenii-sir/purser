@@ -1,28 +1,34 @@
 //! The full revenue report (payer cohorts, LTV, ARPPU, Apple Ads campaigns, trials) counted in the
 //! background, one batch per scheduled call. SpacetimeDB computes one call of a database at a time:
-//! read in one call, the ledger part of a server-wide report would keep every purchase and request
-//! waiting for seconds. Here each call reads [`BATCH`] purchases (or [`VISITS`] earlier histories)
-//! into `revenue_report_row`, and other calls run in between. The last call builds the report from
-//! those rows and keeps it like a report counted in a request (`revenue::keep_report`).
+//! counted in one call, the ledger part of a server-wide report would keep every purchase and request
+//! waiting for seconds. Here each call reads a bounded batch and adds what it counts to the job's
+//! `purser_core::revenue::LedgerAcc` (a few kilobytes of JSON), and other calls run in between. The
+//! last call only turns that into the report and keeps it like a report counted in a request
+//! (`revenue::keep_report`).
 //!
-//! Steps: the purchases of the window (from the first day of the month of the range on, in
-//! `created_at` order), then the earlier purchases of every payer and trial subscription found in
-//! it, then the report. A request that finds the report being counted gets the old one (or is asked
-//! to wait); every step marks it as still being counted.
+//! Steps (see `revenue::LedgerPass`): the purchases of the window (from the first day of the month
+//! of the range on, in `created_at` order, [`batch`] per step) name the payers and the subscriptions
+//! with a trial in the range; then the whole history of [`visits`] of them per step; then the report.
+//! A request that finds the report being counted gets the old one (or is asked to wait); every step
+//! marks it as still being counted.
 
-use crate::revenue::{self, Heavy, Resolved, RowReader, StatsQuery};
-use crate::{purchase, Purchase};
-use purser_core::revenue::LedgerRow;
+use crate::revenue::{self, Heavy, LedgerPass, Resolved, StatsQuery};
+use crate::Purchase;
+use purser_core::revenue::LedgerAcc;
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
 use std::collections::BTreeSet;
 
 /// Purchases of the window read per step.
-pub const BATCH: usize = if cfg!(test) { 3 } else { 2_000 };
-/// Payers or subscriptions whose earlier purchases are read per step.
-pub const VISITS: usize = if cfg!(test) { 2 } else { 200 };
+fn batch() -> usize {
+    crate::ctx::batch(3, 2_000)
+}
+/// Payers or subscriptions whose history is read per step.
+fn visits() -> usize {
+    crate::ctx::batch(2, 200)
+}
 
 const PHASE_WINDOW: u8 = 0;
-const PHASE_EARLIER: u8 = 1;
+const PHASE_HISTORIES: u8 = 1;
 const PHASE_REPORT: u8 = 2;
 
 /// A report being counted.
@@ -47,6 +53,11 @@ pub struct RevenueReportJob {
     /// The window: the last purchase read (`created_at`, id).
     pub cursor_micros: i64,
     pub cursor_id: String,
+    /// Histories to read: `seq` of the next one, and how many were found.
+    pub next_visit: u64,
+    pub visits: u64,
+    /// What is counted so far (`purser_core::revenue::LedgerAcc`, JSON).
+    pub acc_json: String,
     /// Purchases read so far (progress).
     pub rows: u64,
 }
@@ -61,37 +72,20 @@ pub struct RevenueReportTick {
     pub job: u64,
 }
 
-/// A purchase the report reads, as `purser_core::revenue::LedgerRow`.
-#[spacetimedb::table(accessor = revenue_report_row, cache_policy = required_on_disk)]
-pub struct RevenueReportRow {
-    /// `{job}|{purchase id}`
-    #[primary_key]
-    pub key: String,
-    #[index(btree)]
-    pub job: u64,
-    pub app_id: String,
-    pub game_key: String,
-    pub user_id: String,
-    pub environment: String,
-    pub currency: String,
-    pub created_at_micros: i64,
-    pub price_micros: i64,
-    pub granted: bool,
-    pub refunded: bool,
-    pub trial: bool,
-    pub chain: String,
-    pub expires_at_ms: i64,
-    pub asa_campaign: String,
-}
-
-/// A payer (`chain` false) or a trial subscription whose earlier purchases are still to be read.
-#[spacetimedb::table(accessor = revenue_report_visit, cache_policy = required_on_disk)]
+/// A payer (`chain` false) or a subscription with a trial in the range (`chain` true) whose whole
+/// history is still to be read; `seq` numbers them in the order found, so a step reads the next
+/// ones by range.
+#[spacetimedb::table(
+    accessor = revenue_report_visit,
+    cache_policy = required_on_disk,
+    index(accessor = job_seq, btree(columns = [job, seq]))
+)]
 pub struct RevenueReportVisit {
     /// `{job}|{p or c}|{value}`
     #[primary_key]
     pub key: String,
-    #[index(btree)]
     pub job: u64,
+    pub seq: u64,
     pub chain: bool,
     pub value: String,
 }
@@ -118,12 +112,15 @@ pub fn start(tx: &ReducerContext, key: &str, q: &StatsQuery, (from, to, _, apps)
         phase: PHASE_WINDOW,
         cursor_micros: i64::MIN,
         cursor_id: String::new(),
+        next_visit: 0,
+        visits: 0,
+        acc_json: String::new(),
         rows: 0,
     });
     schedule(tx, job.id);
 }
 
-/// Drops every job and what it read (the analytics mode changed).
+/// Drops every job and what it found (the analytics mode changed).
 pub fn cancel_all(tx: &ReducerContext) {
     let jobs: Vec<u64> = tx.db.revenue_report_job().iter().map(|j| j.id).collect();
     for id in jobs {
@@ -131,12 +128,9 @@ pub fn cancel_all(tx: &ReducerContext) {
     }
 }
 
-/// Deletes a job, its rows and visits.
+/// Deletes a job and its histories still to read.
 fn finish(tx: &ReducerContext, job: u64) {
-    for k in tx.db.revenue_report_row().job().filter(job).map(|r| r.key).collect::<Vec<_>>() {
-        tx.db.revenue_report_row().key().delete(&k);
-    }
-    for k in tx.db.revenue_report_visit().job().filter(job).map(|r| r.key).collect::<Vec<_>>() {
+    for k in tx.db.revenue_report_visit().job_seq().filter(job).map(|r| r.key).collect::<Vec<_>>() {
         tx.db.revenue_report_visit().key().delete(&k);
     }
     tx.db.revenue_report_job().id().delete(job);
@@ -147,35 +141,12 @@ fn resolved_of(job: &RevenueReportJob, today: i32) -> Option<Resolved> {
     Some((from, to, today, apps))
 }
 
-/// Keeps a purchase for the report (once).
-fn stage(tx: &ReducerContext, job: u64, id: &str, r: LedgerRow) {
-    let key = format!("{job}|{id}");
-    if tx.db.revenue_report_row().key().find(&key).is_some() {
-        return;
-    }
-    tx.db.revenue_report_row().insert(RevenueReportRow {
-        key,
-        job,
-        app_id: r.app_id,
-        game_key: r.game_key,
-        user_id: r.user_id,
-        environment: r.environment,
-        currency: r.currency,
-        created_at_micros: r.created_at_micros,
-        price_micros: r.price_micros,
-        granted: r.granted,
-        refunded: r.refunded,
-        trial: r.trial,
-        chain: r.chain,
-        expires_at_ms: r.expires_at_ms,
-        asa_campaign: r.asa_campaign,
-    });
-}
-
-fn visit(tx: &ReducerContext, job: u64, chain: bool, value: String) {
-    let key = format!("{job}|{}|{value}", if chain { "c" } else { "p" });
+/// Remembers a history to read (once).
+fn visit(tx: &ReducerContext, job: &mut RevenueReportJob, chain: bool, value: String) {
+    let key = format!("{}|{}|{value}", job.id, if chain { "c" } else { "p" });
     if tx.db.revenue_report_visit().key().find(&key).is_none() {
-        tx.db.revenue_report_visit().insert(RevenueReportVisit { key, job, chain, value });
+        tx.db.revenue_report_visit().insert(RevenueReportVisit { key, job: job.id, seq: job.visits, chain, value });
+        job.visits += 1;
     }
 }
 
@@ -187,84 +158,52 @@ pub fn step(tx: &ReducerContext, job_id: u64) -> bool {
         finish(tx, job_id);
         return true;
     };
-    let (start_micros, window_end) = revenue::window(from, to);
+    let q: StatsQuery = serde_json::from_str(&job.query_json).unwrap_or_default();
+    let mut acc: LedgerAcc = serde_json::from_str(&job.acc_json).unwrap_or_default();
     match job.phase {
         PHASE_WINDOW => {
+            let (start_micros, _) = revenue::window(from, to);
             let start = job.cursor_micros.max(start_micros);
             let cursor = (job.cursor_micros, job.cursor_id.clone());
             let after_cursor = |p: &Purchase| !(p.created_at_micros < cursor.0 || (p.created_at_micros == cursor.0 && p.id <= cursor.1));
-            // As the revenue rebuild: the next BATCH of every build after the cursor, in (created, id) order.
-            let mut rows: Vec<Purchase> = if apps.is_empty() {
-                tx.db.purchase().created_at_micros().filter(start..).filter(|p| after_cursor(p)).take(BATCH + 1).collect()
-            } else {
-                apps.iter().flat_map(|a| tx.db.purchase().app_created().filter((a.as_str(), start..)).filter(|p| after_cursor(p)).take(BATCH + 1).collect::<Vec<_>>()).collect()
-            };
-            rows.sort_by(|a, b| (a.created_at_micros, a.id.as_str()).cmp(&(b.created_at_micros, b.id.as_str())));
-            let more = rows.len() > BATCH;
-            rows.truncate(BATCH);
+            // As the revenue rebuild: the next batch of every build after the cursor, in (created, id) order.
+            let builds: Vec<String> = apps.iter().cloned().collect();
+            let (rows, last_batch) = revenue::next_purchases(tx, start, &builds, batch(), after_cursor);
             if let Some(last) = rows.last() {
                 (job.cursor_micros, job.cursor_id) = (last.created_at_micros, last.id.clone());
             }
-            let mut reader = RowReader::new(tx, from, to);
-            for p in rows.into_iter().filter(|p| revenue::is_sale_of(&apps, p)) {
-                if let Some(user) = revenue::payer_of(&p, window_end) {
-                    visit(tx, job_id, false, user);
-                }
-                if let Some(chain) = revenue::trial_chain_of(&p, from, to) {
-                    visit(tx, job_id, true, chain);
-                }
-                let id = p.id.clone();
-                stage(tx, job_id, &id, reader.row(p));
-                job.rows += 1;
+            job.rows += rows.len() as u64;
+            let mut found = Vec::new();
+            let mut pass = LedgerPass::new(tx, &apps, from, to, q.include_sandbox);
+            for p in rows {
+                pass.window_row(&mut acc, p, |chain, value| found.push((chain, value)));
             }
-            if !more {
-                job.phase = PHASE_EARLIER;
+            for (chain, value) in found {
+                visit(tx, &mut job, chain, value);
+            }
+            if last_batch {
+                job.phase = PHASE_HISTORIES;
             }
         }
-        PHASE_EARLIER => {
-            let visits: Vec<RevenueReportVisit> = tx.db.revenue_report_visit().job().filter(job_id).take(VISITS).collect();
-            if visits.is_empty() {
-                job.phase = PHASE_REPORT;
-            }
-            let mut reader = RowReader::new(tx, from, to);
-            for v in visits {
-                let earlier = if v.chain {
-                    revenue::earlier_of_chain(tx, &apps, &v.value, start_micros)
+        PHASE_HISTORIES => {
+            let (lo, hi) = (job.next_visit, job.next_visit + visits() as u64);
+            let batch: Vec<_> = tx.db.revenue_report_visit().job_seq().filter((job_id, lo..hi)).collect();
+            let mut pass = LedgerPass::new(tx, &apps, from, to, q.include_sandbox);
+            for v in batch {
+                if v.chain {
+                    pass.chain(&mut acc, &v.value);
                 } else {
-                    revenue::earlier_of_payer(tx, &apps, &v.value, start_micros)
-                };
-                for p in earlier {
-                    let id = p.id.clone();
-                    stage(tx, job_id, &id, reader.row(p));
-                    job.rows += 1;
+                    pass.payer(&mut acc, &v.value);
                 }
                 tx.db.revenue_report_visit().key().delete(&v.key);
             }
+            job.next_visit = hi.min(job.visits);
+            if job.next_visit >= job.visits {
+                job.phase = PHASE_REPORT;
+            }
         }
         _ => {
-            let rows: Vec<LedgerRow> = tx
-                .db
-                .revenue_report_row()
-                .job()
-                .filter(job_id)
-                .map(|r| LedgerRow {
-                    app_id: r.app_id,
-                    game_key: r.game_key,
-                    user_id: r.user_id,
-                    environment: r.environment,
-                    currency: r.currency,
-                    created_at_micros: r.created_at_micros,
-                    price_micros: r.price_micros,
-                    granted: r.granted,
-                    refunded: r.refunded,
-                    trial: r.trial,
-                    chain: r.chain,
-                    expires_at_ms: r.expires_at_ms,
-                    asa_campaign: r.asa_campaign,
-                })
-                .collect();
-            let q: StatsQuery = serde_json::from_str(&job.query_json).unwrap_or_default();
-            let report = revenue::report_in(tx, &q, (from, to, today, apps), false, Heavy::Rows(rows));
+            let report = revenue::report_in(tx, &q, (from, to, today, apps), false, Heavy::Acc(acc));
             let counted_for = (job.counted_day, job.rebuilding, job.generation);
             match report {
                 Ok(r) => {
@@ -275,11 +214,12 @@ pub fn step(tx: &ReducerContext, job_id: u64) -> bool {
                     revenue::keep_report(tx, &job.key, counted_for, None);
                 }
             }
-            log::info!("Revenue report {} counted in the background: {} purchases read", job.key, job.rows);
+            log::info!("Revenue report {} counted in the background: {} purchases of the window, {} histories", job.key, job.rows, job.visits);
             finish(tx, job_id);
             return true;
         }
     }
+    job.acc_json = serde_json::to_string(&acc).unwrap_or_default();
     revenue::still_counting(tx, &job.key);
     tx.db.revenue_report_job().id().update(job);
     false

@@ -15,9 +15,10 @@ the server counts:
 
 Why the background: SpacetimeDB computes one call of a database at a time, so a report that reads the ledger for
 seconds in one call would hold every purchase and request for that long. In the background each call reads a
-batch (2,000 purchases of the range, then 200 payers' or trial subscriptions' earlier purchases) and other calls run
-in between; the last call builds the report from what was read and keeps it for an hour. While it is counted, the page
-shows the previous report, or waits for the first one.
+batch (2,000 purchases of the range, then the whole history of 200 of the payers and trial subscriptions they name) and
+adds what it counts to a few kilobytes kept with the job; other calls run in between, and the last call only turns that
+into the report and keeps it for an hour. No call reads more as the ledger grows. While it is counted, the page shows
+the previous report, or waits for the first one.
 
 ## What is counted
 

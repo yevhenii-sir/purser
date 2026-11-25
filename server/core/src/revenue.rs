@@ -27,7 +27,7 @@ use crate::fx::FxTable;
 use crate::integrations::event_kind;
 use crate::model::{environment, kind, store};
 use crate::time::{civil_from_days, day_of_micros, format_day, MICROS_PER_DAY};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -893,14 +893,195 @@ pub struct LedgerRow {
 /// Payer cohorts shown at most.
 pub const MAX_COHORTS: usize = 24;
 
-#[derive(Default)]
+/// What the ledger part of the report needs besides the rows.
+pub struct LedgerCtx<'a> {
+    pub fx: &'a FxTable,
+    pub q: &'a Query,
+    pub now_micros: i64,
+}
+
+/// An Apple Ads campaign's payments in the range.
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Campaign {
-    payers: BTreeSet<String>,
+    payers: u32,
     payments: u32,
     trials: u32,
     refunds: u32,
     gross_usd: i64,
     refunded_usd: i64,
+}
+
+/// [`ledger_metrics`] counted a part at a time: a report over a large ledger is counted in many
+/// small steps, and kept between them as JSON. Give it every payer once ([`LedgerAcc::add_payer`]:
+/// all their rows) and every subscription with a trial in the range once ([`LedgerAcc::add_chain`]:
+/// all its periods); [`LedgerAcc::finish`] gives what `ledger_metrics` gives. Parts added in any
+/// order give the same result.
+#[derive(Default, Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LedgerAcc {
+    /// First-payment month → (payers, net USD by month since that month, up to now).
+    cohorts: BTreeMap<i32, (u32, Vec<i64>)>,
+    /// Payers with a paid purchase in the range and its net USD (ARPPU).
+    paying: u32,
+    paid_net: i64,
+    campaigns: BTreeMap<String, Campaign>,
+    /// Trials started in the range: (started, converted, pending).
+    trials: (u32, u32, u32),
+}
+
+/// The payer of a row: a player of one app (the same id in two apps is two payers).
+pub fn payer_key(r: &LedgerRow) -> String {
+    format!("{}/{}", if r.game_key.is_empty() { &r.app_id } else { &r.game_key }, r.user_id)
+}
+
+impl LedgerAcc {
+    /// Every row of one payer ([`payer_key`]): granted, non-trial store purchases of the report's
+    /// environments decide their cohort (the first one), the cohort's revenue, ARPPU and the
+    /// payments of Apple Ads campaigns. Other rows are left out.
+    pub fn add_payer(&mut self, rows: &[LedgerRow], c: &LedgerCtx) {
+        let rows: Vec<&LedgerRow> = rows.iter().filter(|r| r.granted && !r.trial && c.q.wants(&r.environment)).collect();
+        let Some(first) = rows.iter().map(|r| day_of_micros(r.created_at_micros)).min() else { return };
+        let mut usd = Usd { fx: c.fx, missing: BTreeSet::new(), stale: BTreeSet::new() };
+        let mut gross = |r: &LedgerRow| usd.conv(r.price_micros, &r.currency, day_of_micros(r.created_at_micros));
+        let (m, m_now) = (month_index(first), month_index(day_of_micros(c.now_micros)));
+        let in_cohorts = (month_index(c.q.from)..=month_index(c.q.to)).contains(&m);
+        let mut paid_in_range = false;
+        let mut campaigns_paid: BTreeSet<&str> = BTreeSet::new();
+        for r in &rows {
+            let g = gross(r);
+            let net = if r.refunded { 0 } else { g };
+            if in_cohorts {
+                let (_, by_month) = self.cohorts.entry(m).or_insert_with(|| (0, vec![0; (m_now - m + 1).max(1) as usize]));
+                let offset = (month_index(day_of_micros(r.created_at_micros)) - m).clamp(0, by_month.len() as i32 - 1) as usize;
+                by_month[offset] += net;
+            }
+            if !(c.q.from..=c.q.to).contains(&day_of_micros(r.created_at_micros)) {
+                continue;
+            }
+            paid_in_range = true;
+            self.paid_net += net;
+            if r.asa_campaign.is_empty() {
+                continue;
+            }
+            let camp = self.campaigns.entry(r.asa_campaign.clone()).or_default();
+            if campaigns_paid.insert(r.asa_campaign.as_str()) {
+                camp.payers += 1;
+            }
+            camp.payments += 1;
+            camp.gross_usd += g;
+            if r.refunded {
+                camp.refunds += 1;
+                camp.refunded_usd += g;
+            }
+        }
+        if in_cohorts {
+            if let Some((payers, _)) = self.cohorts.get_mut(&m) {
+                *payers += 1;
+            }
+        }
+        if paid_in_range {
+            self.paying += 1;
+        }
+    }
+
+    /// Every period of one subscription (one build's `chain`): its trials started in the range
+    /// count as converted when a paid period follows, as pending while running unpaid.
+    pub fn add_chain(&mut self, rows: &[LedgerRow], c: &LedgerCtx) {
+        let rows: Vec<&LedgerRow> = rows.iter().filter(|r| r.granted && c.q.wants(&r.environment)).collect();
+        let first_paid = rows.iter().filter(|r| !r.trial).map(|r| r.created_at_micros).min();
+        for r in rows.iter().filter(|r| r.trial && (c.q.from..=c.q.to).contains(&day_of_micros(r.created_at_micros))) {
+            self.trials.0 += 1;
+            if !r.asa_campaign.is_empty() {
+                self.campaigns.entry(r.asa_campaign.clone()).or_default().trials += 1;
+            }
+            if first_paid.is_some_and(|p| p > r.created_at_micros) {
+                self.trials.1 += 1;
+            } else if !r.refunded && r.expires_at_ms.saturating_mul(1000) > c.now_micros {
+                self.trials.2 += 1;
+            }
+        }
+    }
+
+    /// The ledger part of the report (see [`ledger_metrics`]).
+    pub fn finish(&self) -> Value {
+        // LTV per payer after 1, 3, 6 and 12 months: of the cohorts whose first N months are over,
+        // cumulative net revenue up to that month over their payers.
+        let ltv: Vec<Value> = [1usize, 3, 6, 12]
+            .iter()
+            .map(|months| {
+                let (mut revenue, mut payers, mut count) = (0i64, 0u32, 0u32);
+                for (payers_of, by_month) in self.cohorts.values() {
+                    // `by_month` runs up to the current month, which is not over yet.
+                    if by_month.len() > *months {
+                        revenue += by_month[..*months].iter().sum::<i64>();
+                        payers += payers_of;
+                        count += 1;
+                    }
+                }
+                json!({
+                    "months": months,
+                    "cohorts": count,
+                    "payers": payers,
+                    "per_payer_usd_micros": if payers == 0 { Value::Null } else { json!(revenue / payers as i64) },
+                })
+            })
+            .collect();
+        let skip = self.cohorts.len().saturating_sub(MAX_COHORTS);
+        let cohorts: Vec<Value> = self
+            .cohorts
+            .iter()
+            .skip(skip)
+            .map(|(m, (payers, by_month))| {
+                let cumulative: Vec<i64> = by_month
+                    .iter()
+                    .scan(0i64, |acc, v| {
+                        *acc += v;
+                        Some(*acc)
+                    })
+                    .collect();
+                json!({
+                    "cohort": format_month(*m),
+                    "payers": payers,
+                    "revenue_usd_micros": cumulative,
+                    "per_payer_usd_micros": cumulative.iter().map(|v| v / (*payers).max(1) as i64).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let arppu = json!({
+            "payers": self.paying,
+            "net_usd_micros": self.paid_net,
+            "arppu_usd_micros": if self.paying == 0 { Value::Null } else { json!(self.paid_net / self.paying as i64) },
+        });
+        let mut by_asa: Vec<Value> = self
+            .campaigns
+            .iter()
+            .map(|(id, c)| {
+                json!({
+                    "campaign_id": id,
+                    "payers": c.payers,
+                    "payments": c.payments,
+                    "trials": c.trials,
+                    "refunds": c.refunds,
+                    "gross_usd_micros": c.gross_usd,
+                    "refunded_usd_micros": c.refunded_usd,
+                    "net_usd_micros": c.gross_usd - c.refunded_usd,
+                })
+            })
+            .collect();
+        by_asa.sort_by_key(|v| std::cmp::Reverse(v["net_usd_micros"].as_i64().unwrap_or(0)));
+        let (started, converted, pending) = self.trials;
+        json!({
+            "cohorts": cohorts,
+            "ltv": ltv,
+            "arppu": arppu,
+            "by_asa_campaign": by_asa,
+            "trials": {
+                "started": started,
+                "converted": converted,
+                "pending": pending,
+                "conversion_rate": ratio(converted, started - pending),
+            },
+        })
+    }
 }
 
 /// Metrics computed from the ledger rows at report time (no aggregates):
@@ -912,150 +1093,21 @@ struct Campaign {
 /// - `trials`: free trials started in the range and how many became paid. Trials still running
 ///   (not expired, no payment yet) are `pending` and left out of the rate.
 pub fn ledger_metrics(rows: &[LedgerRow], fx: &FxTable, q: &Query, now_micros: i64) -> Value {
-    let today = day_of_micros(now_micros);
-    let mut usd = Usd { fx, missing: BTreeSet::new(), stale: BTreeSet::new() };
-    let rows: Vec<&LedgerRow> = rows.iter().filter(|r| r.granted && q.wants(&r.environment)).collect();
-    let day = |r: &LedgerRow| day_of_micros(r.created_at_micros);
-    let net_usd = |usd: &mut Usd, r: &LedgerRow| if r.refunded { 0 } else { usd.conv(r.price_micros, &r.currency, day(r)) };
-
-    // A payer is a player of one app: the same id in two apps is two payers.
-    let payer = |r: &LedgerRow| format!("{}/{}", if r.game_key.is_empty() { &r.app_id } else { &r.game_key }, r.user_id);
-    // Cohorts.
-    let mut first: BTreeMap<String, i32> = BTreeMap::new();
-    for r in rows.iter().filter(|r| !r.trial) {
-        let e = first.entry(payer(r)).or_insert(i32::MAX);
-        *e = (*e).min(day(r));
+    let c = LedgerCtx { fx, q, now_micros };
+    let mut payers: BTreeMap<String, Vec<LedgerRow>> = BTreeMap::new();
+    let mut chains: BTreeMap<(&str, &str), Vec<LedgerRow>> = BTreeMap::new();
+    for r in rows {
+        payers.entry(payer_key(r)).or_default().push(r.clone());
+        chains.entry((r.app_id.as_str(), r.chain.as_str())).or_default().push(r.clone());
     }
-    let (m_from, m_to, m_now) = (month_index(q.from), month_index(q.to), month_index(today));
-    let mut cohorts: BTreeMap<i32, (u32, Vec<i64>)> = BTreeMap::new();
-    for d in first.values() {
-        let m = month_index(*d);
-        if (m_from..=m_to).contains(&m) {
-            cohorts.entry(m).or_insert_with(|| (0, vec![0; (m_now - m + 1).max(1) as usize])).0 += 1;
-        }
+    let mut acc = LedgerAcc::default();
+    for rows in payers.values() {
+        acc.add_payer(rows, &c);
     }
-    for r in rows.iter().filter(|r| !r.trial) {
-        let Some(c) = first.get(&payer(r)).map(|d| month_index(*d)) else { continue };
-        let value = net_usd(&mut usd, r);
-        if let Some((_, by_month)) = cohorts.get_mut(&c) {
-            let offset = (month_index(day(r)) - c).clamp(0, by_month.len() as i32 - 1) as usize;
-            by_month[offset] += value;
-        }
+    for rows in chains.values() {
+        acc.add_chain(rows, &c);
     }
-    // LTV per payer after 1, 3, 6 and 12 months: of the cohorts whose first N months are over,
-    // cumulative net revenue up to that month over their payers.
-    let ltv: Vec<Value> = [1usize, 3, 6, 12]
-        .iter()
-        .map(|months| {
-            let (mut revenue, mut payers, mut count) = (0i64, 0u32, 0u32);
-            for (payers_of, by_month) in cohorts.values() {
-                // `by_month` runs up to the current month, which is not over yet.
-                if by_month.len() > *months {
-                    revenue += by_month[..*months].iter().sum::<i64>();
-                    payers += payers_of;
-                    count += 1;
-                }
-            }
-            json!({
-                "months": months,
-                "cohorts": count,
-                "payers": payers,
-                "per_payer_usd_micros": if payers == 0 { Value::Null } else { json!(revenue / payers as i64) },
-            })
-        })
-        .collect();
-    let skip = cohorts.len().saturating_sub(MAX_COHORTS);
-    let cohorts: Vec<Value> = cohorts
-        .into_iter()
-        .skip(skip)
-        .map(|(m, (payers, by_month))| {
-            let cumulative: Vec<i64> = by_month.iter().scan(0i64, |acc, v| {
-                *acc += v;
-                Some(*acc)
-            }).collect();
-            json!({
-                "cohort": format_month(m),
-                "payers": payers,
-                "revenue_usd_micros": cumulative,
-                "per_payer_usd_micros": cumulative.iter().map(|v| v / payers.max(1) as i64).collect::<Vec<_>>(),
-            })
-        })
-        .collect();
-
-    // Apple Ads campaigns and trials, for purchases made in the range.
-    let in_range: Vec<&LedgerRow> = rows.iter().copied().filter(|r| (q.from..=q.to).contains(&day(r))).collect();
-
-    // ARPPU: net revenue of the range's paid purchases over the users who paid in it.
-    let mut paying: BTreeSet<String> = BTreeSet::new();
-    let mut paid_net = 0i64;
-    for r in in_range.iter().filter(|r| !r.trial) {
-        paying.insert(payer(r));
-        paid_net += net_usd(&mut usd, r);
-    }
-    let arppu = json!({
-        "payers": paying.len(),
-        "net_usd_micros": paid_net,
-        "arppu_usd_micros": if paying.is_empty() { Value::Null } else { json!(paid_net / paying.len() as i64) },
-    });
-    let mut campaigns: BTreeMap<&str, Campaign> = BTreeMap::new();
-    for r in in_range.iter().filter(|r| !r.asa_campaign.is_empty()) {
-        let c = campaigns.entry(r.asa_campaign.as_str()).or_default();
-        if r.trial {
-            c.trials += 1;
-            continue;
-        }
-        let gross = usd.conv(r.price_micros, &r.currency, day(r));
-        c.payers.insert(r.user_id.clone());
-        c.payments += 1;
-        c.gross_usd += gross;
-        if r.refunded {
-            c.refunds += 1;
-            c.refunded_usd += gross;
-        }
-    }
-    let mut by_asa: Vec<Value> = campaigns
-        .iter()
-        .map(|(id, c)| json!({
-            "campaign_id": id,
-            "payers": c.payers.len(),
-            "payments": c.payments,
-            "trials": c.trials,
-            "refunds": c.refunds,
-            "gross_usd_micros": c.gross_usd,
-            "refunded_usd_micros": c.refunded_usd,
-            "net_usd_micros": c.gross_usd - c.refunded_usd,
-        }))
-        .collect();
-    by_asa.sort_by_key(|v| std::cmp::Reverse(v["net_usd_micros"].as_i64().unwrap_or(0)));
-
-    // Trial → paid: a later paid period of the same subscription.
-    let mut first_paid: BTreeMap<(&str, &str), i64> = BTreeMap::new();
-    for r in rows.iter().filter(|r| !r.trial) {
-        let e = first_paid.entry((r.app_id.as_str(), r.chain.as_str())).or_insert(i64::MAX);
-        *e = (*e).min(r.created_at_micros);
-    }
-    let (mut started, mut converted, mut pending) = (0u32, 0u32, 0u32);
-    for r in in_range.iter().filter(|r| r.trial) {
-        started += 1;
-        if first_paid.get(&(r.app_id.as_str(), r.chain.as_str())).is_some_and(|p| *p > r.created_at_micros) {
-            converted += 1;
-        } else if !r.refunded && r.expires_at_ms.saturating_mul(1000) > now_micros {
-            pending += 1;
-        }
-    }
-
-    json!({
-        "cohorts": cohorts,
-        "ltv": ltv,
-        "arppu": arppu,
-        "by_asa_campaign": by_asa,
-        "trials": {
-            "started": started,
-            "converted": converted,
-            "pending": pending,
-            "conversion_rate": ratio(converted, started - pending),
-        },
-    })
+    acc.finish()
 }
 
 #[cfg(test)]
@@ -1379,6 +1431,28 @@ mod tests {
         assert_eq!((ltv[2]["cohorts"].as_u64(), ltv[2]["per_payer_usd_micros"].is_null()), (Some(0), true));
         // ARPPU of the range: 19 USD net over u1, u2, old, t1, u5, u6.
         assert_eq!(m["arppu"], json!({ "payers": 6, "net_usd_micros": 19_000_000, "arppu_usd_micros": 3_166_666 }));
+
+        // Counted a payer or subscription at a time, kept as JSON between the parts, in another
+        // order: the same report.
+        let c = LedgerCtx { fx: &fx, q: &q, now_micros: at("2026-11-10") };
+        let mut json = serde_json::to_string(&LedgerAcc::default()).unwrap();
+        let mut parts: Vec<(bool, Vec<LedgerRow>)> = Vec::new();
+        for key in rows.iter().map(payer_key).collect::<BTreeSet<_>>().into_iter().rev() {
+            parts.push((false, rows.iter().filter(|r| payer_key(r) == key).cloned().collect()));
+        }
+        for chain in rows.iter().map(|r| r.chain.clone()).collect::<BTreeSet<_>>() {
+            parts.push((true, rows.iter().filter(|r| r.chain == chain).cloned().collect()));
+        }
+        for (chain, part) in parts {
+            let mut acc: LedgerAcc = serde_json::from_str(&json).unwrap();
+            if chain {
+                acc.add_chain(&part, &c);
+            } else {
+                acc.add_payer(&part, &c);
+            }
+            json = serde_json::to_string(&acc).unwrap();
+        }
+        assert_eq!(serde_json::from_str::<LedgerAcc>(&json).unwrap().finish(), m);
     }
 
     #[test]
