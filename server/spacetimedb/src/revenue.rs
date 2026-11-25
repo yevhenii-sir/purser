@@ -1345,8 +1345,12 @@ pub struct RevenueReport {
     pub rebuilding: bool,
     /// An admin started counting it again at this time (0: nobody): others get this one meanwhile.
     pub computing_since_micros: i64,
+    /// Empty while the first count of this question runs (a placeholder: others are told to wait).
     pub report_json: String,
 }
+
+/// The answer to a report another admin is counting for the first time: the UI asks again.
+pub const COUNTING_ERROR: &str = "[ERR_REPORT_COUNTING] another admin is counting this report now: try again in a few seconds";
 
 /// `server_state` key: bumped whenever kept reports are forgotten.
 const REPORT_GENERATION: &str = "revenue_report_generation";
@@ -1369,15 +1373,18 @@ pub enum KeptPlan {
     Answer,
     /// Count it (and keep it if it was slow).
     Count,
+    /// Another admin is counting it for the first time: nothing to answer yet ([`COUNTING_ERROR`]).
+    Wait,
 }
 
 /// Answer the kept report unless it is missing, older than [`KEPT_TTL_MICROS`], of another day, of
 /// another rebuild state, or a refresh was asked for at least [`REFRESH_COOLDOWN_MICROS`] after it
-/// was counted. While another admin counts it again, the kept one is answered.
+/// was counted. While another admin counts it again, the kept one is answered; while the first
+/// count runs, the others wait for it instead of counting the same report side by side.
 pub fn kept_plan(kept: Option<&RevenueReport>, now: i64, today: i32, rebuilding: bool, refresh: bool) -> KeptPlan {
     let Some(k) = kept else { return KeptPlan::Count };
     if k.computing_since_micros > now - COUNTING_MICROS {
-        return KeptPlan::Answer;
+        return if k.report_json.is_empty() { KeptPlan::Wait } else { KeptPlan::Answer };
     }
     let age = now - k.computed_at_micros;
     let stale = age >= KEPT_TTL_MICROS || k.counted_day != today || k.rebuilding != rebuilding || (refresh && age >= REFRESH_COOLDOWN_MICROS);
@@ -1418,15 +1425,33 @@ fn kept_report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<ser
         let now = crate::ctx::tx_now_micros(tx);
         let counted_for = (today(tx), rebuilding(tx), settings::get_i64(tx, REPORT_GENERATION));
         let kept = tx.db.revenue_report().key().find(&key);
-        if kept_plan(kept.as_ref(), now, today(tx), rebuilding(tx), q.refresh) == KeptPlan::Answer {
-            let k = kept.expect("answered from a kept report");
-            let counting = k.computing_since_micros > now - COUNTING_MICROS;
-            let report = serde_json::from_str(&k.report_json).unwrap_or_default();
-            return Ok((key, now, counted_for, Some(with_meta(report, k.computed_at_micros, true, counting))));
+        match kept_plan(kept.as_ref(), now, today(tx), rebuilding(tx), q.refresh) {
+            KeptPlan::Wait => return Err(COUNTING_ERROR.to_string()),
+            KeptPlan::Answer => {
+                let k = kept.expect("answered from a kept report");
+                let counting = k.computing_since_micros > now - COUNTING_MICROS;
+                let report = serde_json::from_str(&k.report_json).unwrap_or_default();
+                return Ok((key, now, counted_for, Some(with_meta(report, k.computed_at_micros, true, counting))));
+            }
+            KeptPlan::Count => {}
         }
-        // A kept report counted again: others get the old one until this count is done.
-        if let Some(k) = kept {
-            tx.db.revenue_report().key().update(RevenueReport { computing_since_micros: now, ..k });
+        // A kept report counted again: others get the old one until this count is done. The first
+        // count leaves a placeholder: others wait for it (at midnight every open page asks at once).
+        match kept {
+            Some(k) => {
+                tx.db.revenue_report().key().update(RevenueReport { computing_since_micros: now, ..k });
+            }
+            None => {
+                let (counted_day, rebuilding, _) = counted_for;
+                tx.db.revenue_report().insert(RevenueReport {
+                    key: key.clone(),
+                    computed_at_micros: 0,
+                    counted_day,
+                    rebuilding,
+                    computing_since_micros: now,
+                    report_json: String::new(),
+                });
+            }
         }
         Ok((key, now, counted_for, None))
     });

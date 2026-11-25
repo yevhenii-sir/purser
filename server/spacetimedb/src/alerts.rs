@@ -37,7 +37,7 @@ const FX_LAST_ERROR: &str = "alert_fx_last_error";
 const SILENT_CHECKED_AT: &str = "alert_silent_checked_at";
 const SILENT_CHECK_MICROS: i64 = 3600 * 1_000_000;
 /// Attempts per message (first try + retries with `retry_delay_secs` backoff, ~1.4 h in total).
-const MAX_ATTEMPTS: u32 = 5;
+pub(crate) const MAX_ATTEMPTS: u32 = 5;
 /// Rows kept in `alert_log`.
 const LOG_KEEP: u64 = 500;
 /// Messages a channel gets per window; the rest is summed up when the window ends.
@@ -124,6 +124,7 @@ pub struct AlertLog {
 }
 
 /// Outbox: one row = one message for one channel.
+#[derive(Clone)]
 #[spacetimedb::table(accessor = alert_outbox, cache_policy = required_in_memory, scheduled(send_alert))]
 pub struct AlertOutbox {
     #[primary_key]
@@ -403,6 +404,13 @@ pub fn on_purchase_failed(tx: &ReducerContext, p: &Purchase) {
     raise(tx, rule::DELIVERY_FAILING, &p.app_id, &detail);
 }
 
+/// A purchase step cannot work until the setup changes (`ledger::block`): alerted at once, and
+/// resolved when no row of the build is blocked or retried any more.
+pub fn on_purchase_blocked(tx: &ReducerContext, p: &Purchase) {
+    let detail = al::blocked_detail(&p.id, &p.product_id, &p.user_id, &p.status, &p.last_error);
+    raise(tx, rule::DELIVERY_FAILING, &p.app_id, &detail);
+}
+
 /// A store rejected the credentials of a build (401/403, OAuth key rejected). Store keys belong to
 /// developer accounts, so the alert is one per account: its message names how many builds use it.
 pub fn store_credentials_rejected(tx: &ReducerContext, app_id: &str, detail: &str) {
@@ -564,7 +572,6 @@ fn last_fx_success(tx: &ReducerContext) -> i64 {
     settings::get_i64(tx, key::FX_LAST_OK)
 }
 
-/// Purchases of the app still pending after `attempts` failed attempts.
 /// Builds with rows the worker keeps retrying: one pass over the pending rows per check, however
 /// many alerts are open.
 fn builds_with_stuck_purchases(tx: &ReducerContext, attempts: u32) -> std::collections::BTreeSet<String> {

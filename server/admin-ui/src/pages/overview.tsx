@@ -10,7 +10,7 @@ import { tryAct, useAsync } from "@/lib/hooks"
 import { useCan } from "@/lib/roles"
 import { revenueOverview } from "@/lib/revenue"
 import { RevenueUpdated } from "@/components/revenue-updated"
-import { STATUSES, type Overview, type PurchaseStatus, type RevenueOverview } from "@/lib/types"
+import { STATUSES, type Overview, type PurchaseStatus, type RevenueOverview, type Waiting } from "@/lib/types"
 import type { PageProps } from "@/routes"
 
 /** Listed even when no purchase is in them. */
@@ -74,6 +74,7 @@ export function OverviewPage({ go }: PageProps) {
             columns={[
               { title: "Purchase", cell: (r) => <Mono>{r.id}</Mono> },
               { title: "Status", cell: (r) => <StatusBadge status={r.status} /> },
+              { title: "Waiting", cell: (r) => <WaitingBadge waiting={r.waiting} /> },
               { title: "Attempts", cell: (r) => r.attempts, num: true },
               { title: "Next try", cell: (r) => <span className="whitespace-nowrap">{fmtTime(r.next_attempt_at_micros)}</span> },
               { title: "Error", className: "whitespace-normal", cell: (r) => <Mono className="line-clamp-2 break-all">{r.last_error}</Mono> },
@@ -86,6 +87,29 @@ export function OverviewPage({ go }: PageProps) {
       </div>
       <PurchaseSheet id={open} onClose={(changed) => { setOpen(null); if (changed) reload() }} />
     </>
+  )
+}
+
+const WAITING: Record<Waiting, { label: string; tone: "ok" | "warn" | "bad" | "muted"; hint: string }> = {
+  running: { label: "running", tone: "ok", hint: "A request or a queue drainer is running its step now." },
+  blocked: {
+    label: "blocked",
+    tone: "bad",
+    hint: "Cannot work until the setup is fixed (see the error). It is tried again as soon as the build, its keys or the delivery hosts change.",
+  },
+  game_answer: { label: "game's answer", tone: "warn", hint: "Sent to the game database; it has not answered yet." },
+  due: { label: "due", tone: "muted", hint: "Due now: the next free queue drainer takes it." },
+  retry: { label: "retry", tone: "warn", hint: "The last attempt failed; it is tried again at the next try." },
+  later: { label: "later", tone: "muted", hint: "Left for later: its store or game did not answer in time." },
+}
+
+function WaitingBadge({ waiting }: { waiting: Waiting | undefined }) {
+  const w = waiting && WAITING[waiting]
+  if (!w) return null
+  return (
+    <span title={w.hint}>
+      <Tone tone={w.tone}>{w.label}</Tone>
+    </span>
   )
 }
 

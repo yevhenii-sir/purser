@@ -1338,6 +1338,46 @@ fn the_revenue_overview_is_kept_and_counted_again_only_when_asked_for_after_a_wh
 }
 
 #[test]
+fn a_report_counted_for_the_first_time_is_not_counted_again_side_by_side() {
+    use crate::revenue::{revenue_report, RevenueReport};
+    let w = World::new();
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    w.as_admin(false);
+    let ask = || crate::revenue::overview(&mut w.ctx(), "{}");
+    let key = {
+        ask().unwrap();
+        w.read(|tx| tx.db.revenue_report().iter().next().unwrap().key)
+    };
+    // What the first count leaves while it runs (no report kept yet).
+    let placeholder = |w: &World| {
+        w.write(|tx| {
+            let now = crate::ctx::tx_now_micros(tx);
+            tx.db.revenue_report().key().delete(&key);
+            tx.db.revenue_report().insert(RevenueReport {
+                key: key.clone(),
+                computed_at_micros: 0,
+                counted_day: 0,
+                rebuilding: false,
+                computing_since_micros: now,
+                report_json: String::new(),
+            });
+        })
+    };
+    placeholder(&w);
+    let err = ask().unwrap_err();
+    assert!(err.contains("ERR_REPORT_COUNTING"), "{err}");
+    assert_eq!(w.read(|tx| tx.db.revenue_report().iter().count()), 1, "the placeholder stays");
+
+    // A count that never finished (the call failed) no longer holds the others.
+    w.advance_clock(121);
+    let r = ask().unwrap();
+    assert_eq!(r["totals"]["gross_usd_micros"], 990_000);
+    let kept = w.read(|tx| tx.db.revenue_report().key().find(&key).unwrap());
+    assert!(!kept.report_json.is_empty() && kept.computing_since_micros == 0);
+}
+
+#[test]
 fn revenue_reports_are_kept_per_question() {
     use crate::revenue::revenue_report;
     let w = World::new();
@@ -2190,6 +2230,124 @@ fn delivery_that_keeps_failing_is_alerted_and_resolved() {
     assert_eq!(states, ["delivery_failing alert", "delivery_failing resolved"]);
 }
 
+fn queue_waiting(w: &World) -> Vec<String> {
+    let overview = w.read(|tx| crate::admin_views::overview(tx, None));
+    overview["pending"].as_array().unwrap().iter().map(|r| r["waiting"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn a_delivery_without_its_secret_waits_for_the_secret_instead_of_retrying() {
+    let w = World::new();
+    setup_alerts(&w, false);
+    w.write(|tx| {
+        tx.db.credential().key().delete(config::credential_key(config::DEFAULT_SCOPE, secret_name::SPACETIME_TOKEN));
+    });
+    w.verify("player-1", "gems");
+    let p = w.purchase();
+    assert_eq!((p.status.as_str(), p.blocked, p.attempts), (status::VERIFIED, true, 1));
+    assert!(p.last_error.contains("spacetime_token"), "{}", p.last_error);
+    assert_eq!(p.next_attempt_at_micros, NOW_MICROS + ledger::BLOCKED_RECHECK_MICROS);
+    assert_eq!(w.calls("/call/"), 0, "nothing is sent without the token");
+    assert_eq!(queue_waiting(&w), ["blocked"]);
+    assert_eq!(w.read(crate::ledger_index::blocked_count), 1);
+    // Alerted at once: retrying does not fix it.
+    let msgs = alert_messages(&w);
+    assert_eq!((msgs.len(), msgs[0].rule.as_str()), (1, "delivery_failing"));
+    assert!(msgs[0].detail.contains("waits until the setup is fixed"), "{}", msgs[0].detail);
+
+    // Not retried every minute; re-checked after hours, logged once.
+    w.advance_clock(3600);
+    w.run_worker();
+    assert_eq!(w.purchase().attempts, 1);
+    w.advance_clock(ledger::BLOCKED_RECHECK_MICROS / 1_000_000);
+    w.run_worker();
+    let p = w.purchase();
+    assert_eq!((p.blocked, p.attempts), (true, 2));
+    let blocked = purchase_events(&w, LEDGER_ID).iter().filter(|(e, _)| e == "blocked").count();
+    assert_eq!(blocked, 1);
+
+    // A secret of another developer account changes nothing; the build's account does.
+    admin_call(&w, |ctx| crate::admin_set_credential(ctx, "other-account".into(), secret_name::SPACETIME_TOKEN.into(), "t".into())).unwrap();
+    assert!(w.purchase().blocked);
+    admin_call(&w, |ctx| crate::admin_set_credential(ctx, config::DEFAULT_SCOPE.into(), secret_name::SPACETIME_TOKEN.into(), "stdb-token".into()))
+        .unwrap();
+    let p = w.purchase();
+    let now = w.read(|tx| tx.timestamp.to_micros_since_unix_epoch());
+    assert!(!p.blocked && p.next_attempt_at_micros <= now, "due now");
+    // The seeded Google token ran out meanwhile.
+    w.write(|tx| {
+        tx.db.access_token_cache().key().update(AccessTokenCache { key: "google/default".into(), token: "google-access-token".into(), expires_at_micros: now + 3_600_000_000 });
+    });
+    w.run_drainers();
+    let p = w.purchase();
+    assert_eq!((p.status.as_str(), p.attempts, p.last_error.as_str()), (status::COMPLETED, 0, ""));
+    assert_eq!(w.calls("/call/billing_grant"), 1);
+    assert!(purchase_events(&w, LEDGER_ID).iter().any(|(e, _)| e == "unblocked"));
+    assert_eq!(w.read(crate::ledger_index::blocked_count), 0);
+}
+
+#[test]
+fn a_delivery_host_that_is_not_allowed_waits_for_the_owner_to_allow_it() {
+    let w = World::new();
+    w.as_admin(true);
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
+        app.spacetime_url = "https://stdb.example.com".into();
+        tx.db.game_app().app_id().update(app);
+    });
+    w.verify("player-1", "gems");
+    let p = w.purchase();
+    assert!(p.blocked && p.last_error.contains("not an allowed https host"), "{}", p.last_error);
+    assert_eq!(w.calls("/call/"), 0);
+    admin_call(&w, |ctx| crate::admin_add_spacetime_host(ctx, "stdb.example.com".into())).unwrap();
+    w.run_drainers();
+    assert_eq!(w.purchase().status, status::COMPLETED);
+    assert_eq!(w.calls("stdb.example.com/v1/database/game-db/call/billing_grant"), 1);
+}
+
+#[test]
+fn a_purchase_of_a_build_that_is_gone_is_blocked_and_a_saved_build_retries_it() {
+    let w = World::new();
+    w.as_admin(true);
+    w.fake.borrow_mut().game_status = 503;
+    w.verify("player-1", "gems");
+    let app = w.read(|tx| tx.db.game_app().app_id().find(APP.to_string()).unwrap());
+    w.write(|tx| {
+        tx.db.game_app().app_id().delete(APP.to_string());
+    });
+    w.advance_clock(61);
+    w.run_worker();
+    let p = w.purchase();
+    assert!(p.blocked && p.last_error.contains("not configured"), "{}", p.last_error);
+
+    // Saving the build again (its delivery fixed meanwhile) tries the row at once.
+    w.fake.borrow_mut().game_status = 200;
+    let input = json!({
+        "app_id": APP, "platform": app.platform, "game_key": app.game_key, "delivery": app.delivery,
+        "spacetime_url": app.spacetime_url, "spacetime_db": app.spacetime_db,
+        "grant_reducer": app.grant_reducer, "revoke_reducer": app.revoke_reducer,
+    });
+    admin_call(&w, |ctx| crate::admin_upsert_game_app(ctx, input.to_string())).unwrap();
+    w.run_drainers();
+    assert_eq!(w.purchase().status, status::COMPLETED);
+}
+
+#[test]
+fn the_queue_says_what_each_row_waits_for() {
+    let w = World::new();
+    w.fake.borrow_mut().game_status = 503;
+    w.verify("player-1", "gems");
+    assert_eq!(queue_waiting(&w), ["retry"]);
+    w.advance_clock(61);
+    assert_eq!(queue_waiting(&w), ["due"]);
+    w.write(|tx| {
+        let mut p = tx.db.purchase().id().find(LEDGER_ID.to_string()).unwrap();
+        p.lease_until_micros = NOW_MICROS + 120 * 1_000_000;
+        ledger::save_purchase(tx, p);
+    });
+    assert_eq!(queue_waiting(&w), ["running"]);
+}
+
 #[test]
 fn alerts_are_throttled_and_repeats_reported_after_the_window() {
     let w = World::new();
@@ -2965,6 +3123,7 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
         step_seq: 0,
         step_at_micros: 0,
         last_error: String::new(),
+        blocked: false,
         created_at_micros: NOW_MICROS,
         updated_at_micros: NOW_MICROS,
         previous_user_id: String::new(),
@@ -4658,6 +4817,7 @@ impl World {
             step_seq: 0,
             step_at_micros: 0,
             last_error: String::new(),
+            blocked: false,
             created_at_micros: updated,
             updated_at_micros: updated,
             previous_user_id: String::new(),
@@ -5267,6 +5427,7 @@ fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -
         step_seq: 0,
         step_at_micros: 0,
         last_error: String::new(),
+        blocked: false,
         created_at_micros,
         updated_at_micros: created_at_micros,
         previous_user_id: String::new(),
@@ -8365,6 +8526,93 @@ fn an_integration_attempt_leaves_no_stand_in_and_a_failed_one_one_retry() {
         ScheduleAt::Interval(_) => unreachable!(),
     };
     assert_eq!((left[0].attempts, due), (1, NOW_MICROS + purser_core::retry_delay_secs(0) * 1_000_000));
+}
+
+/// Runs `f` with an HTTP client whose call never comes back: the host stopped the call (a restart,
+/// a trap) after the one-shot row was taken.
+fn cut_short(w: &World, f: impl FnOnce(&mut ProcedureContext)) {
+    crate::ctx::start_test_call();
+    let mut ctx = w
+        .test
+        .procedure_context_builder(TestAuth::internal())
+        .http(|_, _req: Request| -> Result<Response, spacetimedb::http::Error> { panic!("the host stopped the call") })
+        .build();
+    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut ctx)));
+    assert!(run.is_err(), "the call was cut short");
+}
+
+fn due_at(at: &ScheduleAt) -> i64 {
+    match at {
+        ScheduleAt::Time(t) => t.to_micros_since_unix_epoch(),
+        ScheduleAt::Interval(_) => unreachable!(),
+    }
+}
+
+#[test]
+fn an_alert_cut_short_is_sent_again_by_its_stand_in() {
+    let w = World::new();
+    setup_alerts(&w, false);
+    w.write(|tx| crate::alerts::raise(tx, "integration_failed", APP, "tenjin purchase dropped"));
+    let take = |w: &World, id: u64| {
+        w.write(|tx| {
+            use crate::alerts::alert_outbox;
+            tx.db.alert_outbox().id().delete(id);
+        })
+    };
+    let row = alert_outbox(&w).remove(0);
+    take(&w, row.id);
+    cut_short(&w, |ctx| crate::alerts::send_alert(ctx, row.clone()));
+    let left = alert_outbox(&w);
+    assert_eq!(left.len(), 1, "the stand-in");
+    let guard = NOW_MICROS + crate::integrations::ATTEMPT_GUARD_SECS as i64 * 1_000_000;
+    assert_eq!((left[0].attempts, due_at(&left[0].scheduled_at), left[0].log_id), (row.attempts + 1, guard, row.log_id));
+
+    // The stand-in runs and gets through: nothing is left.
+    let stand_in = left[0].clone();
+    take(&w, stand_in.id);
+    let (mut ctx, seen) = recording_ctx(&w, 200);
+    crate::alerts::send_alert(&mut ctx, stand_in);
+    assert_eq!(seen.borrow().len(), 1);
+    assert!(alert_outbox(&w).is_empty());
+    assert!(alert_log(&w)[0].results_json.contains("sent"), "{}", alert_log(&w)[0].results_json);
+
+    // The last attempt has no stand-in: cut short, it is gone.
+    let last = crate::alerts::AlertOutbox { attempts: crate::alerts::MAX_ATTEMPTS - 1, ..row };
+    cut_short(&w, |ctx| crate::alerts::send_alert(ctx, last));
+    assert!(alert_outbox(&w).is_empty());
+}
+
+#[test]
+fn a_refund_request_answer_cut_short_is_made_again_before_the_deadline() {
+    use crate::consumption::apple_consumption_outbox;
+    let w = refund_world(Some(true), "prefer");
+    refund_request(&w);
+    let take = |w: &World, id: u64| {
+        w.write(|tx| {
+            tx.db.apple_consumption_outbox().id().delete(id);
+        })
+    };
+    let row = consumption_queue(&w).remove(0);
+    take(&w, row.id);
+    let now = w.read(|tx| tx.timestamp.to_micros_since_unix_epoch());
+    cut_short(&w, |ctx| crate::consumption::send_apple_consumption(ctx, row.clone()));
+    let left = consumption_queue(&w);
+    assert_eq!(left.len(), 1, "the stand-in");
+    let guard = now + crate::integrations::ATTEMPT_GUARD_SECS as i64 * 1_000_000;
+    assert_eq!((left[0].attempts, due_at(&left[0].scheduled_at)), (row.attempts + 1, guard));
+
+    // The stand-in answers: nothing is left.
+    let stand_in = left[0].clone();
+    take(&w, stand_in.id);
+    w.script("consumption/2000000123", 202, "");
+    crate::consumption::send_apple_consumption(&mut w.ctx(), stand_in);
+    assert_eq!(w.calls("/consumption/"), 1);
+    assert!(consumption_queue(&w).is_empty());
+
+    // Too close to Apple's deadline for another attempt: no stand-in.
+    let late = crate::consumption::AppleConsumptionOutbox { deadline_at_micros: now + 60 * 1_000_000, ..row };
+    cut_short(&w, |ctx| crate::consumption::send_apple_consumption(ctx, late));
+    assert!(consumption_queue(&w).is_empty());
 }
 
 

@@ -973,7 +973,10 @@ components:
           description: Queue drainers running or scheduled (at most the `worker_lanes` setting).
         stuck_purchases:
           type: integer
-          description: Rows retried 3 times or more.
+          description: Rows retried 3 times or more, or blocked.
+        blocked_purchases:
+          type: integer
+          description: Rows whose step waits for a fix of the setup (a missing secret, a delivery host that is not allowed, a deleted build).
         queued_integration_events:
           type: integer
     ClientInfo:

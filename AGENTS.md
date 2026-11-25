@@ -70,7 +70,9 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   go `verified` → `completed`); `revoke_pending` → `revoked`; `expire_pending` → `expired`;
   `transfer_pending` (restore moved it to another user); `rejected`. Every outside call is retryable:
   the row is written first, `ledger::advance` tries inline, `ledger::process_pending` (scheduled
-  worker) retries with backoff.
+  worker) retries with backoff. A step that only a change of the setup can fix (`ledger::blocker`: a
+  missing secret, a host that is not allowed, a deleted build) is `blocked` instead: it waits for
+  `ledger::unblock` (saving the build, a secret of its scope, a new delivery host) or 6 hours.
 - **Delivery** (`game_app.delivery`): `spacetimedb` (call `grant_reducer` / `revoke_reducer` on the
   game DB with `spacetime_token`; one argument, the `BillingEvent`), `spacetimedb_idc` (a game DB on the
   same server: outbox rows to its `purser_grant` / `purser_revoke`, `spacetime_db` = its identity; the

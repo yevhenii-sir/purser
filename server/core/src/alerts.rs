@@ -671,6 +671,16 @@ pub fn delivery_detail(purchase_id: &str, product_id: &str, user_id: &str, statu
     )
 }
 
+/// Text of a "delivery keeps failing" alert for a purchase whose step cannot work with the setup
+/// as it is (a missing secret, a host that is not allowed): raised at once, retrying does not help.
+pub fn blocked_detail(purchase_id: &str, product_id: &str, user_id: &str, status: &str, last_error: &str) -> String {
+    format!(
+        "{purchase_id} ({product_id}, user {user_id}): {} waits until the setup is fixed: {}",
+        step_label(status),
+        clip(last_error, 400)
+    )
+}
+
 /// Human name of a purchase status for "delivery keeps failing" messages.
 pub fn step_label(status: &str) -> &'static str {
     use crate::model::status;
@@ -859,6 +869,11 @@ mod tests {
         assert_eq!(step_label("granted"), "consume / acknowledge in the store");
         let d = delivery_detail("google:GPA.1", "gems", "player-1", "verified", 3, "HTTP 503");
         assert_eq!(d, "google:GPA.1 (gems, user player-1): grant delivery to the game failed 3 times in a row. Last error: HTTP 503");
+        let d = blocked_detail("google:GPA.1", "gems", "player-1", "verified", "credential 'webhook_secret' is not configured");
+        assert_eq!(
+            d,
+            "google:GPA.1 (gems, user player-1): grant delivery to the game waits until the setup is fixed: credential 'webhook_secret' is not configured"
+        );
     }
 
     #[test]

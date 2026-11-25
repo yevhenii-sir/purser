@@ -82,6 +82,9 @@ export interface Purchase {
   [k: string]: unknown
 }
 
+/** Why a queued purchase waits (`purser_core::model::waiting`). */
+export type Waiting = "running" | "blocked" | "game_answer" | "due" | "retry" | "later"
+
 export type Level = "skip" | "info" | "ok" | "warn" | "fail"
 
 export interface Check {
@@ -258,8 +261,10 @@ export interface Overview {
   worker_stale_after_secs: number
   total: number
   by_status: Record<string, number>
-  /** Rows the worker still has to process, soonest retry first (at most 200). */
-  pending: Pick<Purchase, "id" | "app_id" | "product_id" | "user_id" | "status" | "attempts" | "next_attempt_at_micros" | "last_error" | "updated_at_micros">[]
+  /** Rows the worker still has to process, soonest retry first (at most 200), with what each waits for. */
+  pending: (Pick<Purchase, "id" | "app_id" | "product_id" | "user_id" | "status" | "attempts" | "next_attempt_at_micros" | "last_error" | "updated_at_micros"> & {
+    waiting: Waiting
+  })[]
   pending_total: number
   /** Rows due now (the rest wait for a later retry) and when the longest waiting one became due (0: none). */
   due_total: number

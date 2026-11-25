@@ -1291,7 +1291,7 @@ fn healthz(ctx: &mut HandlerContext, _req: Request) -> Response {
 /// `settings::WORKER_STALE_MICROS`; right after a publish it has not run yet: `starting`). `backlog`
 /// (200): a purchase has been due for `drain::BACKLOG_AFTER_MICROS`, the queue is not keeping up.
 fn health_report(ctx: &mut impl Ctx) -> Outcome {
-    let (now, age, pending, stuck, outbox, queue, drainers) = ctx.tx(|tx| {
+    let (now, age, pending, stuck, blocked, outbox, queue, drainers) = ctx.tx(|tx| {
         use crate::integrations::integration_outbox;
         use crate::ledger_index::pending_purchase;
         use spacetimedb::Table;
@@ -1301,6 +1301,7 @@ fn health_report(ctx: &mut impl Ctx) -> Outcome {
             crate::settings::worker_age_secs(tx),
             tx.db.pending_purchase().count(),
             tx.db.pending_purchase().attempts().filter(crate::doctor::STUCK_ATTEMPTS..).take(crate::ledger_index::QUEUE_COUNT_CAP).count(),
+            crate::ledger_index::blocked_count(tx),
             tx.db.integration_outbox().count(),
             crate::ledger_index::queue(tx, now),
             crate::drain::busy_lanes(tx, now),
@@ -1315,13 +1316,15 @@ fn health_report(ctx: &mut impl Ctx) -> Outcome {
         Some(_) => (200, "healthy"),
     };
     // The backlog, for a monitor that alerts on numbers: purchases the worker has to continue (due
-    // now, and how long the oldest has waited), those it keeps retrying, queued integration events.
+    // now, and how long the oldest has waited), those it keeps retrying, those that wait for a fix
+    // of the setup, queued integration events.
     Outcome::new(
         http,
         json!({
             "status": status, "version": env!("CARGO_PKG_VERSION"), "worker_age_secs": age,
             "pending_purchases": pending, "due_purchases": queue.due, "oldest_due_secs": oldest_due_secs,
-            "queue_drainers": drainers, "stuck_purchases": stuck, "queued_integration_events": outbox,
+            "queue_drainers": drainers, "stuck_purchases": stuck, "blocked_purchases": blocked,
+            "queued_integration_events": outbox,
         }),
     )
 }

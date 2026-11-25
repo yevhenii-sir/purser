@@ -17,6 +17,7 @@ use std::collections::{BTreeSet, VecDeque};
     cache_policy = required_in_memory,
     index(accessor = app_due, btree(columns = [app_id, next_attempt_at_micros]))
 )]
+#[derive(PartialEq)]
 pub struct PendingPurchase {
     #[primary_key]
     pub purchase_id: String,
@@ -25,6 +26,9 @@ pub struct PendingPurchase {
     pub next_attempt_at_micros: i64,
     #[index(btree)]
     pub attempts: u32,
+    /// `purchase.blocked`: waits for a change of the setup (`ledger::unblock`).
+    #[index(btree)]
+    pub blocked: bool,
 }
 
 /// A purchase a player owns now (not consumable, in an owned status) or a subscription they
@@ -64,9 +68,10 @@ pub fn sync(tx: &ReducerContext, p: &Purchase) {
             app_id: p.app_id.clone(),
             next_attempt_at_micros: p.next_attempt_at_micros,
             attempts: p.attempts,
+            blocked: p.blocked,
         };
         match pending {
-            Some(old) if old.app_id == row.app_id && old.next_attempt_at_micros == row.next_attempt_at_micros && old.attempts == row.attempts => {}
+            Some(old) if old == row => {}
             Some(_) => {
                 tx.db.pending_purchase().purchase_id().update(row);
             }
@@ -181,14 +186,26 @@ pub fn due(tx: &ReducerContext, now: i64, batch: usize, skip: &BTreeSet<String>)
     picked
 }
 
-/// Builds with rows the worker has retried at least `attempts` times.
+/// Builds with rows the worker has retried at least `attempts` times, or that are blocked.
 pub fn stuck_builds(tx: &ReducerContext, attempts: u32) -> BTreeSet<String> {
-    tx.db.pending_purchase().attempts().filter(attempts..).map(|r| r.app_id).collect()
+    let retried = tx.db.pending_purchase().attempts().filter(attempts..);
+    retried.chain(tx.db.pending_purchase().blocked().filter(true)).map(|r| r.app_id).collect()
 }
 
-/// Ledger ids of the build's rows retried at least `attempts` times.
+/// Ledger ids of the build's rows retried at least `attempts` times, or blocked.
 pub fn stuck_of(tx: &ReducerContext, app_id: &str, attempts: u32) -> Vec<String> {
-    tx.db.pending_purchase().app_due().filter((app_id, 1i64..)).filter(|r| r.attempts >= attempts).map(|r| r.purchase_id).collect()
+    tx.db
+        .pending_purchase()
+        .app_due()
+        .filter((app_id, 1i64..))
+        .filter(|r| r.attempts >= attempts || r.blocked)
+        .map(|r| r.purchase_id)
+        .collect()
+}
+
+/// Rows waiting for a change of the setup (at most [`QUEUE_COUNT_CAP`]).
+pub fn blocked_count(tx: &ReducerContext) -> usize {
+    tx.db.pending_purchase().blocked().filter(true).take(QUEUE_COUNT_CAP).count()
 }
 
 /// The worker's queue at `now`.
@@ -215,13 +232,13 @@ pub fn any_due(tx: &ReducerContext, now: i64) -> bool {
     tx.db.pending_purchase().next_attempt_at_micros().filter(1i64..=now).next().is_some()
 }
 
-/// Builds with a row that has been due since `before` or earlier (the queue is not keeping up),
-/// with the number of their rows due at `now`.
 /// Builds whose queue may have rows (see [`due`]).
 fn queue_builds(tx: &ReducerContext) -> BTreeSet<String> {
     tx.db.purchase_count().iter().map(|c| c.app_id).chain(tx.db.game_app().iter().map(|a| a.app_id)).collect()
 }
 
+/// Builds with a row that has been due since `before` or earlier (the queue is not keeping up),
+/// with the number of their rows due at `now`.
 pub fn lagging_builds(tx: &ReducerContext, before: i64, now: i64) -> Vec<(String, u64)> {
     let apps = queue_builds(tx);
     apps.into_iter()

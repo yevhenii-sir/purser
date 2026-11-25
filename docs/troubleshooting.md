@@ -19,6 +19,7 @@ problems before they reach players; the Logs page shows what the module did.
 | `ERR_NOT_REVOCABLE` | admin, `/server/revoke` | The purchase cannot be revoked in its state (still being verified, already ended). | Look at its history on the purchase page. |
 | `ERR_TX_EXISTS` | manual grant, `/server/grant` (`409`) | The `transaction_id` of a grant is already used (by another grant). | Use one id per grant; repeat the same request to get its result. |
 | `ERR_BAD_USER` | admin, `/server/*` | A player id must be 1-128 characters of `A-Z a-z 0-9 - _ . :` (client routes answer `400 "invalid user_id"`). | The Unity SDK refuses other ids in `SetUserId`; hash an e-mail address, for example. |
+| `ERR_REPORT_COUNTING` | `admin_revenue_stats`, `admin_revenue_overview` | Another admin is counting the same report for the first time. | Ask again in a few seconds (the admin page does it by itself); a count that has not finished in 2 minutes no longer holds others. |
 | `ERR_BAD_TABLE` | `backup.py` (`admin_backup_page`) | The module does not page that table: the backup reads it with `/sql`. | — |
 | `ERR_PLAYER_TOKENS_REQUIRED` | `/manage/stripe`, `403` | The customer portal acts for the player's Stripe customer: only builds with player tokens get a session. | Use player tokens, or Stripe's customer portal login link (`StripeCheckoutOptions.CustomerPortalLoginUrl`). |
 | `ERR_NO_SUBSCRIPTION` | `/manage/stripe`, `404` | The player has no active Stripe subscription in this build. | The login link still lets a customer in by email. |
@@ -26,8 +27,15 @@ problems before they reach players; the Logs page shows what the module did.
 
 A purchase that stays *pending* on the Overview has a `last_error`: a store or delivery call that keeps failing
 (credentials, the game's reducer or webhook). The worker retries with backoff; fix the cause and it goes on by itself,
-or use **Retry now**. `GET /healthz` reports `pending_purchases`, `due_purchases`, `oldest_due_secs` and
-`stuck_purchases` for monitors.
+or use **Retry now**. `GET /healthz` reports `pending_purchases`, `due_purchases`, `oldest_due_secs`,
+`stuck_purchases` and `blocked_purchases` for monitors.
+
+A purchase that waits as **blocked** (the Overview's *Waiting* column) cannot work with the setup as it is: its error
+names the missing secret (`spacetime_token`, `webhook_secret`, the Google service account), the SpacetimeDB host the
+owner has not allowed (Server page → SpacetimeDB hosts), the `spacetime_db` that is not the game database's identity,
+or the deleted build. Nothing is sent meanwhile and the `delivery_failing` alert is raised at once. Saving the build,
+setting a secret of its scope (the build, its developer account or `default`) or allowing a host tries it again
+at once; otherwise it is looked at every 6 hours.
 
 ## Server keys (`/server/*`)
 

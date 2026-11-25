@@ -25,8 +25,38 @@ pub fn creds(tx: &TxContext, app: &GameApp) -> Option<Creds> {
     Some(Creds { hosts, secret: config::require_secret(tx, app, name).map(|s| s.value) })
 }
 
+/// Why a delivery of the build cannot work until its setup changes (`None`: it can be tried): a
+/// missing secret, a host the owner has not allowed (checked on every delivery: a host removed
+/// since the build was saved), names that cannot be a path segment, an unknown delivery.
+/// `grant`: the event is a grant (else a revoke). The ledger blocks such rows (`ledger::block`).
+pub fn blocker(app: &GameApp, creds: Option<&Creds>, grant: bool) -> Option<String> {
+    match app.delivery.as_str() {
+        delivery::NONE | delivery::SPACETIMEDB_IDC => None,
+        delivery::SPACETIMEDB => {
+            let reducer = if grant { &app.grant_reducer } else { &app.revoke_reducer };
+            if reducer.is_empty() {
+                return None;
+            }
+            let creds = creds?;
+            // Never send the token anywhere but an allowed SpacetimeDB host.
+            if !purser_core::is_allowed_spacetime_url(&app.spacetime_url, &creds.hosts) {
+                return Some(format!("spacetime_url '{}' is not an allowed https host", app.spacetime_url));
+            }
+            if !is_safe_path_segment(&app.spacetime_db) || !is_safe_path_segment(reducer) {
+                return Some("spacetime_db / reducer name contains invalid characters".into());
+            }
+            creds.secret.as_ref().err().cloned()
+        }
+        delivery::WEBHOOK => creds?.secret.as_ref().err().cloned(),
+        other => Some(format!("unknown delivery '{other}'")),
+    }
+}
+
 /// Delivers with credentials read earlier ([`creds`]).
 pub fn deliver_with(ctx: &mut impl Ctx, app: &GameApp, creds: Option<&Creds>, ev: &BillingEvent) -> Result<(), String> {
+    if let Some(e) = blocker(app, creds, ev.event == event_type::GRANT) {
+        return Err(e);
+    }
     match (app.delivery.as_str(), creds) {
         (delivery::NONE, _) => Ok(()),
         (delivery::SPACETIMEDB, Some(c)) => deliver_spacetimedb(ctx, app, c, ev),
@@ -45,14 +75,7 @@ fn deliver_spacetimedb(ctx: &mut impl Ctx, app: &GameApp, creds: &Creds, ev: &Bi
         return Ok(());
     }
     let args = ev.reducer_args();
-    // Never send the token anywhere but an allowed SpacetimeDB host (checked again here: rows saved
-    // earlier, or a host the owner removed since).
-    if !purser_core::is_allowed_spacetime_url(&app.spacetime_url, &creds.hosts) {
-        return Err(format!("spacetime_url '{}' is not an allowed https host", app.spacetime_url));
-    }
-    if !is_safe_path_segment(&app.spacetime_db) || !is_safe_path_segment(reducer) {
-        return Err("spacetime_db / reducer name contains invalid characters".into());
-    }
+    // The host and names were checked by `blocker`.
     let token = creds.secret.clone()?;
     let url = format!("{}/v1/database/{}/call/{}", app.spacetime_url.trim_end_matches('/'), app.spacetime_db, reducer);
     let res = net::send(

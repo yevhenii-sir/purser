@@ -104,6 +104,10 @@ pub fn save_purchase(tx: &ReducerContext, mut p: Purchase) -> Purchase {
             bump(tx, &old.app_id, &old.status, false);
             bump(tx, &p.app_id, &p.status, true);
         }
+        // A blocked step of the old status no longer says anything about the new one.
+        if old.status != p.status {
+            p.blocked = false;
+        }
         // A new step for the game: another status, owner or access end (not a retry, a lease).
         if old.status != p.status || old.user_id != p.user_id || old.access_until_ms() != p.access_until_ms() {
             p.step_seq = old.step_seq.wrapping_add(1);
@@ -706,13 +710,17 @@ impl Lease {
     }
 }
 
-/// Reads what the step of a leased row needs.
+/// Reads what the step of a leased row needs. A step that cannot work with the setup as it is
+/// (see [`blocker`]) is not run: the row is [`block`]ed.
 fn prepare(tx: &TxContext, app: GameApp, row: Purchase) -> Lease {
     let delivers = matches!(
         row.status.as_str(),
         status::VERIFIED | status::TRANSFER_PENDING | status::REVOKE_PENDING | status::EXPIRE_PENDING
     );
     let delivery = if delivers { delivery_client::creds(tx, &app) } else { None };
+    if let Some(why) = blocker(tx, &app, &row, delivers, delivery.as_ref()) {
+        return Lease::Idle(block(tx, &row.id, &row.status, &why));
+    }
     let revoked_by_admin = row.status == status::REVOKE_PENDING && crate::support::revoked_by_admin(tx, &row.id);
     let store_auth = if row.status == status::GRANTED && stores::needs_finish(&row) {
         stores::Auth::cached(tx, &app, tx_now_micros(tx))
@@ -756,9 +764,29 @@ pub fn lease(tx: &TxContext, id: &str, app: Option<&GameApp>) -> Lease {
     };
     match app {
         Some(app) => prepare(tx, app, p),
-        None => Lease::Idle(fail(tx, id, &p.status, "app is not configured")),
+        None => Lease::Idle(block(tx, id, &p.status, &format!("build {} is not configured (deleted?)", p.app_id))),
     }
 }
+
+/// Why the step of `row` cannot work until someone changes the setup (`None`: it can be tried).
+/// Only what no retry fixes: a missing secret, a host the owner has not allowed, a game database
+/// that is not an identity. Rejected credentials and failing calls are retried with backoff.
+fn blocker(tx: &TxContext, app: &GameApp, row: &Purchase, delivers: bool, delivery: Option<&delivery_client::Creds>) -> Option<String> {
+    if delivers {
+        if app.delivery == delivery::SPACETIMEDB_IDC {
+            return crate::idc::target_of(app)
+                .is_none()
+                .then(|| IDC_TARGET_ERROR.to_string());
+        }
+        return delivery_client::blocker(app, delivery, row.status == status::VERIFIED);
+    }
+    if row.status == status::GRANTED && stores::needs_finish(row) {
+        return config::require_secret(tx, app, config::secret_name::GOOGLE_SERVICE_ACCOUNT_JSON).err();
+    }
+    None
+}
+
+const IDC_TARGET_ERROR: &str = "spacetimedb_idc delivery: spacetime_db must be the game database's identity (64 hex digits)";
 
 /// Compare-and-set status transition, plus the integration event (`event_kind`) for it.
 /// `lease_app`: the caller goes on with the row, so it is leased (and its next step prepared) in
@@ -787,6 +815,7 @@ fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event:
     p.status = to.to_string();
     p.attempts = 0;
     p.last_error.clear();
+    p.blocked = false;
     let terminal = is_terminal(to);
     p.next_attempt_at_micros = if terminal { 0 } else { now };
     p.lease_until_micros = 0;
@@ -821,6 +850,21 @@ fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event:
 /// A step for status `ran_for` failed: retried with backoff. If the row changed meanwhile (a
 /// refund during a grant), the failure belongs to the old step: the row goes on with its new work.
 fn fail(tx: &TxContext, id: &str, ran_for: &str, error: &str) -> Option<Purchase> {
+    failed(tx, id, ran_for, error, false)
+}
+
+/// How long a blocked row waits when nothing it depends on changes: the setup may have been fixed
+/// in a way [`unblock`] does not see (SQL, a host that came back).
+pub const BLOCKED_RECHECK_MICROS: i64 = 6 * 3600 * 1_000_000;
+
+/// A step for status `ran_for` cannot work until the setup changes ([`blocker`]): the row waits for
+/// [`unblock`] (or [`BLOCKED_RECHECK_MICROS`]) instead of being retried, and the owner is alerted
+/// at once: waiting does not fix it.
+fn block(tx: &TxContext, id: &str, ran_for: &str, error: &str) -> Option<Purchase> {
+    failed(tx, id, ran_for, error, true)
+}
+
+fn failed(tx: &TxContext, id: &str, ran_for: &str, error: &str, blocked: bool) -> Option<Purchase> {
     let mut p = tx.db.purchase().id().find(id.to_string())?;
     let now = tx_now_micros(tx);
     p.lease_until_micros = 0;
@@ -832,16 +876,60 @@ fn fail(tx: &TxContext, id: &str, ran_for: &str, error: &str) -> Option<Purchase
         crate::ledger::save_purchase(tx, p.clone());
         return Some(p);
     }
-    let delay = retry_delay_secs(p.attempts);
+    let error: String = error.chars().take(500).collect();
+    // The same block again (the periodic re-check): not logged again.
+    let newly_blocked = blocked && !(p.blocked && p.last_error == error);
     p.attempts += 1;
-    p.next_attempt_at_micros = now + delay * 1_000_000;
-    p.last_error = error.chars().take(500).collect();
+    p.last_error = error.clone();
+    p.blocked = blocked;
     p.updated_at_micros = now;
-    log::warn!("Purchase {id} step failed (attempt {}), retry in {delay}s: {error}", p.attempts);
-    crate::alerts::on_purchase_failed(tx, &p);
+    if blocked {
+        p.next_attempt_at_micros = now + BLOCKED_RECHECK_MICROS;
+        log::warn!("Purchase {id} is blocked until the setup changes: {error}");
+        if newly_blocked {
+            log_event(tx, id, "blocked", &error);
+        }
+        crate::alerts::on_purchase_blocked(tx, &p);
+    } else {
+        let delay = retry_delay_secs(p.attempts - 1);
+        p.next_attempt_at_micros = now + delay * 1_000_000;
+        log::warn!("Purchase {id} step failed (attempt {}), retry in {delay}s: {error}", p.attempts);
+        crate::alerts::on_purchase_failed(tx, &p);
+    }
     crate::ledger::save_purchase(tx, p.clone());
-    crate::support::log_error(tx, id, error);
+    if !blocked || newly_blocked {
+        crate::support::log_error(tx, id, &error);
+    }
     Some(p)
+}
+
+/// The setup of `scope` changed (a build, its developer account or `default` secrets; `None`: the
+/// delivery hosts): its blocked rows are tried again now.
+pub fn unblock(tx: &ReducerContext, scope: Option<&str>) {
+    use crate::ledger_index::pending_purchase;
+    let now = tx_now_micros(tx);
+    let rows: Vec<(String, String)> = tx.db.pending_purchase().blocked().filter(true).map(|q| (q.purchase_id, q.app_id)).collect();
+    let mut accounts: BTreeMap<String, String> = BTreeMap::new();
+    for (id, app_id) in rows {
+        let covered = match scope {
+            None => true,
+            Some(s) if s == config::DEFAULT_SCOPE || s == app_id => true,
+            Some(s) => {
+                let account = accounts
+                    .entry(app_id.clone())
+                    .or_insert_with(|| tx.db.game_app().app_id().find(&app_id).map(|a| a.account).unwrap_or_default());
+                account == s
+            }
+        };
+        if !covered {
+            continue;
+        }
+        let Some(mut p) = tx.db.purchase().id().find(&id) else { continue };
+        p.blocked = false;
+        p.next_attempt_at_micros = now;
+        save_purchase(tx, p);
+        log_event(tx, &id, "unblocked", &format!("the setup of {} changed", scope.unwrap_or("the delivery hosts")));
+    }
 }
 
 fn billing_event(p: &Purchase, event: &str, why: &str, now_ms: i64) -> BillingEvent {
@@ -982,7 +1070,7 @@ fn idc_step(ctx: &mut impl Ctx, app: &GameApp, p: &Purchase, ev: &BillingEvent, 
                 crate::idc::send(tx, target, p, ev);
                 Lease::Idle(park(tx, &p.id))
             }
-            None => Lease::Idle(fail(tx, &p.id, &p.status, "spacetimedb_idc delivery: spacetime_db must be the game database's identity (64 hex digits)")),
+            None => Lease::Idle(block(tx, &p.id, &p.status, IDC_TARGET_ERROR)),
         },
         crate::idc::Next::Wait => Lease::Idle(park(tx, &p.id)),
         crate::idc::Next::Overdue(e) => Lease::Idle(park_overdue(tx, &p.id, &e)),

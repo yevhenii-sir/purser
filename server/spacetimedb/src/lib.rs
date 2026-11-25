@@ -260,6 +260,9 @@ pub struct Purchase {
     /// When the current step began (the events' `occurred_at_ms`).
     pub step_at_micros: i64,
     pub last_error: String,
+    /// The last step failed in a way only a change of the setup fixes (`last_error` says what):
+    /// it waits for that change (`ledger::unblock`) instead of being retried with backoff.
+    pub blocked: bool,
     #[index(btree)]
     pub created_at_micros: i64,
     #[index(btree)]
@@ -338,6 +341,7 @@ impl Purchase {
             step_seq: 0,
             step_at_micros: 0,
             last_error: String::new(),
+            blocked: false,
             created_at_micros: now_micros,
             updated_at_micros: now_micros,
             previous_user_id: String::new(),
@@ -500,6 +504,7 @@ pub fn admin_add_spacetime_host(ctx: &ReducerContext, host: String) -> Result<()
         added_by: ctx.sender(),
         added_at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
     });
+    crate::ledger::unblock(ctx, None);
     Ok(())
 }
 
@@ -682,6 +687,7 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
     if retarget {
         crate::idc::retarget(ctx, &app.app_id);
     }
+    crate::ledger::unblock(ctx, Some(&app.app_id));
     Ok(())
 }
 
@@ -939,6 +945,7 @@ pub(crate) fn put_credential(ctx: &ReducerContext, scope: &str, name: &str, valu
         ctx.db.credential().insert(Credential { key: key.clone(), value });
     }
     drop_cached_tokens(ctx, scope, name);
+    crate::ledger::unblock(ctx, Some(scope));
     log::info!("Credential {key} updated");
     Ok(())
 }
@@ -1214,6 +1221,7 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             step_seq: 0,
             step_at_micros: 0,
             last_error: r.last_error,
+            blocked: false,
             created_at_micros: r.created_at_micros,
             updated_at_micros: r.updated_at_micros,
             previous_user_id: r.previous_user_id,

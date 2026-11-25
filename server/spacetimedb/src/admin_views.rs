@@ -6,6 +6,7 @@
 
 use crate::ctx::{tx_now_micros, Ctx};
 use crate::health::app_check;
+use crate::idc::idc_call;
 use crate::integrations::{integration, integration_outbox};
 use crate::ledger::purchase_count;
 use crate::ledger_index::pending_purchase;
@@ -117,10 +118,12 @@ pub fn overview(tx: &spacetimedb::ReducerContext, only: Option<&std::collections
         }
         if pending.len() < OVERVIEW_PENDING_ROWS {
             let Some(p) = tx.db.purchase().id().find(&q.purchase_id) else { continue };
+            let awaits_game = tx.db.idc_call().purchase_id().find(&p.id).is_some_and(|c| c.answer.is_empty() && c.status == p.status);
+            let waiting = purser_core::model::waiting_for(now, p.next_attempt_at_micros, p.lease_until_micros, p.blocked, awaits_game, p.attempts);
             pending.push(json!({
                 "id": p.id, "app_id": p.app_id, "product_id": p.product_id, "user_id": p.user_id,
                 "status": p.status, "attempts": p.attempts, "next_attempt_at_micros": p.next_attempt_at_micros,
-                "last_error": p.last_error, "updated_at_micros": p.updated_at_micros,
+                "last_error": p.last_error, "updated_at_micros": p.updated_at_micros, "waiting": waiting,
             }));
         }
     }

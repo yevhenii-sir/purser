@@ -198,9 +198,58 @@ pub fn ledger_id(store: &str, transaction_id: &str) -> String {
     format!("{store}:{transaction_id}")
 }
 
+/// Why a ledger row the worker has to continue is still waiting (the admin page's queue).
+pub mod waiting {
+    /// A request or a queue drainer is running its step now.
+    pub const RUNNING: &str = "running";
+    /// Its step cannot work until the setup changes (a missing secret, a host that is not allowed,
+    /// a deleted build): retried when the build, its secrets or the hosts change, and every
+    /// few hours.
+    pub const BLOCKED: &str = "blocked";
+    /// An inter-database call was sent; the game database has not answered yet.
+    pub const GAME_ANSWER: &str = "game_answer";
+    /// Due now: the next free queue drainer takes it.
+    pub const DUE: &str = "due";
+    /// Its last attempt failed: tried again at `next_attempt_at_micros`.
+    pub const RETRY: &str = "retry";
+    /// Left for later without a failure (its store or game did not answer in time for others).
+    pub const LATER: &str = "later";
+}
+
+/// What a queued row is waiting for (one of [`waiting`]): `awaits_game` = an inter-database call
+/// of its current step was sent and not answered.
+pub fn waiting_for(now: i64, next_attempt_at: i64, lease_until: i64, blocked: bool, awaits_game: bool, attempts: u32) -> &'static str {
+    if lease_until > now {
+        waiting::RUNNING
+    } else if blocked {
+        waiting::BLOCKED
+    } else if awaits_game {
+        waiting::GAME_ANSWER
+    } else if next_attempt_at <= now {
+        waiting::DUE
+    } else if attempts > 0 {
+        waiting::RETRY
+    } else {
+        waiting::LATER
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queued_row_says_what_it_waits_for() {
+        let now = 1_000;
+        assert_eq!(waiting_for(now, now + 5, now + 5, true, true, 3), waiting::RUNNING);
+        assert_eq!(waiting_for(now, now + 5, 0, true, true, 3), waiting::BLOCKED);
+        assert_eq!(waiting_for(now, now + 5, 0, false, true, 3), waiting::GAME_ANSWER);
+        assert_eq!(waiting_for(now, now, 0, false, false, 3), waiting::DUE);
+        assert_eq!(waiting_for(now, now + 5, 0, false, false, 3), waiting::RETRY);
+        assert_eq!(waiting_for(now, now + 5, 0, false, false, 0), waiting::LATER);
+        // A lease that ran out is no longer running.
+        assert_eq!(waiting_for(now, now - 1, now, false, false, 0), waiting::DUE);
+    }
 
     #[test]
     fn access_lasts_through_the_grace_period() {
