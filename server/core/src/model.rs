@@ -133,6 +133,8 @@ pub struct StoreTx {
     pub offer_id: String,
     /// Kind of that offer: `intro` | `promo` | `code` | `winback`; empty when none or unknown.
     pub offer_type: String,
+    /// Access without a payment (a Google promo code or rewarded product): counted at price 0.
+    pub promotional: bool,
 }
 
 impl StoreTx {

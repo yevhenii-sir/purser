@@ -55,12 +55,12 @@ impl Delta {
         self.refunds += o.refunds;
         self.transfers += o.transfers;
         self.expirations += o.expirations;
-        self.gross_micros += o.gross_micros;
-        self.refunded_micros += o.refunded_micros;
+        self.gross_micros = self.gross_micros.saturating_add(o.gross_micros);
+        self.refunded_micros = self.refunded_micros.saturating_add(o.refunded_micros);
         self.trials += o.trials;
         self.trial_conversions += o.trial_conversions;
-        self.gross_after_year_micros += o.gross_after_year_micros;
-        self.refunded_after_year_micros += o.refunded_after_year_micros;
+        self.gross_after_year_micros = self.gross_after_year_micros.saturating_add(o.gross_after_year_micros);
+        self.refunded_after_year_micros = self.refunded_after_year_micros.saturating_add(o.refunded_after_year_micros);
     }
 }
 

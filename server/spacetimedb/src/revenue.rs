@@ -148,12 +148,12 @@ macro_rules! add_delta {
         row.refunds += d.refunds;
         row.transfers += d.transfers;
         row.expirations += d.expirations;
-        row.gross_micros += d.gross_micros;
-        row.refunded_micros += d.refunded_micros;
+        row.gross_micros = row.gross_micros.saturating_add(d.gross_micros);
+        row.refunded_micros = row.refunded_micros.saturating_add(d.refunded_micros);
         row.trials += d.trials;
         row.trial_conversions += d.trial_conversions;
-        row.gross_after_year_micros += d.gross_after_year_micros;
-        row.refunded_after_year_micros += d.refunded_after_year_micros;
+        row.gross_after_year_micros = row.gross_after_year_micros.saturating_add(d.gross_after_year_micros);
+        row.refunded_after_year_micros = row.refunded_after_year_micros.saturating_add(d.refunded_after_year_micros);
     }};
 }
 
@@ -1155,7 +1155,7 @@ fn resolve(tx: &ReducerContext, q: &StatsQuery) -> Result<(i32, i32, i32, BTreeS
     let today = today(tx);
     let to = if q.to.is_empty() { today } else { parse_day(&q.to).ok_or("bad 'to' date")? };
     let from = if q.from.is_empty() { to - 29 } else { parse_day(&q.from).ok_or("bad 'from' date")? };
-    if from > to || to - from > MAX_RANGE_DAYS {
+    if from > to || i64::from(to) - i64::from(from) > i64::from(MAX_RANGE_DAYS) {
         return Err(format!("the range must be 1..{MAX_RANGE_DAYS} days"));
     }
     let mut apps: Vec<String> = q.app_ids.clone();

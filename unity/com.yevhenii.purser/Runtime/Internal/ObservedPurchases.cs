@@ -40,6 +40,8 @@ namespace Purser
             /// <summary>Granted by the package without the server's answer (fail-open).</summary>
             [JsonProperty("provisional")] public bool Provisional;
             [JsonProperty("added_ms")] public long AddedMs;
+            /// <summary>The player who bought it: verified for them even if another player is signed in by then.</summary>
+            [JsonProperty("user")] public string UserId;
         }
 
         private readonly BillingContext m_Context;
@@ -111,6 +113,7 @@ namespace Purser
                     Purchase = purchase.Copy(),
                     Provisional = provisional,
                     AddedMs = new DateTimeOffset(m_Context.UtcNow()).ToUnixTimeMilliseconds(),
+                    UserId = m_Context.User,
                 });
                 while (Entries.Count > MaxEntries)
                 {
@@ -170,7 +173,7 @@ namespace Purser
             {
                 if (p == null)
                     return new PurchaseResult(PurchaseStatus.Failed, null, message: "not kept");
-                var user = m_Context.User ?? m_Host.SyncUser();
+                var user = !string.IsNullOrEmpty(entry.UserId) ? entry.UserId : m_Context.User ?? m_Host.SyncUser();
                 if (user == null)
                     return new PurchaseResult(PurchaseStatus.PendingVerification, productId, p.StoreProductId, p.TransactionId,
                         "kept until there is a player id");

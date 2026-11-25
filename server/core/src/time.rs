@@ -87,7 +87,9 @@ pub fn parse_day(s: &str) -> Option<i32> {
     let y: i64 = it.next()?.parse().ok()?;
     let m: i64 = it.next()?.parse().ok()?;
     let d: i64 = it.next()?.parse().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    // Years outside 1900..=9999 would overflow day arithmetic (a range check of two such days can
+    // wrap and let a report loop over billions of days).
+    if !(1900..=9999).contains(&y) || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
         return None;
     }
     Some(days_from_civil(y, m, d) as i32)
@@ -178,5 +180,13 @@ mod tests {
         assert_eq!(parse_rfc3339_ms(""), None);
         assert_eq!(parse_rfc3339_ms("2026-13-05T11:02:03Z"), None);
         assert_eq!(parse_rfc3339_ms("2026-10-05 11:02:03"), None);
+    }
+
+    #[test]
+    fn days_outside_the_supported_years_are_refused() {
+        assert_eq!(parse_day("1899-12-31"), None);
+        assert_eq!(parse_day("10000-01-01"), None);
+        assert_eq!(parse_day("99999999999-01-01"), None);
+        assert!(parse_day("2026-11-09").is_some());
     }
 }

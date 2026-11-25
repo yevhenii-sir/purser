@@ -838,6 +838,7 @@ pub fn store_tx(p: &Purchase) -> StoreTx {
         family_shared: false,
         offer_id: String::new(),
         offer_type: String::new(),
+        promotional: false,
     }
 }
 

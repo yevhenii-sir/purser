@@ -143,7 +143,12 @@ namespace Purser
 
         void IObservedPurchasesHost.OnVerified(PurchaseResult result) => Raise(PurchaseVerified, nameof(PurchaseVerified), result);
 
-        void IObservedPurchasesHost.OnRejected(PurchaseResult result) => Raise(PurchaseRejected, nameof(PurchaseRejected), result);
+        void IObservedPurchasesHost.OnRejected(PurchaseResult result)
+        {
+            // A provisional success nobody received yet must not reach a handler added later.
+            m_Orders.DropHeld(result.TransactionId);
+            Raise(PurchaseRejected, nameof(PurchaseRejected), result);
+        }
 
         private void Raise(Action<PurchaseResult> handlers, string name, PurchaseResult result)
         {

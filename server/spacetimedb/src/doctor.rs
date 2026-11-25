@@ -297,7 +297,13 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
         r.add(
             "sns_topic",
             "Amazon notification topic",
-            if s.app.sns_topic_arn.is_empty() {
+            if s.app.sns_topic_arn.is_empty() && !sh.other_topic.is_empty() {
+                v(
+                    Level::Warn,
+                    format!("Signed messages came from two topics: {} and {}; only one is Amazon's", sh.last_topic, sh.other_topic),
+                    "Find Amazon's topic in the Amazon Developer Console (Real-time Notifications) and pin that one on the build",
+                )
+            } else if s.app.sns_topic_arn.is_empty() {
                 v(
                     Level::Warn,
                     format!("Notifications come from {}; any AWS topic would be accepted", sh.last_topic),

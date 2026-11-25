@@ -2,7 +2,6 @@ import { useState, type ReactNode } from "react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { call, DB_NAME, getToken, setToken, sql } from "@/lib/api"
@@ -19,10 +18,9 @@ function Centered({ children }: { children: ReactNode }) {
 
 export function LoginPage({ error, onSignedIn }: { error?: string; onSignedIn: () => void }) {
   const [token, setTokenValue] = useState("")
-  const [remember, setRemember] = useState(false)
   const submit = () => {
     if (!token.trim()) return
-    setToken(token.trim(), remember)
+    setToken(token.trim())
     onSignedIn()
   }
   return (
@@ -41,10 +39,6 @@ export function LoginPage({ error, onSignedIn }: { error?: string; onSignedIn: (
             <Input id="token" type="password" autoComplete="off" spellCheck={false} value={token}
               onChange={(e) => setTokenValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
           </div>
-          <div className="flex items-center gap-2">
-            <Checkbox id="remember" checked={remember} onCheckedChange={(v) => setRemember(v === true)} />
-            <Label htmlFor="remember" className="font-normal">Remember on this device</Label>
-          </div>
           {error && (
             <Alert variant="destructive">
               <AlertDescription className="break-all">{error}</AlertDescription>
@@ -54,7 +48,9 @@ export function LoginPage({ error, onSignedIn }: { error?: string; onSignedIn: (
         <CardFooter className="flex-col items-stretch gap-3">
           <Button onClick={submit}>Sign in</Button>
           <p className="text-xs text-muted-foreground">
-            The token stays in this browser and is only sent to this database on SpacetimeDB. By default it is forgotten when the tab is closed.
+            The token is kept for this tab only and sent only to this database; it is forgotten when the tab is closed. Every
+            database on a SpacetimeDB host shares this page's address: on a shared host such as maincloud, sign out when you are
+            done and do not open other databases' pages in this browser meanwhile.
           </p>
         </CardFooter>
       </Card>

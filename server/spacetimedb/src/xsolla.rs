@@ -514,6 +514,10 @@ fn paid(ctx: &mut impl Ctx, app: &GameApp, p: &x::Paid, source: &str) -> Answer 
             None => String::new(),
         };
         let st = x::store_tx(&app.app_id, &product.product_id, p, &original);
+        // A payment webhook retried or replayed after the refund must not grant the order again.
+        if let Some(row) = tx.db.purchase().id().find(st.ledger_id()).filter(|r| !status::is_owned(&r.status)) {
+            return Paid::NoLongerActive(row.status);
+        }
         match ledger::record_and_lease(tx, app, &product, &st, &ledger::Claim::user(&p.user_id, "")) {
             Ok(lease) => Paid::Leased(lease),
             Err(e) => Paid::Refused(e),
@@ -532,6 +536,10 @@ fn paid(ctx: &mut impl Ctx, app: &GameApp, p: &x::Paid, source: &str) -> Answer 
             ledger::run(ctx, lease);
             ok_204("ok", "")
         }
+        Paid::NoLongerActive(st) => {
+            log::info!("{source} for {}: transaction {} is {st} already, not granted again", app.app_id, p.transaction_id);
+            ok_204("ignored", format!("the purchase is {st}"))
+        }
         Paid::Refused(e) => {
             log::warn!("{source} for {}: {e}", app.app_id);
             rejected(400, "INVALID_PARAMETER", e)
@@ -546,6 +554,8 @@ enum Paid {
     UnknownProduct,
     WrongKind(Product),
     Refused(String),
+    /// The ledger row exists and was refunded or expired since.
+    NoLongerActive(String),
     Leased(ledger::Lease),
 }
 

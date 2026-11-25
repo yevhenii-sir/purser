@@ -86,6 +86,13 @@ pub fn parse_product_purchase(
     body: &str,
 ) -> Result<StoreTx, String> {
     let v: Value = serde_json::from_str(body).map_err(|e| format!("bad ProductPurchase: {e}"))?;
+    // Several units in one purchase (multi-quantity turned on in Play Console) would be granted as
+    // one: refused until the ledger carries a quantity, so the purchase stays unacknowledged and
+    // Google refunds it after three days unless a later version grants it.
+    let quantity = v["quantity"].as_i64().unwrap_or(1);
+    if quantity > 1 {
+        return Err(format!("purchases of {quantity} units at once are not supported (turn off multi-quantity for this product)"));
+    }
     // purchaseState: 0 purchased, 1 canceled, 2 pending; a reply without one grants nothing.
     let state = match v["purchaseState"].as_i64() {
         Some(0) => TxState::Active,
@@ -125,6 +132,8 @@ pub fn parse_product_purchase(
         family_shared: false,
         offer_id: String::new(),
         offer_type: String::new(),
+        // purchaseType 1 promo code, 2 rewarded (watched an ad): access without a payment.
+        promotional: matches!(v["purchaseType"].as_i64(), Some(1 | 2)),
     })
 }
 
@@ -239,15 +248,23 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
         family_shared: false,
         offer_id,
         offer_type: String::new(),
+        promotional: false,
     })
 }
+
+/// `voidedPurchaseNotification.productType` of a one-time product.
+pub const VOIDED_ONE_TIME_PRODUCT: i64 = 2;
+/// `voidedPurchaseNotification.refundType` of a refund of some units of a multi-quantity purchase.
+pub const REFUND_TYPE_PARTIAL_QUANTITY: i64 = 2;
 
 /// What a Real-time developer notification is about.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Rtdn {
     Subscription { package: String, token: String, subscription_id: String, notification_type: i64 },
     OneTimeProduct { package: String, token: String, product_id: String, notification_type: i64 },
-    Voided { package: String, token: String, order_id: String, product_type: i64 },
+    /// `product_type` 1 subscription, 2 one-time product; `refund_type` 1 full, 2 some of the
+    /// quantity (`REFUND_TYPE_QUANTITY_BASED_PARTIAL_REFUND`).
+    Voided { package: String, token: String, order_id: String, product_type: i64, refund_type: i64 },
     Test { package: String },
     Unknown { package: String },
 }
@@ -289,6 +306,7 @@ pub fn parse_rtdn_push(body: &str) -> Result<Rtdn, String> {
             token: s(&vn["purchaseToken"]),
             order_id: s(&vn["orderId"]),
             product_type: vn["productType"].as_i64().unwrap_or(0),
+            refund_type: vn["refundType"].as_i64().unwrap_or(1),
         }
     } else if n.get("testNotification").is_some() {
         Rtdn::Test { package }
@@ -352,6 +370,14 @@ mod tests {
         assert_eq!((tx.trial, tx.country.as_str()), (true, "BR"));
         let paid = body.replace(r#""offerPhase":{"freeTrial":{}}"#, r#""offerPhase":{"basePrice":{}}"#);
         assert!(!parse_subscription_v2("com.game", "tok", &paid, 0).unwrap().trial);
+    }
+
+    #[test]
+    fn a_purchase_of_several_units_is_refused() {
+        let body = r#"{"purchaseState":0,"orderId":"GPA.1","quantity":3}"#;
+        assert!(parse_product_purchase("com.game", "gems", "tok", body).unwrap_err().contains("3 units"));
+        let one = r#"{"purchaseState":0,"orderId":"GPA.1","quantity":1}"#;
+        assert!(parse_product_purchase("com.game", "gems", "tok", one).is_ok());
     }
 
     #[test]
@@ -450,7 +476,7 @@ mod tests {
         );
 
         let voided = push(r#"{"packageName":"com.game","voidedPurchaseNotification":{"purchaseToken":"tok","orderId":"GPA.1","productType":2,"refundType":1}}"#);
-        assert!(matches!(parse_rtdn_push(&voided).unwrap(), Rtdn::Voided { product_type: 2, .. }));
+        assert!(matches!(parse_rtdn_push(&voided).unwrap(), Rtdn::Voided { product_type: 2, refund_type: 1, .. }));
 
         let test = push(r#"{"packageName":"com.game","testNotification":{"version":"1.0"}}"#);
         assert!(matches!(parse_rtdn_push(&test).unwrap(), Rtdn::Test { .. }));

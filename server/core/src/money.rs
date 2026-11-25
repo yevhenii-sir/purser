@@ -36,6 +36,35 @@ pub fn from_units_nanos(units: i64, nanos: i64) -> Option<i64> {
     units.checked_mul(1_000_000)?.checked_add(nanos / 1000)
 }
 
+/// A currency code the server stores: three ASCII capital letters (ISO 4217 style).
+pub fn is_currency_code(s: &str) -> bool {
+    s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+/// The most a single purchase may cost in USD micros before the client's price is ignored.
+pub const MAX_CLIENT_PRICE_USD_MICROS: i64 = 10_000 * 1_000_000;
+/// How far (either way) the client's price may be from the catalog's, in USD.
+pub const CLIENT_PRICE_FACTOR: i64 = 20;
+
+/// Whether to believe the price a client reports for a purchase the store gives no price for.
+/// `client_usd_micros` is its USD value (None: no exchange rate for the currency), and
+/// `catalog_usd_micros` the catalog price's (None: no catalog price or no rate). An unknown
+/// currency, an absurd amount or a price far from the catalog's falls back to the catalog price:
+/// a client must not be able to write arbitrary revenue.
+pub fn believable_client_price(client_micros: i64, client_currency: &str, client_usd_micros: Option<i64>, catalog_usd_micros: Option<i64>) -> bool {
+    if client_micros <= 0 || !is_currency_code(client_currency) {
+        return false;
+    }
+    let Some(usd) = client_usd_micros else { return false };
+    if usd <= 0 || usd > MAX_CLIENT_PRICE_USD_MICROS {
+        return false;
+    }
+    match catalog_usd_micros {
+        Some(c) if c > 0 => usd >= c / CLIENT_PRICE_FACTOR && usd <= c.saturating_mul(CLIENT_PRICE_FACTOR),
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +82,18 @@ mod tests {
         }
         assert_eq!(from_units_nanos(4, 990_000_000), Some(4_990_000));
         assert_eq!(from_units_nanos(i64::MAX, 0), None);
+    }
+
+    #[test]
+    fn client_prices_are_believed_only_when_sane() {
+        assert!(is_currency_code("EUR") && !is_currency_code("eur") && !is_currency_code("EURO") && !is_currency_code("ZZ1"));
+        // 4.59 EUR ≈ 5 USD, catalog 4.99 USD.
+        assert!(believable_client_price(4_590_000, "EUR", Some(5_000_000), Some(4_990_000)));
+        assert!(!believable_client_price(1_000_000_000_000, "USD", Some(1_000_000_000_000), Some(4_990_000)), "a million dollars");
+        assert!(!believable_client_price(4_990_000, "ZZZ", None, Some(4_990_000)), "a currency without a rate");
+        assert!(!believable_client_price(4_990_000, "usd", Some(4_990_000), None));
+        assert!(!believable_client_price(100_000, "USD", Some(100_000), Some(4_990_000)), "far below the catalog");
+        assert!(believable_client_price(9_990_000, "USD", Some(9_990_000), None), "no catalog price: under the cap");
+        assert!(!believable_client_price(0, "USD", Some(0), None));
     }
 }

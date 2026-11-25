@@ -68,9 +68,10 @@ pub fn verify_player_token(token: &str, secret: &str, user_id: &str, game_key: &
     if exp + LEEWAY_SECS < now_secs {
         return Err("the player token expired".into());
     }
+    // `aud` is required: a token without it would work for every app sharing the secret.
     match &claims["aud"] {
-        Value::Null => Ok(()),
         Value::String(a) if a == game_key => Ok(()),
+        Value::Null => Err(format!("the player token has no aud (set it to the app's game key, {game_key})")),
         _ => Err("the player token is for another app".into()),
     }
 }
@@ -113,12 +114,15 @@ pub struct Limit {
 pub fn limits(route: &str) -> (Option<Limit>, Option<Limit>) {
     let l = |per_minute, burst| Some(Limit { per_minute, burst });
     match route {
-        "verify" => (l(30, 20), l(600, 300)),
-        "restore" => (l(6, 3), l(600, 300)),
+        // The build's store calls are limited by STORE_CALLS (taken per store call once the
+        // request is valid), so junk requests cannot use up a build's limit before validation.
+        "verify" => (l(30, 20), None),
+        "restore" => (l(6, 3), None),
         "entitlements" => (l(60, 30), None),
-        "attributes" => (l(20, 10), None),
+        // Rows written per request for any player id: a ceiling per build too.
+        "attributes" => (l(20, 10), l(1200, 600)),
         "paywall" => (l(60, 30), None),
-        "paywall_event" => (l(60, 30), None),
+        "paywall_event" => (l(60, 30), l(6000, 3000)),
         "offers" => (l(20, 10), None),
         "checkout" => (l(20, 10), l(600, 300)),
         "manage" => (l(10, 5), l(300, 150)),
@@ -127,6 +131,10 @@ pub fn limits(route: &str) -> (Option<Limit>, Option<Limit>) {
         _ => (None, None),
     }
 }
+
+/// Store look-ups one build's clients may cause (`/verify`, each `/restore` item), counted only
+/// for valid requests right before the store call: protects the store API quota.
+pub const STORE_CALLS: Limit = Limit { per_minute: 600, burst: 300 };
 
 /// How many players' worth of requests the bucket of requests without a player id allows.
 pub const ANONYMOUS_PLAYERS: u32 = 50;
@@ -203,13 +211,13 @@ mod tests {
         assert!(verify_player_token(&t, SECRET, "player-1", "game", now + 600 + LEEWAY_SECS + 1).unwrap_err().contains("expired"));
         assert!(verify_player_token(&t, "another-secret-another-secret-xx", "player-1", "game", now).unwrap_err().contains("signature"));
         assert!(verify_player_token(&t, "short", "player-1", "game", now).unwrap_err().contains("not configured"));
-        // A token without `aud` is accepted; "none" is not.
+        // A token without `aud` is refused (it would work for every app sharing the secret); "none" too.
         let header = crate::jwt::b64url(br#"{"alg":"HS256"}"#);
         let claims = crate::jwt::b64url(br#"{"sub":"player-1","exp":1790000600}"#);
         let mut mac = Hmac::<Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
         mac.update(format!("{header}.{claims}").as_bytes());
         let no_aud = format!("{header}.{claims}.{}", crate::jwt::b64url(&mac.finalize().into_bytes()));
-        assert_eq!(verify_player_token(&no_aud, SECRET, "player-1", "game", now), Ok(()));
+        assert!(verify_player_token(&no_aud, SECRET, "player-1", "game", now).unwrap_err().contains("no aud"));
         let none = format!("{}.{claims}.", crate::jwt::b64url(br#"{"alg":"none"}"#));
         assert!(verify_player_token(&none, SECRET, "player-1", "game", now).is_err());
         assert_eq!(bearer("Bearer abc.def.ghi"), "abc.def.ghi");
@@ -232,7 +240,7 @@ mod tests {
         assert_eq!(take(limit, Some((0, t0)), t0 + 3_600_000_000), Ok(1000));
         let slow = Limit { per_minute: 6, burst: 1 };
         assert_eq!(take(slow, Some((0, t0)), t0), Err(10));
-        assert!(limits("verify").1.is_some() && limits("entitlements").1.is_none());
+        assert!(limits("verify").1.is_none() && limits("checkout").1.is_some() && limits("entitlements").1.is_none());
     }
 
     #[test]

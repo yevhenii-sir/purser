@@ -250,6 +250,10 @@ pub struct Purchase {
     /// When the worker should continue processing; 0 = nothing to do (`ledger_index::PendingPurchase`
     /// lists the rows with work).
     pub next_attempt_at_micros: i64,
+    /// Until when a request or drainer holds the row for a step (`ledger::lease`); 0 = nobody.
+    /// Writers that change the row's state (a refund, a restore) do not touch it: they make the
+    /// row due, and the next step waits for the holder to finish (or the lease to run out).
+    pub lease_until_micros: i64,
     pub last_error: String,
     #[index(btree)]
     pub created_at_micros: i64,
@@ -325,6 +329,7 @@ impl Purchase {
             was_granted: false,
             attempts: 0,
             next_attempt_at_micros: now_micros,
+            lease_until_micros: 0,
             last_error: String::new(),
             created_at_micros: now_micros,
             updated_at_micros: now_micros,
@@ -566,6 +571,24 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
     if i.app_id.contains(['/', ':']) || i.app_id.len() > 128 {
         return Err("[ERR_BAD_APP] app_id must not contain '/' or ':'".into());
     }
+    // Build ids and developer accounts share the secret scopes (`{scope}/{name}`): a build named
+    // like an account (or `default`) would reach that account's secrets.
+    let account = if i.account.is_empty() { default_account() } else { i.account.clone() };
+    if i.app_id == config::DEFAULT_SCOPE || ctx.db.game_app().iter().any(|a| a.app_id != i.app_id && a.account == i.app_id) {
+        return Err(format!("[ERR_BAD_APP] app_id {} is the name of a developer account", i.app_id));
+    }
+    if account != config::DEFAULT_SCOPE && ctx.db.game_app().app_id().find(&account).is_some() {
+        return Err(format!("[ERR_BAD_APP] account {account} is the app_id of a build: name the account differently"));
+    }
+    // An admin limited to some apps uses only accounts no other app uses (their secrets were set
+    // by someone who can reach every app).
+    let current_account = ctx.db.game_app().app_id().find(&i.app_id).map(|a| a.account);
+    if who.scope.is_some() && current_account.as_deref() != Some(account.as_str()) && account != config::DEFAULT_SCOPE {
+        let others = ctx.db.game_app().iter().any(|a| a.account == account && !who.sees_game(&a.game_key));
+        if others {
+            return Err(format!("{} account {account} (it is used by apps you cannot reach)", crate::access::SCOPE_ERROR));
+        }
+    }
     let store = purser_core::registry::usable_build_store(&i.platform, &i.store)
         .map_err(|e| format!("[ERR_BAD_APP] {e}"))?;
     if !delivery::is_valid(&i.delivery) {
@@ -593,6 +616,9 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
     }
     if i.delivery == delivery::WEBHOOK && !i.webhook_url.starts_with("https://") {
         return Err("[ERR_BAD_APP] webhook delivery needs an https webhook_url".into());
+    }
+    if !i.webhook_url.is_empty() {
+        purser_core::encoding::check_public_https_url("webhook_url", &i.webhook_url).map_err(|e| format!("[ERR_BAD_APP] {e}"))?;
     }
     if !purser_core::consumption::mode::is_valid(&i.apple_refund_mode) {
         return Err("[ERR_BAD_APP] apple_refund_mode must be off, inform or prefer".into());
@@ -633,10 +659,14 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
         sns_topic_arn,
         client_auth,
     };
+    let retarget = existing.as_ref().is_some_and(|e| e.spacetime_db != app.spacetime_db);
     if existing.is_some() {
         ctx.db.game_app().app_id().update(app.clone());
     } else {
         ctx.db.game_app().insert(app.clone());
+    }
+    if retarget {
+        crate::idc::retarget(ctx, &app.app_id);
     }
     Ok(())
 }
@@ -911,6 +941,8 @@ pub fn admin_requeue_purchase(ctx: &ReducerContext, purchase_id: String) -> Resu
         .find(&purchase_id)
         .ok_or("[ERR_PURCHASE_NOT_FOUND] Unknown purchase")?;
     who.check_app(ctx, &p.app_id)?;
+    // An inter-database call it waits for is sent again (the game applies events idempotently).
+    crate::idc::forget(ctx, &p.id);
     p.next_attempt_at_micros = ctx.timestamp.to_micros_since_unix_epoch();
     p.attempts = 0;
     crate::ledger::save_purchase(ctx, p);
@@ -944,6 +976,12 @@ pub fn admin_grant_manual(ctx: &ReducerContext, json: String) -> Result<(), Stri
     grant_manual(ctx, &i, &ctx.sender().to_string()).map(|_| ())
 }
 
+/// The ledger transaction id of a manual grant: the caller's id within the app (`{game_key}.{id}`),
+/// so ids of different apps never meet (one app's server key cannot probe or take another's).
+pub fn manual_transaction_id(game_key: &str, transaction_id: &str) -> String {
+    format!("{game_key}.{transaction_id}")
+}
+
 /// A manual grant (`admin_grant_manual`, `/server/grant`): a ledger row of the `manual` store the
 /// worker delivers like any purchase. `by` is who asked (an admin identity, a server key).
 /// Returns the ledger id.
@@ -966,7 +1004,8 @@ pub fn grant_manual(ctx: &ReducerContext, i: &ManualGrantInput, by: &str) -> Res
         .find(product_key(&i.app_id, &i.product_id))
         .ok_or("[ERR_BAD_PRODUCT] Unknown product")?;
     let now = ctx.timestamp.to_micros_since_unix_epoch();
-    let tx_id = if i.transaction_id.is_empty() { format!("manual-{now}") } else { i.transaction_id.clone() };
+    let game_key = ctx.db.game_app().app_id().find(&i.app_id).map(|a| a.game_key).unwrap_or_default();
+    let tx_id = manual_transaction_id(&game_key, &if i.transaction_id.is_empty() { format!("manual-{now}") } else { i.transaction_id.clone() });
     let id = ledger_id(store::MANUAL, &tx_id);
     if ctx.db.purchase().id().find(&id).is_some() {
         return Err("[ERR_TX_EXISTS] Transaction already exists".into());
@@ -1127,6 +1166,7 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             was_granted: r.was_granted,
             attempts: r.attempts,
             next_attempt_at_micros: r.next_attempt_at_micros,
+            lease_until_micros: 0,
             last_error: r.last_error,
             created_at_micros: r.created_at_micros,
             updated_at_micros: r.updated_at_micros,

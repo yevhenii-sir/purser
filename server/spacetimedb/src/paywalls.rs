@@ -540,7 +540,7 @@ pub fn results(ctx: &mut impl Ctx, query_json: &str) -> Result<Value, String> {
             let p = placement.clone().ok_or_else(|| bad("ERR_PLACEMENT_NOT_FOUND", "no such placement"))?;
             let to = if q.to.is_empty() { today } else { parse_day(&q.to).ok_or("bad 'to' date")? };
             let from = if q.from.is_empty() { to - 29 } else { parse_day(&q.from).ok_or("bad 'from' date")? };
-            if from > to || to - from > MAX_RANGE_DAYS {
+            if from > to || i64::from(to) - i64::from(from) > i64::from(MAX_RANGE_DAYS) {
                 return Err(format!("the range must be 1..{MAX_RANGE_DAYS} days"));
             }
             (pw::parse_variants(&p.variants_json), from, to, Value::Null)

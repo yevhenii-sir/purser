@@ -376,6 +376,32 @@ fn retry(ctx: &mut impl Ctx, job: &StoreCreateJob, state: &JobState, label: &str
     ctx.tx(|tx| schedule(tx, id, delay));
 }
 
+/// A pending job no tick wakes stays pending: its run stopped between deleting the tick and
+/// scheduling the next one (a host restart), or it came back from a backup (ticks are not backed
+/// up). After this long without progress the minute worker starts it again; steps are safe to
+/// repeat.
+pub const STALE_MICROS: i64 = 10 * 60 * 1_000_000;
+
+/// Starts the pending jobs that nothing will wake (minute worker).
+pub fn wake_orphans(tx: &TxContext) {
+    let cutoff = now(tx) - STALE_MICROS;
+    let stale: Vec<u64> = tx
+        .db
+        .store_create_job()
+        .iter()
+        .filter(|j| j.status == job_status::PENDING && j.updated_at_micros < cutoff)
+        .map(|j| j.id)
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+    let woken: std::collections::BTreeSet<u64> = tx.db.store_create_tick().iter().map(|t| t.job_id).collect();
+    for id in stale.into_iter().filter(|id| !woken.contains(id)) {
+        log::info!("Store create job {id}: nothing woke it, starting it again");
+        schedule(tx, id, 0);
+    }
+}
+
 #[spacetimedb::procedure]
 pub fn run_store_create_job(ctx: &mut ProcedureContext, tick: StoreCreateTick) {
     if ctx.sender() != ctx.database_identity() {

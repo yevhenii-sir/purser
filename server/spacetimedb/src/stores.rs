@@ -304,6 +304,30 @@ pub fn apple_fetch(
     likely_environment: &str,
     auth: &mut Auth,
 ) -> Result<StoreTx, StoreError> {
+    let (st, base, token) = apple_lookup(ctx, app, transaction_id, likely_environment, auth)?;
+    apple_subscription_status(ctx, base, &token, st)
+}
+
+/// One App Store transaction as Apple reports it now, without moving on to the subscription's
+/// latest transaction (as [`apple_fetch`] does).
+pub fn apple_fetch_transaction(
+    ctx: &mut impl Ctx,
+    app: &GameApp,
+    transaction_id: &str,
+    likely_environment: &str,
+    auth: &mut Auth,
+) -> Result<StoreTx, StoreError> {
+    apple_lookup(ctx, app, transaction_id, likely_environment, auth).map(|(st, _, _)| st)
+}
+
+/// The transaction, the Server API base that knows it and the token.
+fn apple_lookup(
+    ctx: &mut impl Ctx,
+    app: &GameApp,
+    transaction_id: &str,
+    likely_environment: &str,
+    auth: &mut Auth,
+) -> Result<(StoreTx, &'static str, String), StoreError> {
     let token = auth.get(|| apple_token(ctx, app))?;
     let mut last = String::new();
     for base in apple::api_bases(likely_environment) {
@@ -313,7 +337,7 @@ pub fn apple_fetch(
         match res.status {
             200 => {
                 let st = apple::parse_transaction_info_response(&res.body, ctx.now_ms()).map_err(StoreError::Transient)?;
-                return apple_subscription_status(ctx, base, &token, st);
+                return Ok((st, base, token));
             }
             404 => last = res.describe(),
             400 => return Err(StoreError::Invalid(format!("App Store lookup: {}", res.describe()))),
@@ -386,7 +410,11 @@ pub fn amazon_fetch(
                     ctx.now_ms(),
                     sandbox,
                 )
-                .map_err(StoreError::Invalid)
+                .map_err(|e| match e {
+                    amazon::ReceiptError::Malformed(m) => StoreError::Transient(format!("Amazon RVS: {m}")),
+                    amazon::ReceiptError::CatalogMismatch(m) => StoreError::Config(m),
+                    amazon::ReceiptError::OtherProduct(m) => StoreError::Invalid(m),
+                })
             }
             RvsStatus::InvalidReceipt => last = msg,
             RvsStatus::Canceled => {

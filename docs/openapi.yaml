@@ -908,7 +908,7 @@ paths:
                 type: object
                 properties:
                   status: { type: string, enum: [ok] }
-                  purchase_id: { type: string, examples: ["manual:season-3-reward-c2005b4c"] }
+                  purchase_id: { type: string, examples: ["manual:mygame.season-3-reward-c2005b4c"] }
                   purchase_status: { type: string }
                   repeated: { type: boolean }
         "400": { description: "Invalid input (unknown product, user id)." }

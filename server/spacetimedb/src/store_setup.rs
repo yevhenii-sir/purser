@@ -71,7 +71,8 @@ fn connect_app(ctx: &mut impl Ctx, app: &GameApp) -> Result<(String, String), St
 /// Points both notification URLs of the build's app (production and sandbox, version 2) to this
 /// server, with `apple_notification_secret` when it is set.
 pub fn setup_apple_notifications(ctx: &mut impl Ctx, app_id: &str, from_page: &str) -> Result<Value, String> {
-    let (app, base) = load(ctx, app_id, from_page, Cap::Configure, "admin_setup_apple_notifications", store::APPLE)?;
+    // The notification URL carries the build's notification secret: setting where it goes needs Secrets.
+    let (app, base) = load(ctx, app_id, from_page, Cap::Secrets, "admin_setup_apple_notifications", store::APPLE)?;
     let app_c = app.clone();
     let secret = ctx.tx(|tx| config::secret(tx, &app_c, secret_name::APPLE_NOTIFICATION_SECRET).map(|s| s.value));
     let route = format!("{base}/notify/apple");

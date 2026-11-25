@@ -95,6 +95,10 @@ fn seen(tx: &TxContext) {
 /// worker finishes the rest. Every call it makes is cut at this deadline ([`Budget::bound_calls`]):
 /// a waiting call holds a module instance, and requests share the host's pool of them.
 pub const REQUEST_BUDGET_SECS: i64 = 3;
+/// Seconds a store notification may spend on store and delivery calls (an App Store one may look
+/// in production, then sandbox, then the subscription status). Past it the store gets a 503 and
+/// sends the notification again.
+pub const NOTIFICATION_BUDGET_SECS: i64 = 5;
 /// Seconds one worker run may spend starting outbound calls; the next run (a minute later) goes on.
 pub const WORKER_BUDGET_SECS: i64 = 40;
 

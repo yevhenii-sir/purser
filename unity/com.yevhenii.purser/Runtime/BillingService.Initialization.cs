@@ -247,6 +247,9 @@ namespace Purser
         /// <inheritdoc/>
         public void SetUserId(string userId)
         {
+            if (!string.IsNullOrEmpty(userId) && !AccountIds.IsValidUserId(userId))
+                throw new ArgumentException($"user id '{userId}' is not accepted by the server: use 1-128 ASCII letters, digits and - _ . : " +
+                                            "(hash an e-mail address, for example)", nameof(userId));
             m_Users = new StaticUserIdProvider(userId);
             SyncUser();
         }
@@ -257,7 +260,16 @@ namespace Purser
             try
             {
                 var id = m_Users?.GetUserId();
-                return string.IsNullOrEmpty(id) ? null : id;
+                if (string.IsNullOrEmpty(id))
+                    return null;
+                if (!AccountIds.IsValidUserId(id))
+                {
+                    // The server would refuse every request for it: no player rather than purchases retried forever.
+                    m_Log.Error($"User id '{id}' is not accepted by the server (1-128 ASCII letters, digits and - _ . :): purchases " +
+                                "wait until the provider returns a valid id.");
+                    return null;
+                }
+                return id;
             }
             catch (Exception e)
             {

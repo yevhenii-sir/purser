@@ -64,6 +64,20 @@ pub fn google_account_id(user_id: &str) -> String {
     }
 }
 
+/// A player id the server accepts: 1..=128 ASCII letters, digits and `-_.:`.
+pub fn is_valid_user_id(u: &str) -> bool {
+    !u.is_empty() && u.len() <= 128 && u.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+}
+
+/// The player id a Google `obfuscatedAccountId` names, when it can be one. [`google_account_id`]
+/// puts ids longer than 64 characters in as 64 lowercase hex digits (a hash), so such a value is a
+/// player id only when `known_player` says a player has it (a SpacetimeDB identity is one);
+/// otherwise the purchase waits for the client's verify.
+pub fn user_id_of_google_account_id(account: &str, known_player: impl FnOnce(&str) -> bool) -> Option<&str> {
+    let maybe_hash = account.len() == 64 && account.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'));
+    (is_valid_user_id(account) && (!maybe_hash || known_player(account))).then_some(account)
+}
+
 /// Value the client puts into Apple `appAccountToken` (a UUID) for `user_id`:
 /// first 16 bytes of SHA-256(user_id) with RFC 9562 version 8 / RFC 4122 variant bits,
 /// formatted lowercase 8-4-4-4-12. Must match `AccountIds.AppleAccountToken` in the Unity package.
@@ -122,6 +136,17 @@ mod account_binding_tests {
         let token = apple_account_token("player-1");
         assert!(account_binding_allows(store::APPLE, kind::CONSUMABLE, &token.to_uppercase(), "player-1"));
         assert!(!account_binding_allows(store::APPLE, kind::CONSUMABLE, &token, "player-2"));
+    }
+
+    #[test]
+    fn a_google_account_id_names_a_player_unless_it_may_be_a_hash() {
+        let nobody = |_: &str| false;
+        assert_eq!(user_id_of_google_account_id("player-42", nobody), Some("player-42"));
+        let hashed = google_account_id(&"p".repeat(100));
+        assert_eq!(user_id_of_google_account_id(&hashed, nobody), None, "a hashed long id");
+        assert_eq!(user_id_of_google_account_id(&hashed, |u| u == hashed), Some(hashed.as_str()), "a known identity");
+        assert_eq!(user_id_of_google_account_id("bad id", |_| true), None);
+        assert_eq!(user_id_of_google_account_id("", |_| true), None);
     }
 
     #[test]

@@ -10,6 +10,21 @@ namespace Purser
     /// </summary>
     public static class AccountIds
     {
+        /// <summary>A player id the server accepts: 1-128 ASCII letters, digits and <c>- _ . :</c>
+        /// (<c>purser_core::is_valid_user_id</c>).</summary>
+        public static bool IsValidUserId(string userId)
+        {
+            if (string.IsNullOrEmpty(userId) || userId.Length > 128)
+                return false;
+            foreach (var c in userId)
+            {
+                var ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == ':';
+                if (!ok)
+                    return false;
+            }
+            return true;
+        }
+
         /// <summary>Google <c>obfuscatedAccountId</c> (max 64 chars): the id itself, or SHA-256 hex if longer.</summary>
         public static string GoogleAccountId(string userId)
         {

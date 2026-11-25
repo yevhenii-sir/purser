@@ -140,6 +140,7 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
         family_shared: s("inAppOwnershipType") == "FAMILY_SHARED",
         offer_id: s("offerIdentifier"),
         offer_type: offer_type(p["offerType"].as_i64()).to_string(),
+        promotional: false,
         paused_until_ms: 0,
         grace_until_ms: 0,
         billing_issue: false,

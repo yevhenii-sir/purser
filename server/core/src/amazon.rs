@@ -155,6 +155,7 @@ fn tx(app_id: &str, user_id: &str, receipt_id: &str, product_id: &str, state: Tx
         family_shared: false,
         offer_id: String::new(),
         offer_type: String::new(),
+        promotional: false,
     }
 }
 
@@ -167,6 +168,25 @@ pub fn canceled_tx(app_id: &str, user_id: &str, receipt_id: &str, product_id: &s
 /// for. `catalog_product` / `catalog_kind`: the product the client claims; a subscription receipt
 /// may name the parent SKU (`productId`) or the term SKU (`termSku`), either matches.
 /// `sandbox`: the answer came from the RVS Cloud Sandbox.
+/// Why an RVS answer could not be read as a purchase.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReceiptError {
+    /// Not a receipt we understand (a proxy page, a change on Amazon's side): worth retrying.
+    Malformed(String),
+    /// The catalog's product kind differs from the receipt's: the build's setup must change.
+    CatalogMismatch(String),
+    /// The receipt is for another product (of another kind) than the client says.
+    OtherProduct(String),
+}
+
+impl std::fmt::Display for ReceiptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReceiptError::Malformed(m) | ReceiptError::CatalogMismatch(m) | ReceiptError::OtherProduct(m) => f.write_str(m),
+        }
+    }
+}
+
 pub fn parse_receipt(
     app_id: &str,
     user_id: &str,
@@ -175,23 +195,27 @@ pub fn parse_receipt(
     body: &str,
     now_ms: i64,
     sandbox: bool,
-) -> Result<StoreTx, String> {
-    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad RVS response: {e}"))?;
+) -> Result<StoreTx, ReceiptError> {
+    let v: Value = serde_json::from_str(body).map_err(|e| ReceiptError::Malformed(format!("bad RVS response: {e}")))?;
     let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
     let receipt_id = s("receiptId");
     if receipt_id.is_empty() {
-        return Err("RVS response without receiptId".into());
+        return Err(ReceiptError::Malformed("RVS response without receiptId".into()));
     }
     let product_type = s("productType");
-    let receipt_kind = product_kind(&product_type).ok_or_else(|| format!("unknown Amazon productType '{product_type}'"))?;
-    if receipt_kind != catalog_kind {
-        return Err(format!("the receipt is a {receipt_kind}, the catalog says {catalog_kind}"));
-    }
+    let receipt_kind = product_kind(&product_type)
+        .ok_or_else(|| ReceiptError::Malformed(format!("unknown Amazon productType '{product_type}'")))?;
     let product_id = if !catalog_product.is_empty() && s("termSku") == catalog_product {
         catalog_product.to_string()
     } else {
         s("productId")
     };
+    if receipt_kind != catalog_kind {
+        let msg = format!("the receipt is a {receipt_kind} ({product_id}), the catalog says {catalog_product} is a {catalog_kind}");
+        // The same product of another kind in the catalog is the build's setup; another product
+        // is not this purchase.
+        return Err(if product_id == catalog_product { ReceiptError::CatalogMismatch(msg) } else { ReceiptError::OtherProduct(msg) });
+    }
 
     let cancel = ms(&v["cancelDate"]);
     let renewal = ms(&v["renewalDate"]);
@@ -295,7 +319,10 @@ mod tests {
     #[test]
     fn kind_must_match_the_catalog() {
         let body = r#"{"receiptId":"r1","productId":"vip","productType":"ENTITLED"}"#;
-        assert!(parse_receipt("a", "u", "vip", kind::CONSUMABLE, body, NOW, false).unwrap_err().contains("non_consumable"));
+        let e = parse_receipt("a", "u", "vip", kind::CONSUMABLE, body, NOW, false).unwrap_err();
+        assert!(matches!(e, ReceiptError::CatalogMismatch(_)) && e.to_string().contains("non_consumable"), "{e}");
+        let other = parse_receipt("a", "u", "gems", kind::CONSUMABLE, body, NOW, false).unwrap_err();
+        assert!(matches!(other, ReceiptError::OtherProduct(_)), "{other}");
         assert!(parse_receipt("a", "u", "vip", kind::NON_CONSUMABLE, body, NOW, false).is_ok());
         assert!(parse_receipt("a", "u", "vip", kind::NON_CONSUMABLE, r#"{"productType":"ENTITLED"}"#, NOW, false).is_err());
     }

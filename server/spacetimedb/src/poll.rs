@@ -35,6 +35,9 @@ const AFTER_EXPIRY_MICROS: i64 = 10 * 60 * 1_000_000;
 const BATCH: usize = 10;
 /// Backoff while the store has not decided yet; then the row is dropped.
 const BACKOFF_SECS: [i64; 5] = [3600, 3 * 3600, 6 * 3600, 12 * 3600, 24 * 3600];
+/// When the store could not be asked (an outage, broken credentials): the next try, which counts
+/// toward nothing (only the store's own "not decided" answers lead to giving up).
+const UNREACHED_RETRY_SECS: i64 = 3600;
 
 /// Schedules (or cancels) the re-check of a subscription the ledger just recorded.
 pub fn schedule(tx: &TxContext, ledger_id: &str, st: &StoreTx, product_kind: &str) {
@@ -67,13 +70,23 @@ pub fn schedule(tx: &TxContext, ledger_id: &str, st: &StoreTx, product_kind: &st
 fn backoff(tx: &TxContext, id: &str) {
     let Some(mut row) = tx.db.store_poll().purchase_id().find(id.to_string()) else { return };
     let Some(delay) = BACKOFF_SECS.get(row.attempts as usize) else {
-        log::info!("Subscription re-check of {id}: no answer from the store, giving up");
+        log::warn!("Subscription re-check of {id}: the store has not decided, giving up");
+        ledger::log_event(tx, id, "recheck_gave_up", "the store reported it neither renewed nor ended after every re-check");
         tx.db.store_poll().purchase_id().delete(id.to_string());
         return;
     };
     row.attempts += 1;
     row.next_poll_at_micros = tx_now_micros(tx) + delay * 1_000_000;
     tx.db.store_poll().purchase_id().update(row);
+}
+
+/// The store could not be asked: undoes the attempt `check` counted and tries again later.
+fn unreached(tx: &TxContext, id: &str, error: &str) {
+    let Some(mut row) = tx.db.store_poll().purchase_id().find(id.to_string()) else { return };
+    row.attempts = row.attempts.saturating_sub(1);
+    row.next_poll_at_micros = tx_now_micros(tx) + UNREACHED_RETRY_SECS * 1_000_000;
+    tx.db.store_poll().purchase_id().update(row);
+    ledger::log_event(tx, id, "recheck_failed", error);
 }
 
 fn drop_row(tx: &TxContext, id: &str) {
@@ -119,7 +132,10 @@ fn check(ctx: &mut impl Ctx, id: &str, budget: Budget) {
         let product = config::find_product(tx, &p.app_id, &p.product_id);
         Some((p, app, product))
     });
-    let Some((p, app, product)) = loaded.filter(|(p, _, _)| status::is_owned(&p.status) && p.kind == kind::SUBSCRIPTION) else {
+    // Owned rows, and paused ones (expired meanwhile): they should resume by themselves, and a
+    // lost resume notification is what this re-check is for.
+    let checked = |p: &crate::Purchase| p.kind == kind::SUBSCRIPTION && (status::is_owned(&p.status) || p.paused_until_ms > 0);
+    let Some((p, app, product)) = loaded.filter(|(p, _, _)| checked(p)) else {
         ctx.tx(|tx| drop_row(tx, id));
         return;
     };
@@ -133,7 +149,9 @@ fn check(ctx: &mut impl Ctx, id: &str, budget: Budget) {
             return;
         }
         Err(e) => {
-            log::warn!("Subscription re-check of {id} failed: {}", e.message());
+            let msg = e.message().to_string();
+            log::warn!("Subscription re-check of {id} failed: {msg}");
+            ctx.tx(|tx| unreached(tx, id, &msg));
             return;
         }
     };
@@ -152,6 +170,7 @@ fn check(ctx: &mut impl Ctx, id: &str, budget: Budget) {
         TxState::Expired | TxState::Revoked => {
             if let Some(changed) = ctx.tx(|tx| {
                 drop_row(tx, id);
+                // Still paused (maybe longer): `record_inactive` schedules the next re-check.
                 ledger::record_inactive(tx, &st, "subscription re-check")
             }) {
                 ledger::advance(ctx, &changed, budget);

@@ -265,7 +265,10 @@ pub fn find_players(tx: &TxContext, query: &str, only: Option<&BTreeSet<String>>
     } else if tx.db.game_app().iter().filter(|a| visible(&a.app_id)).any(|a| tx.db.user_attribution().key().find(attribution_key(&a.app_id, q)).is_some()) {
         add(q, "attribution", "");
     }
-    let (ledger_ids, originals) = rules::search_keys(q);
+    let (mut ledger_ids, originals) = rules::search_keys(q);
+    // A manual grant's id as its caller knows it (stored within the app: `crate::manual_transaction_id`).
+    let games: std::collections::BTreeSet<String> = tx.db.game_app().iter().filter(|a| visible(&a.app_id)).map(|a| a.game_key).collect();
+    ledger_ids.extend(games.iter().map(|g| purser_core::model::ledger_id(purser_core::model::store::MANUAL, &crate::manual_transaction_id(g, q))));
     for id in &ledger_ids {
         if let Some(p) = tx.db.purchase().id().find(id).filter(|p| visible(&p.app_id)) {
             add(&p.user_id, "transaction", &p.id);

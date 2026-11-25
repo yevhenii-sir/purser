@@ -45,7 +45,7 @@ def main():
     folder = a.dir or os.path.join("backups", f"migrate-{a.from_db}")
     try:
         backup.backup(argparse.Namespace(database=a.from_db, dir=folder, force=True), url(a.src), src_tok)
-        backup.restore(argparse.Namespace(database=a.to_db, dir=folder, dry_run=a.dry_run), url(a.dst), tok)
+        backup.restore(argparse.Namespace(database=a.to_db, dir=folder, dry_run=a.dry_run, resume=False), url(a.dst), tok)
     except StdbError as e:
         sys.exit(str(e))
 

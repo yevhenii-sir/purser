@@ -103,7 +103,7 @@ macro_rules! client_request {
 client_request!(EntitlementsRequest, RestoreRequest, PaywallRequest, AttributesRequest, PaywallEventRequest);
 
 pub(crate) fn valid_user_id(u: &str) -> bool {
-    !u.is_empty() && u.len() <= 128 && u.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    purser_core::is_valid_user_id(u)
 }
 
 fn store_error_outcome(e: StoreError) -> Outcome {
@@ -213,14 +213,21 @@ fn verify(ctx: &mut impl Ctx, store_name: &str, r: &VerifyRequest) -> Outcome {
         let usable = app.enabled && config::app_store(&app).id == store_name;
         let auth = if usable { Auth::cached(tx, &app, now) } else { Auth::default() };
         let environment = if usable { likely_environment(tx, store_name, &r.order_id) } else { String::new() };
-        if usable {
+        // Only a request that will ask the store counts against the build's store calls, and only
+        // then is the player remembered.
+        let asks_store = usable && product.is_some() && stores::missing_field(store_name, &receipt_of(r, &environment)).is_none();
+        let limited = if asks_store { take_store_call(tx, &app.app_id, now).err() } else { None };
+        if asks_store && limited.is_none() {
             players::touch(tx, &app.app_id, &r.user_id, &r.client);
         }
-        Some((app, product, auth, environment))
+        Some((app, product, auth, environment, limited))
     });
-    let Some((app, product, mut auth, environment)) = loaded.filter(|(a, ..)| a.enabled) else {
+    let Some((app, product, mut auth, environment, limited)) = loaded.filter(|(a, ..)| a.enabled) else {
         return Outcome::status(400, "error", format!("unknown app {}", r.app_id));
     };
+    if let Some(wait) = limited {
+        return store_calls_limited(wait);
+    }
     let app_store = config::app_store(&app);
     if app_store.id != store_name {
         return Outcome::status(
@@ -230,6 +237,27 @@ fn verify(ctx: &mut impl Ctx, store_name: &str, r: &VerifyRequest) -> Outcome {
         );
     }
     verify_with(ctx, &app, product, &mut auth, &environment, r)
+}
+
+fn receipt_of<'a>(r: &'a VerifyRequest, environment: &'a str) -> stores::ReceiptRef<'a> {
+    stores::ReceiptRef {
+        purchase_token: &r.purchase_token,
+        order_id: &r.order_id,
+        store_user_id: &r.store_user_id,
+        user_id: &r.user_id,
+        environment,
+    }
+}
+
+/// One store look-up against the build's limit (`purser_core::client_api::STORE_CALLS`);
+/// `Err(seconds to wait)` when the build used it up.
+fn take_store_call(tx: &TxContext, app_id: &str, now: i64) -> Result<(), u64> {
+    client_guard::take(tx, &format!("store/{app_id}"), purser_core::client_api::STORE_CALLS, now)
+}
+
+fn store_calls_limited(wait: u64) -> Outcome {
+    let message = format!("too many purchases checked for this build, retry in {wait} s");
+    Outcome::new(429, json!({ "status": "error", "code": purser_core::client_api::ERR_RATE_LIMITED, "message": message }))
 }
 
 /// Writes the verify health alone (answers that record nothing).
@@ -262,13 +290,7 @@ fn verify_with(
         return Outcome::status(400, "error", format!("unknown product {}", r.product_id));
     };
 
-    let receipt = stores::ReceiptRef {
-        purchase_token: &r.purchase_token,
-        order_id: &r.order_id,
-        store_user_id: &r.store_user_id,
-        user_id: &r.user_id,
-        environment,
-    };
+    let receipt = receipt_of(r, environment);
     if let Some(missing) = stores::missing_field(store_name, &receipt) {
         return Outcome::status(400, "error", missing);
     }
@@ -285,9 +307,22 @@ fn verify_with(
     if st.app_id != app.app_id {
         return health_only(ctx, app_id, fetched_ok, Outcome::status(400, "invalid", "transaction belongs to another app"));
     }
-    if !st.product_id.is_empty() && st.product_id != product.product_id {
-        return health_only(ctx, app_id, fetched_ok, Outcome::status(400, "invalid", format!("transaction is for product {}", st.product_id)));
-    }
+    let product = if !st.product_id.is_empty() && st.product_id != product.product_id {
+        // An upgraded or crossgraded subscription: the store answers with the subscription's
+        // latest transaction, in its new product. Other products of a transaction are refused.
+        let upgraded = (product.kind == kind::SUBSCRIPTION)
+            .then(|| ctx.tx(|tx| config::find_product(tx, app_id, &st.product_id)))
+            .flatten()
+            .filter(|p| p.kind == kind::SUBSCRIPTION);
+        match upgraded {
+            Some(p) => p,
+            None => {
+                return health_only(ctx, app_id, fetched_ok, Outcome::status(400, "invalid", format!("transaction is for product {}", st.product_id)))
+            }
+        }
+    } else {
+        product
+    };
     // Clients bind purchases to the player: Google obfuscatedAccountId / Apple appAccountToken.
     // Only consumables are held to it; owned products are restorable on a new user id.
     if !purser_core::account_binding_allows(st.store, &product.kind, &st.account_id, &r.user_id) {
@@ -355,7 +390,12 @@ fn verify_with(
                     "pending",
                     "purchase verified, reward will be delivered shortly",
                 ),
-                Some(p) => with_status(200, &p.status, ""),
+                // The answers the SDK knows: an unknown one would be retried forever.
+                Some(p) => match p.status.as_str() {
+                    status::REVOKE_PENDING | status::REVOKED => with_status(200, status::REVOKED, ""),
+                    status::EXPIRE_PENDING | status::EXPIRED => with_status(200, status::EXPIRED, ""),
+                    _ => with_status(403, "forbidden", "the purchase was rejected"),
+                },
                 None => with_status(500, "error", "ledger row disappeared"),
             }
         }
@@ -471,22 +511,40 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
         return Err(Outcome::status(400, "error", format!("at most {MAX_RESTORE_ITEMS} purchases per call")));
     }
     let now = ctx.now_micros();
+    // The same purchase twice in one call is looked up once (the copy gets the first's answer).
+    let first_of: Vec<usize> = r
+        .purchases
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            r.purchases[..i]
+                .iter()
+                .position(|o| o.purchase_token == item.purchase_token && o.order_id == item.order_id && o.product_id == item.product_id)
+                .unwrap_or(i)
+        })
+        .collect();
     let (app, items, mut auth) = ctx.tx(|tx| {
         let app = enabled_app(tx, &r.app_id)?;
-        players::touch(tx, &app.app_id, &r.user_id, &r.client);
         let store_name = config::app_store(&app).id;
-        let items: Vec<(Option<Product>, String)> = r
+        // Each item that will ask the store takes one of the build's store calls.
+        let items: Vec<(Option<Product>, String, Option<u64>)> = r
             .purchases
             .iter()
-            .map(|item| {
+            .enumerate()
+            .map(|(i, item)| {
                 let product_id = if item.product_id.is_empty() {
                     stores::implied_product_id(tx, store_name, &app.app_id, &item.order_id).unwrap_or_default()
                 } else {
                     item.product_id.clone()
                 };
-                (config::find_product(tx, &app.app_id, &product_id), likely_environment(tx, store_name, &item.order_id))
+                let product = config::find_product(tx, &app.app_id, &product_id);
+                let limited = if product.is_some() && first_of[i] == i { take_store_call(tx, &app.app_id, now).err() } else { None };
+                (product, likely_environment(tx, store_name, &item.order_id), limited)
             })
             .collect();
+        if r.purchases.is_empty() || items.iter().any(|(p, _, limited)| p.is_some() && limited.is_none()) {
+            players::touch(tx, &app.app_id, &r.user_id, &r.client);
+        }
         let auth = if r.purchases.is_empty() { Auth::default() } else { Auth::cached(tx, &app, now) };
         Ok::<_, Outcome>((app, items, auth))
     })?;
@@ -499,8 +557,18 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
     // client restores again; purchases already recorded answer from the ledger then).
     let budget = Budget::new(ctx, RESTORE_BUDGET_SECS);
     let _calls = budget.bound_calls();
-    let mut results = Vec::new();
-    for (i, (item, (product, environment))) in r.purchases.iter().zip(items).enumerate() {
+    let mut results: Vec<Value> = Vec::new();
+    for (i, (item, (product, environment, limited))) in r.purchases.iter().zip(items).enumerate() {
+        if first_of[i] != i {
+            let copy = results[first_of[i]].clone();
+            results.push(copy);
+            continue;
+        }
+        if let Some(wait) = limited {
+            let o = store_calls_limited(wait);
+            results.push(json!({ "product_id": item.product_id, "http_status": o.http, "status": o.body["status"], "message": o.body["message"] }));
+            continue;
+        }
         if !budget.left() {
             results.push(json!({
                 "product_id": item.product_id,
@@ -853,8 +921,32 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
                 Err(e) => notification_fetch_error(e),
             }
         }
-        Rtdn::Voided { token, order_id, product_type, .. } => {
+        Rtdn::Voided { token, order_id, product_type, refund_type, .. } => {
             // Refund / chargeback of a purchase of this package (the secret may be shared by several).
+            if refund_type == google::REFUND_TYPE_PARTIAL_QUANTITY {
+                // Some units of a multi-quantity purchase: the rest stays paid (purchases of more
+                // than one unit are not granted, see `stores::google_fetch`).
+                log::warn!("Google partial refund of order {order_id} for {}: not revoked", app.app_id);
+                return Outcome::status(200, "ignored", "partial quantity refund");
+            }
+            // A one-time product is checked with Google first: a forged notification (someone who has
+            // the push URL) must not revoke a paid purchase. Google reports a refunded one canceled.
+            if product_type == google::VOIDED_ONE_TIME_PRODUCT {
+                let found = ctx.tx(|tx| {
+                    let row = tx.db.purchase().purchase_token().filter(token.as_str()).max_by_key(|p| p.created_at_micros)?;
+                    config::find_product(tx, &app.app_id, &row.product_id)
+                });
+                if let Some(product) = found {
+                    match stores::google_fetch(ctx, &app, &product, &token, &mut auth) {
+                        Ok(st) if st.state == TxState::Active => {
+                            log::warn!("Google voided notification for order {order_id} of {}: Google reports it paid, ignored", app.app_id);
+                            return Outcome::status(200, "ignored", "Google reports the purchase as paid");
+                        }
+                        Ok(_) => {}
+                        Err(e) => return notification_fetch_error(e),
+                    }
+                }
+            }
             let changed = ctx.tx(|tx| {
                 let row = tx
                     .db
@@ -939,9 +1031,19 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         return Outcome::status(200, "ignored", "transaction belongs to another app");
     }
     let source = format!("apple {} {}", n.notification_type, n.subtype);
-    // A refund Apple took back: the revoked row is granted again and its money counts again.
+    // A refund Apple took back: the revoked row of that transaction (not the subscription's latest
+    // one) is granted again and its money counts again, unless Apple says it is revoked now (a
+    // late redelivery after a new refund).
     if n.notification_type == "REFUND_REVERSED" {
-        let (id, details) = (st.ledger_id(), source.trim().to_string());
+        let reversed = match stores::apple_fetch_transaction(ctx, &app, &n.transaction_id, &n.environment, &mut auth) {
+            Ok(t) => t,
+            Err(e) => return notification_fetch_error(e),
+        };
+        if reversed.state == TxState::Revoked {
+            log::info!("{source}: {} is revoked again, not reinstated", reversed.ledger_id());
+            return Outcome::status(200, "ignored", "the transaction is revoked");
+        }
+        let (id, details) = (reversed.ledger_id(), source.trim().to_string());
         let lease = ctx.tx(|tx| {
             let p = tx.db.purchase().id().find(&id).filter(|p| p.app_id == app.app_id)?;
             ledger::reinstate(tx, p, &details).map(|id| ledger::lease(tx, &id, Some(&app)))
@@ -1005,13 +1107,17 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         return Outcome::status(200, "ignored", "unknown app: add ?app=<app_id> to the endpoint URL");
     };
 
-    let verified = stores::sns_certificate(ctx, &m.signing_cert_url, cached_cert)
+    // Any AWS account can sign: only our topic (checked before fetching its certificate), and no
+    // replays of old messages.
+    let pinned = if m.is_from(&app.sns_topic_arn) {
+        Ok(())
+    } else {
+        Err(StoreError::Invalid(format!("message from topic {}, the build expects {}", m.topic_arn, app.sns_topic_arn)))
+    };
+    let verified = pinned
+        .and_then(|()| stores::sns_certificate(ctx, &m.signing_cert_url, cached_cert))
         .and_then(|pem| sns::verify(&m, &pem).map_err(StoreError::Invalid))
         .and_then(|()| {
-            // Any AWS account can sign: only our topic, and no replays of old messages.
-            if !m.is_from(&app.sns_topic_arn) {
-                return Err(StoreError::Invalid(format!("message from topic {}, the build expects {}", m.topic_arn, app.sns_topic_arn)));
-            }
             if !m.is_fresh(now / 1000) {
                 return Err(StoreError::Invalid(format!("stale message (Timestamp {})", m.timestamp)));
             }
@@ -1026,7 +1132,7 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         Err(e) => {
             let reason = e.message().to_string();
             log::warn!("Amazon notification for {} rejected: {reason}", app.app_id);
-            ctx.tx(|tx| store_health::rejected(tx, &app.app_id, &reason));
+            ctx.tx(|tx| record_notification(tx, &app.app_id, "amazon", Some(&reason), false));
             return Outcome::status(401, "error", "rejected");
         }
     }
@@ -1037,9 +1143,11 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
             let token = m.token.clone();
             ctx.tx(|tx| {
                 store_health::touch(tx, &app.app_id, |h, now| {
-                    h.last_confirmation_at_micros = now;
-                    h.confirmation_token = token.clone();
-                    h.last_topic = topic.clone();
+                    // Unpinned, a second topic's confirmation does not replace the first one's token.
+                    if store_health::note_topic(h, &topic, &app.sns_topic_arn) {
+                        h.last_confirmation_at_micros = now;
+                        h.confirmation_token = token.clone();
+                    }
                 })
             });
             log::info!("Amazon RTN confirmation for {}: run the setup check to see the token", app.app_id);
@@ -1057,7 +1165,7 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     let found = ctx.tx(|tx| {
         store_health::touch(tx, &app.app_id, |h, now| {
             h.last_at_micros = now;
-            h.last_topic = topic.clone();
+            store_health::note_topic(h, &topic, &app.sns_topic_arn);
         });
         if !rechecks {
             return None;
@@ -1086,6 +1194,8 @@ fn notify_store(ctx: &mut HandlerContext, req: Request) -> Response {
 }
 
 fn dispatch_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
+    // Store look-ups of a notification wait in a module instance like a client's: bounded.
+    let _calls = crate::ctx::Budget::new(ctx, crate::ctx::NOTIFICATION_BUDGET_SECS).bound_calls();
     match route_store(&req).as_str() {
         store::GOOGLE => handle_google_notification(ctx, req),
         store::APPLE => handle_apple_notification(ctx, req),

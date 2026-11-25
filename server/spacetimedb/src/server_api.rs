@@ -206,9 +206,9 @@ pub fn grant(ctx: &mut impl Ctx, authorization: &str, r: &GrantRequest) -> (web:
     if !crate::handlers::valid_user_id(&r.transaction_id) {
         return (refused(400, "ERR_BAD_JSON", "transaction_id: 1-128 characters of A-Z a-z 0-9 - _ . :"), None);
     }
-    let id = purser_core::model::ledger_id(purser_core::model::store::MANUAL, &r.transaction_id);
     let outcome = ctx.tx(|tx| {
         let (caller, app) = check(tx, authorization, scope::GRANT, &r.app_id)?;
+        let id = purser_core::model::ledger_id(purser_core::model::store::MANUAL, &crate::manual_transaction_id(&app.game_key, &r.transaction_id));
         if let Some(p) = tx.db.purchase().id().find(&id) {
             // The same request again: answers what the first one did; another one with this id is refused.
             let same = p.app_id == app.app_id && p.user_id == r.user_id && p.product_id == r.product_id;
@@ -228,11 +228,12 @@ pub fn grant(ctx: &mut impl Ctx, authorization: &str, r: &GrantRequest) -> (web:
         };
         crate::grant_manual(tx, &input, &caller.actor()).map_err(|e| (refused(400, "ERR_BAD_GRANT", e), None))?;
         crate::access::audit_as(tx, &caller.actor(), &caller.name, "server_grant", &id, &format!("{} {} {}", r.user_id, r.product_id, r.note));
-        Ok(())
+        Ok(id)
     });
-    if let Err(answer) = outcome {
-        return answer;
-    }
+    let id = match outcome {
+        Ok(id) => id,
+        Err(answer) => return answer,
+    };
     ledger::advance(ctx, &id, Budget::new(ctx, crate::ctx::REQUEST_BUDGET_SECS));
     let status = ctx.tx(|tx| tx.db.purchase().id().find(&id).map(|p| p.status));
     ((200, json!({ "status": "ok", "purchase_id": id, "purchase_status": status })), None)

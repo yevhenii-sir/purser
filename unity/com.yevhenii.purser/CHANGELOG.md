@@ -7,6 +7,18 @@ also compiles and passes its tests without Unity IAP and with Unity IAP 4.13.
 
 ### Fixed
 
+- A Google Play purchase the server refuses is no longer acknowledged: the refusal may come from the server's setup
+  or another signed-in player, and Google refunds an unacknowledged purchase after three days (it was consumed, and
+  the money lost). App Store purchases are finished as before.
+- Purchases kept for later verification (observer mode, fail-open) are verified for the player who bought them, not
+  whoever is signed in by then.
+- Fail-open grants only for builds whose server said the client grants (`delivery: client`, remembered from the last
+  answer): with a server delivery, the server cannot deliver a purchase the client already finished.
+- A provisional result held for a `PurchaseSucceeded` handler is dropped when the server refuses the purchase; a
+  purchase is reported `PendingVerification` at most once.
+- `SetUserId` refuses ids the server does not accept (1-128 ASCII letters, digits and `- _ . :`,
+  `AccountIds.IsValidUserId`), and an id from a provider that is not one means no player (an e-mail address was
+  retried forever). Connecting to Unity IAP is bounded by the operation timeout.
 - Tools → Purser → Add Bootstrap To Scene used an API obsolete in Unity 6.6 (a compiler warning); it uses
   `FindAnyObjectByType` everywhere now.
 

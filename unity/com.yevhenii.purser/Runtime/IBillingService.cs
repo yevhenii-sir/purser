@@ -100,7 +100,9 @@ namespace Purser
         /// and when the app returns to the foreground) until <see cref="Initialized"/>; calling it again tries now.</summary>
         Task InitializeAsync(CancellationToken ct = default);
 
-        /// <summary>Sets the current player (replaces the user id provider with a static one).</summary>
+        /// <summary>Sets the current player (replaces the user id provider with a static one). The server accepts ids of
+        /// 1-128 ASCII letters, digits and <c>- _ . :</c> (<see cref="AccountIds.IsValidUserId"/>): an e-mail address, for
+        /// example, is not one. Throws <see cref="System.ArgumentException"/> for another id.</summary>
         void SetUserId(string userId);
 
         /// <summary>

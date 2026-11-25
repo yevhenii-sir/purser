@@ -17,12 +17,21 @@ export const SERVED_BY_MODULE = DEMO || /\/v1\/database\/[^/]+\/route\/admin\/?$
 
 const TOKEN_KEY = "purserAdminToken"
 
-function storage(kind: "local" | "session"): Storage | null {
+// Only for this tab (sessionStorage), never localStorage: every database's routes on a SpacetimeDB
+// host share one origin, so a page another module serves there could read a stored token.
+function storage(): Storage | null {
   try {
-    return kind === "local" ? window.localStorage : window.sessionStorage
+    return window.sessionStorage
   } catch {
     return null
   }
+}
+
+// Earlier versions could keep the token in localStorage ("Remember on this device"): drop it.
+try {
+  window.localStorage.removeItem("purserAdminToken")
+} catch {
+  // Storage blocked: nothing was kept either.
 }
 
 /** The token when the browser refuses storage (private mode, blocked site data): kept for this page load only. */
@@ -31,17 +40,16 @@ let memoryToken = ""
 export function getToken(): string {
   if (__DEMO__) return "demo"
   try {
-    return storage("session")?.getItem(TOKEN_KEY) || storage("local")?.getItem(TOKEN_KEY) || memoryToken
+    return storage()?.getItem(TOKEN_KEY) || memoryToken
   } catch {
     return memoryToken
   }
 }
 
-export function setToken(token: string, remember: boolean) {
+export function setToken(token: string) {
   memoryToken = token
   try {
-    storage("session")?.setItem(TOKEN_KEY, token)
-    if (remember) storage("local")?.setItem(TOKEN_KEY, token)
+    storage()?.setItem(TOKEN_KEY, token)
   } catch {
     // Storage refused or full: `memoryToken` holds it.
   }
@@ -50,8 +58,7 @@ export function setToken(token: string, remember: boolean) {
 export function clearToken() {
   memoryToken = ""
   try {
-    storage("session")?.removeItem(TOKEN_KEY)
-    storage("local")?.removeItem(TOKEN_KEY)
+    storage()?.removeItem(TOKEN_KEY)
   } catch {
     // Nothing could be stored either.
   }

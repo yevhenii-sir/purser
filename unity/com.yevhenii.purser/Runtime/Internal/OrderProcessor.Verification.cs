@@ -21,6 +21,8 @@ namespace Purser
             var productId = config?.id ?? order.StoreProductId;
             // Read before the first await: the purchase that set it may finish meanwhile.
             var context = givenUp != null ? givenUp.Context : ContextOf(order);
+            // The game was told something about this order already (pending, or Apply's result).
+            var reported = false;
             try
             {
                 var user = m_Context.User;
@@ -47,7 +49,6 @@ namespace Purser
                 var delays = m_Config.retryDelaysSeconds ?? new int[0];
                 var attempt = 0;
                 var rateLimited = 0;
-                var reported = false;
                 var failOpenAt = CanFailOpen(owner, config) ? m_Context.UtcNow() + TimeSpan.FromSeconds(m_Config.failOpenAfterSeconds) : (DateTime?)null;
                 while (true)
                 {
@@ -66,6 +67,7 @@ namespace Purser
                     var response = await call;
                     if (m_Context.IsDisposed)
                         return;
+                    RememberDelivery(response?.Value?.Delivery);
                     var outcome = Classify(response);
                     if (outcome != Outcome.Retry)
                     {
@@ -76,6 +78,7 @@ namespace Purser
                             config = m_Config.FindByStoreId(response.Value.ProductId);
                             productId = config?.id ?? response.Value.ProductId;
                         }
+                        reported = true;
                         Apply(order, config, productId, response.Value, outcome, context);
                         return;
                     }
@@ -122,8 +125,10 @@ namespace Purser
             {
                 m_Log.Error($"Processing {order} failed: {e}");
                 GiveUp(order, context);
-                m_Host.Report(new PurchaseResult(PurchaseStatus.PendingVerification, productId, order.StoreProductId,
-                    order.TransactionId, e.Message), order);
+                // Once per order: the game may already have seen a result of it (a handler threw after it).
+                if (!reported)
+                    m_Host.Report(new PurchaseResult(PurchaseStatus.PendingVerification, productId, order.StoreProductId,
+                        order.TransactionId, e.Message), order);
             }
             finally
             {
@@ -136,11 +141,24 @@ namespace Purser
 
         /// <summary>Fail-open applies to the order: <see cref="BillingConfig.failOpenAfterSeconds"/> is set, the product is
         /// known and not <see cref="BillingProductConfig.strictVerification"/>, and the store's purchase can be verified
-        /// after it was finished (receipt stores, not webhook stores).</summary>
+        /// after it was finished (receipt stores, not webhook stores).
+        /// Only once the server said this build has no game backend (<c>delivery: client</c>): with a server delivery the
+        /// server cannot deliver a purchase the client already finished, and the provisional grant would be taken back.</summary>
         private bool CanFailOpen(IStoreAdapter owner, BillingProductConfig config) =>
             m_Observed != null && m_Config.failOpenAfterSeconds > 0 && config != null && !config.strictVerification &&
             !(owner is IWebhookStoreAdapter) &&
-            (owner.Store == BillingStores.Google || owner.Store == BillingStores.Apple || owner.Store == BillingStores.Amazon);
+            (owner.Store == BillingStores.Google || owner.Store == BillingStores.Apple || owner.Store == BillingStores.Amazon) &&
+            m_Context.Storage.Load(DeliveryStorageKey) == VerifyDelivery.Client;
+
+        /// <summary>Storage key of the last <c>delivery</c> the server named (see <see cref="CanFailOpen"/>).</summary>
+        internal const string DeliveryStorageKey = "purser.delivery";
+
+        private void RememberDelivery(string delivery)
+        {
+            if (string.IsNullOrEmpty(delivery) || m_Context.Storage.Load(DeliveryStorageKey) == delivery)
+                return;
+            m_Context.Storage.Save(DeliveryStorageKey, delivery);
+        }
 
         /// <summary>Waits for <paramref name="call"/> until <paramref name="deadline"/>; false when it did not end by then.</summary>
         private async Task<bool> AnsweredBeforeAsync(Task call, DateTime deadline)
@@ -314,7 +332,8 @@ namespace Purser
                         transactionId, "payment is not completed yet", server), order);
                     break;
                 case Outcome.Rejected:
-                    // Definitive answer: finish the transaction so the store stops re-delivering it.
+                    // Definitive answer: the adapter finishes it as refused (Unity IAP leaves a Google purchase
+                    // unacknowledged, so Google refunds it; other stores stop re-delivering it).
                     ReleaseContext(order, context);
                     m_Store.Finish(order, false);
                     m_Host.Report(new PurchaseResult(PurchaseStatus.Rejected, productId, order.StoreProductId,

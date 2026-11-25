@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -174,6 +175,7 @@ namespace Purser.Tests
             using (var h = new ServiceHarness())
             {
                 h.Config.failOpenAfterSeconds = 8;
+                h.Storage.Save(OrderProcessor.DeliveryStorageKey, VerifyDelivery.Client);
                 h.Start();
                 var rejected = new List<PurchaseResult>();
                 h.Service.PurchaseRejected += rejected.Add;
@@ -190,6 +192,52 @@ namespace Purser.Tests
                 Assert.IsTrue(h.Api.VerifyRequests.Last().ClientFinished);
                 Assert.AreEqual(1, rejected.Count);
                 Assert.IsTrue(rejected[0].Provisional);
+            }
+        }
+
+        [Test]
+        public void FailOpen_WaitsUntilTheServerSaidTheClientGrants()
+        {
+            using (var h = new ServiceHarness())
+            {
+                // With a server delivery, a purchase the client finished could not be delivered by the server.
+                h.Config.failOpenAfterSeconds = 8;
+                h.Start();
+                h.Api.DefaultVerify = FakeApi.TransportError();
+                h.Store.OnPurchase = id => FakeStore.GoogleOrder(id, "tok-9", "GPA.9");
+
+                var result = Sync.Run(h.Service.PurchaseAsync("no_ads"));
+
+                Assert.AreEqual(PurchaseStatus.PendingVerification, result.Status);
+                Assert.IsEmpty(h.Store.Confirmed);
+            }
+        }
+
+        [Test]
+        public void KeptPurchases_AreVerifiedForTheirBuyer()
+        {
+            using (var h = new ServiceHarness())
+            {
+                h.Start();
+                h.Api.DefaultVerify = FakeApi.TransportError();
+                Sync.Run(h.Service.ReportPurchaseAsync(Google("no_ads", "tok-5")));
+                h.Api.DefaultVerify = FakeApi.Verify(200, VerifyStatus.Success);
+
+                h.Service.SetUserId("player-2");
+
+                Assert.AreEqual("player-1", h.Api.VerifyRequests.Last().UserId, "the buyer, not the player signed in now");
+            }
+        }
+
+        [Test]
+        public void SetUserId_RefusesIdsTheServerDoesNotAccept()
+        {
+            using (var h = new ServiceHarness())
+            {
+                h.Start();
+                Assert.Throws<ArgumentException>(() => h.Service.SetUserId("player@example.com"));
+                Assert.IsTrue(AccountIds.IsValidUserId("player-1.x:y_z"));
+                Assert.IsFalse(AccountIds.IsValidUserId(new string('a', 129)));
             }
         }
 

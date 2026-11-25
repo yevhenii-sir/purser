@@ -9,6 +9,7 @@ use purser_core::integrations::event_kind;
 use crate::config;
 use crate::ctx::{tx_now_micros, Budget, Ctx};
 use crate::delivery_client;
+use crate::players::player_profile;
 use crate::stores;
 use crate::{game_app, product, purchase, purchase_log, GameApp, Product, Purchase, PurchaseLog, RetrySchedule};
 use purser_core::event::{delivery, event_type, reason, BillingEvent};
@@ -119,16 +120,28 @@ fn is_terminal(s: &str) -> bool {
     matches!(s, status::COMPLETED | status::REVOKED | status::EXPIRED | status::REJECTED)
 }
 
-/// Price for analytics: store price (Apple) → price reported by the client → catalog default.
-fn pick_price(st: &StoreTx, product: &Product, client_price_micros: i64, client_currency: &str) -> (i64, String) {
-    if st.trial || st.family_shared {
+/// Price for analytics: store price (Apple) → price reported by the client, when believable
+/// (`purser_core::money::believable_client_price`, USD values by `usd`) → catalog default.
+fn pick_price(
+    st: &StoreTx,
+    product: &Product,
+    client_price_micros: i64,
+    client_currency: &str,
+    usd: impl Fn(i64, &str) -> Option<i64>,
+) -> (i64, String) {
+    if st.trial || st.family_shared || st.promotional {
         // A free trial, or a family member's purchase shared with this player: nothing was paid.
         // A free trial: nothing was paid (Google reports the price of the next renewal).
         return (0, if st.currency.is_empty() { product.currency.clone() } else { st.currency.clone() });
     }
     if st.price_micros > 0 {
         (st.price_micros, st.currency.clone())
-    } else if client_price_micros > 0 && !client_currency.is_empty() {
+    } else if purser_core::money::believable_client_price(
+        client_price_micros,
+        client_currency,
+        usd(client_price_micros, client_currency),
+        (product.price_micros > 0).then(|| usd(product.price_micros, &product.currency)).flatten(),
+    ) {
         (client_price_micros, client_currency.to_string())
     } else {
         (product.price_micros, product.currency.clone())
@@ -340,14 +353,19 @@ fn record_row(
             p.status = if p.previous_user_id.is_empty() { status::VERIFIED } else { status::TRANSFER_PENDING }.to_string();
             p.store_action = action;
             p.attempts = 0;
-            p.next_attempt_at_micros = next_attempt;
+            // A step in flight keeps its lease: this change waits for it (see `lease`).
+            let held = p.lease_until_micros > now;
+            p.next_attempt_at_micros = if held { p.lease_until_micros } else { next_attempt };
+            if leased && !held {
+                p.lease_until_micros = next_attempt;
+            }
             p.updated_at_micros = now;
             crate::ledger::save_purchase(tx, p.clone());
             log_event(tx, &id, "reverified", &changes.join("; "));
             for ev in lifecycle {
                 integrations::enqueue(tx, &p, ev);
             }
-            return Ok((id, Some(p)));
+            return Ok((id, (!held).then_some(p)));
         }
         if filled {
             // Only the client's details: the row keeps its state and schedule.
@@ -359,7 +377,10 @@ fn record_row(
         return Ok((id, None));
     }
 
-    let (price_micros, currency) = pick_price(st, product, claim.price_micros, &claim.currency);
+    let today = (crate::ctx::tx_now_micros(tx) / 86_400_000_000) as i32;
+    let fx = (claim.price_micros > 0).then(|| crate::revenue::fx_table(tx, today - 14, today));
+    let usd = |micros: i64, ccy: &str| fx.as_ref()?.to_usd_micros(micros, ccy, today);
+    let (price_micros, currency) = pick_price(st, product, claim.price_micros, &claim.currency, usd);
     let mut row = Purchase {
         original_transaction_id: st.original_transaction_id.clone(),
         purchase_token: st.purchase_token.clone(),
@@ -371,6 +392,7 @@ fn record_row(
         currency,
         app_instance_id: claim.app_instance_id.clone(),
         next_attempt_at_micros: next_attempt,
+        lease_until_micros: if leased { next_attempt } else { 0 },
         country: st.country.clone(),
         trial: st.trial,
         grace_until_ms: st.grace_until_ms,
@@ -448,7 +470,10 @@ pub fn find_owner(tx: &TxContext, st: &StoreTx) -> Option<(String, String)> {
         Some(p) => Some((p.user_id, p.app_instance_id)),
         // obfuscatedAccountId is the user id itself for ids up to 64 chars (see
         // `purser_core::google_account_id`); longer ids are hashed and wait for the client verify.
-        None if st.store == store::GOOGLE && !st.account_id.is_empty() => Some((st.account_id.clone(), String::new())),
+        None if st.store == store::GOOGLE => {
+            let known = |u: &str| tx.db.player_profile().user_id().filter(u).next().is_some();
+            purser_core::user_id_of_google_account_id(&st.account_id, known).map(|u| (u.to_string(), String::new()))
+        }
         None => None,
     }
 }
@@ -612,6 +637,7 @@ const ACCESS_WAS_UNTIL: &str = "access_was_until";
 /// Applies an inactive store state (refund / revoke / expiry) to the ledger.
 pub fn record_inactive(tx: &TxContext, st: &StoreTx, details: &str) -> Option<String> {
     let mut p = find_related(tx, st)?;
+    let before = (p.billing_issue, p.auto_renew_off, p.grace_until_ms, p.paused_until_ms);
     // Why it ended: a failed renewal payment (billing retry, account hold) or auto-renew off.
     p.billing_issue = st.billing_issue;
     p.auto_renew_off = st.auto_renew_off;
@@ -619,14 +645,22 @@ pub fn record_inactive(tx: &TxContext, st: &StoreTx, details: &str) -> Option<St
     p.paused_until_ms = st.paused_until_ms;
     crate::poll::schedule(tx, &p.id, st, &p.kind);
     let now_ms = tx_now_micros(tx) / 1000;
-    match st.state {
+    // Kept even when the status does not change (a pause noticed on a row that expired already).
+    let facts = (before != (p.billing_issue, p.auto_renew_off, p.grace_until_ms, p.paused_until_ms)).then(|| p.clone());
+    let changed = match st.state {
         purser_core::model::TxState::Revoked => mark_inactive(tx, p, status::REVOKE_PENDING, now_ms, details),
         purser_core::model::TxState::Expired => {
             let exp = if st.expires_at_ms > 0 { st.expires_at_ms } else { now_ms };
             mark_inactive(tx, p, status::EXPIRE_PENDING, exp, details)
         }
         _ => None,
+    };
+    if changed.is_none() {
+        if let Some(p) = facts {
+            save_purchase(tx, p);
+        }
     }
+    changed
 }
 
 /// A purchase taken for processing, with what its next step reads from the database (read in
@@ -684,15 +718,26 @@ fn prepare(tx: &TxContext, app: GameApp, row: Purchase) -> Lease {
 pub fn lease(tx: &TxContext, id: &str, app: Option<&GameApp>) -> Lease {
     let now = tx_now_micros(tx);
     let Some(mut p) = tx.db.purchase().id().find(id.to_string()) else { return Lease::Idle(None) };
+    if p.lease_until_micros > now {
+        // Another request or drainer is running a step of it: what changed meanwhile is taken up
+        // when it ends (or when its lease runs out).
+        if p.next_attempt_at_micros > 0 && p.next_attempt_at_micros < p.lease_until_micros {
+            p.next_attempt_at_micros = p.lease_until_micros;
+            crate::ledger::save_purchase(tx, p.clone());
+        }
+        return Lease::Idle(Some(p));
+    }
     if p.next_attempt_at_micros == 0 || p.next_attempt_at_micros > now {
         return Lease::Idle(Some(p));
     }
     if is_terminal(&p.status) {
         p.next_attempt_at_micros = 0;
+        p.lease_until_micros = 0;
         crate::ledger::save_purchase(tx, p.clone());
         return Lease::Idle(Some(p));
     }
     p.next_attempt_at_micros = now + LEASE_MICROS;
+    p.lease_until_micros = now + LEASE_MICROS;
     crate::ledger::save_purchase(tx, p.clone());
     let app = match app {
         Some(a) if a.app_id == p.app_id => Some(a.clone()),
@@ -700,7 +745,7 @@ pub fn lease(tx: &TxContext, id: &str, app: Option<&GameApp>) -> Lease {
     };
     match app {
         Some(app) => prepare(tx, app, p),
-        None => Lease::Idle(fail(tx, id, "app is not configured")),
+        None => Lease::Idle(fail(tx, id, &p.status, "app is not configured")),
     }
 }
 
@@ -709,14 +754,18 @@ pub fn lease(tx: &TxContext, id: &str, app: Option<&GameApp>) -> Lease {
 /// the same transaction; `None` leaves the next step to the worker.
 fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event: Option<&str>, lease_app: Option<&GameApp>) -> Lease {
     let Some(mut p) = tx.db.purchase().id().find(id.to_string()) else { return Lease::Idle(None) };
+    let now = tx_now_micros(tx);
     if p.status != from {
-        // Changed meanwhile (e.g. by a notification): go on from its current state.
+        // Changed meanwhile (e.g. by a notification): this step's lease ends, and the row goes on
+        // from its current state.
+        p.lease_until_micros = 0;
+        p.next_attempt_at_micros = if is_terminal(&p.status) { 0 } else { p.next_attempt_at_micros.clamp(1, now) };
+        crate::ledger::save_purchase(tx, p.clone());
         return match lease_app {
             Some(app) => lease(tx, id, Some(app)),
             None => Lease::Idle(Some(p)),
         };
     }
-    let now = tx_now_micros(tx);
     if from == status::TRANSFER_PENDING {
         if !p.previous_user_id.is_empty() {
             crate::revenue::on_transfer(tx, &p);
@@ -729,6 +778,7 @@ fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event:
     p.last_error.clear();
     let terminal = is_terminal(to);
     p.next_attempt_at_micros = if terminal { 0 } else { now };
+    p.lease_until_micros = 0;
     p.updated_at_micros = now;
     if let Some(ev) = integration_event {
         let first_grant = matches!(ev, event_kind::PURCHASE | event_kind::SUBSCRIPTION_START | event_kind::RENEWAL);
@@ -747,6 +797,7 @@ fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event:
     let lease_app = lease_app.filter(|_| !terminal);
     if lease_app.is_some() {
         p.next_attempt_at_micros = now + LEASE_MICROS;
+        p.lease_until_micros = now + LEASE_MICROS;
     }
     crate::ledger::save_purchase(tx, p.clone());
     log_event(tx, id, to, "");
@@ -756,9 +807,20 @@ fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event:
     }
 }
 
-fn fail(tx: &TxContext, id: &str, error: &str) -> Option<Purchase> {
+/// A step for status `ran_for` failed: retried with backoff. If the row changed meanwhile (a
+/// refund during a grant), the failure belongs to the old step: the row goes on with its new work.
+fn fail(tx: &TxContext, id: &str, ran_for: &str, error: &str) -> Option<Purchase> {
     let mut p = tx.db.purchase().id().find(id.to_string())?;
     let now = tx_now_micros(tx);
+    p.lease_until_micros = 0;
+    if p.status != ran_for {
+        log::info!("Purchase {id}: a {ran_for} step failed after the row became {}: {error}", p.status);
+        if !is_terminal(&p.status) {
+            p.next_attempt_at_micros = now;
+        }
+        crate::ledger::save_purchase(tx, p.clone());
+        return Some(p);
+    }
     let delay = retry_delay_secs(p.attempts);
     p.attempts += 1;
     p.next_attempt_at_micros = now + delay * 1_000_000;
@@ -796,8 +858,9 @@ fn billing_event(p: &Purchase, event: &str, why: &str, now_ms: i64) -> BillingEv
 pub fn release(tx: &TxContext, lease: &Lease, at: i64) {
     let Some(id) = lease.leased_id() else { return };
     if let Some(mut p) = tx.db.purchase().id().find(id.to_string()) {
-        if p.next_attempt_at_micros > at {
-            p.next_attempt_at_micros = at;
+        if p.next_attempt_at_micros > at || p.lease_until_micros > 0 {
+            p.next_attempt_at_micros = p.next_attempt_at_micros.min(at);
+            p.lease_until_micros = 0;
             save_purchase(tx, p);
         }
     }
@@ -854,7 +917,7 @@ fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease 
                     let lease_app = next_step.is_some_and(|b| b.allows(tx_now_micros(tx))).then_some(&app);
                     transition(tx, &p.id, &p.status, status::COMPLETED, None, lease_app)
                 }),
-                Err(e) => Lease::Idle(ctx.tx(|tx| fail(tx, &p.id, &e))),
+                Err(e) => Lease::Idle(ctx.tx(|tx| fail(tx, &p.id, &p.status, &e))),
             };
         }
         // Not a refund: no integration event.
@@ -893,35 +956,50 @@ fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease 
             let lease_app = next_step.is_some_and(|b| b.allows(tx_now_micros(tx))).then_some(&app);
             transition(tx, &p.id, &p.status, next, kind, lease_app)
         }),
-        Err(e) => Lease::Idle(ctx.tx(|tx| fail(tx, &p.id, &e))),
+        Err(e) => Lease::Idle(ctx.tx(|tx| fail(tx, &p.id, &p.status, &e))),
     }
 }
 
 /// A delivery step through an inter-database call (`idc`), in one transaction: send the call and
 /// park the row, keep waiting, or apply the game's answer (move on, or fail with backoff).
 fn idc_step(ctx: &mut impl Ctx, app: &GameApp, p: &Purchase, ev: &BillingEvent, next: &str, kind: Option<&str>, next_step: Option<Budget>) -> Lease {
-    ctx.tx(|tx| match crate::idc::next(tx, p) {
+    ctx.tx(|tx| match crate::idc::next(tx, p, ev) {
         crate::idc::Next::Send => match crate::idc::target_of(app) {
             Some(target) => {
                 crate::idc::send(tx, target, p, ev);
                 Lease::Idle(park(tx, &p.id))
             }
-            None => Lease::Idle(fail(tx, &p.id, "spacetimedb_idc delivery: spacetime_db must be the game database's identity (64 hex digits)")),
+            None => Lease::Idle(fail(tx, &p.id, &p.status, "spacetimedb_idc delivery: spacetime_db must be the game database's identity (64 hex digits)")),
         },
         crate::idc::Next::Wait => Lease::Idle(park(tx, &p.id)),
+        crate::idc::Next::Overdue(e) => Lease::Idle(park_overdue(tx, &p.id, &e)),
         crate::idc::Next::Done => {
             let lease_app = next_step.is_some_and(|b| b.allows(tx_now_micros(tx))).then_some(app);
             transition(tx, &p.id, &p.status, next, kind, lease_app)
         }
-        crate::idc::Next::Failed(e) => Lease::Idle(fail(tx, &p.id, &e)),
+        crate::idc::Next::Failed(e) => Lease::Idle(fail(tx, &p.id, &p.status, &e)),
     })
 }
 
 /// Lets a row wait for the game's answer to an inter-database call: the answer makes it due again
 /// (`idc::answered`), the worker looks again after `idc::WAIT_MICROS` otherwise.
+/// [`park`], and the row says why it still waits: counted as a failed attempt, so the setup check,
+/// the stuck-purchase alerts and `/healthz` see a game database that does not answer.
+fn park_overdue(tx: &TxContext, id: &str, error: &str) -> Option<Purchase> {
+    let mut p = tx.db.purchase().id().find(id.to_string())?;
+    p.attempts += 1;
+    p.last_error = error.to_string();
+    p.updated_at_micros = tx_now_micros(tx);
+    log::warn!("Purchase {id}: {error}");
+    crate::alerts::on_purchase_failed(tx, &p);
+    save_purchase(tx, p);
+    park(tx, id)
+}
+
 fn park(tx: &TxContext, id: &str) -> Option<Purchase> {
     let mut p = tx.db.purchase().id().find(id.to_string())?;
     p.next_attempt_at_micros = tx_now_micros(tx) + crate::idc::WAIT_MICROS;
+    p.lease_until_micros = 0;
     Some(save_purchase(tx, p))
 }
 
@@ -943,6 +1021,7 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
         crate::retention::daily(tx);
         crate::client_guard::prune(tx);
         crate::integrations::prune_dead(tx);
+        crate::store_create::wake_orphans(tx);
         crate::revenue::upkeep(tx)
     });
     let budget = Budget::new(ctx, crate::ctx::WORKER_BUDGET_SECS);

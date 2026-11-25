@@ -273,6 +273,9 @@ def seed(a, d):
 # ---------------------------------------------------------------------------------------------
 
 
+# Optional product fields an export keeps (the shared catalog id, access levels, store listing).
+PRODUCT_EXTRAS = ("catalog_id", "access", "title", "description", "period", "apple_group")
+
 UNITY_TYPE = {"consumable": "Consumable", "non_consumable": "NonConsumable", "subscription": "Subscription"}
 
 
@@ -438,7 +441,9 @@ def export(a, d, force):
     if names:
         files["app_names.json"] = dict(sorted(names.items()))
 
+    # Every field `admin_upsert_products` takes; the optional ones only when set.
     products = [{k: p[k] for k in ("app_id", "product_id", "kind", "price_micros", "currency")}
+                | {k: p[k] for k in PRODUCT_EXTRAS if p.get(k)}
                 for p in sorted(sql(a, "SELECT * FROM product"), key=lambda p: (p["app_id"], p["product_id"]))]
     if products:
         files["products.json"] = products

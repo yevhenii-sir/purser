@@ -71,7 +71,8 @@ namespace Purser
         {
             m_Connect = new TaskCompletionSource<bool>();
             var connect = m_Store.Connect();
-            await Task.WhenAny(connect, m_Connect.Task);
+            // Bounded: a connection that neither completes nor reports would hold initialization forever.
+            await TaskTimeout.With(Task.WhenAny(connect, m_Connect.Task), OperationTimeout, ct, "store connection");
             if (connect.IsFaulted && !m_Connect.Task.IsCompleted)
                 throw new BillingException("Store connection failed: " + connect.Exception?.GetBaseException().Message);
             if (m_Store.GetConnectionState() == ConnectionState.Connected)
@@ -145,9 +146,13 @@ namespace Purser
         }
 
         /// <summary>Google consume / acknowledge (the server already did it for server deliveries), Apple
-        /// finishTransaction. Unity IAP finishes rejected purchases the same way.</summary>
+        /// finishTransaction. A Google purchase the server refused is left unconfirmed: the refusal may be
+        /// the server's setup or another signed-in player, and Google refunds a purchase nobody acknowledges
+        /// within three days, so the player gets the money back instead of losing it.</summary>
         public void Finish(StoreOrder order, bool granted)
         {
+            if (!granted && order.Platform == BillingPlatform.Google)
+                return;
             if (order.Native is PendingOrder pending)
                 m_Store.ConfirmPurchase(pending);
         }

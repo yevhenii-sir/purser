@@ -155,7 +155,7 @@ def idc(a, base, tok, db, req, check, call, sql):
     for _ in range(60):
         code, _, body = req("POST", f"{base}/v1/database/{game_db}/sql", b"SELECT * FROM billing_event_log", "text/plain", tok)
         rows = json.loads(body)[0]["rows"] if code == 200 else []
-        status = sql(f"SELECT status FROM purchase WHERE id = 'manual:idc-1'")["rows"]
+        status = sql(f"SELECT status FROM purchase WHERE id = 'manual:e2e.idc-1'")["rows"]
         if rows and status and status[0][0] == "completed":
             break
         time.sleep(1)

@@ -318,6 +318,16 @@ namespace Purser
                               "(expected when the server already consumed the purchase).");
         }
 
+        /// <summary>Forgets held results of a transaction the server refused (see <see cref="ObservedPurchases"/>).</summary>
+        internal void DropHeld(string transactionId)
+        {
+            if (string.IsNullOrEmpty(transactionId) || m_Held.Count == 0)
+                return;
+            foreach (var key in m_Held.Where(h => h.Value.Order.TransactionId == transactionId || h.Value.Result?.TransactionId == transactionId)
+                         .Select(h => h.Key).ToList())
+                m_Held.Remove(key);
+        }
+
         private HeldResult FindHeld(StoreOrder order)
         {
             if (m_Held.Count == 0)

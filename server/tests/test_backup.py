@@ -59,5 +59,40 @@ class ReadTable(unittest.TestCase):
         self.assertEqual(len(rows), 5, "read again with /sql")
 
 
+KEYED = {"elements": [{"name": {"some": "key"}, "algebraic_type": {"String": []}},
+                      {"name": {"some": "last_seen_micros"}, "algebraic_type": {"I64": []}}]}
+
+
+class Restore(unittest.TestCase):
+    def test_a_row_touched_while_the_backup_ran_is_kept_once(self):
+        rows = [["app/a", 1], ["app/b", 2], ["app/a", 3]]
+        self.assertEqual(backup.unique_rows(KEYED, rows, "key"), [["app/a", 3], ["app/b", 2]])
+
+    def test_the_restored_databases_own_admins_stay(self):
+        schema = {"elements": [{"name": {"some": "identity"}, "algebraic_type": {"String": []}},
+                               {"name": {"some": "protected"}, "algebraic_type": {"Bool": []}}]}
+        data = {"schema": schema, "rows": [["0xold", True]]}
+        current = [{"schema": schema, "rows": [["0xnew", True], ["0xold", True]]}]
+        with mock.patch.object(backup, "sql", lambda *_: current):
+            backup.keep_target_admins("http://x", "db", "tok", data)
+        self.assertEqual(data["rows"], [["0xold", True], ["0xnew", True]])
+
+    def test_ids_nothing_refers_to_are_given_by_the_new_database(self):
+        self.assertIn("integration_dead", backup.FRESH_IDS)
+
+
+class Migrate(unittest.TestCase):
+    def test_migrate_restores_without_resume(self):
+        import migrate
+        seen = {}
+        with mock.patch.object(migrate.backup, "backup"),                 mock.patch.object(migrate.backup, "restore", lambda a, *_: seen.update(resume=a.resume)),                 mock.patch.object(sys, "argv", ["migrate.py", "--from", "http://127.0.0.1:1", "--from-db", "a",
+                                                "--to", "http://127.0.0.1:2", "--to-db", "b"]),                 mock.patch.object(migrate, "token", lambda *_: "t", create=True):
+            try:
+                migrate.main()
+            except SystemExit:
+                pass
+        self.assertEqual(seen.get("resume"), False)
+
+
 if __name__ == "__main__":
     unittest.main()

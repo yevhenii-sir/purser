@@ -23,8 +23,12 @@ pub struct StoreNotifyHealth {
     /// Token and API base of the last Apple test notification requested by the setup check.
     pub test_token: String,
     pub test_base: String,
-    /// Amazon: the SNS topic of the last signed message (to pin it on the build).
+    /// Amazon: the SNS topic of the last signed message (to pin it on the build). While no topic
+    /// is pinned, the first one seen stays here.
     pub last_topic: String,
+    /// Amazon, no topic pinned: another topic that sent signed messages too (any AWS account can
+    /// sign). The setup check then asks to find Amazon's in the console instead of pinning one.
+    pub other_topic: String,
 }
 
 pub fn get(ctx: &ReducerContext, app_id: &str) -> StoreNotifyHealth {
@@ -46,6 +50,7 @@ fn negligible(old: &StoreNotifyHealth, new: &StoreNotifyHealth) -> bool {
         && old.test_token == new.test_token
         && old.test_base == new.test_base
         && old.last_topic == new.last_topic
+        && old.other_topic == new.other_topic
         && rejected(old) == rejected(new)
         && test_last(old) == test_last(new)
         && recent(old.last_at_micros, new.last_at_micros)
@@ -77,4 +82,16 @@ pub fn rejected(ctx: &ReducerContext, app_id: &str, reason: &str) {
         h.last_rejected_at_micros = now;
         h.last_rejected_reason = reason.to_string();
     });
+}
+
+/// Records the SNS topic of a signed Amazon message. Unpinned, the first topic is kept and a
+/// different one goes to `other_topic` (an AWS account other than Amazon's may be subscribing);
+/// returns whether it is the kept topic.
+pub fn note_topic(h: &mut StoreNotifyHealth, topic: &str, pinned: &str) -> bool {
+    if !pinned.is_empty() || h.last_topic.is_empty() || h.last_topic == topic {
+        h.last_topic = topic.to_string();
+        return true;
+    }
+    h.other_topic = topic.to_string();
+    false
 }

@@ -59,7 +59,13 @@ SKIP = {
 }
 # Auto-increment primary keys that nothing refers to: inserted as 0, so the new database's sequence
 # gives them ids (inserting the old ids would collide with ids it gives later).
-FRESH_IDS = {"purchase_log": "id", "admin_audit": "id", "alert_log": "id", "store_create_job": "id"}
+FRESH_IDS = {"purchase_log": "id", "admin_audit": "id", "alert_log": "id", "store_create_job": "id", "integration_dead": "id"}
+# Tables paged by a column that changes while the backup runs (a player's last request): a row
+# touched after its page was read shows up again in a later page. Kept once per key (the last
+# copy read), or the restore would fail on a duplicate key.
+MOVING = {"user_attribution": "key", "player_profile": "key"}
+# Tables whose values the dry run does not print (secrets, channel addresses).
+HIDDEN = {"credential", "alert_channel"}
 # Rows per INSERT statement.
 BATCH = 200
 # Large tables read in windows of an indexed integer column (rows per `/sql` answer at most PAGE).
@@ -214,6 +220,13 @@ def converted(data, cols, types):
     return {"schema": {"elements": elements}, "rows": rows}, added, dropped
 
 
+def unique_rows(schema, rows, key):
+    """Rows with distinct `key`: the last copy of each (read later, so newer)."""
+    i = column_names(schema).index(key)
+    last = {row[i]: row for row in rows}
+    return list(last.values())
+
+
 def backup(a, base, tok):
     os.makedirs(a.dir, exist_ok=True)
     if os.listdir(a.dir) and not a.force:
@@ -228,6 +241,8 @@ def backup(a, base, tok):
         if name in SKIP:
             continue
         schema, rows = read_table(base, a.database, tok, name)
+        if name in MOVING:
+            rows = unique_rows(schema, rows, MOVING[name])
         write_private(os.path.join(a.dir, f"{name}.json"), {"schema": schema, "rows": rows})
         manifest["tables"][name] = len(rows)
         print(f"backup   {name}: {len(rows)} rows")
@@ -276,6 +291,18 @@ def reindex(base, db, tok):
     sys.exit("admin_reindex_ledger did not finish: the worker continues it")
 
 
+def keep_target_admins(base, db, tok, data):
+    """Adds the restored database's own admins (its owner above all) to the backup's `admin` rows:
+    restoring into a database another identity owns would otherwise lock its owner out."""
+    current = sql(base, db, tok, "SELECT * FROM admin")[0]
+    cols, have = column_names(data["schema"]), column_names(current["schema"])
+    # `/sql` gives an Identity as a list or object: compared as JSON.
+    known = {json.dumps(row[cols.index("identity")]) for row in data["rows"]}
+    for row in current["rows"]:
+        if json.dumps(row[have.index("identity")]) not in known:
+            data["rows"].append([row[have.index(c)] if c in have else None for c in cols])
+
+
 def mark_done(a, progress, path, name):
     if a.dry_run:
         return
@@ -293,7 +320,12 @@ def restore(a, base, tok):
     gone = [t for t in manifest["tables"] if t not in present]
     if gone:
         print(f"skipped  tables the new module no longer has: {', '.join(gone)}")
-    run = (lambda q: print(q[:200] + ("..." if len(q) > 200 else ""))) if a.dry_run else (lambda q: sql(base, a.database, tok, q))
+    def show(q):
+        name = q.split()[2] if q.startswith(("INSERT INTO", "DELETE FROM")) else ""
+        if name in HIDDEN and q.startswith("INSERT"):
+            q = q[:q.index(" VALUES ")] + " VALUES <hidden>"
+        print(q[:200] + ("..." if len(q) > 200 else ""))
+    run = show if a.dry_run else (lambda q: sql(base, a.database, tok, q))
     progress_path = os.path.join(a.dir, PROGRESS)
     progress = {"done": [], "channel_ids": {}}
     if a.resume and os.path.exists(progress_path):
@@ -314,6 +346,8 @@ def restore(a, base, tok):
         data, added, dropped = converted(data, *target_columns(base, a.database, tok, name))
         if added or dropped:
             print(f"convert  {name}: new columns {added or '-'}, removed {dropped or '-'}")
+        if name == "admin":
+            keep_target_admins(base, a.database, tok, data)
         run(f"DELETE FROM {name}")
         if name == "alert_channel":
             cols = column_names(data["schema"])

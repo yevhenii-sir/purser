@@ -46,11 +46,27 @@ pub struct GameRevokeOutbox {
 pub struct IdcCall {
     #[primary_key]
     pub purchase_id: String,
-    /// The ledger status the call was made in: an answer to an older step is ignored.
+    /// The outbox message of the call (`kind` says which outbox): an answer to another message
+    /// (an earlier call of the row) is ignored.
+    pub msg_id: u64,
+    /// `grant` | `revoke`.
+    pub kind: String,
+    /// The ledger status the call was made in.
     pub status: String,
+    /// What the call told the game ([`fingerprint`]): a grant with another access end or owner is
+    /// sent again.
+    pub fingerprint: String,
     pub sent_at_micros: i64,
     /// Empty while the game has not answered, `ok`, or the game's error.
     pub answer: String,
+}
+
+const GRANT: &str = "grant";
+const REVOKE: &str = "revoke";
+
+/// What a call tells the game that may change while it waits (a renewal moves the access end).
+fn fingerprint(ev: &BillingEvent) -> String {
+    format!("{}|{}|{}|{}", ev.event, ev.reason, ev.user_id, ev.expires_at_ms)
 }
 
 /// How long a ledger row waits for the answer before the worker looks again (the call itself is
@@ -63,6 +79,9 @@ pub enum Next {
     Send,
     /// Sent, no answer yet: wait.
     Wait,
+    /// Sent more than [`WAIT_MICROS`] ago and still no answer (the game database is down, deleted,
+    /// or the identity names another database): keep waiting, and say so.
+    Overdue(String),
     /// The game applied it.
     Done,
     /// The game refused it (its reducer failed): retry later.
@@ -79,15 +98,26 @@ pub fn parse_identity(s: &str) -> Option<Identity> {
     (hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit())).then(|| Identity::from_hex(hex).ok()).flatten()
 }
 
-/// The state of the call for the row's current step (and forgets an answered one).
-pub fn next(tx: &TxContext, p: &Purchase) -> Next {
+/// The state of the call for the row's current step `ev` (and forgets an answered one). A call of
+/// an older step (the row changed while it waited) is waited for first: the grant and the revoke
+/// go through different outboxes, and the game must see them in order.
+pub fn next(tx: &TxContext, p: &Purchase, ev: &BillingEvent) -> Next {
     let Some(call) = tx.db.idc_call().purchase_id().find(&p.id) else { return Next::Send };
-    if call.status != p.status {
+    let current = call.status == p.status && call.fingerprint == fingerprint(ev);
+    if call.answer.is_empty() {
+        let waited = tx_now_micros(tx) - call.sent_at_micros;
+        return if waited <= WAIT_MICROS {
+            Next::Wait
+        } else {
+            Next::Overdue(format!("no answer from the game database to the {} call since {} min", call.kind, waited / 60_000_000))
+        };
+    }
+    if !current {
+        // Answered, but for an older step: this step sends its own call.
         tx.db.idc_call().purchase_id().delete(&p.id);
         return Next::Send;
     }
     match call.answer.as_str() {
-        "" => Next::Wait,
         "ok" => {
             tx.db.idc_call().purchase_id().delete(&p.id);
             Next::Done
@@ -125,32 +155,43 @@ pub fn send(tx: &TxContext, target: Identity, p: &Purchase, ev: &BillingEvent) {
     let game = game::Identity(target);
     let event = to_game(ev);
     let purchase_id = p.id.clone();
-    if ev.event == purser_core::event::event_type::GRANT {
-        tx.db.game_grant_outbox().insert(GameGrantOutbox { msg_id: 0, game, event, purchase_id });
+    let (kind, msg_id) = if ev.event == purser_core::event::event_type::GRANT {
+        (GRANT, tx.db.game_grant_outbox().insert(GameGrantOutbox { msg_id: 0, game, event, purchase_id }).msg_id)
     } else {
-        tx.db.game_revoke_outbox().insert(GameRevokeOutbox { msg_id: 0, game, event, purchase_id });
-    }
-    let call = IdcCall { purchase_id: p.id.clone(), status: p.status.clone(), sent_at_micros: tx_now_micros(tx), answer: String::new() };
+        (REVOKE, tx.db.game_revoke_outbox().insert(GameRevokeOutbox { msg_id: 0, game, event, purchase_id }).msg_id)
+    };
+    let call = IdcCall {
+        purchase_id: p.id.clone(),
+        msg_id,
+        kind: kind.to_string(),
+        status: p.status.clone(),
+        fingerprint: fingerprint(ev),
+        sent_at_micros: tx_now_micros(tx),
+        answer: String::new(),
+    };
     tx.db.idc_call().purchase_id().delete(&p.id);
     tx.db.idc_call().insert(call);
 }
 
 #[spacetimedb::reducer(on_result(game_grant_outbox))]
 pub fn game_grant_answered(ctx: &ReducerContext, row: GameGrantOutbox, result: Result<(), String>) {
-    answered(ctx, &row.purchase_id, result);
+    answered(ctx, GRANT, row.msg_id, &row.purchase_id, result);
 }
 
 #[spacetimedb::reducer(on_result(game_revoke_outbox))]
 pub fn game_revoke_answered(ctx: &ReducerContext, row: GameRevokeOutbox, result: Result<(), String>) {
-    answered(ctx, &row.purchase_id, result);
+    answered(ctx, REVOKE, row.msg_id, &row.purchase_id, result);
 }
 
 /// Records the game's answer and lets the ledger row go on at once (a queue drainer takes it).
-fn answered(ctx: &ReducerContext, purchase_id: &str, result: Result<(), String>) {
+fn answered(ctx: &ReducerContext, kind: &str, msg_id: u64, purchase_id: &str, result: Result<(), String>) {
     if !ctx.sender_auth().is_internal() && ctx.sender() != Identity::ZERO {
         return; // SpacetimeDB's own callback only
     }
     let Some(mut call) = ctx.db.idc_call().purchase_id().find(purchase_id.to_string()) else { return };
+    if call.msg_id != msg_id || call.kind != kind {
+        return; // the answer to an earlier call of the row
+    }
     call.answer = match result {
         Ok(()) => "ok".to_string(),
         Err(e) => {
@@ -169,5 +210,23 @@ fn answered(ctx: &ReducerContext, purchase_id: &str, result: Result<(), String>)
             p.next_attempt_at_micros = now;
             crate::ledger::save_purchase(ctx, p);
         }
+    }
+}
+
+/// Forgets the row's call, answered or not: its next step sends a new one (an admin's requeue,
+/// or the build now names another game database).
+pub fn forget(tx: &ReducerContext, purchase_id: &str) {
+    tx.db.idc_call().purchase_id().delete(purchase_id.to_string());
+}
+
+/// The build's game database changed: rows waiting for an answer from the old one call the new one.
+pub fn retarget(tx: &ReducerContext, app_id: &str) {
+    let now = tx_now_micros(tx);
+    let waiting: Vec<String> = tx.db.idc_call().iter().filter(|c| c.answer.is_empty()).map(|c| c.purchase_id).collect();
+    for id in waiting {
+        let Some(mut p) = tx.db.purchase().id().find(&id).filter(|p| p.app_id == app_id) else { continue };
+        forget(tx, &id);
+        p.next_attempt_at_micros = now;
+        crate::ledger::save_purchase(tx, p);
     }
 }

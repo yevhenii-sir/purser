@@ -663,6 +663,7 @@ pub fn store_tx(app_id: &str, product_id: &str, p: &Paid, original: &str) -> Sto
         family_shared: false,
         offer_id: String::new(),
         offer_type: String::new(),
+        promotional: false,
     }
 }
 

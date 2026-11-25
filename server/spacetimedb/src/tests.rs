@@ -549,6 +549,31 @@ fn restoring_back_while_the_transfer_is_pending_revokes_nobody() {
 }
 
 #[test]
+fn a_refund_while_the_grant_is_in_flight_is_revoked_after_it() {
+    let w = World::new();
+    w.fake.borrow_mut().failing_reducer = "billing_grant".into();
+    w.verify("player-1", "gems");
+    assert_eq!(w.purchase().status, status::VERIFIED);
+    w.fake.borrow_mut().failing_reducer.clear();
+    w.advance_clock(61);
+    // A request (or drainer) takes the row and is about to call the game.
+    let lease = w.ctx().tx(|tx| ledger::lease(tx, LEDGER_ID, None));
+    assert!(lease.leased_id().is_some());
+    // The refund lands meanwhile; nobody else may run the revoke before the grant ends.
+    w.ctx().tx(|tx| {
+        let p = tx.db.purchase().id().find(LEDGER_ID.to_string()).unwrap();
+        ledger::mark_inactive(tx, p, status::REVOKE_PENDING, 0, "refund");
+    });
+    w.run_worker();
+    assert_eq!(w.calls("/call/billing_revoke"), 0, "the revoke waits for the grant in flight");
+    ledger::run(&mut w.ctx(), lease);
+    let calls: Vec<String> = w.reducer_calls().into_iter().filter(|c| !c.contains("failed")).collect();
+    let tail: Vec<&str> = calls.iter().rev().take(2).rev().map(String::as_str).collect();
+    assert_eq!(tail, ["billing_grant player-1 purchase", "billing_revoke player-1 refund"]);
+    assert_eq!(w.purchase().status, status::REVOKED);
+}
+
+#[test]
 fn voided_purchase_is_revoked_in_the_game() {
     let w = World::new();
     w.verify("player-1", "gems");
@@ -560,6 +585,17 @@ fn voided_purchase_is_revoked_in_the_game() {
     assert_eq!(w.google_notification("wrong", voided.clone()).http, 401);
     assert_eq!(w.purchase().status, status::COMPLETED);
 
+    // Google still reports the purchase as paid: a forged notification revokes nothing.
+    let o = w.google_notification(RTDN_SECRET, voided.clone());
+    assert_eq!((o.http, o.body["status"].as_str()), (200, Some("ignored")), "{}", o.body);
+    assert_eq!(w.purchase().status, status::COMPLETED);
+
+    // A refund of some units of a multi-quantity purchase does not revoke the whole purchase.
+    let mut partial = voided.clone();
+    partial["voidedPurchaseNotification"]["refundType"] = json!(2);
+    assert_eq!(w.google_notification(RTDN_SECRET, partial).body["status"], "ignored");
+
+    w.script("/purchases/products/", 200, &json!({ "purchaseState": 1, "orderId": ORDER, "consumptionState": 1 }).to_string());
     let o = w.google_notification(RTDN_SECRET, voided);
     assert_eq!(o.http, 200);
     assert_eq!(w.purchase().status, status::REVOKED);
@@ -2878,6 +2914,7 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
         was_granted: true,
         attempts: 0,
         next_attempt_at_micros: 0,
+        lease_until_micros: 0,
         last_error: String::new(),
         created_at_micros: NOW_MICROS,
         updated_at_micros: NOW_MICROS,
@@ -3536,6 +3573,10 @@ fn xsolla_webhooks_validate_users_grant_once_and_refund() {
     assert_eq!(xsolla_webhook(&w, refund).http, 204);
     assert_eq!(w.calls("/call/billing_revoke"), 1);
     assert_eq!(revenue_rows(&w).values().map(|r| r.1).sum::<u32>(), 1);
+    // The payment webhook retried (or replayed) after the refund grants nothing again.
+    assert_eq!(xsolla_webhook(&w, payment).http, 204);
+    assert_eq!(find(&w, "xsolla:900001").unwrap().status, status::REVOKED);
+    assert_eq!(w.calls("/call/billing_grant"), 1);
 }
 
 #[test]
@@ -4549,6 +4590,7 @@ impl World {
             was_granted: false,
             attempts: 0,
             next_attempt_at_micros: 0,
+            lease_until_micros: 0,
             last_error: String::new(),
             created_at_micros: updated,
             updated_at_micros: updated,
@@ -4736,6 +4778,23 @@ impl World {
     fn read<T>(&self, f: impl FnOnce(&spacetimedb::ReducerContext) -> T) -> T {
         self.test.with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(f(tx))).unwrap()
     }
+}
+
+#[test]
+fn an_absurd_price_from_the_client_is_not_recorded() {
+    let w = World::new();
+    let catalog = w.read(|tx| tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap());
+    let o = w.verify_with_fields("player-1", json!({ "price_micros": 1_000_000_000_000i64, "currency": "USD" }));
+    assert_eq!(o.body["status"], "success", "{}", o.body);
+    let p = w.purchase();
+    assert_eq!((p.price_micros, p.currency.as_str()), (catalog.price_micros, catalog.currency.as_str()), "the catalog price");
+
+    let w = World::new();
+    w.verify_with_fields("player-1", json!({ "price_micros": 1_090_000, "currency": "USD" }));
+    assert_eq!((w.purchase().price_micros, w.purchase().currency.as_str()), (1_090_000, "USD"), "a believable price is kept");
+    let w = World::new();
+    w.verify_with_fields("player-1", json!({ "price_micros": 1_090_000, "currency": "ZZZZ" }));
+    assert_eq!(w.purchase().currency, catalog.currency, "not a currency");
 }
 
 #[test]
@@ -5137,6 +5196,7 @@ fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -
         was_granted: true,
         attempts: 0,
         next_attempt_at_micros: 0,
+        lease_until_micros: 0,
         last_error: String::new(),
         created_at_micros,
         updated_at_micros: created_at_micros,
@@ -5848,6 +5908,27 @@ mod store_create_tests {
         let patch = w.fake.borrow().calls.iter().find(|c| c.starts_with("PATCH ")).cloned().unwrap();
         assert!(patch.contains("regionsVersion.version=2022%2F02") && patch.contains("\"title\":\"100 gems\""), "{patch}");
         assert_eq!(w.calls("batchUpdateStates"), 1);
+    }
+
+    #[test]
+    fn a_pending_job_nothing_wakes_is_started_again_by_the_worker() {
+        let w = World::new();
+        w.as_admin(false);
+        create(&w, &[APP], json!([product("gems_new", "consumable")])).unwrap();
+        // Its run stopped after the host deleted the tick (a restart), or it came from a backup.
+        w.read(|tx| {
+            for t in tx.db.store_create_tick().iter().collect::<Vec<_>>() {
+                tx.db.store_create_tick().id().delete(t.id);
+            }
+        });
+        w.run_worker();
+        assert_eq!(w.read(|tx| tx.db.store_create_tick().iter().count()), 0, "a fresh job is left alone");
+        w.advance_clock(11 * 60);
+        w.run_worker();
+        let ticks: Vec<u64> = w.read(|tx| tx.db.store_create_tick().iter().map(|t| t.job_id).collect());
+        assert_eq!(ticks, vec![jobs(&w)[0].id]);
+        w.run_worker();
+        assert_eq!(w.read(|tx| tx.db.store_create_tick().iter().count()), 1, "woken once");
     }
 
     #[test]
@@ -7246,6 +7327,24 @@ fn client_routes_are_rate_limited_per_player_and_build() {
 }
 
 #[test]
+fn only_valid_requests_use_up_the_builds_store_calls() {
+    use crate::players::player_profile;
+    let w = World::new();
+    // Junk: unknown products from made-up players take nothing and remember nobody.
+    for i in 0..400 {
+        let o = w.verify(&format!("junk-{i}"), "no_such_product");
+        assert_eq!(o.http, 400);
+    }
+    assert_eq!(w.read(|tx| tx.db.player_profile().iter().count()), 0);
+    assert_eq!(w.verify("player-1", "gems").body["status"], "success", "real players still verify");
+    // The build's store calls used up: the next verify waits and asks no store.
+    let now = w.ctx().now_micros();
+    w.ctx().tx(|tx| while crate::client_guard::take(tx, &format!("store/{APP}"), purser_core::client_api::STORE_CALLS, now).is_ok() {});
+    let o = w.verify("player-2", "gems");
+    assert_eq!((o.http, o.body["code"].as_str()), (429, Some("ERR_RATE_LIMITED")), "{}", o.body);
+}
+
+#[test]
 fn answers_are_signed_when_the_build_has_a_key() {
     use ed25519_dalek::Verifier;
     let w = World::new();
@@ -7743,6 +7842,35 @@ fn a_reversed_app_store_refund_grants_the_purchase_again() {
 }
 
 #[test]
+fn a_late_reversal_of_a_transaction_revoked_again_changes_nothing() {
+    let w = refund_world(None, "off");
+    let id = "apple:2000000123";
+    w.ctx().tx(|tx| {
+        let p = tx.db.purchase().id().find(id.to_string()).unwrap();
+        ledger::mark_inactive(tx, p, status::REVOKE_PENDING, 0, "apple REFUND");
+    });
+    w.advance_clock(60);
+    w.run_worker();
+    // Apple refunded it again; the reversal of the first refund arrives late.
+    let payload = json!({
+        "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_APP,
+        "productId": "gems", "type": "Consumable", "environment": "Sandbox", "revocationDate": 1_700_000_000_000i64,
+    });
+    let jws = format!(
+        "{}.{}.sig",
+        purser_core::jwt::b64url(br#"{"alg":"ES256"}"#),
+        purser_core::jwt::b64url(payload.to_string().as_bytes())
+    );
+    w.fake.borrow_mut().overrides.retain(|(n, _, _)| !n.contains("/inApps/v1/transactions/"));
+    w.script("storekit-sandbox.itunes.apple.com/inApps/v1/transactions/2000000123", 200, &json!({ "signedTransactionInfo": jws }).to_string());
+    let calls = w.reducer_calls().len();
+    let o = apple_notification(&w, "REFUND_REVERSED", purser_core::apple::testing::sign);
+    assert_eq!(o.http, 200, "{}", o.body);
+    assert_eq!(w.reducer_calls().len(), calls, "nothing granted");
+    assert_eq!(w.read(|tx| tx.db.purchase().id().find(id.to_string()).unwrap().status), status::REVOKED);
+}
+
+#[test]
 fn a_paused_google_subscription_is_revoked_until_it_resumes() {
     let w = World::new();
     add_subscription_product(&w);
@@ -7787,6 +7915,38 @@ fn a_paused_google_subscription_is_revoked_until_it_resumes() {
     assert!(w.entitlements("player-1")["paused"].as_object().unwrap().is_empty());
 }
 
+#[test]
+fn a_paused_google_subscription_resumes_through_the_re_check_alone() {
+    let w = World::new();
+    add_subscription_product(&w);
+    keep_google_token_valid(&w, 400);
+    w.fake.borrow_mut().account_id = "player-1".into();
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_ACTIVE", "vip", ORDER, "2026-12-20T00:00:00Z", "");
+    w.verify("player-1", "vip");
+    let paused = json!({
+        "subscriptionState": "SUBSCRIPTION_STATE_PAUSED", "latestOrderId": ORDER,
+        "pausedStateContext": { "autoResumeTime": "2027-01-20T00:00:00Z" },
+        "lineItems": [{ "productId": "vip", "expiryTime": "2026-09-20T00:00:00Z" }],
+    });
+    w.fake.borrow_mut().overrides.retain(|(n, ..)| !n.contains("subscriptionsv2"));
+    w.script("subscriptionsv2", 200, &paused.to_string());
+    subscription_notification(&w, 10);
+    w.advance_clock(60);
+    w.run_worker();
+    assert_eq!(w.purchase().status, status::EXPIRED);
+
+    // The resume notification is lost: the re-check after the pause finds it running again.
+    w.fake.borrow_mut().overrides.retain(|(n, ..)| !n.contains("subscriptionsv2"));
+    google_subscription(&w, TOKEN, "SUBSCRIPTION_STATE_ACTIVE", "vip", ORDER, "2027-02-20T00:00:00Z", "");
+    let resume_check_micros = 1_800_403_200_000 * 1000 + 11 * 60 * 1_000_000;
+    w.advance_clock((resume_check_micros - w.ctx().now_micros()) / 1_000_000);
+    w.run_worker();
+    let p = w.purchase();
+    assert!(status::is_owned(&p.status), "{}", p.status);
+    assert_eq!(p.paused_until_ms, 0);
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip"]["product_id"], "vip");
+}
+
 // ---------------------------------------------------------------------
 // Server keys (`/server/*`)
 // ---------------------------------------------------------------------
@@ -7817,7 +7977,7 @@ fn server_keys_read_grant_and_revoke_for_their_app_only() {
     assert_eq!((entitlements(&mut w.ctx(), "", &q("player-1")).0).0, 401);
     let other = SERVER_KEY.replace("mnop", "mnoq");
     assert_eq!((entitlements(&mut w.ctx(), &bearer(&other), &q("player-1")).0).0, 401);
-    let revoke_req = RevokeRequest { app_id: APP.into(), purchase_id: "manual:reward-1".into(), reason: "abuse".into() };
+    let revoke_req = RevokeRequest { app_id: APP.into(), purchase_id: "manual:game.reward-1".into(), reason: "abuse".into() };
     let ((http, body), _) = revoke(&mut w.ctx(), &bearer(SERVER_KEY), &revoke_req);
     assert_eq!((http, body["code"].as_str()), (403, Some("ERR_SERVER_SCOPE")));
 
@@ -7831,7 +7991,7 @@ fn server_keys_read_grant_and_revoke_for_their_app_only() {
         note: "season reward".into(),
     };
     let ((http, body), _) = grant(&mut w.ctx(), &bearer(SERVER_KEY), &g);
-    assert_eq!((http, body["purchase_id"].as_str()), (200, Some("manual:reward-1")), "{body}");
+    assert_eq!((http, body["purchase_id"].as_str()), (200, Some("manual:game.reward-1")), "{body}");
     assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_grant player-1 purchase"));
     let calls = w.reducer_calls().len();
     let ((http, body), _) = grant(&mut w.ctx(), &bearer(SERVER_KEY), &g);
@@ -8231,6 +8391,53 @@ fn an_idc_answer_from_a_client_is_ignored() {
         .unwrap();
     w.run_drainers();
     assert_eq!(w.purchase().status, status::VERIFIED, "not granted on a forged answer");
+}
+
+#[test]
+fn a_refund_waits_for_the_grant_call_and_its_answer_does_not_settle_the_revoke() {
+    use crate::idc::game_revoke_outbox;
+    let w = World::new();
+    use_idc(&w);
+    w.verify("player-1", "gems");
+    let grant = grant_calls(&w).remove(0);
+    w.ctx().tx(|tx| {
+        let p = tx.db.purchase().id().find(LEDGER_ID.to_string()).unwrap();
+        ledger::mark_inactive(tx, p, status::REVOKE_PENDING, 0, "refund");
+    });
+    w.run_worker();
+    let revokes = |w: &World| w.read(|tx| tx.db.game_revoke_outbox().iter().collect::<Vec<_>>());
+    assert!(revokes(&w).is_empty(), "the revoke waits until the game answered the grant");
+
+    answer(&w, grant.clone(), Ok(()));
+    w.run_drainers();
+    let sent = revokes(&w);
+    assert_eq!((sent.len(), sent[0].event.reason.as_str()), (1, "refund"));
+    // The grant's answer delivered again settles nothing.
+    answer(&w, grant, Ok(()));
+    w.run_drainers();
+    assert_eq!(w.purchase().status, status::REVOKE_PENDING, "waits for the revoke's own answer");
+    w.test
+        .with_reducer_tx(TestAuth::internal(), |ctx| {
+            crate::idc::game_revoke_answered(ctx, sent[0].clone(), Ok(()));
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+    w.run_drainers();
+    assert_eq!(w.purchase().status, status::REVOKED);
+}
+
+#[test]
+fn an_idc_call_without_an_answer_is_reported() {
+    let w = World::new();
+    keep_google_token_valid(&w, 3 * 3600);
+    use_idc(&w);
+    w.verify("player-1", "gems");
+    w.advance_clock(3601);
+    w.run_worker();
+    let p = w.purchase();
+    assert_eq!((p.status.as_str(), p.attempts), (status::VERIFIED, 1));
+    assert!(p.last_error.contains("no answer from the game database"), "{}", p.last_error);
+    assert_eq!(grant_calls(&w).len(), 1, "nothing sent twice");
 }
 
 #[test]
