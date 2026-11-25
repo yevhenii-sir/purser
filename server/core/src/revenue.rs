@@ -8,9 +8,13 @@
 //! - Gross: the first grant of a store purchase (purchase, subscription start, renewal), on the
 //!   day the purchase was recorded. Manual grants are not revenue.
 //! - Refunds: when the store reports a refund of a purchase that was granted, on that day.
-//! - Expirations and transfers: counted on the day they happen; no money.
+//! - Expirations and transfers: counted on the day they happen; no money. A free trial that ends
+//!   without a payment is a `trial_expiration`, not an expiration: churn and the renewal rate are
+//!   about paid subscriptions.
 //! - Free trials: counted as `trials`, no money. The first paid period of a subscription after a
-//!   trial is also a `trial_conversion` (and, like any later period, a renewal).
+//!   trial is a `trial_conversion` and a new (paid) subscription, not a renewal: renewals are paid
+//!   periods after a paid period. Active subscriptions and MRR count paid periods; trials running
+//!   are counted apart.
 //! - Store fee: the gross of subscription periods paid after the first 12 paid months of that
 //!   subscription is kept apart (`gross_after_year_micros`), so the report can apply the reduced
 //!   commission to it. The commission itself is applied at report time ([`Commission`]): changing
@@ -39,8 +43,10 @@ pub struct Delta {
     pub refunded_micros: i64,
     /// Free trials started.
     pub trials: u32,
-    /// First paid period after a free trial (also counted in `renewals` / `new_subscriptions`).
+    /// First paid period after a free trial (also counted in `new_subscriptions`).
     pub trial_conversions: u32,
+    /// Free trials that ended without a payment (not in `expirations`).
+    pub trial_expirations: u32,
     /// Part of `gross_micros` / `refunded_micros` from subscription periods paid after the first
     /// 12 paid months of the subscription (reduced store commission).
     pub gross_after_year_micros: i64,
@@ -59,6 +65,7 @@ impl Delta {
         self.refunded_micros = self.refunded_micros.saturating_add(o.refunded_micros);
         self.trials += o.trials;
         self.trial_conversions += o.trial_conversions;
+        self.trial_expirations += o.trial_expirations;
         self.gross_after_year_micros = self.gross_after_year_micros.saturating_add(o.gross_after_year_micros);
         self.refunded_after_year_micros = self.refunded_after_year_micros.saturating_add(o.refunded_after_year_micros);
     }
@@ -274,7 +281,13 @@ pub fn grant_delta_with(store_name: &str, grant_event: &str, price_micros: i64, 
         return Some(Delta { trials: 1, ..Default::default() });
     }
     let mut d = grant_delta(store_name, grant_event, price_micros)?;
-    d.trial_conversions = facts.trial_conversion as u32;
+    if facts.trial_conversion {
+        // The first payment of the subscription: it starts now (the store calls it a renewal).
+        d.trial_conversions = 1;
+        d.new_subscriptions = 1;
+        d.renewals = 0;
+        d.purchases = 0;
+    }
     if facts.after_first_year {
         d.gross_after_year_micros = d.gross_micros;
     }
@@ -325,8 +338,15 @@ pub fn reinstate_delta(store_name: &str, was_granted: bool, amount_micros: i64, 
     Some(d)
 }
 
-pub fn expire_delta(store_name: &str, product_kind: &str) -> Option<Delta> {
-    (is_store(store_name) && product_kind == kind::SUBSCRIPTION).then(|| Delta { expirations: 1, ..Default::default() })
+/// A subscription period ended without a renewal: churn, or a free trial nobody paid for.
+pub fn expire_delta(store_name: &str, product_kind: &str, facts: &PeriodFacts) -> Option<Delta> {
+    (is_store(store_name) && product_kind == kind::SUBSCRIPTION).then(|| {
+        if facts.trial {
+            Delta { trial_expirations: 1, ..Default::default() }
+        } else {
+            Delta { expirations: 1, ..Default::default() }
+        }
+    })
 }
 
 pub fn transfer_delta(store_name: &str) -> Option<Delta> {
@@ -501,7 +521,21 @@ pub struct SubRow {
     pub product_id: String,
     pub environment: String,
     pub currency: String,
+    /// Paid periods running.
     pub active: u32,
+    /// Free trials running (not in `active` or `monthly_micros`).
+    pub trials: u32,
+    pub monthly_micros: i64,
+}
+
+/// Subscriptions running now of one (environment, currency): paid ones, trials and the monthly
+/// price of the paid ones.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ActiveNow {
+    pub environment: String,
+    pub currency: String,
+    pub active: u32,
+    pub trials: u32,
     pub monthly_micros: i64,
 }
 
@@ -522,7 +556,7 @@ pub struct ReportInput<'a> {
     pub rows: &'a [DayRow],
     pub subs: &'a [SubRow],
     /// (environment, currency, count, monthly micros) of the subscriptions active now.
-    pub active_now: &'a [(String, String, u32, i64)],
+    pub active_now: &'a [ActiveNow],
     pub countries: &'a [CountryRow],
     pub commission: &'a Commission,
     pub fx: &'a FxTable,
@@ -593,6 +627,7 @@ impl Money {
             "expirations": self.d.expirations,
             "trials": self.d.trials,
             "trial_conversions": self.d.trial_conversions,
+            "trial_expirations": self.d.trial_expirations,
         })
     }
 }
@@ -620,15 +655,23 @@ fn ratio(num: u32, den: u32) -> Value {
 #[derive(Default)]
 struct SubMonth {
     d: Delta,
-    /// (first day with a snapshot in the month, active subscriptions that day).
+    /// (first day with a snapshot in the month, paid subscriptions active that day).
     first_snapshot: Option<(i32, u32)>,
+}
+
+/// Paid subscriptions active on a day, trials running and the MRR in USD micros.
+#[derive(Default, Clone, Copy)]
+struct SubDay {
+    active: u32,
+    trials: u32,
+    mrr: i64,
 }
 
 /// Builds the dashboard report without the per-country rows and with the default commission.
 pub fn build_report(
     rows: &[DayRow],
     subs: &[SubRow],
-    active_now: &[(String, String, u32, i64)],
+    active_now: &[ActiveNow],
     fx: &FxTable,
     q: &Query,
     today: i32,
@@ -670,23 +713,25 @@ pub fn build_full_report(input: &ReportInput) -> Value {
         by_country.entry(r.country.clone()).or_default().add(&r.delta, m);
     }
 
-    let mut sub_days: BTreeMap<i32, (u32, i64)> = BTreeMap::new();
+    let mut sub_days: BTreeMap<i32, SubDay> = BTreeMap::new();
     for s in subs.iter().filter(|s| in_range(s.day, &s.environment)) {
         let m = usd.conv(s.monthly_micros, &s.currency, s.day);
         let e = sub_days.entry(s.day).or_default();
-        e.0 += s.active;
-        e.1 += m;
+        e.active += s.active;
+        e.trials += s.trials;
+        e.mrr += m;
     }
-    for (day, (active, _)) in &sub_days {
+    for (day, s) in &sub_days {
         let m = months.entry(month_index(*day)).or_default();
         if m.first_snapshot.is_none_or(|(d, _)| *day < d) {
-            m.first_snapshot = Some((*day, *active));
+            m.first_snapshot = Some((*day, s.active));
         }
     }
-    let (mut active, mut mrr) = (0u32, 0i64);
-    for (_, ccy, count, monthly) in active_now.iter().filter(|(env, ..)| q.wants(env)) {
-        active += count;
-        mrr += usd.conv(*monthly, ccy, today);
+    let mut now = SubDay::default();
+    for a in active_now.iter().filter(|a| q.wants(&a.environment)) {
+        now.active += a.active;
+        now.trials += a.trials;
+        now.mrr += usd.conv(a.monthly_micros, &a.currency, today);
     }
 
     let paid = total.d.purchases + total.d.new_subscriptions + total.d.renewals;
@@ -697,16 +742,19 @@ pub fn build_full_report(input: &ReportInput) -> Value {
         v
     };
 
-    // Churn: subscriptions that ended / active at the start, per 30 days. Renewal rate: of the
-    // periods that ended (renewed or expired), the share that renewed.
-    let active_at_start = sub_days.iter().next().map(|(_, (a, _))| *a);
+    // Churn: paid subscriptions that ended / paid ones active at the start, per 30 days. Renewal
+    // rate: of the paid periods that ended (renewed or expired), the share that renewed. Trial
+    // conversion: of the trials that ended (paid or not), the share that paid.
+    let active_at_start = sub_days.iter().next().map(|(_, s)| s.active);
     let days = (q.to - q.from + 1) as f64;
     let churn = match active_at_start {
         Some(a) if a > 0 => json!(total.d.expirations as f64 / a as f64 * 30.0 / days),
         _ => Value::Null,
     };
     // From the first month with any subscription activity on.
-    let busy = |s: &SubMonth| s.first_snapshot.is_some() || s.d.new_subscriptions + s.d.trials + s.d.renewals + s.d.expirations > 0;
+    let busy = |s: &SubMonth| {
+        s.first_snapshot.is_some() || s.d.new_subscriptions + s.d.trials + s.d.renewals + s.d.expirations + s.d.trial_expirations > 0
+    };
     let first_busy = months.iter().find(|(_, s)| busy(s)).map(|(m, _)| *m).unwrap_or(i32::MAX);
     let monthly: Vec<Value> = months
         .range(first_busy..)
@@ -718,6 +766,8 @@ pub fn build_full_report(input: &ReportInput) -> Value {
                 "new_subscriptions": s.d.new_subscriptions,
                 "trials": s.d.trials,
                 "trial_conversions": s.d.trial_conversions,
+                "trial_expirations": s.d.trial_expirations,
+                "trial_conversion_rate": ratio(s.d.trial_conversions, s.d.trial_conversions + s.d.trial_expirations),
                 "renewals": s.d.renewals,
                 "expirations": s.d.expirations,
                 "churn_rate": ratio(s.d.expirations, start.unwrap_or(0)),
@@ -755,12 +805,18 @@ pub fn build_full_report(input: &ReportInput) -> Value {
             "by_app": commission.by_app,
         },
         "subscriptions": {
-            "active_now": active,
-            "mrr_usd_micros": mrr,
-            "series": sub_days.iter().map(|(d, (a, m))| json!({ "day": format_day(*d), "active": a, "mrr_usd_micros": m })).collect::<Vec<_>>(),
+            "active_now": now.active,
+            "trials_now": now.trials,
+            "mrr_usd_micros": now.mrr,
+            "series": sub_days
+                .iter()
+                .map(|(d, s)| json!({ "day": format_day(*d), "active": s.active, "trials": s.trials, "mrr_usd_micros": s.mrr }))
+                .collect::<Vec<_>>(),
             "new_subscriptions": total.d.new_subscriptions,
             "trials_started": total.d.trials,
             "trial_conversions": total.d.trial_conversions,
+            "trial_expirations": total.d.trial_expirations,
+            "trial_conversion_rate": ratio(total.d.trial_conversions, total.d.trial_conversions + total.d.trial_expirations),
             "renewals": total.d.renewals,
             "expirations": total.d.expirations,
             "active_at_start": active_at_start,
@@ -985,9 +1041,24 @@ mod tests {
         assert_eq!(grant_delta(store::MANUAL, event_kind::PURCHASE, 0), None);
         assert_eq!(refund_delta("google", false, 990_000), None, "never granted: nothing to refund");
         assert_eq!(refund_delta("google", true, 990_000).unwrap().refunded_micros, 990_000);
-        assert_eq!(expire_delta("apple", kind::CONSUMABLE), None);
-        assert_eq!(expire_delta("apple", kind::SUBSCRIPTION).unwrap().expirations, 1);
+        let paid = PeriodFacts::default();
+        assert_eq!(expire_delta("apple", kind::CONSUMABLE, &paid), None);
+        assert_eq!(expire_delta("apple", kind::SUBSCRIPTION, &paid).unwrap().expirations, 1);
         assert_eq!(transfer_delta(store::MANUAL), None);
+    }
+
+    #[test]
+    fn trials_are_not_renewals_or_churn() {
+        let trial = PeriodFacts { trial: true, ..Default::default() };
+        let converted = PeriodFacts { trial_conversion: true, ..Default::default() };
+        // The store reports the first payment after a trial as a renewal: it is a new paid subscription.
+        let d = grant_delta_with("apple", event_kind::RENEWAL, 4_990_000, &converted).unwrap();
+        assert_eq!((d.new_subscriptions, d.renewals, d.trial_conversions, d.gross_micros), (1, 0, 1, 4_990_000));
+        let d = grant_delta_with("apple", event_kind::RENEWAL, 4_990_000, &PeriodFacts::default()).unwrap();
+        assert_eq!((d.new_subscriptions, d.renewals, d.trial_conversions), (0, 1, 0));
+        // A trial that ends unpaid is no churn.
+        let d = expire_delta("apple", kind::SUBSCRIPTION, &trial).unwrap();
+        assert_eq!((d.expirations, d.trial_expirations), (0, 1));
     }
 
     #[test]
@@ -1007,7 +1078,7 @@ mod tests {
         let t = grant_delta_with("apple", event_kind::SUBSCRIPTION_START, 4_990_000, &period_facts(true, 0, &[])).unwrap();
         assert_eq!((t.trials, t.new_subscriptions, t.gross_micros), (1, 0, 0), "a trial is not revenue");
         let c = grant_delta_with("apple", event_kind::RENEWAL, 4_990_000, &first_paid).unwrap();
-        assert_eq!((c.renewals, c.trial_conversions, c.gross_micros, c.gross_after_year_micros), (1, 1, 4_990_000, 0));
+        assert_eq!((c.new_subscriptions, c.renewals, c.trial_conversions, c.gross_micros, c.gross_after_year_micros), (1, 0, 1, 4_990_000, 0));
         let y2 = PeriodFacts { after_first_year: true, ..Default::default() };
         assert_eq!(grant_delta_with("google", event_kind::RENEWAL, 100, &y2).unwrap().gross_after_year_micros, 100);
         assert_eq!(refund_delta_with("google", true, 100, &y2).unwrap().refunded_after_year_micros, 100);
@@ -1116,8 +1187,12 @@ mod tests {
             row(d0 + 2, "a", "production", "EUR", refund_delta("google", true, 1_000_000).unwrap()),
             row(d0 - 5, "a", "production", "USD", sale(7_000_000)),
         ];
-        let subs = vec![SubRow { day: d0, app_id: "a".into(), product_id: "vip".into(), environment: "production".into(), currency: "EUR".into(), active: 2, monthly_micros: 5_000_000 }];
-        let now = vec![("production".to_string(), "USD".to_string(), 3, 15_000_000), ("sandbox".to_string(), "USD".to_string(), 9, 1)];
+        let subs = vec![SubRow {
+            day: d0, app_id: "a".into(), product_id: "vip".into(), environment: "production".into(), currency: "EUR".into(),
+            active: 2, trials: 4, monthly_micros: 5_000_000,
+        }];
+        let now_of = |env: &str, active, trials, monthly_micros| ActiveNow { environment: env.into(), currency: "USD".into(), active, trials, monthly_micros };
+        let now = vec![now_of("production", 3, 2, 15_000_000), now_of("sandbox", 9, 0, 1)];
         let q = Query { from: d0, to: d0 + 2, include_sandbox: false };
         let r = build_report(&rows, &subs, &now, &fx, &q, d0 + 2);
 
@@ -1132,9 +1207,9 @@ mod tests {
         assert_eq!(r["by_app"][1]["app_id"], "b");
         let uah = r["by_currency"].as_array().unwrap().iter().find(|c| c["currency"] == "UAH").unwrap();
         assert_eq!((uah["gross_micros"].as_i64(), uah["converted"].as_bool()), (Some(40_000_000), Some(false)));
-        assert_eq!(r["subscriptions"]["active_now"], 3);
+        assert_eq!((r["subscriptions"]["active_now"].as_u64(), r["subscriptions"]["trials_now"].as_u64()), (Some(3), Some(2)));
         assert_eq!(r["subscriptions"]["mrr_usd_micros"], 15_000_000);
-        assert_eq!(r["subscriptions"]["series"][0]["mrr_usd_micros"], 10_000_000);
+        assert_eq!(r["subscriptions"]["series"][0], json!({ "day": "2026-11-01", "active": 2, "trials": 4, "mrr_usd_micros": 10_000_000 }));
 
         let with_sandbox = build_report(&rows, &subs, &now, &fx, &Query { include_sandbox: true, ..q }, d0 + 2);
         assert_eq!(with_sandbox["totals"]["gross_usd_micros"], 14_000_000);
@@ -1179,16 +1254,22 @@ mod tests {
         let ev = |d: Delta| row(d0 + 5, "a", "production", "USD", d);
         let rows = vec![
             ev(Delta { new_subscriptions: 2, trials: 4, ..Default::default() }),
-            ev(Delta { renewals: 6, trial_conversions: 1, ..Default::default() }),
-            ev(Delta { expirations: 2, ..Default::default() }),
+            ev(Delta { renewals: 6, ..Default::default() }),
+            ev(Delta { new_subscriptions: 1, trial_conversions: 1, ..Default::default() }),
+            ev(Delta { expirations: 2, trial_expirations: 3, ..Default::default() }),
             row(d0 + 35, "a", "production", "USD", Delta { renewals: 1, ..Default::default() }),
         ];
-        let snap = |day: i32, active: u32| SubRow { day, app_id: "a".into(), product_id: "p".into(), environment: "production".into(), currency: "USD".into(), active, monthly_micros: 0 };
+        let snap = |day: i32, active: u32| SubRow {
+            day, app_id: "a".into(), product_id: "p".into(), environment: "production".into(), currency: "USD".into(), active, trials: 0, monthly_micros: 0,
+        };
         let subs = vec![snap(d0 + 1, 20), snap(d0, 10), snap(d0 + 31, 15)];
         let q = Query { from: d0, to: d0 + 59, include_sandbox: false };
         let r = build_report(&rows, &subs, &[], &fx, &q, d0 + 59);
         let s = &r["subscriptions"];
         assert_eq!((s["trials_started"].as_u64(), s["trial_conversions"].as_u64(), s["active_at_start"].as_u64()), (Some(4), Some(1), Some(10)));
+        assert_eq!((s["trial_expirations"].as_u64(), s["trial_conversion_rate"].as_f64()), (Some(3), Some(0.25)));
+        assert_eq!(s["new_subscriptions"], 3);
+        // Paid periods only: expired trials are neither churn nor failed renewals.
         assert_eq!(s["renewal_rate"], 7.0 / 9.0);
         assert_eq!(s["churn_rate"], 2.0 / 10.0 * 30.0 / 60.0, "per 30 days");
         let oct = &s["monthly"][0];

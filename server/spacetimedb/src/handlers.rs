@@ -717,7 +717,8 @@ struct PaywallEventRequest {
     variant_id: String,
     #[serde(default)]
     test_id: String,
-    /// Not stored (views are counted per day and variant); validated like everywhere else.
+    /// Counts the player once per test as a viewer (`paywalls::PaywallViewer`); without it only
+    /// the view is counted.
     #[serde(default)]
     user_id: String,
     #[serde(default = "default_paywall_event")]
@@ -729,7 +730,7 @@ fn paywall_event_tx(tx: &TxContext, r: &PaywallEventRequest) -> Result<Outcome, 
         return Err(Outcome::status(400, "error", "invalid user_id"));
     }
     let app = enabled_app(tx, &r.app_id)?;
-    paywalls::record_event(tx, &app, &r.placement, &r.variant_id, &r.test_id, &r.event).map_err(paywall_error)?;
+    paywalls::record_event(tx, &app, &r.placement, &r.variant_id, &r.test_id, &r.event, &r.user_id).map_err(paywall_error)?;
     Ok(Outcome::status(200, "ok", ""))
 }
 

@@ -125,9 +125,12 @@ export interface Money {
   renewals: number
   refunds: number
   transfers: number
+  /** Paid subscriptions that ended (free trials that ended unpaid are `trial_expirations`). */
   expirations: number
   trials: number
+  /** First payments after a free trial (also in `new_subscriptions`). */
   trial_conversions: number
+  trial_expirations: number
   /** Estimate: commission from the store fee settings. */
   store_fee_usd_micros: number
   proceeds_usd_micros: number
@@ -139,6 +142,9 @@ export interface SubscriptionMonth {
   new_subscriptions: number
   trials: number
   trial_conversions: number
+  trial_expirations: number
+  /** Trials that ended paid ÷ all trials that ended. */
+  trial_conversion_rate: number | null
   renewals: number
   expirations: number
   churn_rate: number | null
@@ -201,12 +207,17 @@ export interface Stats extends Partial<Kept> {
     converted: boolean
   }[]
   subscriptions: {
+    /** Paid subscriptions running now; free trials are `trials_now`. */
     active_now: number
+    trials_now: number
     mrr_usd_micros: number
-    series: { day: string; active: number; mrr_usd_micros: number }[]
+    series: { day: string; active: number; trials: number; mrr_usd_micros: number }[]
+    /** Paid subscriptions started: paid at once or after a trial (`trial_conversions`). */
     new_subscriptions: number
     trials_started: number
     trial_conversions: number
+    trial_expirations: number
+    trial_conversion_rate: number | null
     renewals: number
     expirations: number
     active_at_start: number | null

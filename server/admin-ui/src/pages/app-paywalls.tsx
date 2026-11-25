@@ -58,20 +58,25 @@ interface TestRow {
 
 interface VariantResult extends Variant {
   views: number
+  /** Players who saw it: once per test (outside tests, once a day). */
+  viewers: number
+  /** Players with a first purchase from it. */
+  buyers: number
   purchases: number
   renewals: number
   refunds: number
+  /** Buyers ÷ viewers. */
   conversion: number | null
   gross_usd_micros: number
   net_usd_micros: number
-  arpu_per_view_usd_micros: number | null
-  /** Null until every variant still shown has enough views (the server's `MIN_VIEWS_TO_SCORE`). */
+  arpu_per_viewer_usd_micros: number | null
+  /** Null until every variant still shown has enough players (the server's `MIN_VIEWERS_TO_SCORE`). */
   probability_best: number | null
 }
 
 interface Results {
   variants: VariantResult[]
-  totals: { views: number; purchases: number; conversion: number | null; gross_usd_micros: number; net_usd_micros: number }
+  totals: { views: number; viewers: number; buyers: number; purchases: number; conversion: number | null; gross_usd_micros: number; net_usd_micros: number }
   unknown_variant_purchases: number
   fx: { missing: string[] }
   test: { test_id: string; running: boolean; started_at_ms: number; stopped_at_ms: number; winner_variant_id: string } | null
@@ -555,18 +560,38 @@ function ResultsSection({ gameKey, placements, placement, tests, onPlacement }: 
             noun="variants"
             columns={[
               { title: "Variant", sort: (v) => v.variant_id, cell: (v) => <span className="flex flex-col"><Mono>{v.variant_id}</Mono><span className="text-xs text-muted-foreground">{v.paywall_id}</span></span> },
-              { title: "Views", num: true, sort: (v) => v.views, cell: (v) => v.views.toLocaleString() },
-              { title: "Purchases", num: true, sort: (v) => v.purchases, cell: (v) => <>{v.purchases.toLocaleString()}{v.refunds > 0 && <span className="text-xs text-muted-foreground"> ({v.refunds} refunded)</span>}</> },
+              {
+                title: "Players",
+                num: true,
+                sort: (v) => v.viewers,
+                cell: (v) => <span title={`${(v.views ?? 0).toLocaleString()} views`}>{(v.viewers ?? 0).toLocaleString()}</span>,
+              },
+              {
+                title: "Buyers",
+                num: true,
+                sort: (v) => v.buyers,
+                cell: (v) => (
+                  <span title={`${v.purchases.toLocaleString()} purchase(s)`}>
+                    {(v.buyers ?? 0).toLocaleString()}
+                    {v.refunds > 0 && <span className="text-xs text-muted-foreground"> ({v.refunds} refunded)</span>}
+                  </span>
+                ),
+              },
               { title: "Conversion", num: true, sort: (v) => v.conversion, cell: (v) => pct(v.conversion, 2) },
               { title: "Revenue", num: true, sort: (v) => v.net_usd_micros, cell: (v) => <span title={`gross ${usd(v.gross_usd_micros)}, ${v.renewals} renewal(s)`}>{usd(v.net_usd_micros)}</span> },
-              { title: "ARPU / view", num: true, sort: (v) => v.arpu_per_view_usd_micros, cell: (v) => (v.arpu_per_view_usd_micros === null ? "—" : usd(v.arpu_per_view_usd_micros)) },
+              {
+                title: "ARPU / player",
+                num: true,
+                sort: (v) => v.arpu_per_viewer_usd_micros,
+                cell: (v) => (v.arpu_per_viewer_usd_micros == null ? "—" : usd(v.arpu_per_viewer_usd_micros)),
+              },
               {
                 title: "Probability to be best",
                 sort: (v) => v.probability_best ?? -1,
                 size: 200,
                 className: "w-48",
                 cell: (v) => v.probability_best === null ? (
-                  <span className="text-xs text-muted-foreground" title="Shown once every variant still shown has 100 views">not enough data</span>
+                  <span className="text-xs text-muted-foreground" title="Shown once every variant still shown has 100 players">not enough data</span>
                 ) : (
                   <div className="flex items-center gap-2">
                     <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
@@ -579,10 +604,12 @@ function ResultsSection({ gameKey, placements, placement, tests, onPlacement }: 
             ]}
           />
           <p className="text-xs text-muted-foreground">
-            Total: {r.totals.views.toLocaleString()} views, {r.totals.purchases.toLocaleString()} purchases, {usd(r.totals.net_usd_micros)} net.
+            Total: {(r.totals.viewers ?? 0).toLocaleString()} players ({r.totals.views.toLocaleString()} views), {(r.totals.buyers ?? 0).toLocaleString()} buyers,{" "}
+            {r.totals.purchases.toLocaleString()} purchases, {usd(r.totals.net_usd_micros)} net. Conversion is per player: a player who opens the paywall
+            twenty times counts once.
             {r.unknown_variant_purchases > 0 && ` ${r.unknown_variant_purchases} purchase(s) name a variant that is not in this list.`}
             {r.fx.missing.length > 0 && ` No exchange rate for ${r.fx.missing.join(", ")}: left out of USD.`}
-            {" "}Wait for a few hundred views per variant before you pick a winner.
+            {" "}Wait for a few hundred players per variant before you pick a winner.
           </p>
         </div>
       )}

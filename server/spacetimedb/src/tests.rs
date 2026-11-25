@@ -2618,7 +2618,7 @@ fn country_rows(w: &World) -> std::collections::BTreeMap<String, CountryRow> {
 }
 
 /// Product aggregate rows with every counter: `key → (counters, gross, refunded, gross after year)`.
-fn full_revenue_rows(w: &World) -> std::collections::BTreeMap<String, ([u32; 8], i64, i64, i64)> {
+fn full_revenue_rows(w: &World) -> std::collections::BTreeMap<String, ([u32; 9], i64, i64, i64)> {
     use crate::revenue::revenue_daily;
     w.test
         .with_reducer_tx(TestAuth::internal(), |tx| {
@@ -2627,7 +2627,10 @@ fn full_revenue_rows(w: &World) -> std::collections::BTreeMap<String, ([u32; 8],
                     .revenue_daily()
                     .iter()
                     .map(|r| {
-                        let counters = [r.purchases, r.new_subscriptions, r.renewals, r.refunds, r.transfers, r.expirations, r.trials, r.trial_conversions];
+                        let counters = [
+                            r.purchases, r.new_subscriptions, r.renewals, r.refunds, r.transfers, r.expirations, r.trials, r.trial_conversions,
+                            r.trial_expirations,
+                        ];
                         (r.key, (counters, r.gross_micros, r.refunded_micros, r.gross_after_year_micros))
                     })
                     .collect(),
@@ -2670,6 +2673,39 @@ fn subscription_period(w: &World, order_id: &str, phase: &str, expires: &str) {
         }],
     });
     w.script("subscriptionsv2", 200, &body.to_string());
+}
+
+#[test]
+fn a_trial_that_ends_unpaid_is_not_churn_and_running_trials_are_not_paid_subscriptions() {
+    let w = World::new();
+    keep_google_token_valid(&w, 60);
+    add_subscription_product(&w);
+    subscription_period(&w, "GPA.7777-0000-0000-00001", "freeTrial", "2026-09-28T00:00:00Z");
+    assert_eq!(w.verify("player-1", "vip").body["status"], "success");
+    w.as_admin(false);
+    let subs = |w: &World| {
+        w.advance_clock(61);
+        stats(w, json!({ "refresh": true }))["subscriptions"].clone()
+    };
+    let s = subs(&w);
+    assert_eq!((s["active_now"].as_u64(), s["trials_now"].as_u64(), s["mrr_usd_micros"].as_i64()), (Some(0), Some(1), Some(0)));
+
+    // The player cancels: the trial ends without a payment.
+    w.fake.borrow_mut().overrides.retain(|(needle, ..)| needle != "subscriptionsv2");
+    let body = json!({
+        "subscriptionState": "SUBSCRIPTION_STATE_EXPIRED",
+        "latestOrderId": "GPA.7777-0000-0000-00001",
+        "acknowledgementState": "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+        "lineItems": [{ "productId": "vip", "expiryTime": "2026-09-28T00:00:00Z", "offerPhase": { "freeTrial": {} } }],
+    });
+    w.script("subscriptionsv2", 200, &body.to_string());
+    assert_eq!(subscription_notification(&w, 13).http, 200);
+    let rows: Vec<_> = full_revenue_rows(&w).into_values().collect();
+    let total = |i: usize| rows.iter().map(|r| r.0[i]).sum::<u32>();
+    assert_eq!((total(6), total(5), total(8)), (1, 0, 1), "trials, expirations, trial expirations");
+    let s = subs(&w);
+    assert_eq!((s["expirations"].as_u64(), s["trial_expirations"].as_u64(), s["trial_conversion_rate"].as_f64()), (Some(0), Some(1), Some(0.0)));
+    assert_eq!(s["trials_now"], 0);
 }
 
 fn set_setting(w: &World, key: &str, value: &str) -> Result<(), String> {
@@ -2729,7 +2765,8 @@ fn trials_conversions_and_the_reduced_fee_after_a_paid_year() {
     let rows: Vec<_> = full_revenue_rows(&w).into_values().collect();
     assert_eq!(rows.len(), 3, "{rows:?}");
     let total = |i: usize| rows.iter().map(|r| r.0[i]).sum::<u32>();
-    assert_eq!((total(6), total(7), total(2), total(1)), (1, 1, 2, 0), "trials, conversions, renewals, new subscriptions");
+    // The first payment after the trial starts the paid subscription; only the later period renews.
+    assert_eq!((total(6), total(7), total(2), total(1)), (1, 1, 1, 1), "trials, conversions, renewals, new subscriptions");
     assert_eq!(rows.iter().map(|r| r.1).sum::<i64>(), 2 * 4_990_000);
     assert_eq!(rows.iter().map(|r| r.3).sum::<i64>(), 4_990_000, "the last period is after the first paid year");
     assert!(country_rows(&w).keys().all(|k| k.contains("|DE|")));
@@ -2846,8 +2883,12 @@ fn get_paywall_for(w: &World, placement: &str, user: &str) -> Outcome {
 }
 
 fn paywall_view(w: &World, variant: &str, test: &str) -> Outcome {
+    paywall_view_by(w, "player-1", variant, test)
+}
+
+fn paywall_view_by(w: &World, user: &str, variant: &str, test: &str) -> Outcome {
     let r: PaywallEventRequest = serde_json::from_value(
-        json!({ "app_id": APP, "placement": "main_paywall", "variant_id": variant, "test_id": test, "user_id": "player-1", "event": "view" }),
+        json!({ "app_id": APP, "placement": "main_paywall", "variant_id": variant, "test_id": test, "user_id": user, "event": "view" }),
     )
     .unwrap();
     paywall_event_outcome(&mut w.ctx(), &r).unwrap_or_else(|o| o)
@@ -3015,19 +3056,23 @@ fn verify_stores_the_paywall_variant_and_results_count_views_and_revenue() {
     setup_paywalls(&w);
     start_test(&w, "main-ab-1").unwrap();
 
-    assert_eq!(paywall_view(&w, "a", "main-ab-1").http, 200);
-    assert_eq!(paywall_view(&w, "a", "main-ab-1").http, 200);
-    assert_eq!(paywall_view(&w, "b", "main-ab-1").http, 200);
+    // Players the test assigns to `a` and to `b`.
+    let in_variant = |v: &str, n: usize| -> Vec<String> {
+        (1..400).map(|i| format!("player-{i}")).filter(|u| get_paywall_for(&w, "main_paywall", u).body["variant_id"] == v).take(n).collect()
+    };
+    let (a_players, b_player) = (in_variant("a", 2), in_variant("b", 1).remove(0));
+    // `a`: one player opens it twice, another once; `b`: one player, and a view of `b` by a player
+    // the test put in `a` (forged: counted as a view, not as a player of `b`).
+    for (user, variant) in [(&a_players[0], "a"), (&a_players[0], "a"), (&a_players[1], "a"), (&b_player, "b"), (&a_players[0], "b")] {
+        assert_eq!(paywall_view_by(&w, user, variant, "main-ab-1").http, 200);
+    }
     assert_eq!(paywall_view(&w, "a", "").http, 200, "views outside a test are counted separately");
     let bad = paywall_view(&w, "zzz", "main-ab-1");
     assert_eq!((bad.http, bad.body["code"].as_str()), (400, Some("ERR_UNKNOWN_VARIANT")));
     assert_eq!(paywall_view(&w, "a", "other-test").body["code"], "ERR_UNKNOWN_TEST");
 
-    // A player the test assigns to `a` (the server checks the variant a purchase names).
-    let buyer = (1..200)
-        .map(|i| format!("player-{i}"))
-        .find(|u| get_paywall_for(&w, "main_paywall", u).body["variant_id"] == "a")
-        .expect("someone is in variant a");
+    // A player the test assigns to `a` buys (the server checks the variant a purchase names).
+    let buyer = a_players[0].clone();
     let r: VerifyRequest = serde_json::from_value(json!({
         "app_id": APP, "user_id": buyer, "product_id": "gems", "purchase_token": TOKEN,
         "placement": "main_paywall", "variant_id": "a", "test_id": "main-ab-1", "paywall_id": "pw_a",
@@ -3048,14 +3093,33 @@ fn verify_stores_the_paywall_variant_and_results_count_views_and_revenue() {
     let report = paywall_results(&w, json!({ "game_key": "game", "placement_id": "main_paywall", "test_id": "main-ab-1" })).unwrap();
     let a = &report["variants"][0];
     let b = &report["variants"][1];
-    assert_eq!((a["variant_id"].as_str(), a["views"].as_u64(), a["purchases"].as_u64()), (Some("a"), Some(2), Some(1)));
+    assert_eq!((a["variant_id"].as_str(), a["views"].as_u64(), a["viewers"].as_u64()), (Some("a"), Some(3), Some(2)));
+    assert_eq!((a["purchases"].as_u64(), a["buyers"].as_u64()), (Some(1), Some(1)));
+    // Per player: 1 of 2, however often they opened it.
     assert_eq!((a["gross_usd_micros"].as_i64(), a["conversion"].as_f64()), (Some(990_000), Some(0.5)));
-    assert_eq!((b["views"].as_u64(), b["purchases"].as_u64()), (Some(1), Some(0)));
-    assert!(a["probability_best"].is_null(), "a handful of views is not enough to score");
+    assert_eq!((b["views"].as_u64(), b["viewers"].as_u64(), b["purchases"].as_u64()), (Some(2), Some(1), Some(0)));
+    assert!(a["probability_best"].is_null(), "a handful of players is not enough to score");
     assert_eq!(report["test"]["running"], true);
 
     let outside = paywall_results(&w, json!({ "game_key": "game", "placement_id": "main_paywall" })).unwrap();
     assert_eq!((outside["variants"][0]["views"].as_u64(), outside["totals"]["purchases"].as_u64()), (Some(1), Some(0)));
+    assert_eq!(outside["variants"][0]["viewers"], 1);
+    // Outside tests a player counts once a day.
+    paywall_view(&w, "a", "");
+    w.advance_clock(86_400);
+    paywall_view(&w, "a", "");
+    let outside = paywall_results(&w, json!({ "game_key": "game", "placement_id": "main_paywall" })).unwrap();
+    assert_eq!((outside["variants"][0]["views"].as_u64(), outside["variants"][0]["viewers"].as_u64()), (Some(3), Some(2)));
+
+    // Erasing a player forgets that they saw the paywalls.
+    use crate::paywalls::paywall_viewer;
+    let viewers_of = |w: &World, u: &str| w.read(|tx| tx.db.paywall_viewer().user_id().filter(u).count());
+    assert!(viewers_of(&w, &a_players[0]) > 0);
+    let export: Value = serde_json::from_str(&crate::player_data::admin_export_player(&mut w.ctx(), "game".into(), a_players[0].clone())).unwrap();
+    assert!(export["paywalls_seen"].as_array().unwrap().iter().any(|v| v["placement"] == "main_paywall" && v["test_id"] == "main-ab-1"), "{export}");
+    admin_call(&w, |ctx| crate::player_data::admin_erase_player(ctx, "game".into(), a_players[0].clone())).unwrap();
+    assert_eq!(viewers_of(&w, &a_players[0]), 0);
+    assert!(viewers_of(&w, &b_player) > 0, "other players stay");
 }
 
 #[test]
@@ -5829,6 +5893,7 @@ fn silent_notification_alerts_follow_the_store_of_each_build() {
                 refunded_micros: 0,
                 trials: 0,
                 trial_conversions: 0,
+                trial_expirations: 0,
                 gross_after_year_micros: 0,
                 refunded_after_year_micros: 0,
             });
@@ -6768,6 +6833,7 @@ fn old_players_attribution_and_paywall_days_are_deleted_but_subscribers_keep_the
             variant_id: String::new(),
             paywall_id: String::new(),
             views: 1,
+            viewers: 1,
         });
         tx.db.access_token_cache().insert(AccessTokenCache { key: "google/expired".into(), token: "t".into(), expires_at_micros: NOW_MICROS - 1 });
         crate::retention::prune(tx, NOW_MICROS);

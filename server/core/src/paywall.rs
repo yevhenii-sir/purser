@@ -206,6 +206,8 @@ impl Attribution {
 #[derive(Clone, Debug)]
 pub struct AttributedPurchase {
     pub variant_id: String,
+    /// The player: conversion counts players who bought, not purchases.
+    pub user_id: String,
     pub store: String,
     /// `purchase` | `renewal`
     pub reason: String,
@@ -219,9 +221,20 @@ pub struct AttributedPurchase {
     pub granted: bool,
 }
 
+/// Views of one variant: every view event and the players who saw it.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Views {
+    pub views: u64,
+    /// Players counted once per test (outside tests: once a day each).
+    pub viewers: u64,
+}
+
 #[derive(Default, Clone, Copy, Debug)]
 struct Counts {
     views: u64,
+    viewers: u64,
+    /// Players with a first purchase attributed to the variant.
+    buyers: u64,
     purchases: u64,
     renewals: u64,
     refunds: u64,
@@ -317,23 +330,25 @@ pub fn probability_best(arms: &[(u64, u64)]) -> Vec<f64> {
     p
 }
 
-/// Views a variant needs before the probability to be best is shown: with fewer, it is mostly
+/// Players a variant needs before the probability to be best is shown: with fewer, it is mostly
 /// the prior speaking.
-pub const MIN_VIEWS_TO_SCORE: u64 = 100;
+pub const MIN_VIEWERS_TO_SCORE: u64 = 100;
 
 /// Results of a placement or test per variant.
 ///
-/// - `views`: client view events per variant.
+/// - `views`: client view events per variant; `viewers`: the players who saw it (a player who
+///   opens the paywall twenty times is one), the unit of the test.
 /// - `purchases`: first purchases (`reason = purchase`) attributed to the variant; renewals of those
-///   subscriptions add revenue (`renewals`) but are not conversions.
+///   subscriptions add revenue (`renewals`) but are not conversions. `buyers`: the players behind
+///   them.
 /// - Revenue in USD micros at the rate of the purchase day; refunded purchases (`revoke_pending`,
 ///   `revoked`) count in `refunded_usd_micros`, `net = gross - refunded`. Manual grants, rejected
 ///   rows and (unless `include_sandbox`) sandbox purchases are left out.
-/// - `conversion = purchases / views`, `arpu_per_view = net / views` (null without views).
-/// - `probability_best`: see [`probability_best`] on (purchases, views).
+/// - `conversion = buyers / viewers`, `arpu_per_viewer = net / viewers` (null without viewers).
+/// - `probability_best`: see [`probability_best`] on (buyers, viewers).
 pub fn results(
     variants: &[Variant],
-    views: &BTreeMap<String, u64>,
+    views: &BTreeMap<String, Views>,
     purchases: &[AttributedPurchase],
     fx: &FxTable,
     include_sandbox: bool,
@@ -341,11 +356,13 @@ pub fn results(
     let mut counts: BTreeMap<&str, Counts> = variants.iter().map(|v| (v.variant_id.as_str(), Counts::default())).collect();
     for (variant, n) in views {
         if let Some(c) = counts.get_mut(variant.as_str()) {
-            c.views += n;
+            c.views += n.views;
+            c.viewers += n.viewers;
         }
     }
     let mut missing_fx = BTreeSet::new();
     let mut other = 0u64;
+    let mut buyers: BTreeSet<(&str, &str)> = BTreeSet::new();
     for p in purchases {
         if p.store == store::MANUAL || p.status == status::REJECTED || !p.granted {
             continue;
@@ -368,6 +385,9 @@ pub fn results(
             c.renewals += 1;
         } else {
             c.purchases += 1;
+            if buyers.insert((p.variant_id.as_str(), p.user_id.as_str())) {
+                c.buyers += 1;
+            }
         }
         c.gross_usd += usd;
         if matches!(p.status.as_str(), status::REVOKE_PENDING | status::REVOKED) {
@@ -376,12 +396,12 @@ pub fn results(
         }
     }
 
-    // Scored: variants still shown (weight > 0) with enough views. A variant switched off, or one
-    // without data, would otherwise look like a likely winner (its prior is a coin flip).
+    // Scored: variants still shown (weight > 0) seen by enough players. A variant switched off, or
+    // one without data, would otherwise look like a likely winner (its prior is a coin flip).
     let scored: Vec<usize> = variants
         .iter()
         .enumerate()
-        .filter(|(_, v)| v.weight > 0 && counts[v.variant_id.as_str()].views >= MIN_VIEWS_TO_SCORE)
+        .filter(|(_, v)| v.weight > 0 && counts[v.variant_id.as_str()].viewers >= MIN_VIEWERS_TO_SCORE)
         .map(|(i, _)| i)
         .collect();
     let mut best: Vec<Value> = vec![Value::Null; variants.len()];
@@ -390,7 +410,7 @@ pub fn results(
             .iter()
             .map(|&i| {
                 let c = counts[variants[i].variant_id.as_str()];
-                (c.purchases.min(c.views), c.views)
+                (c.buyers.min(c.viewers), c.viewers)
             })
             .collect();
         for (&i, pb) in scored.iter().zip(probability_best(&arms)) {
@@ -405,6 +425,8 @@ pub fn results(
         .map(|(v, pb)| {
             let c = counts[v.variant_id.as_str()];
             total.views += c.views;
+            total.viewers += c.viewers;
+            total.buyers += c.buyers;
             total.purchases += c.purchases;
             total.renewals += c.renewals;
             total.refunds += c.refunds;
@@ -416,14 +438,16 @@ pub fn results(
                 "paywall_id": v.paywall_id,
                 "weight": v.weight,
                 "views": c.views,
+                "viewers": c.viewers,
+                "buyers": c.buyers,
                 "purchases": c.purchases,
                 "renewals": c.renewals,
                 "refunds": c.refunds,
-                "conversion": ratio(c.purchases as f64, c.views),
+                "conversion": ratio(c.buyers as f64, c.viewers),
                 "gross_usd_micros": c.gross_usd,
                 "refunded_usd_micros": c.refunded_usd,
                 "net_usd_micros": net,
-                "arpu_per_view_usd_micros": ratio(net as f64, c.views),
+                "arpu_per_viewer_usd_micros": ratio(net as f64, c.viewers),
                 "probability_best": pb,
             })
         })
@@ -432,15 +456,17 @@ pub fn results(
         "variants": rows,
         "totals": {
             "views": total.views,
+            "viewers": total.viewers,
+            "buyers": total.buyers,
             "purchases": total.purchases,
             "renewals": total.renewals,
             "refunds": total.refunds,
-            "conversion": ratio(total.purchases as f64, total.views),
+            "conversion": ratio(total.buyers as f64, total.viewers),
             "gross_usd_micros": total.gross_usd,
             "net_usd_micros": total.gross_usd - total.refunded_usd,
         },
         "unknown_variant_purchases": other,
-        "method": "conversion per view; probability to be best from exact Beta(1+purchases, 1+views-purchases) posteriors, shown once every variant still shown has 100 views",
+        "method": "conversion per player (buyers / viewers); probability to be best from exact Beta(1+buyers, 1+viewers-buyers) posteriors, shown once every variant still shown has 100 viewers",
         "fx": { "missing": missing_fx },
     })
 }
@@ -555,6 +581,7 @@ mod tests {
         fx.add_day(day, [("EUR".to_string(), 0.8)].into_iter().collect());
         let p = |variant: &str, reason: &str, st: &str, env: &str, price: i64, ccy: &str| AttributedPurchase {
             variant_id: variant.into(),
+            user_id: format!("{variant}-{price}-{st}-{env}-{ccy}-{reason}"),
             store: store::GOOGLE.into(),
             reason: reason.into(),
             status: st.into(),
@@ -574,28 +601,38 @@ mod tests {
             p("b", "purchase", status::COMPLETED, environment::PRODUCTION, 1_000_000, "UAH"),
             p("zzz", "purchase", status::COMPLETED, environment::PRODUCTION, 1_000_000, "USD"),
         ];
-        let views: BTreeMap<String, u64> = [("a".to_string(), 10), ("b".to_string(), 20), ("gone".to_string(), 5)].into_iter().collect();
+        let seen = |views, viewers| Views { views, viewers };
+        let views: BTreeMap<String, Views> =
+            [("a".to_string(), seen(30, 10)), ("b".to_string(), seen(20, 20)), ("gone".to_string(), seen(5, 5))].into_iter().collect();
         let r = results(&[v("a", 1), v("b", 1)], &views, &purchases, &fx, false);
         let a = &r["variants"][0];
         let b = &r["variants"][1];
-        assert_eq!((a["views"].as_u64(), a["purchases"].as_u64(), a["gross_usd_micros"].as_i64()), (Some(10), Some(1), Some(1_000_000)));
+        assert_eq!((a["views"].as_u64(), a["viewers"].as_u64(), a["purchases"].as_u64()), (Some(30), Some(10), Some(1)));
+        assert_eq!(a["gross_usd_micros"].as_i64(), Some(1_000_000));
+        // Per player: 1 buyer of 10 viewers, however often they opened it.
         assert_eq!(a["conversion"].as_f64(), Some(0.1));
-        assert_eq!(a["arpu_per_view_usd_micros"].as_f64(), Some(100_000.0));
+        assert_eq!(a["arpu_per_viewer_usd_micros"].as_f64(), Some(100_000.0));
         // b: EUR purchase + renewal (1 USD each), refunded 2 USD purchase, UAH without a rate.
         assert_eq!((b["purchases"].as_u64(), b["renewals"].as_u64(), b["refunds"].as_u64()), (Some(3), Some(1), Some(1)));
         assert_eq!((b["gross_usd_micros"].as_i64(), b["net_usd_micros"].as_i64()), (Some(4_000_000), Some(2_000_000)));
         assert_eq!(r["fx"]["missing"], json!(["UAH"]));
         assert_eq!(r["unknown_variant_purchases"], 1);
-        assert_eq!(r["totals"]["views"], 30);
-        assert!(a["probability_best"].is_null() && b["probability_best"].is_null(), "too few views to score");
+        assert_eq!((r["totals"]["views"].as_u64(), r["totals"]["viewers"].as_u64()), (Some(50), Some(30)));
+        assert!(a["probability_best"].is_null() && b["probability_best"].is_null(), "too few viewers to score");
 
-        // Enough views: scored, summing to 1; a variant switched off (weight 0) is not scored.
-        let many: BTreeMap<String, u64> = [("a".to_string(), 1000), ("b".to_string(), 1000), ("c".to_string(), 0)].into_iter().collect();
+        // Enough viewers: scored, summing to 1; a variant switched off (weight 0) is not scored.
+        let many: BTreeMap<String, Views> =
+            [("a".to_string(), seen(5000, 1000)), ("b".to_string(), seen(1000, 1000)), ("c".to_string(), seen(0, 0))].into_iter().collect();
         let r = results(&[v("a", 1), v("b", 1), v("c", 0)], &many, &purchases, &fx, false);
         let pb = |i: usize| r["variants"][i]["probability_best"].as_f64();
         assert!((pb(0).unwrap() + pb(1).unwrap() - 1.0).abs() < 1e-6, "{r}");
         assert!(pb(1).unwrap() > pb(0).unwrap(), "b converted more");
         assert!(r["variants"][2]["probability_best"].is_null());
+
+        // A player who buys twice is one buyer; two purchases.
+        let twice = vec![p("a", "purchase", status::COMPLETED, environment::PRODUCTION, 1_000_000, "USD"); 2];
+        let r = results(&[v("a", 1)], &views, &twice, &fx, false);
+        assert_eq!((r["variants"][0]["purchases"].as_u64(), r["variants"][0]["buyers"].as_u64()), (Some(2), Some(1)));
 
         // No views: conversion is unknown, not zero.
         let r = results(&[v("a", 1)], &BTreeMap::new(), &[], &fx, true);

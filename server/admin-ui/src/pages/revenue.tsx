@@ -28,7 +28,10 @@ const RANGES = [["7", "Last 7 days"], ["30", "Last 30 days"], ["90", "Last 90 da
 const ALL = "__all__"
 
 const netConfig = { net: { label: "Net revenue", color: "var(--chart-1)" } } satisfies ChartConfig
-const subsConfig = { active: { label: "Active subscriptions", color: "var(--chart-2)" } } satisfies ChartConfig
+const subsConfig = {
+  active: { label: "Paid subscriptions", color: "var(--chart-2)" },
+  trials: { label: "Free trials", color: "var(--chart-4)" },
+} satisfies ChartConfig
 
 const isoDay = (d: Date) => d.toISOString().slice(0, 10)
 const compactUsd = (micros: number) =>
@@ -218,7 +221,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
             <Stat label="Net revenue" value={usd(r.totals.net_usd_micros)} hint={`gross ${usd(r.totals.gross_usd_micros)}`} />
             <Stat label="Refunds" value={usd(r.totals.refunded_usd_micros)} hint={`${r.totals.refunds} · ${(r.totals.refund_rate * 100).toFixed(1)}% of payments`} />
             <Stat label="Active subscriptions" value={subs.active_now}
-              hint={`MRR ${usd(subs.mrr_usd_micros)} · ${subs.auto_renew_off_now ?? 0} won't renew · ${subs.billing_issue_now ?? 0} payment issues (${subs.in_grace_now ?? 0} in grace)`} />
+              hint={`paid · ${subs.trials_now ?? 0} in a free trial · MRR ${usd(subs.mrr_usd_micros)} · ${subs.auto_renew_off_now ?? 0} won't renew · ${subs.billing_issue_now ?? 0} payment issues (${subs.in_grace_now ?? 0} in grace)`} />
             <Stat label="Payments" value={payments(r.totals)}
               hint={`${r.totals.purchases} purchases · ${r.totals.new_subscriptions} new subs · ${r.totals.renewals} renewals`} />
             <Stat
@@ -227,8 +230,8 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
               hint={`after ~${usd(r.totals.store_fee_usd_micros)} store fee (${r.proceeds.percent}% default)`}
               onClick={() => setFeeDialog(true)}
             />
-            <Stat label="New subscriptions" value={subs.new_subscriptions + subs.trial_conversions}
-              hint={`${subs.new_subscriptions} paid starts · ${subs.trial_conversions} from trials · ${subs.trials_started} trials started`} />
+            <Stat label="New subscriptions" value={subs.new_subscriptions}
+              hint={`${subs.new_subscriptions - subs.trial_conversions} paid at once · ${subs.trial_conversions} after a trial · ${subs.trials_started} trials started, ${subs.trial_expirations ?? 0} ended unpaid`} />
             <Stat label="Trial → paid" value={pct(r.trials.conversion_rate)}
               hint={`${r.trials.converted} of ${r.trials.started - r.trials.pending} ended trials · ${r.trials.pending} running`} />
             <Stat label="Renewal rate" value={pct(subs.renewal_rate)}
@@ -279,6 +282,9 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
                   <YAxis tickLine={false} axisLine={false} width={40} allowDecimals={false} />
                   <ChartTooltip content={<ChartTooltipContent labelFormatter={(_, p) => (p?.[0] ? shortDay(p[0].payload.day) : "")} />} />
                   <Line dataKey="active" type="monotone" stroke="var(--color-active)" strokeWidth={2} dot={false} />
+                  {subs.series.some((s) => (s.trials ?? 0) > 0) && (
+                    <Line dataKey="trials" type="monotone" stroke="var(--color-trials)" strokeWidth={2} strokeDasharray="4 3" dot={false} />
+                  )}
                 </LineChart>
               </ChartContainer>
             </Section>
@@ -287,13 +293,16 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
           {hasSubs && (
             <Section
               title="Subscriptions by month"
-              description="Churn: expired ÷ active at the first snapshot of the month. Renewal rate: renewals ÷ (renewals + expirations); renewals include the first paid period after a trial."
+              description="Paid subscriptions only: churn is expired ÷ active at the first snapshot of the month, renewal rate renewals ÷ (renewals + expirations). The first payment after a free trial is a new subscription; a trial that ends unpaid is not churn (trial conversion: paid ÷ ended trials)."
               actions={
                 <CsvButton
                   onClick={() =>
                     downloadCsv(`subscriptions_${r.from}_${r.to}.csv`, [
-                      ["month", "active_start", "new_subscriptions", "trials", "trial_conversions", "renewals", "expirations", "churn_rate", "renewal_rate"],
-                      ...subs.monthly.map((m) => [m.month, m.active_start, m.new_subscriptions, m.trials, m.trial_conversions, m.renewals, m.expirations, m.churn_rate, m.renewal_rate]),
+                      ["month", "active_start", "new_subscriptions", "trials", "trial_conversions", "trial_expirations", "trial_conversion_rate", "renewals", "expirations", "churn_rate", "renewal_rate"],
+                      ...subs.monthly.map((m) => [
+                        m.month, m.active_start, m.new_subscriptions, m.trials, m.trial_conversions, m.trial_expirations, m.trial_conversion_rate,
+                        m.renewals, m.expirations, m.churn_rate, m.renewal_rate,
+                      ]),
                     ])
                   }
                 />
@@ -310,6 +319,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
                   { title: "New paid", sort: (m) => m.new_subscriptions, cell: (m) => m.new_subscriptions, num: true },
                   { title: "Trials", sort: (m) => m.trials, cell: (m) => m.trials, num: true },
                   { title: "Trial → paid", sort: (m) => m.trial_conversions, cell: (m) => m.trial_conversions, num: true },
+                  { title: "Trial conversion", sort: (m) => m.trial_conversion_rate, cell: (m) => pct(m.trial_conversion_rate ?? null), num: true },
                   { title: "Renewals", sort: (m) => m.renewals, cell: (m) => m.renewals, num: true },
                   { title: "Expired", sort: (m) => m.expirations, cell: (m) => m.expirations, num: true },
                   { title: "Churn", sort: (m) => m.churn_rate, cell: (m) => pct(m.churn_rate), num: true },

@@ -62,10 +62,10 @@ function metrics(s: TreeSummary): Metrics {
     views: s.paywall_views,
     purchases: t.purchases,
     trials: t.trials,
-    // The first paid period after a trial is counted as a renewal by the server.
-    newSubs: t.new_subscriptions + t.trial_conversions,
+    // The first paid period after a trial is a new subscription, not a renewal.
+    newSubs: t.new_subscriptions,
     fromTrials: t.trial_conversions,
-    renewals: Math.max(0, t.renewals - t.trial_conversions),
+    renewals: t.renewals,
     expirations: t.expirations,
     oneTime: t.gross_usd_micros - subRevenue,
     subscription: subRevenue,

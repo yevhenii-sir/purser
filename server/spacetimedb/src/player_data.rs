@@ -4,6 +4,7 @@
 use crate::access;
 use crate::ctx::{tx_now_micros, Budget, Ctx};
 use crate::integrations::{attribution_key, integration_outbox, user_attribution};
+use crate::paywalls::paywall_viewer;
 use crate::players::player_profile;
 use crate::{game_app, ledger, purchase, purchase_log, settings, Purchase};
 use purser_core::model::{kind, status};
@@ -122,6 +123,19 @@ pub fn admin_export_player(ctx: &mut ProcedureContext, game_key: String, user_id
             .filter_map(|a| tx.db.user_attribution().key().find(attribution_key(a, &user_id)))
             .map(|r| json!({ "app_id": r.app_id, "ids": serde_json::from_str::<Value>(&r.attribution_json).unwrap_or(Value::Null), "updated_at_micros": r.updated_at_micros }))
             .collect();
+        // Which paywalls of the app the player saw (placement, test, the last day).
+        let prefix = format!("{game_key}/");
+        let paywalls_seen: Vec<Value> = tx
+            .db
+            .paywall_viewer()
+            .user_id()
+            .filter(user_id.as_str())
+            .filter(|v| v.placement_key.starts_with(&prefix))
+            .map(|v| {
+                let test_id = v.key.split('|').nth(1).unwrap_or("").to_string();
+                json!({ "placement": v.placement_key.trim_start_matches(&prefix), "test_id": test_id, "last_day": purser_core::time::format_day(v.last_day) })
+            })
+            .collect();
         Ok::<_, String>(json!({
             "user_id": user_id,
             "game_key": game_key,
@@ -129,6 +143,7 @@ pub fn admin_export_player(ctx: &mut ProcedureContext, game_key: String, user_id
             "purchases": purchases,
             "profiles": profiles,
             "attribution": attribution,
+            "paywalls_seen": paywalls_seen,
         }))
     })
     .unwrap_or_else(|e| json!({ "error": e }))
@@ -172,5 +187,6 @@ pub fn admin_erase_player(ctx: &ReducerContext, game_key: String, user_id: Strin
         ctx.db.player_profile().key().delete(format!("{app}/{user_id}"));
         ctx.db.user_attribution().key().delete(attribution_key(app, &user_id));
     }
+    crate::paywalls::forget_viewers(ctx, &game_key, Some(&user_id));
     Ok(())
 }

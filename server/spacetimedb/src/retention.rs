@@ -6,7 +6,7 @@
 //! aggregates are never deleted here.
 
 use crate::integrations::user_attribution;
-use crate::paywalls::paywall_daily;
+use crate::paywalls::{paywall_daily, paywall_viewer};
 use crate::players::player_profile;
 use crate::settings::{self, key};
 use crate::{access_token_cache, game_app};
@@ -66,16 +66,21 @@ pub fn prune(tx: &ReducerContext, now: i64) {
     for k in &views {
         tx.db.paywall_daily().key().delete(k);
     }
+    let viewers: Vec<String> = tx.db.paywall_viewer().last_day().filter(..cutoff_day).take(BATCH).map(|r| r.key).collect();
+    for k in &viewers {
+        tx.db.paywall_viewer().key().delete(k);
+    }
     let tokens: Vec<String> = tx.db.access_token_cache().expires_at_micros().filter(..now).take(BATCH).map(|t| t.key).collect();
     for k in &tokens {
         tx.db.access_token_cache().key().delete(k);
     }
-    if profiles.len() + attribution.len() + views.len() + tokens.len() > 0 {
+    if profiles.len() + attribution.len() + views.len() + viewers.len() + tokens.len() > 0 {
         log::info!(
-            "Retention: {} player profile(s), {} attribution row(s), {} paywall day(s), {} expired token(s) deleted",
+            "Retention: {} player profile(s), {} attribution row(s), {} paywall day(s), {} paywall viewer(s), {} expired token(s) deleted",
             profiles.len(),
             attribution.len(),
             views.len(),
+            viewers.len(),
             tokens.len()
         );
     }
@@ -96,5 +101,6 @@ pub fn delete_build(tx: &ReducerContext, app_id: &str, game_key: &str) {
         for k in tx.db.paywall_daily().iter().filter(|r| r.placement_key.starts_with(&prefix)).map(|r| r.key).collect::<Vec<_>>() {
             tx.db.paywall_daily().key().delete(&k);
         }
+        crate::paywalls::forget_viewers(tx, game_key, None);
     }
 }

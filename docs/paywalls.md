@@ -12,7 +12,8 @@ between paywalls. This is the Adapty "placements / paywalls / A/B tests" model, 
 | Paywall | `paywall_id`, name, catalog product ids in display order, remote config (any JSON, up to 16 KB) | `paywall` (`{game_key}/{paywall_id}`) |
 | Placement | `placement_id`, variants `[{variant_id, paywall_id, weight}]`, enabled, the running or last test | `placement` (`{game_key}/{placement_id}`) |
 | Test | test id, the variants and weights when it started, start / stop time, winner | `paywall_test` |
-| Views | views per day × placement × test × variant (one row, incremented) | `paywall_daily` |
+| Views | views and new viewers per day × placement × test × variant (one row, incremented) | `paywall_daily` |
+| Viewers | the players who saw a placement: once per test, outside tests once a day; kept for `retention_days` after the last view, erased with the player | `paywall_viewer` |
 | Purchases | the ledger row remembers `paywall_placement`, `paywall_variant_id`, `paywall_test_id`, `paywall_id` | `purchase` (new columns) |
 
 Everything belongs to an **app** (a `game_key`): its Android and iOS builds share paywalls and
@@ -44,12 +45,14 @@ The admin page (app → **Paywalls** → Results, or the `admin_paywall_results`
 
 | Column | Rule |
 |---|---|
-| Views | `/paywall/event` view events (the client calls `LogPaywallShownAsync` once per display) |
-| Purchases | first purchases (`reason = purchase`) whose `/verify` named this placement, test and variant |
+| Players | the players who saw the variant (`/paywall/event` with a `user_id`): a player counts once per test, however often they open it, and only for the variant the test assigns them; outside tests once a day |
+| Views | every view event (the client calls `LogPaywallShownAsync` once per display) |
+| Buyers | the players with a first purchase (`reason = purchase`) whose `/verify` named this placement, test and variant |
+| Purchases | those first purchases (a player who buys twice is one buyer, two purchases) |
 | Renewals | renewals of those subscriptions: a renewal row inherits the attribution of the purchase that started the subscription |
 | Revenue | gross of purchases and renewals in USD at the ECB rate of the purchase day (same rates as the revenue dashboard); refunded rows (`revoke_pending` / `revoked`) are subtracted for net |
-| Conversion | purchases / views (shown as "—" without views) |
-| ARPU / view | net revenue / views |
+| Conversion | buyers / players (shown as "—" without players) |
+| ARPU / player | net revenue / players |
 | Probability to be best | see below |
 
 Manual grants, rejected rows and (unless "Sandbox" is ticked) sandbox purchases are left out. A test's
@@ -57,17 +60,19 @@ results cover everything attributed to its id, whenever it happened (clients tha
 still report it shortly after the stop). "Outside tests" covers views and purchases with no test id in
 the last 30 days (`from` / `to` in the query).
 
-**Probability to be best** is Bayesian: each variant's conversion rate gets a
-Beta(1 + purchases, 1 + views − purchases) posterior (uniform prior), approximated by a normal
-distribution with the same mean and variance, and `P(i is best) = ∫ pdf_i(x) · Π_{j≠i} cdf_j(x) dx` is
-integrated numerically (`purser_core::paywall::probability_best`). It compares conversion, not revenue:
-a variant with cheaper products can win on conversion and lose on ARPU, so read both. With few views
-every variant stays near `1 / n`; wait for a few hundred views per variant (and a full week of traffic)
-before you pick a winner.
+**Probability to be best** is Bayesian: each variant's conversion rate gets its exact
+Beta(1 + buyers, 1 + players − buyers) posterior (uniform prior), and
+`P(i is best) = ∫ pdf_i(x) · Π_{j≠i} cdf_j(x) dx` is integrated numerically
+(`purser_core::paywall::probability_best`). It is shown once every variant still shown has 100 players
+(variants with weight 0 are not scored). It compares conversion, not revenue: a variant with cheaper
+products can win on conversion and lose on ARPU, so read both. Wait for a few hundred players per
+variant (and a full week of traffic) before you pick a winner.
 
-Views are counted per display, not per player, so conversion is "per view" like Adapty's. Purchases are
-attributed by the client: a modified client can send any variant id, which only adds noise to its own
-numbers.
+The unit is the player: a player who opens the shop twenty times is one player, so a variant shown more
+often (a paywall that pops up on every level) does not look worse per view than it is. Views stay in the
+table for reference. Views without a `user_id` count as views only. Purchases and views name their
+variant from the client; the server counts them for a test only when the test assigns that variant to
+the player, so a modified client cannot move a test's result.
 
 ## HTTP API
 

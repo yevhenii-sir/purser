@@ -380,9 +380,11 @@ def main():
     for d in range(today - 59, today + 1):
         for v in ("a", "b"):
             views = int(rnd.gauss(70 + (d - today + 60) * 0.8, 8))
+            # Players new to the test that day: most views are players coming back to the shop.
+            viewers = max(1, int(views * rnd.uniform(0.15, 0.25)))
             key = f"{d}|galaxy-miner/shop|shop-ab-1|{v}"
-            srv.sql(f"INSERT INTO paywall_daily (key, placement_key, day, test_id, variant_id, paywall_id, views) VALUES "
-                    f"('{key}', 'galaxy-miner/shop', {d}, 'shop-ab-1', '{v}', '{'shop_gems' if v == 'a' else 'shop_vip_first'}', {views})")
+            srv.sql(f"INSERT INTO paywall_daily (key, placement_key, day, test_id, variant_id, paywall_id, views, viewers) VALUES "
+                    f"('{key}', 'galaxy-miner/shop', {d}, 'shop-ab-1', '{v}', '{'shop_gems' if v == 'a' else 'shop_vip_first'}', {views}, {viewers})")
     # What happened to the integration events: sent a few minutes ago; the Amazon build's players
     # send no Adjust device id, so its events are skipped.
     for i in srv.sql("SELECT app_id, kind FROM integration"):

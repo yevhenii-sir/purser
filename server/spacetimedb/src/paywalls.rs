@@ -92,7 +92,28 @@ pub struct PaywallDaily {
     pub test_id: String,
     pub variant_id: String,
     pub paywall_id: String,
+    /// Every view event.
     pub views: u64,
+    /// Players who saw the variant for the first time in the test that day (outside tests: their
+    /// first view of the day). Summed over a test: the players it reached ([`PaywallViewer`]).
+    pub viewers: u64,
+}
+
+/// A player who saw a placement's paywall: counted as a viewer once per test (outside tests, once
+/// a day), so a player who opens it twenty times is one player of the test. Kept for the
+/// retention period after the last view (`retention_days`) and erased with the player's data.
+#[spacetimedb::table(accessor = paywall_viewer, cache_policy = required_on_disk)]
+pub struct PaywallViewer {
+    /// `{placement_key}|{test_id}|{user_id}`
+    #[primary_key]
+    pub key: String,
+    #[index(btree)]
+    pub placement_key: String,
+    #[index(btree)]
+    pub user_id: String,
+    /// The day of the last view.
+    #[index(btree)]
+    pub last_day: i32,
 }
 
 pub fn scoped_key(game_key: &str, id: &str) -> String {
@@ -159,7 +180,9 @@ pub fn serve(ctx: &ReducerContext, app: &GameApp, placement_id: &str, user_id: &
 }
 
 /// `POST /paywall/event`: counts a view of a variant. The variant must belong to the placement's
-/// current variants (no test) or to the snapshot of `test_id`.
+/// current variants (no test) or to the snapshot of `test_id`. With a player id the player counts
+/// as a viewer once per test (outside tests once a day), and in a test only for the variant the
+/// test assigns them (a forged variant does not move the result).
 pub fn record_event(
     ctx: &ReducerContext,
     app: &GameApp,
@@ -167,6 +190,7 @@ pub fn record_event(
     variant_id: &str,
     test_id: &str,
     event: &str,
+    user_id: &str,
 ) -> Result<(), ClientError> {
     if !pw::event::is_valid(event) {
         return Err(client_error(400, "ERR_BAD_EVENT", format!("unknown event '{event}' (supported: view)")));
@@ -189,10 +213,13 @@ pub fn record_event(
         .find(|v| v.variant_id == variant_id)
         .ok_or_else(|| client_error(400, "ERR_UNKNOWN_VARIANT", format!("no variant '{variant_id}'")))?;
     let day = day_of_micros(crate::ctx::tx_now_micros(ctx));
+    let assigned = test_id.is_empty() || pw::assign(test_id, user_id, &variants).is_some_and(|v| v.variant_id == variant_id);
+    let viewer = !user_id.is_empty() && assigned && count_viewer(ctx, &pl.key, test_id, user_id, day);
     let key = format!("{day}|{}|{test_id}|{variant_id}", pl.key);
     match ctx.db.paywall_daily().key().find(&key) {
         Some(mut row) => {
             row.views += 1;
+            row.viewers += viewer as u64;
             ctx.db.paywall_daily().key().update(row);
         }
         None => {
@@ -204,10 +231,48 @@ pub fn record_event(
                 variant_id: variant_id.to_string(),
                 paywall_id: variant.paywall_id.clone(),
                 views: 1,
+                viewers: viewer as u64,
             });
         }
     }
     Ok(())
+}
+
+/// Remembers that `user_id` saw the placement on `day`; whether this view makes them a viewer to
+/// count: their first in the test, or outside tests their first of the day.
+fn count_viewer(ctx: &ReducerContext, placement_key: &str, test_id: &str, user_id: &str, day: i32) -> bool {
+    let key = format!("{placement_key}|{test_id}|{user_id}");
+    match ctx.db.paywall_viewer().key().find(&key) {
+        Some(mut v) => {
+            let new_day = v.last_day != day;
+            if new_day {
+                v.last_day = day;
+                ctx.db.paywall_viewer().key().update(v);
+            }
+            test_id.is_empty() && new_day
+        }
+        None => {
+            ctx.db.paywall_viewer().insert(PaywallViewer {
+                key,
+                placement_key: placement_key.to_string(),
+                user_id: user_id.to_string(),
+                last_day: day,
+            });
+            true
+        }
+    }
+}
+
+/// Forgets which players of the game saw its paywalls (`user_id`: one player; `None`: all).
+pub fn forget_viewers(ctx: &ReducerContext, game_key: &str, user_id: Option<&str>) {
+    let prefix = format!("{game_key}/");
+    let keys: Vec<String> = match user_id {
+        Some(u) => ctx.db.paywall_viewer().user_id().filter(u).filter(|v| v.placement_key.starts_with(&prefix)).map(|v| v.key).collect(),
+        None => ctx.db.paywall_viewer().iter().filter(|v| v.placement_key.starts_with(&prefix)).map(|v| v.key).collect(),
+    };
+    for k in keys {
+        ctx.db.paywall_viewer().key().delete(&k);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -573,10 +638,12 @@ pub fn results(ctx: &mut impl Ctx, query_json: &str) -> Result<Value, String> {
         };
         let in_range = |day: i32| day >= from && day <= to;
 
-        let mut views: BTreeMap<String, u64> = BTreeMap::new();
+        let mut views: BTreeMap<String, pw::Views> = BTreeMap::new();
         for r in tx.db.paywall_daily().placement_key().filter(key.as_str()) {
             if r.test_id == q.test_id && in_range(r.day) {
-                *views.entry(r.variant_id).or_default() += r.views;
+                let v = views.entry(r.variant_id).or_default();
+                v.views += r.views;
+                v.viewers += r.viewers;
             }
         }
         // A test: its purchases by the test id index; outside tests: the date range of the index on
@@ -601,6 +668,7 @@ pub fn results(ctx: &mut impl Ctx, query_json: &str) -> Result<Value, String> {
             .map(|p| AttributedPurchase {
                 granted: p.was_granted && !p.family_shared && !purser_core::xsolla::is_moved(&p.store, &p.purchase_token),
                 variant_id: p.paywall_variant_id,
+                user_id: p.user_id,
                 store: p.store,
                 reason: p.reason,
                 status: p.status,

@@ -68,8 +68,10 @@ pub struct RevenueDaily {
     pub refunded_micros: i64,
     /// Free trials started.
     pub trials: u32,
-    /// First paid periods after a free trial.
+    /// First paid periods after a free trial (also in `new_subscriptions`).
     pub trial_conversions: u32,
+    /// Free trials that ended unpaid (not in `expirations`).
+    pub trial_expirations: u32,
     /// Part of gross / refunded from subscription periods after the first paid year.
     pub gross_after_year_micros: i64,
     pub refunded_after_year_micros: i64,
@@ -98,6 +100,7 @@ pub struct RevenueCountryDaily {
     pub refunded_micros: i64,
     pub trials: u32,
     pub trial_conversions: u32,
+    pub trial_expirations: u32,
     pub gross_after_year_micros: i64,
     pub refunded_after_year_micros: i64,
 }
@@ -113,8 +116,11 @@ pub struct SubscriptionDaily {
     pub product_id: String,
     pub environment: String,
     pub currency: String,
+    /// Paid periods running.
     pub active: u32,
-    /// Sum of the monthly price of the active subscriptions, in `currency`.
+    /// Free trials running (not in `active` or `monthly_micros`).
+    pub trials: u32,
+    /// Sum of the monthly price of the paid subscriptions, in `currency`.
     pub monthly_micros: i64,
 }
 
@@ -152,6 +158,7 @@ macro_rules! add_delta {
         row.refunded_micros = row.refunded_micros.saturating_add(d.refunded_micros);
         row.trials += d.trials;
         row.trial_conversions += d.trial_conversions;
+        row.trial_expirations += d.trial_expirations;
         row.gross_after_year_micros = row.gross_after_year_micros.saturating_add(d.gross_after_year_micros);
         row.refunded_after_year_micros = row.refunded_after_year_micros.saturating_add(d.refunded_after_year_micros);
     }};
@@ -171,6 +178,7 @@ macro_rules! delta_of {
             refunded_micros: $r.refunded_micros,
             trials: $r.trials,
             trial_conversions: $r.trial_conversions,
+            trial_expirations: $r.trial_expirations,
             gross_after_year_micros: $r.gross_after_year_micros,
             refunded_after_year_micros: $r.refunded_after_year_micros,
         }
@@ -196,6 +204,7 @@ fn daily_row(day: i32, p: &Purchase) -> RevenueDaily {
         refunded_micros: 0,
         trials: 0,
         trial_conversions: 0,
+        trial_expirations: 0,
         gross_after_year_micros: 0,
         refunded_after_year_micros: 0,
     }
@@ -220,6 +229,7 @@ fn country_row(day: i32, p: &Purchase) -> RevenueCountryDaily {
         refunded_micros: 0,
         trials: 0,
         trial_conversions: 0,
+        trial_expirations: 0,
         gross_after_year_micros: 0,
         refunded_after_year_micros: 0,
     }
@@ -355,7 +365,7 @@ fn logged_money(p: &Purchase, logs: &[(String, String, i64)], f: &PeriodFacts) -
         let d = match event.as_str() {
             "partial_refund" => details.parse().ok().and_then(|a| rv::partial_refund_delta(&p.store, p.was_granted, a, f)),
             COUNTED_REFUND => counted_details(details).and_then(|(a, g)| rv::refund_delta_with(&p.store, g, a, f)),
-            COUNTED_EXPIRATION => rv::expire_delta(&p.store, &p.kind),
+            COUNTED_EXPIRATION => rv::expire_delta(&p.store, &p.kind, f),
             COUNTED_REINSTATE => counted_details(details).and_then(|(a, g)| rv::reinstate_delta(&p.store, g, a, f)),
             _ => None,
         };
@@ -411,7 +421,7 @@ pub fn on_inactive(tx: &ReducerContext, p: &Purchase, new_status: &str) {
     }
     let d = match new_status {
         status::REVOKE_PENDING => refund_delta(p),
-        status::EXPIRE_PENDING => rv::expire_delta(&p.store, &p.kind),
+        status::EXPIRE_PENDING => rv::expire_delta(&p.store, &p.kind, &period_facts(p)),
         _ => None,
     };
     if let Some(d) = d {
@@ -723,10 +733,9 @@ pub fn admin_delete_fx_override(ctx: &ReducerContext, currency: String) -> Resul
 
 // --- Subscriptions ---------------------------------------------------------------------------
 
-/// Active subscriptions now: (app, product, environment, currency) → (count, monthly micros).
-/// Renewals of one subscription are counted once (latest row). Only rows that expire after now
-/// are read (index range).
-fn active_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> BTreeMap<(String, String, String, String), (u32, i64)> {
+/// Subscriptions running now per (app, product, environment, currency): paid ones, free trials
+/// and the monthly price of the paid ones. Renewals of one subscription are counted once (latest row).
+fn active_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> BTreeMap<(String, String, String, String), Running> {
     let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
     let mut latest: BTreeMap<(String, String), Purchase> = BTreeMap::new();
     // What players own now (an in-memory list), not every row whose period has not ended.
@@ -739,7 +748,7 @@ fn active_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> BTreeMa
             latest.insert(k, p);
         }
     }
-    let mut out: BTreeMap<(String, String, String, String), (u32, i64)> = BTreeMap::new();
+    let mut out: BTreeMap<(String, String, String, String), Running> = BTreeMap::new();
     // The catalog's billing period; guessed from the row's span only when the product has none (a
     // row recorded late, by a restore or an import, spans less than its period).
     let mut periods: BTreeMap<(String, String), u32> = BTreeMap::new();
@@ -749,10 +758,22 @@ fn active_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> BTreeMa
         });
         let period = if catalog > 0 { catalog } else { rv::guess_period_days(p.expires_at_ms - p.created_at_micros / 1000) };
         let e = out.entry((p.app_id, p.product_id, p.environment, p.currency)).or_default();
-        e.0 += 1;
-        e.1 += rv::monthly_micros(p.price_micros, period);
+        if p.trial {
+            e.trials += 1;
+        } else {
+            e.active += 1;
+            e.monthly_micros += rv::monthly_micros(p.price_micros, period);
+        }
     }
     out
+}
+
+/// Subscriptions of one (app, product, environment, currency) running now ([`active_subscriptions`]).
+#[derive(Default)]
+struct Running {
+    active: u32,
+    trials: u32,
+    monthly_micros: i64,
 }
 
 /// Subscriptions that give access now, by renewal state: (auto-renew off, in a grace period,
@@ -783,7 +804,7 @@ fn subscription_states(tx: &ReducerContext, apps: &BTreeSet<String>, include_san
 }
 
 fn snapshot_subscriptions(tx: &ReducerContext, day: i32) {
-    for ((app_id, product_id, environment, currency), (active, monthly_micros)) in active_subscriptions(tx, &BTreeSet::new()) {
+    for ((app_id, product_id, environment, currency), Running { active, trials, monthly_micros }) in active_subscriptions(tx, &BTreeSet::new()) {
         let row = SubscriptionDaily {
             key: row_key(day, &app_id, &product_id, &environment, &currency),
             day,
@@ -792,6 +813,7 @@ fn snapshot_subscriptions(tx: &ReducerContext, day: i32) {
             environment,
             currency,
             active,
+            trials,
             monthly_micros,
         };
         if tx.db.subscription_daily().key().find(&row.key).is_some() {
@@ -1100,7 +1122,8 @@ fn ledger_rows(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32)
 /// `admin_revenue_stats` with `"summary": true`: the parts of the report built from the daily
 /// aggregates alone, without reading the ledger. `by_product` rows get the product's `kind`
 /// (`subscription` or a one-time kind; empty when the product was deleted); `subscriptions`
-/// keeps what the daily snapshots give (no `active_now` / `mrr_usd_micros`: those read the ledger).
+/// keeps what the daily snapshots give (no `active_now` / `trials_now` / `mrr_usd_micros`: those
+/// read the ledger).
 fn summary_of(tx: &ReducerContext, mut report: serde_json::Value, paywall_views: u64) -> serde_json::Value {
     if let Some(rows) = report["by_product"].as_array_mut() {
         for r in rows {
@@ -1110,6 +1133,7 @@ fn summary_of(tx: &ReducerContext, mut report: serde_json::Value, paywall_views:
     }
     if let Some(subs) = report["subscriptions"].as_object_mut() {
         subs.remove("active_now");
+        subs.remove("trials_now");
         subs.remove("mrr_usd_micros");
     }
     let mut out = serde_json::Map::new();
@@ -1226,6 +1250,7 @@ fn report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<serde_js
                 environment: s.environment,
                 currency: s.currency,
                 active: s.active,
+                trials: s.trials,
                 monthly_micros: s.monthly_micros,
             })
             .collect();
@@ -1279,9 +1304,15 @@ fn report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<serde_js
                 currency: r.currency,
             })
             .collect();
-        let active_now: Vec<(String, String, u32, i64)> = active_subscriptions(tx, &apps)
+        let active_now: Vec<rv::ActiveNow> = active_subscriptions(tx, &apps)
             .into_iter()
-            .map(|((_, _, env, ccy), (n, m))| (env, ccy, n, m))
+            .map(|((_, _, environment, currency), r)| rv::ActiveNow {
+                environment,
+                currency,
+                active: r.active,
+                trials: r.trials,
+                monthly_micros: r.monthly_micros,
+            })
             .collect();
 
         let mut report = rv::build_full_report(&ReportInput {

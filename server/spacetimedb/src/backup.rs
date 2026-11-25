@@ -27,6 +27,7 @@ pub const TABLES: &[(&str, &str)] = &[
     ("revenue_country_daily", "day"),
     ("subscription_daily", "day"),
     ("paywall_daily", "day"),
+    ("paywall_viewer", "last_day"),
 ];
 
 /// One page of `table`: rows whose column is `from` or more, in the column's order, about `limit`
@@ -69,7 +70,7 @@ fn take<T: spacetimedb::sats::ser::Serialize>(rows: impl Iterator<Item = T>, key
 fn page(tx: &ReducerContext, table: &str, from: i64, limit: usize) -> Result<Value, String> {
     use crate::access::admin_audit;
     use crate::integrations::user_attribution;
-    use crate::paywalls::paywall_daily;
+    use crate::paywalls::{paywall_daily, paywall_viewer};
     use crate::players::player_profile;
     use crate::revenue::{revenue_country_daily, revenue_daily, subscription_daily};
     use crate::{purchase, purchase_log};
@@ -83,6 +84,7 @@ fn page(tx: &ReducerContext, table: &str, from: i64, limit: usize) -> Result<Val
         "revenue_country_daily" => take(tx.db.revenue_country_daily().day().filter(day..), |r| r.day as i64, limit),
         "subscription_daily" => take(tx.db.subscription_daily().day().filter(day..), |r| r.day as i64, limit),
         "paywall_daily" => take(tx.db.paywall_daily().day().filter(day..), |r| r.day as i64, limit),
+        "paywall_viewer" => take(tx.db.paywall_viewer().last_day().filter(day..), |r| r.last_day as i64, limit),
         "purchase_log" => {
             // Its primary key has no range index: ids are dense (auto_inc, append only; a restart
             // skips at most a block of the sequence), so look them up one by one until a long run

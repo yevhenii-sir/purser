@@ -63,7 +63,7 @@ FRESH_IDS = {"purchase_log": "id", "admin_audit": "id", "alert_log": "id", "stor
 # Tables paged by a column that changes while the backup runs (a player's last request): a row
 # touched after its page was read shows up again in a later page. Kept once per key (the last
 # copy read), or the restore would fail on a duplicate key.
-MOVING = {"user_attribution": "key", "player_profile": "key"}
+MOVING = {"user_attribution": "key", "player_profile": "key", "paywall_viewer": "key"}
 # Tables whose values the dry run does not print (secrets, channel addresses).
 HIDDEN = {"credential", "alert_channel"}
 # Rows per INSERT statement.
@@ -82,6 +82,7 @@ PAGED = {
     "revenue_country_daily": ("day", *DAYS),
     "subscription_daily": ("day", *DAYS),
     "paywall_daily": ("day", *DAYS),
+    "paywall_viewer": ("last_day", *DAYS),
 }
 PAGE = 20_000
 # Where a restore stopped (in the backup's directory).

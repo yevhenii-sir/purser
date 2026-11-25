@@ -8,10 +8,11 @@ The admin panel's **Revenue** page shows what the stores paid, in USD: net reven
 |---|---|---|
 | Gross revenue, purchases, new subscriptions, renewals | the first time a store purchase is granted | the day the purchase was verified |
 | Free trials | the first grant of a free-trial period (no money) | the day the trial started |
-| Trial conversions | the first paid period of a subscription after a free trial (also a renewal) | the day it was verified |
+| Trial conversions | the first paid period of a subscription after a free trial (also a new subscription, not a renewal) | the day it was verified |
 | Refunds | the store reports a refund of a granted purchase | the day it is reported |
-| Expirations, transfers | a subscription expires / an owned product moves to another user | the day it happens |
-| Active subscriptions, MRR | subscriptions paid until a future date, renewals counted once | snapshot taken daily |
+| Expirations, transfers | a paid subscription expires / an owned product moves to another user | the day it happens |
+| Trial expirations | a free trial ends without a payment (not an expiration) | the day it happens |
+| Active subscriptions, MRR | paid subscriptions running, renewals counted once; free trials running are counted apart (`trials_now`) | snapshot taken daily |
 
 - Manual grants are not revenue. Sandbox purchases are excluded unless *Include sandbox* is on.
 - Amounts are store prices before the store's commission and taxes: the App Store reports the price; Google reports the price of subscriptions; for Google one-time products the price comes from the client (`price_micros` in `/verify`) or the build's product price. Set prices on Android products (the setup check warns about missing ones); each build has its own.
@@ -36,10 +37,12 @@ Taxes (VAT, digital services taxes) are not modelled, so real payouts are lower 
 
 ## Subscriptions
 
-- **New subscriptions** = paid starts without a trial. The first paid period after a free trial counts as a **renewal** (and in **Trial → paid**). **Trials started** counts free trials.
-- **Trial → paid**: of the free trials started in the period, the share that has a later paid period of the same subscription. Trials still running (not expired, not paid yet) are left out of the rate.
-- **Renewal rate** = renewals ÷ (renewals + expirations): of the subscription periods that ended, the share that continued. Renewals include the first paid period after a trial; expirations include trials that ended unpaid.
-- **Churn** = expirations ÷ active subscriptions at the first daily snapshot of the period (or month), per 30 days. Active subscriptions include running free trials, and expirations include trials that ended unpaid: both are a blend of trial funnel and paid retention. The snapshots start on the day the analytics version was installed, so churn is empty before that.
+The trial funnel and paid retention are counted apart:
+
+- **New subscriptions** = paid subscriptions started: paid at once, or the first payment after a free trial (`trial_conversions`, which the stores report as a renewal). **Trials started** counts free trials, **trial expirations** the trials that ended unpaid.
+- **Trial → paid**: of the free trials started in the period, the share that has a later paid period of the same subscription. Trials still running (not expired, not paid yet) are left out of the rate. `trial_conversion_rate` in `subscriptions` and per month is the same idea by the day things happened: trials that ended paid ÷ trials that ended (paid or not) in the period.
+- **Renewal rate** = renewals ÷ (renewals + expirations): of the paid periods that ended, the share that continued. Neither the first payment after a trial nor a trial that ended unpaid is in it.
+- **Churn** = expirations ÷ paid subscriptions active at the first daily snapshot of the period (or month), per 30 days. Running trials are not active subscriptions and an unpaid trial is not churn. The snapshots start on the day the analytics version was installed, so churn is empty before that.
 - **Subscriptions by month** shows these per calendar month.
 - **Active subscriptions** also says how many of them will not renew (auto-renew off), had a renewal payment fail, and are in the store's grace period after it (`auto_renew_off_now`, `billing_issue_now`, `in_grace_now`). A subscription replaced by another (upgrade, downgrade) is not an expiration.
 
@@ -50,7 +53,7 @@ The **Revenue tree** on the Revenue page (and on an app's Revenue tab) shows whe
 - paywall views → purchases / new subscriptions: payments per view (hidden when there are more payments than views, i.e. most payments happen outside paywalls);
 - trials → new subscriptions: trial conversions ÷ trials started in the period (conversions of trials started earlier count too, so it is a rough rate; **Trial → paid** above is the exact one);
 - purchases → one-time sales: the average one-time purchase;
-- renewals → subscriptions: renewals ÷ (renewals + expirations), here without the first paid period after a trial;
+- renewals → subscriptions: renewals ÷ (renewals + expirations) of paid periods;
 - expirations → active subscriptions: churn per 30 days;
 - one-time sales / subscriptions → gross: their share; refunds → net: refunds ÷ gross.
 
@@ -79,7 +82,7 @@ The ECB publishes about 30 currencies. Others (UAH, VND, …) are listed as *No 
 
 - `revenue_daily`: one row per day × app × product × environment × currency, updated in the same transaction as the ledger. Besides the counts and amounts it keeps trials, trial conversions and the gross / refunds of subscription periods after the first paid year.
 - `revenue_country_daily`: the same per day × app × billing country × environment × currency.
-- `subscription_daily`: active subscriptions per day.
+- `subscription_daily`: paid subscriptions active per day, free trials running (`trials`) and the MRR of the paid ones.
 - `fx_day`, `fx_override`: exchange rates.
 - `purchase.country`, `purchase.trial`: billing country and free-trial flag of each ledger row.
 
@@ -87,10 +90,10 @@ The ECB publishes about 30 currencies. Others (UAH, VND, …) are listed as *No 
 
 | Field | Content |
 |---|---|
-| `totals`, `series[]`, `by_app[]`, `by_product[]`, `by_country[]` | `gross_usd_micros`, `refunded_usd_micros`, `net_usd_micros`, `store_fee_usd_micros`, `proceeds_usd_micros`, `purchases`, `new_subscriptions`, `renewals`, `refunds`, `transfers`, `expirations`, `trials`, `trial_conversions` (`by_app` also `commission_percent`) |
+| `totals`, `series[]`, `by_app[]`, `by_product[]`, `by_country[]` | `gross_usd_micros`, `refunded_usd_micros`, `net_usd_micros`, `store_fee_usd_micros`, `proceeds_usd_micros`, `purchases`, `new_subscriptions`, `renewals`, `refunds`, `transfers`, `expirations`, `trials`, `trial_conversions`, `trial_expirations` (`by_app` also `commission_percent`) |
 | `by_currency[]` | amounts in the original currency and in USD, `converted` |
 | `proceeds` | the commission used: `percent`, `after_year_percent`, `by_app`, `estimated: true` |
-| `subscriptions` | `active_now`, `mrr_usd_micros`, `series[]`, `new_subscriptions`, `trials_started`, `trial_conversions`, `renewals`, `expirations`, `active_at_start`, `churn_rate`, `renewal_rate`, `monthly[]` |
+| `subscriptions` | `active_now` (paid), `trials_now`, `mrr_usd_micros`, `series[]` (`day`, `active`, `trials`, `mrr_usd_micros`), `new_subscriptions`, `trials_started`, `trial_conversions`, `trial_expirations`, `trial_conversion_rate`, `renewals`, `expirations`, `active_at_start`, `churn_rate`, `renewal_rate`, `monthly[]` (the same per month) |
 | `trials` | `started`, `converted`, `pending`, `conversion_rate` (trials started in the period) |
 | `cohorts[]` | `cohort` (`YYYY-MM`), `payers`, `revenue_usd_micros[]` and `per_payer_usd_micros[]` (cumulative by month since the first payment) |
 | `ltv[]` | `months`, `cohorts`, `payers`, `per_payer_usd_micros` (null without a cohort that old) |
