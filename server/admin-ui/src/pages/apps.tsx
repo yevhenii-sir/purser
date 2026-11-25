@@ -13,7 +13,7 @@ import { useApps } from "@/lib/apps"
 import { buildLabel, PLATFORM_ICON, platformById } from "@/lib/stores"
 import { usd } from "@/lib/format"
 import { useAsync } from "@/lib/hooks"
-import { revenueOverview } from "@/lib/revenue"
+import { revenueOverview, revenueOverviewIfOn } from "@/lib/revenue"
 import { RevenueUpdated } from "@/components/revenue-updated"
 import type { Level, RevenueOverview } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -65,9 +65,9 @@ export function AppsPage({ go }: PageProps) {
   const loaded = useAsync(async () => {
     const [builds, stats] = await Promise.all([
       proc<BuildSummary[]>("admin_apps_summary"),
-      revenueOverview().catch(() => null),
+      revenueOverviewIfOn(),
     ])
-    return { builds: new Map(builds.map((b) => [b.app_id, b])), stats }
+    return { builds: new Map(builds.map((b) => [b.app_id, b])), stats: stats === "off" ? null : stats, analyticsOff: stats === "off" }
   })
   const data = useMemo(() => {
     if (!groups || !loaded.data) return undefined
@@ -127,6 +127,7 @@ export function AppsPage({ go }: PageProps) {
           </Select>}
           {view === "cards" && <span className="text-sm text-muted-foreground">{data.groups.length} app{data.groups.length === 1 ? "" : "s"}</span>}
           {data.stats?.rebuilding && <span className="text-xs text-muted-foreground">· revenue totals are being rebuilt</span>}
+          {data.analyticsOff && <span className="text-xs text-muted-foreground">· revenue analytics are off (Server → Analytics)</span>}
           {data.stats && <RevenueUpdated stats={data.stats} onRefresh={async () => setCounted(await revenueOverview(true))} prefix="· revenue" className="text-xs text-muted-foreground" />}
           <Tabs value={view} onValueChange={(v) => setView(v as View)} className="ms-auto">
             <TabsList>

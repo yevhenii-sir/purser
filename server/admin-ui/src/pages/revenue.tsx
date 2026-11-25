@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react"
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ReferenceLine, XAxis, YAxis } from "recharts"
-import { DownloadIcon, PercentIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react"
+import { DownloadIcon, InfoIcon, PercentIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, SearchIcon, TriangleAlertIcon, XIcon } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
@@ -18,7 +18,7 @@ import { call, proc } from "@/lib/api"
 import { useAppIndex, type AppGroup } from "@/lib/apps"
 import { money, pct, shortDay, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
-import { revenueStats } from "@/lib/revenue"
+import { isAnalyticsOff, revenueStats } from "@/lib/revenue"
 import { buildLabel } from "@/lib/stores"
 import type { Cohort, Money, Stats } from "@/lib/types"
 import { downloadBlob } from "@/lib/utils"
@@ -122,7 +122,26 @@ function revenueByApp(rows: BuildRow[], groupOf: Map<string, AppGroup>): AppReve
 const feeText = ([lo, hi]: [number, number]) => (lo === hi ? `${lo}%` : `${lo}–${hi}%`)
 
 /** `fixedGame`: only this app (the app page); `embedded`: no page header. */
-export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: string; embedded?: boolean }) {
+/** `analytics` = `off`: a mode chosen for large games, not a failure. */
+function AnalyticsOff({ go }: { go: PageProps["go"] }) {
+  return (
+    <Alert>
+      <InfoIcon />
+      <AlertTitle>Revenue analytics are off</AlertTitle>
+      <AlertDescription>
+        <p>
+          This server keeps only what purchases need (the mode for large games): no revenue totals, reports or subscription
+          snapshots. Count revenue in your attribution and analytics tools (Tenjin, AppsFlyer, Adjust, GA4, ... get every
+          purchase, renewal and refund as an integration event) or from the Cloud Storage export to BigQuery. Business alerts
+          and <code>/metrics</code> keep working.
+        </p>
+        <Button variant="outline" size="sm" className="mt-2" onClick={() => go("server")}>Server → Analytics</Button>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
+export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame?: string; embedded?: boolean }) {
   const [days, setDays] = useState("30")
   const [game, setGame] = useState(fixedGame || ALL)
   const [sandbox, setSandbox] = useState(false)
@@ -195,7 +214,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
       </div>
 
       {error ? (
-        <ErrorBox error={error} />
+        isAnalyticsOff(error) ? <AnalyticsOff go={go} /> : <ErrorBox error={error} />
       ) : loading || !r || !subs ? (
         <Loading rows={6} />
       ) : (
@@ -230,8 +249,14 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Net revenue" value={usd(r.totals.net_usd_micros)} hint={`gross ${usd(r.totals.gross_usd_micros)}`} />
             <Stat label="Refunds" value={usd(r.totals.refunded_usd_micros)} hint={`${r.totals.refunds} · ${(r.totals.refund_rate * 100).toFixed(1)}% of payments`} />
-            <Stat label="Active subscriptions" value={subs.active_now}
-              hint={`paid · ${subs.trials_now ?? 0} in a free trial · MRR ${usd(subs.mrr_usd_micros)} · ${subs.auto_renew_off_now ?? 0} won't renew · ${subs.billing_issue_now ?? 0} payment issues (${subs.in_grace_now ?? 0} in grace)`} />
+            {r.analytics === "light" ? (
+              // Light analytics read no ledger: the running subscriptions are the last daily snapshot.
+              <Stat label="Active subscriptions" value={subs.series?.at(-1)?.active ?? "—"}
+                hint={`paid, at the last daily snapshot · ${subs.series?.at(-1)?.trials ?? 0} in a free trial · MRR ${usd(subs.series?.at(-1)?.mrr_usd_micros ?? 0)}`} />
+            ) : (
+              <Stat label="Active subscriptions" value={subs.active_now}
+                hint={`paid · ${subs.trials_now ?? 0} in a free trial · MRR ${usd(subs.mrr_usd_micros)} · ${subs.auto_renew_off_now ?? 0} won't renew · ${subs.billing_issue_now ?? 0} payment issues (${subs.in_grace_now ?? 0} in grace)`} />
+            )}
             <Stat label="Payments" value={payments(r.totals)}
               hint={`${r.totals.purchases} purchases · ${r.totals.new_subscriptions} new subs · ${r.totals.renewals} renewals`} />
             <Stat

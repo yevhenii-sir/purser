@@ -8,7 +8,7 @@ import { call, proc, route } from "@/lib/api"
 import { fmtTime, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { useCan } from "@/lib/roles"
-import { revenueOverview } from "@/lib/revenue"
+import { revenueOverview, revenueOverviewIfOn } from "@/lib/revenue"
 import { RevenueUpdated } from "@/components/revenue-updated"
 import { STATUSES, type Overview, type PurchaseStatus, type RevenueOverview, type Waiting } from "@/lib/types"
 import type { PageProps } from "@/routes"
@@ -24,7 +24,7 @@ export function OverviewPage({ go }: PageProps) {
     const [health, overview, stats] = await Promise.all([
       route<{ version?: string } | null>("/healthz"),
       proc<Overview>("admin_overview"),
-      revenueOverview().catch(() => null),
+      revenueOverviewIfOn(),
     ])
     const byStatus = STATUSES.map((s) => ({ status: s, n: Number(overview.by_status[s] || 0) }))
     return { health, overview, byStatus, stats }
@@ -34,7 +34,9 @@ export function OverviewPage({ go }: PageProps) {
   if (loading && !data) return <Loading rows={6} />
   if (!data) return null
   const { health, overview: ov } = data
-  const stats = counted && counted.computed_at_micros > (data.stats?.computed_at_micros ?? 0) ? counted : data.stats
+  const analyticsOff = data.stats === "off"
+  const loadedStats = data.stats === "off" ? null : data.stats
+  const stats = counted && counted.computed_at_micros > (loadedStats?.computed_at_micros ?? 0) ? counted : loadedStats
   const stopped = ov.worker_age_secs !== null && ov.worker_age_secs > ov.worker_stale_after_secs
   const waitedSecs = ov.due_total > 0 ? Math.max(0, Math.round((Date.now() * 1000 - Number(ov.oldest_due_micros)) / 1e6)) : 0
   const behind = !stopped && waitedSecs >= ov.backlog_after_secs
@@ -49,7 +51,7 @@ export function OverviewPage({ go }: PageProps) {
           value={health.status === 200 ? <Tone tone="ok">healthy</Tone> : <Tone tone="bad">{health.status}</Tone>}
           hint={health.json?.version ? `module ${health.json.version}` : undefined}
         />
-        <Stat label="Net revenue, 30 days" value={stats ? usd(stats.totals.net_usd_micros) : "—"} hint={<>{stats?.rebuilding ? "USD, totals are being rebuilt" : "USD, without sandbox"}{stats && " · "}<RevenueUpdated stats={stats} onRefresh={async () => setCounted(await revenueOverview(true))} /></>} onClick={() => go("revenue")} />
+        <Stat label="Net revenue, 30 days" value={stats ? usd(stats.totals.net_usd_micros) : "—"} hint={analyticsOff ? "revenue analytics are off (Server → Analytics)" : <>{stats?.rebuilding ? "USD, totals are being rebuilt" : "USD, without sandbox"}{stats && " · "}<RevenueUpdated stats={stats} onRefresh={async () => setCounted(await revenueOverview(true))} /></>} onClick={() => go(analyticsOff ? "server" : "revenue")} />
         <Stat label="Apps / builds" value={`${ov.apps} / ${ov.builds}`} onClick={() => go("apps")} />
         <Stat label="Purchases" value={Number(ov.total).toLocaleString()} hint={`${ov.pending_total} waiting (${ov.due_total} due) · ${ov.outbox} events queued`} onClick={() => go("purchases")} />
       </div>

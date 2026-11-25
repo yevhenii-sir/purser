@@ -35,6 +35,23 @@ export function revenueStats(query: Record<string, unknown>, fresh = false): Pro
   )
 }
 
+/** The server keeps no revenue analytics (`analytics` = `off`): the reports answer this. */
+export function isAnalyticsOff(e: unknown): boolean {
+  return String(e instanceof Error ? e.message : e).includes("ERR_ANALYTICS_OFF")
+}
+
+/** Forgets every report kept in the session (the analytics mode changed). */
+export function forgetRevenue() {
+  forget(PREFIX)
+  forget("revenue-overview")
+}
+
+/** [`revenueOverview`] for pages that show it beside other things: `null` when it failed, `"off"`
+ * when the server keeps no revenue analytics. */
+export function revenueOverviewIfOn(): Promise<RevenueOverview | null | "off"> {
+  return revenueOverview().catch((e) => (isAnalyticsOff(e) ? "off" : null))
+}
+
 /** Totals of the last 30 days for the Overview and the Apps list. The server keeps the report for
  * an hour and counts it again only when a page asks after that; `refresh` counts it now (the
  * server allows that once a minute and answers the kept report otherwise). */

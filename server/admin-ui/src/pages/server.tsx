@@ -7,10 +7,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
 import { RichTable, type RichColumn } from "@/components/rich-table"
 import { SecretField } from "@/components/secret-field"
-import { call, getSetting, publicRoute, ROUTE, select } from "@/lib/api"
+import { call, DEMO, getSetting, publicRoute, ROUTE, select } from "@/lib/api"
 import { BUILTIN_SPACETIME_HOST } from "@/lib/delivery"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { useAppIndex, useApps } from "@/lib/apps"
+import { forgetRevenue } from "@/lib/revenue"
 import { isFileSecret } from "@/lib/secrets"
 import { buildLabel } from "@/lib/stores"
 import { SECRET_NAMES } from "@/lib/types"
@@ -136,7 +137,10 @@ function AnalyticsSection() {
   const set = async (value: string) => {
     if (value === current) return
     if (value === "off" && !confirm("Turn revenue analytics off? The Revenue page and reports stay empty until you turn them on again (then the totals are rebuilt from the ledger); business alerts and /metrics keep working.")) return
-    if ((await tryAct(() => call("admin_set_setting", "analytics", value), "Saved")) !== undefined) reload()
+    if ((await tryAct(() => call("admin_set_setting", "analytics", value), DEMO ? "Demo: this tab shows the mode (nothing is saved)" : "Saved")) !== undefined) {
+      forgetRevenue()
+      reload()
+    }
   }
   return (
     <Section title="Analytics" description={ANALYTICS_MODES.find((m) => m.value === current)?.hint}>

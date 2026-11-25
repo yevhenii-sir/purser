@@ -47,11 +47,55 @@ export function installClock() {
   globalThis.Date = DemoDate as DateConstructor
 }
 
+// --- the analytics mode ----------------------------------------------------------------------------
+
+/** The analytics mode a visitor picked on the Server page: this tab only (nothing is saved), so the
+ * demo can show what each mode leaves on the revenue pages. */
+const MODE_KEY = "purser-demo-analytics"
+let analyticsMode: string = (() => {
+  try {
+    return sessionStorage.getItem(MODE_KEY) || "full"
+  } catch {
+    return "full"
+  }
+})()
+
+function setAnalytics(key: string, value: string) {
+  if (key !== "analytics") throw new Error(READ_ONLY)
+  const mode = value.trim().toLowerCase() || "full"
+  if (!["full", "light", "off"].includes(mode)) throw new Error(`[ERR_BAD_SETTING] analytics must be full, light or off`)
+  analyticsMode = mode
+  try {
+    sessionStorage.setItem(MODE_KEY, mode)
+  } catch {
+    // Private mode: the choice lasts until the page is reloaded.
+  }
+  return null
+}
+
+const ANALYTICS_OFF = "[ERR_ANALYTICS_OFF] revenue analytics are off on this server (Server page: Analytics)"
+
+/** A full report as the server answers it in `light` mode: nothing read from the ledger. */
+function light(r: Row): Row {
+  if (!r.cohorts) return { ...r, analytics: "light" }
+  return {
+    ...r,
+    analytics: "light",
+    cohorts: [],
+    ltv: (r.ltv || []).map((l: Row) => ({ ...l, cohorts: 0, payers: 0, per_payer_usd_micros: null })),
+    arppu: { payers: 0, net_usd_micros: 0, arppu_usd_micros: null },
+    by_asa_campaign: [],
+    trials: { started: 0, converted: 0, pending: 0, conversion_rate: null },
+    subscriptions: { ...r.subscriptions, active_now: 0, trials_now: 0, mrr_usd_micros: 0, auto_renew_off_now: 0, in_grace_now: 0, billing_issue_now: 0 },
+  }
+}
+
 // --- reads ---------------------------------------------------------------------------------------
 
 /** A table read (`select`), answered from the snapshot the way `admin_select` filters. */
 export function select(q: Query): Row[] {
-  const rows = S.tables[q.table] || []
+  let rows = S.tables[q.table] || []
+  if (q.table === "server_state") rows = [...rows.filter((r: Row) => r.key !== "analytics"), { key: "analytics", value: analyticsMode }]
   const hits = lookups(q).flatMap(([col, v]) => (col ? rows.filter((r) => String(r[col]) === v) : rows))
   return project(hits.map((r) => ({ ...r })), q.columns)
 }
@@ -66,6 +110,12 @@ export function sql(): never {
 const isoDay = (ms: number) => new Date(ms).toISOString().slice(0, 10)
 
 function revenue(json: string) {
+  if (analyticsMode === "off") throw new Error(ANALYTICS_OFF)
+  const r = recordedRevenue(json) as Row
+  return analyticsMode === "light" ? light(r) : r
+}
+
+function recordedRevenue(json: string) {
   const q = JSON.parse(json || "{}")
   const to = q.to || isoDay(Date.now())
   const from = q.from || isoDay(Date.parse(to) - 29 * DAY)
@@ -140,6 +190,7 @@ function storeCreatePreview(json: string) {
 
 const PROCS: Record<string, (...args: never[]) => unknown> = {
   admin_store_create_preview: storeCreatePreview,
+  admin_set_setting: setAnalytics,
   whoami: () => "0x" + S.identity,
   admin_response_public_key: () => ({ public_key: null }),
   admin_transfer_policy: () => ({ mode: "always", cooldown_days: 0, max_transfers: 0 }),

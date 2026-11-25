@@ -28,6 +28,7 @@
 - Imported purchases that were refunded or expired before the import (`admin_import_purchases`, `import_revenuecat.py`) count as refunds and churn again: the import logs what the live hooks would have counted, which the revenue rebuild replays; it counted none of them.
 - The Alerts page and other tables with an action column without a title no longer fail to render once they have rows.
 - The `/metrics` URL on the Server page uses the public address when one is set.
+- With `analytics` = `off` the Revenue page and an app's Revenue tab explain the mode (revenue goes to the integrations and BigQuery; alerts and `/metrics` keep working) instead of showing the server's error, and Overview and Apps say why revenue is missing. In `light` mode the active subscriptions card shows the last daily snapshot instead of 0. The demo switches the analytics mode for the open tab, so each mode's revenue pages can be seen.
 - The admin page demo shows the current features: Huawei AppGallery and Telegram Stars builds, VAT and multi-unit purchases, a prorated refund, promo codes, an alert channel with business alerts and the daily summary.
 
 ## 0.10.0 - 2026-11-25
