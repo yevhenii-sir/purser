@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "spacetimedb"]
+members = ["core", "spacetimedb", "game-receiver"]
 
 [profile.release]
 opt-level = "s"

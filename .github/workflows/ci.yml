@@ -40,10 +40,9 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: server
-      # Builds spacetimedb-core (vendored OpenSSL, v8): slow on the first run, cached afterwards.
       - run: cargo test -p purser --locked
-      # Same build: no warnings in either crate (tests included).
-      - run: cargo clippy -p purser-core -p purser --all-targets --locked -- -D warnings
+      # Same build: no warnings in any crate (tests included).
+      - run: cargo clippy -p purser-core -p purser -p purser-game-receiver --all-targets --locked -- -D warnings
 
   wasm:
     name: wasm build
@@ -55,11 +54,13 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: server
-      - run: cargo build -p purser --target wasm32-unknown-unknown --release --locked
+      - run: cargo build -p purser -p purser-game-receiver --target wasm32-unknown-unknown --release --locked
       - uses: actions/upload-artifact@v7
         with:
           name: purser.wasm
-          path: server/target/wasm32-unknown-unknown/release/purser.wasm
+          path: |
+            server/target/wasm32-unknown-unknown/release/purser.wasm
+            server/target/wasm32-unknown-unknown/release/purser_game_receiver.wasm
 
   e2e:
     name: end to end on SpacetimeDB
@@ -81,8 +82,8 @@ jobs:
           python-version: "3.12"
       # The version the module is built with (server/spacetimedb/Cargo.toml).
       - name: SpacetimeDB server
-        run: docker run -d --name stdb -p 127.0.0.1:3000:3000 clockworklabs/spacetime:v2.16.1 start --listen-addr 0.0.0.0:3000
-      - run: python tools/e2e.py --server http://127.0.0.1:3000 --wasm wasm/purser.wasm
+        run: docker run -d --name stdb -p 127.0.0.1:3000:3000 clockworklabs/spacetime:v2.16.3 start --listen-addr 0.0.0.0:3000
+      - run: python tools/e2e.py --server http://127.0.0.1:3000 --wasm wasm/purser.wasm --game-wasm wasm/purser_game_receiver.wasm
       - name: Server log
         if: failure()
         run: docker logs stdb | tail -200

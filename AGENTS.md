@@ -29,7 +29,8 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 | `server/spacetimedb` (`purser`) | The module: tables and reducers (`lib.rs`), HTTP routes (`handlers.rs`), product creation in the stores (`store_create.rs`, jobs run by a scheduled worker), one-click store setup: App Store notification URLs, Stripe webhook endpoint, Google Cloud with a one-time token (`store_setup.rs`), ledger state machine and the minute worker (`ledger.rs`), the worker's queue and the owned purchases derived from the ledger (`ledger_index.rs`), the queue drainers that work through it, `worker_lanes` at once (`drain.rs`), store clients, token cache and the dispatch by store (`stores.rs`), subscription re-checks (`poll.rs`), store notification health of every build (`store_health.rs`), secret resolution (`config.rs`), delivery (`delivery_client.rs`), integrations outbox and per-build health (`integrations.rs`), Apple refund request answers (`consumption.rs`), setup check (`doctor.rs`), health (`health.rs`), revenue (`revenue.rs`), paywalls, placements and A/B tests (`paywalls.rs`), catalog import (`catalog.rs`), settings (`settings.rs`), owner alerts and their outbox (`alerts.rs`), HTTP wrapper (`net.rs`; errors never show query strings), request plumbing: answers, body limit, query parameters (`web.rs`), `Ctx` trait and the time `Budget` of a request or worker run (`ctx.rs`), tests (`tests.rs`). |
 | `server/spacetimedb/admin/index.html`, `admin/csp.txt` | **Generated** admin page and its Content-Security-Policy (script hash), both committed and embedded with `include_str!`. Never edit by hand. |
 | `server/admin-ui` | Admin page sources: Vite, React 19, TypeScript, Tailwind v4, shadcn/ui, recharts, cmdk. |
-| `server/seed.py`, `server/stdb.py`, `server/backup.py`, `server/migrate.py`, `server/import_revenuecat.py`, `server/seed.example/`, `server/tests/` | CLI setup from JSON files, setup check from the terminal (`seed.py --check`), backups through the owner's `/sql` (`backup.py backup|restore`, also for `--delete-data` releases), a copy of a database to another server (`migrate.py`), RevenueCat history import (`import_revenuecat.py`), unit tests of the scripts (`server/tests`). |
+| `server/seed.py`, `server/stdb.py`, `server/backup.py`, `server/publish_check.py`, `server/migrate.py`, `server/import_revenuecat.py`, `server/seed.example/`, `server/tests/` | CLI setup from JSON files, setup check from the terminal (`seed.py --check`), backups through the owner's `/sql` and the index-paged `admin_backup_page` (`backup.py backup|restore`, also for `--delete-data` releases), whether a module publishes in place (`publish_check.py`, SpacetimeDB's `pre_publish` plan), a copy of a database to another server (`migrate.py`), RevenueCat history import (`import_revenuecat.py`), unit tests of the scripts (`server/tests`). |
+| `server/game-receiver` | Reference receiver of the `spacetimedb_idc` delivery (a SpacetimeDB module: `purser_grant` / `purser_revoke`), published by the end-to-end check. The module's receiver bindings in `spacetimedb/src/game_receiver/` are generated from it: `spacetime generate --lang rust --bindings module --bin-path <its wasm> --out-dir spacetimedb/src/game_receiver`; regenerate after changing it. |
 | `server/setup_google.py` | Google Play setup from the terminal: gets a `gcloud` access token and calls the `admin_setup_google` procedure (APIs, service account + key, Pub/Sub topic, RTDN push subscriptions). |
 | `server/mcp_server.py` | MCP server (stdlib JSON-RPC over stdio) over the admin procedures; see docs/mcp.md. |
 | `unity/com.yevhenii.purser` | UPM package: `BillingService`, `BillingConfig`, providers, Editor inspector, EditMode tests, native iOS plugin (`Runtime/Plugins/iOS`). The core (`Purser.Runtime`) does not reference Unity IAP; the Unity IAP 5 adapter is the assembly `Purser.UnityIap` (`Runtime/UnityIap`, compiled only with `com.unity.purchasing` 5.4+ via the `PURSER_UNITY_IAP5` version define, registers `Billing.DefaultStoreFactory` on load), its tests are `Purser.Tests.UnityIap` (`Tests/Editor/UnityIap`). |
@@ -69,7 +70,9 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   the row is written first, `ledger::advance` tries inline, `ledger::process_pending` (scheduled
   worker) retries with backoff.
 - **Delivery** (`game_app.delivery`): `spacetimedb` (call `grant_reducer` / `revoke_reducer` on the
-  game DB with `spacetime_token`; one argument, the `BillingEvent`), `webhook` (HMAC `webhook_secret`),
+  game DB with `spacetime_token`; one argument, the `BillingEvent`), `spacetimedb_idc` (a game DB on the
+  same server: outbox rows to its `purser_grant` / `purser_revoke`, `spacetime_db` = its identity; the
+  ledger row waits in `idc_call` for the answer, `idc.rs`), `webhook` (HMAC `webhook_secret`),
   `none` (client grants; `PurchaseResult.GrantOnClient`). Contract: [docs/game-integration.md](docs/game-integration.md).
 - **Account binding**: Google `obfuscatedAccountId` / Apple `appAccountToken` derived from `user_id`
   (`purser_core::google_account_id` / `apple_account_token`, mirrored by Unity `AccountIds` with the
@@ -85,7 +88,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   snapshots, ECB rates (`fx_day`, `fx_override`). Rules in `purser_core::revenue` are used both live
   and by `admin_rebuild_revenue`, so both give the same numbers.
 
-## SpacetimeDB facts that bite (version 2.16.1, `features = ["unstable"]`)
+## SpacetimeDB facts that bite (version 2.16.3, `features = ["unstable"]`)
 
 - All tables are **private**. Only the database owner can read them with `/sql`, and owner-only DML
   (`INSERT INTO admin ...`) is how the first admin is added when `init` did not run (database created
@@ -150,7 +153,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 ```bash
 cd server
 cargo test -p purser-core --locked
-cargo test -p purser --locked        # Windows: needs a full Perl, see CONTRIBUTING.md
+cargo test -p purser --locked
 cargo build -p purser --target wasm32-unknown-unknown --release --locked
 
 cd server/admin-ui
@@ -183,7 +186,7 @@ cancellation) runs on the next editor update, after a synchronous test has looke
 `Sync.InlineContinuations()` (`Tests/Editor/Fakes.cs`).
 
 Build order matters: `npm run build` **before** the wasm build, because the page is embedded.
-Don't run a full `cargo update` (newer `icu_*` crates break `spacetimedb-core`); upgrade SpacetimeDB
+Don't run a full `cargo update` (keep the crates SpacetimeDB is built with); upgrade SpacetimeDB
 with `cargo update -p spacetimedb --precise <version>`.
 
 Local run with the admin page:

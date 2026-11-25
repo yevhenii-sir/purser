@@ -11,8 +11,10 @@ token must be the database owner's: `PURSER_TOKEN`, else the `spacetime login` o
 
 What is copied: every table except caches (access tokens, rate limit buckets), queues of work in
 progress (integration, alert and Apple refund outboxes), the worker's schedules, which the new
-module creates itself, and tables derived from the ledger (rebuilt after a restore). Large tables are
-read in windows of an indexed column, so no single `/sql` answer holds a whole ledger.
+module creates itself, inter-database calls in flight, and tables derived from the ledger (rebuilt
+after a restore). Large tables are read in pages the module reads through an index
+(`admin_backup_page`), so no answer holds a whole ledger and no read scans it; a module without that
+procedure is read in windows of an indexed column with `/sql`.
 
 Restoring replaces the rows of each copied table, so restore into a freshly published database. A
 newer module may have added columns: they get their zero value (empty text, 0, false); columns the
@@ -47,6 +49,10 @@ SKIP = {
     # Queue drainers running now and their next runs (the worker starts them again).
     "drain_lane",
     "drain_schedule",
+    # Inter-database calls in flight (SQL cannot write outboxes): a restored row calls again.
+    "game_grant_outbox",
+    "game_revoke_outbox",
+    "idc_call",
     # Derived from the ledger: rebuilt after a restore (`admin_reindex_ledger`).
     "pending_purchase",
     "owned_purchase",
@@ -128,14 +134,39 @@ def literal(value, algebraic_type):
     raise ValueError(f"cannot restore a column of type {json.dumps(algebraic_type)}")
 
 
+def read_pages(base, db, tok, name, schema):
+    """Rows of a table through the module's `admin_backup_page` (an index walk), or None when the
+    module has no such procedure (published before it) or does not page this table."""
+    cols = column_names(schema)
+    rows, start = [], -(2 ** 63)
+    while True:
+        try:
+            out = call_raw(base, db, tok, "admin_backup_page", name, start, PAGE)
+        except StdbError:
+            return None
+        if not isinstance(out, dict) or "error" in out:
+            return None
+        rows.extend([r.get(c) for c in cols] for r in out["rows"])
+        if out.get("next") is None:
+            return rows
+        start = out["next"]
+
+
 def read_table(base, db, tok, name):
-    """(schema, rows) of a table: in one answer, or in windows of its column in `PAGED`."""
+    """(schema, rows) of a table: in one answer, or for the large ones in pages the module reads
+    through an index (`/sql` would scan the whole table for every window), else in windows of
+    their column in `PAGED`."""
     if name not in PAGED:
         result = sql(base, db, tok, f"SELECT * FROM {name}")[0]
         return result["schema"], result["rows"]
     column, lo, top = PAGED[name]
     total = sql(base, db, tok, f"SELECT COUNT(*) AS n FROM {name}")[0]["rows"][0][0]
     schema = sql(base, db, tok, f"SELECT * FROM {name} LIMIT 0")[0]["schema"]
+    paged = read_pages(base, db, tok, name, schema)
+    if paged is not None and len(paged) == total:
+        return schema, paged
+    if paged is not None:
+        print(f"note     {name}: {len(paged)} of {total} rows through the index, reading it with /sql")
     rows, width = [], top - lo
     while len(rows) < total and lo < top:
         hi = min(lo + width, top)

@@ -369,11 +369,33 @@ fn build_call(tx: &TxContext, row: &IntegrationOutbox, event: &OutEvent, access_
     }
 }
 
+/// How long an attempt's stand-in row waits ([`send_integration_event`]): far past the longest
+/// attempt (a token and an event call, each cut at `net::TIMEOUT_SECS`).
+pub const ATTEMPT_GUARD_SECS: u64 = 5 * 60;
+
+/// Sends one queued event. The host deletes a one-shot row before it starts the call, so the
+/// attempt first puts a stand-in in its place (one attempt more, due after
+/// [`ATTEMPT_GUARD_SECS`]) and removes it when it ends: an attempt cut short (a restart, a trap)
+/// is made again instead of lost. The last attempt has no stand-in.
 #[spacetimedb::procedure]
 pub fn send_integration_event(ctx: &mut ProcedureContext, row: IntegrationOutbox) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    let guard = ctx.tx(|tx| {
+        (row.attempts + 1 < MAX_ATTEMPTS).then(|| {
+            let at = ScheduleAt::Time(tx.timestamp + Duration::from_secs(ATTEMPT_GUARD_SECS));
+            tx.db.integration_outbox().insert(IntegrationOutbox { id: 0, attempts: row.attempts + 1, scheduled_at: at, ..row.clone() }).id
+        })
+    });
+    send_event(ctx, &row);
+    if let Some(id) = guard {
+        ctx.tx(|tx| tx.db.integration_outbox().id().delete(id));
+    }
+}
+
+fn send_event(ctx: &mut ProcedureContext, row: &IntegrationOutbox) {
+    let row = row.clone();
     let label = format!("{} {} ({})", row.kind, row.purchase_id, row.app_id);
     let event: OutEvent = match serde_json::from_str(&row.event_json) {
         Ok(e) => e,

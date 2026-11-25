@@ -20,11 +20,7 @@ cargo test -p purser      # module tests on spacetimedb::test_utils, mocked HTTP
 cargo build -p purser --target wasm32-unknown-unknown --release
 ```
 
-The module tests build `spacetimedb-core`, which compiles OpenSSL from source. On Windows that needs a full Perl (the one from Git Bash won't do), e.g. [Strawberry Perl](https://strawberryperl.com/):
-
-```bash
-OPENSSL_SRC_PERL=C:/Strawberry/perl/bin/perl.exe cargo test -p purser
-```
+The module tests run on SpacetimeDB's in-memory test datastore: no Perl, OpenSSL or C toolchain is needed.
 
 ## Admin page
 

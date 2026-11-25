@@ -1,6 +1,6 @@
 # Self-hosting
 
-The billing module runs on any SpacetimeDB **2.16.1+** server: maincloud or your own. This page covers your own server.
+The billing module runs on any SpacetimeDB **2.16.3+** server: maincloud or your own. This page covers your own server.
 
 **Quickest path: Docker.** [`deploy/docker`](../deploy/docker/README.md) runs SpacetimeDB with `docker compose`, publishes the module with `publish.sh` (the release download or your own build) and adds an optional Caddy proxy with automatic HTTPS that applies the allowlist below. Its README covers the owner token, backups and upgrades. The rest of this page explains the same setup by hand.
 
@@ -26,7 +26,7 @@ Stores, game clients and game servers need these paths:
 | `/v1/identity*`, `/v1/ping` | clients |
 | `/v1/database/*/schema` | optional: the setup check reads the game schema to verify the grant / revoke reducers |
 
-Keep `publish`, `sql`, `logs` and other admin paths closed to the internet and use them through an SSH tunnel. The admin page itself (`/route/admin`) is harmless at the public address (it loads no data without `/sql`); the Docker Caddyfile hides it anyway with `not path_regexp ^/v1/database/[^/]+/route/admin(/.*)?$` in the `@public` matcher.
+Keep `publish`, `sql`, `logs` and other admin paths closed to the internet and use them through an SSH tunnel. The server also answers, without any token: `/v1/metrics` (Prometheus metrics of every database), `/v1/prometheus/sd_config`, `/v1/health`, `/v1/identity/<identity>/databases` (the databases an identity owns) and, outside `/v1`, `/internal/heap` and `/internal/task-dump` (memory profiling, task dumps): the allowlists below keep all of them inside; never expose port 3000 itself. The admin page itself (`/route/admin`) is harmless at the public address (it loads no data without `/sql`); the Docker Caddyfile hides it anyway with `not path_regexp ^/v1/database/[^/]+/route/admin(/.*)?$` in the `@public` matcher.
 
 Caddy:
 
@@ -56,8 +56,20 @@ server {
         proxy_set_header Host $host;
     }
     location / { return 404; }
+    # The server buffers request bodies whole and has no limit or timeout of its own on routes.
+    client_max_body_size 1m;
+    proxy_read_timeout 60s;
 }
 ```
+
+More that SpacetimeDB does not do for you (from its source; none of it is configurable in the server):
+
+- **Request size and rate:** `/route/*` reads any body whole into memory, and nothing limits requests per client: set the proxy's body limit (Caddy `request_body { max_size 1MB }`) and, if the server is exposed widely, a rate limit. Billing limits per player and per build itself, but only after the request reached the module.
+- **`X-Forwarded-Host` / `-Proto`** are taken from any client: the proxy should set them (`proxy_set_header Host $host;` above) rather than pass the client's.
+- **Disk:** module logs rotate daily and are never deleted (`<data-dir>/replicas/*/module_logs`), the server log is never rotated, and old snapshots and commitlog segments stay. Delete old files with a cron job or a logrotate rule; watch the free space.
+- **`config.toml`** (in the data directory) ignores unknown keys and typos silently, and the file `spacetime start` writes the first time logs at `debug`: set `[logs] level = "info"` and drop the debug `directives` on a production server.
+- **The Postgres wire protocol** (`--pg-port`) has no TLS on your own server and logs a token that failed to sign in: leave it off, or on `127.0.0.1` only.
+- **Production databases:** `spacetime lock <your-billing-db>` refuses `--delete-data`, `spacetime delete` and resets until `spacetime unlock`. Lock the production database: `spacetime dev` publishes with `--delete-data=on-conflict` by default, and to maincloud when no server is set.
 
 ## Admin access through an SSH tunnel
 
@@ -92,7 +104,13 @@ The module cannot call private addresses (`127.0.0.1`, `10.x`, …). Deliveries 
 
 ## Upgrading
 
-Publish the new `purser.wasm` to the same database name. New tables and indexes are created automatically.
+Publish the new `purser.wasm` to the same database name. New tables and indexes are created automatically. To know beforehand whether a module publishes in place, ask the server (nothing is published; from `server/`, as the database owner):
+
+```bash
+python publish_check.py --server maincloud --database <your-billing-db> --wasm purser.wasm
+```
+
+It prints SpacetimeDB's migration plan and exits with 0 (publish normally) or 2 (the release needs `--delete-data`: back up and restore as below). A locked database (`spacetime lock`) refuses `--delete-data` until you unlock it.
 
 A release whose notes say it needs `--delete-data` changes tables in a way SpacetimeDB cannot migrate in place. Keep the data with a backup around the publish (from `server/`, as the database owner):
 
@@ -102,7 +120,7 @@ spacetime publish --delete-data -b purser.wasm <your-billing-db>
 python backup.py restore --server maincloud --database <your-billing-db> --dir backups/before-upgrade
 ```
 
-`backup.py` reads every table through the owner's `/sql` (no caches, queued integration events or worker schedules) and writes it back into the new database. A newer module's added columns get their zero value and removed ones are dropped; when a release needs more than that, its notes say how to carry the data over. Large tables are read in windows, the files are readable by their owner only (they hold every secret), and a restore that stopped goes on with `--resume`.
+`backup.py` reads every table through the owner's `/sql` (no caches, queued integration events, inter-database calls in flight or worker schedules) and writes it back into the new database. A newer module's added columns get their zero value and removed ones are dropped; when a release needs more than that, its notes say how to carry the data over. Large tables are read in pages the module reads through an index (`admin_backup_page`: `/sql` would scan a whole table for every window, holding the database meanwhile), the files are readable by their owner only (they hold every secret), and a restore that stopped goes on with `--resume`.
 
 ## Memory
 
@@ -110,15 +128,18 @@ Tables whose rows pile up keep only what is used in memory (SpacetimeDB tiered s
 
 ## Capacity
 
-Measured on a local SpacetimeDB 2.16.1 (32 threads; `tools/loadtest.py`, the store replaced by a local proxy):
+Measured on a local SpacetimeDB 2.16.1 with the data on disk (Windows, NVMe SSD, 32 threads; `tools/loadtest.py`, the store replaced by a local proxy). Every transaction a request opens waits until it is on disk (fsync); concurrent ones share a flush, so throughput grows with concurrency while one request alone waits a few milliseconds per transaction:
 
-| Load | Answers per second | Latency (median / p99) |
-|---|---|---|
-| `/entitlements` (reads) | ~7,500 | 2 / 3 ms |
-| a purchase without outbound calls (`delivery: none`, `/server/grant`) | ~2,500 | 6 / 8 ms |
-| a purchase whose store or game answers in 300 ms | ~105 | 310 ms (more at once: waits in line) |
-| a store that does not answer | ~3 s per request, the purchase is retried | |
-| a queue of 18,800 due purchases (calls that succeed at once) | emptied ~5 s after the drainers started | |
+| Load | Concurrent requests | Answers per second | Latency (median / p99) |
+|---|---|---|---|
+| `/entitlements` (reads) | 1 / 16 / 64 | ~280 / ~2,900 / ~4,700 | 3 / 6, 5 / 36, 10 / 43 ms |
+| a purchase without outbound calls (`delivery: none`, `/server/grant`) | 1 / 16 / 64 | ~67 / ~800 / ~1,400 | 13 / 47, 19 / 52, 43 / 78 ms |
+| a purchase whose store or game answers in 300 ms | 64 | ~105 | 650 ms (waits in line for an instance) |
+| `/entitlements` while those purchases fill the instances | 4 | ~11 | 340 / 630 ms |
+| a store that does not answer | 8 | the request answers after 3 s, the purchase is retried | |
+| a queue of 3,700 due purchases (calls that succeed at once) | | emptied ~12 s after the drainers started | |
+
+In memory (`spacetime start --in-memory`, no disk) the same machine answered ~7,500 reads and ~2,500 purchases a second at 16 concurrent requests: on your server, the disk sets the pace of everything that writes, and every request writes (rate limits, the ledger). A drainer starts at once for work a request leaves; a retry that becomes due later waits for the minute worker to start one.
 
 The limit that matters is the store's latency. SpacetimeDB runs HTTP routes and procedures on a pool of module instances, one per CPU thread by default, and a route that waits for a store keeps its instance for the whole wait: purchases per second ≈ pool size ÷ the store's answer time, and while every instance waits, the other routes (`/entitlements` at a game's start) wait in line behind them. Nothing is lost meanwhile: requests queue, and a purchase the client did not get an answer for stays unfinished in the store and is sent again.
 
@@ -130,6 +151,7 @@ The limit that matters is the store's latency. SpacetimeDB runs HTTP routes and 
   ```
 
 - On maincloud the pool is not configurable.
+- The pool helps with waiting, not with computing: a database computes one call at a time. A server-wide revenue report over a long range keeps everything else waiting while it is counted (2,000 builds, 90 days: ~13 s); slow reports are kept for an hour for that reason (see [Analytics](analytics.md)).
 - A request spends at most 3 s on outbound calls (a store that hangs cannot hold an instance longer), and the queue drainers hold at most `worker_lanes` instances (server setting, default 2, up to 8). With a store answering in 300 ms, 2 drainers finish ~6 queued purchases a second, 8 about 25: raise it when `/healthz` says `backlog` although the calls succeed.
 
 ## Backups and monitoring

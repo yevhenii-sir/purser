@@ -18,6 +18,7 @@ use std::time::Duration;
 mod access;
 mod admin_views;
 mod alerts;
+mod backup;
 mod catalog;
 mod client_guard;
 mod config;
@@ -28,6 +29,8 @@ mod doctor;
 mod drain;
 mod handlers;
 mod health;
+mod idc;
+mod game_receiver;
 mod integrations;
 mod ledger;
 mod ledger_index;
@@ -584,6 +587,9 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
             "[ERR_BAD_APP] spacetime_url must be https:// on an allowed host: {} (the database owner adds hosts with admin_add_spacetime_host)",
             hosts.join(", ")
         ));
+    }
+    if i.delivery == delivery::SPACETIMEDB_IDC && crate::idc::parse_identity(&i.spacetime_db).is_none() {
+        return Err("[ERR_BAD_APP] spacetimedb_idc delivery needs spacetime_db = the game database's identity (64 hex digits, `spacetime list`)".into());
     }
     if i.delivery == delivery::WEBHOOK && !i.webhook_url.starts_with("https://") {
         return Err("[ERR_BAD_APP] webhook delivery needs an https webhook_url".into());

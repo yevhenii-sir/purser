@@ -604,11 +604,35 @@ fn deliver(ctx: &ProcedureContext, call: &HttpCall, secrets: &[String]) -> Resul
     }
 }
 
+/// Sends one queued message; an attempt cut short is made again (a stand-in row, as in
+/// `integrations::send_integration_event`).
 #[spacetimedb::procedure]
 pub fn send_alert(ctx: &mut ProcedureContext, row: AlertOutbox) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    let guard = ctx.tx(|tx| {
+        (row.attempts + 1 < MAX_ATTEMPTS).then(|| {
+            let at = ScheduleAt::Time(tx.timestamp + Duration::from_secs(crate::integrations::ATTEMPT_GUARD_SECS));
+            let stand_in = AlertOutbox {
+                id: 0,
+                channel_id: row.channel_id,
+                channel: row.channel.clone(),
+                log_id: row.log_id,
+                message_json: row.message_json.clone(),
+                attempts: row.attempts + 1,
+                scheduled_at: at,
+            };
+            tx.db.alert_outbox().insert(stand_in).id
+        })
+    });
+    send_message(ctx, &row);
+    if let Some(id) = guard {
+        ctx.tx(|tx| tx.db.alert_outbox().id().delete(id));
+    }
+}
+
+fn send_message(ctx: &mut ProcedureContext, row: &AlertOutbox) {
     let msg: Message = match serde_json::from_str(&row.message_json) {
         Ok(m) => m,
         Err(e) => {

@@ -6,7 +6,7 @@ This is the server reference: tables, secrets, the HTTP API and admin calls. To 
 
 - Your database name goes into `spacetime.json` (copy `spacetime.example.json`) for `seed.py`, `migrate.py` and `mcp_server.py`. The scripts use the token of `spacetime login`, or `PURSER_TOKEN` when it is set.
 - `mcp_server.py` — an MCP server for Claude and other MCP clients; see [docs/mcp.md](../docs/mcp.md).
-- SpacetimeDB **2.16.1**, HTTP handlers (`features = ["unstable"]`, beta).
+- SpacetimeDB **2.16.3**, HTTP handlers (`features = ["unstable"]`, beta).
 - `core/` — pure logic without SpacetimeDB (JWT, parsing store responses and notifications, delivery contract), covered by tests.
 - `spacetimedb/` — the module: tables, admin reducers, HTTP routes, ledger and worker.
 
@@ -34,6 +34,7 @@ Google RTDN / App Store Notifications V2 / Amazon RTN ──▶ /notify/<store> 
 
 - An outgoing HTTP request from the module can fail or time out. That's why a ledger row is written first and every external step is retryable: whatever didn't finish is completed by the queue drainers (`drain.rs`) with backoff 1m → 5m → 15m → 1h → 3h → 6h → 12h.
 - A client request spends at most 3 s on store and delivery calls, counted from its start, and a worker run at most 40 s (`ctx::Budget`): every call is cut at that deadline (and at 10 s, `net::TIMEOUT_SECS`). A request that waits for a call holds one of the host's module instances, which every route shares, so a store that hangs must not hold them for long. What a request leaves is due at once and wakes a drainer: `/verify` answers `success` once the reward is delivered and the consume / acknowledge follows seconds later, or `pending` when the delivery did not fit; a store look-up that does not answer in time is `502`, and the SDK sends the purchase again.
+- Outboxes (integration events, alerts, Apple refund answers) are one-shot scheduled rows the host deletes before the call: every attempt first puts a stand-in row back (due 5 minutes later, one attempt more) and removes it when it ends, so an attempt cut short by a restart or a trap is made again, not lost.
 - Queue drainers: up to `worker_lanes` (server setting, default 2, at most 8) run at once, each calling the stores and games one at a time, builds taking turns, so a slow store holds at most that many instances. A ledger write that leaves a purchase due (a request out of time, an admin grant, an import) starts them at once, the minute worker (`process_pending`) when retries come due; a build whose host does not answer is left for a minute. `/healthz` reports the queue (`due_purchases`, `oldest_due_secs`), says `backlog` when a purchase has waited 15 minutes, and the `queue_behind` alert names the build.
 - HTTP to private addresses (`127.0.0.1`, `10.x`, …) is forbidden: the webhook and the game database must be publicly reachable.
 - HTTP handlers are in beta. If the API breaks, the same logic can be called as procedures through the stable `POST /v1/database/<db>/call/<procedure>`.
@@ -77,8 +78,9 @@ One row = one **build**: an app in one store. The builds of the same game (Googl
 | `store` | `google` \| `apple` \| `amazon` \| `steam` \| `stripe` \| `xsolla`; empty = the platform's default store (`android` → `google`, `ios` → `apple`, `amazon` → `amazon`, `steam` → `steam`). A `web` build must name its store. Rows written before the column existed have it empty |
 | `game_key` | shared game key for `/entitlements` |
 | `account` | secrets profile (developer account), see below |
-| `delivery` | `spacetimedb` \| `webhook` \| `none` (the game needs no server of its own, the client grants the reward, see “Games without a backend”) |
+| `delivery` | `spacetimedb` \| `spacetimedb_idc` \| `webhook` \| `none` (the game needs no server of its own, the client grants the reward, see “Games without a backend”) |
 | `spacetime_url`, `spacetime_db`, `grant_reducer`, `revoke_reducer` | for `spacetimedb`: each reducer takes one `BillingEvent` |
+| `spacetime_db` (`spacetimedb_idc`) | the game database's identity (64 hex digits): a database on the same SpacetimeDB server or cluster, called through inter-database calls (`purser_grant` / `purser_revoke`, exactly once, no token; docs/game-integration.md) |
 | `webhook_url` | for `webhook` (https only) |
 | `allow_sandbox` | accept sandbox / license-tester purchases (needed for App Review and QA) |
 | `client_consumes` | the client consumes in Google itself (for example, while purchases still go through Adapty). Off (default): a consumable that Google reports as already consumed but that isn't in the ledger is rejected, see “Protection against double grants” |
@@ -455,13 +457,9 @@ spacetime publish --bin-path target/wasm32-unknown-unknown/release/purser.wasm <
 
 `cargo test -p purser` runs the module's own tests on `spacetimedb::test_utils` (SpacetimeDB 2.12+). They use an in-memory database, and an HTTP mock stands in for Google Play, the game database and the FX API, so no server or keys are needed. The tests cover grant and consume, idempotent repeated `/verify`, worker retries with backoff, protecting consumables from another account, `/restore` onto a new `user_id`, refunds via RTDN, admin permission checks, the setup check, the product import and the revenue aggregates. Test code: [`spacetimedb/src/tests.rs`](spacetimedb/src/tests.rs).
 
-The test build pulls in `spacetimedb-core`, which builds OpenSSL from source. On Windows this needs a full Perl: the Perl from Git Bash won't do. [Strawberry Perl](https://strawberryperl.com/) works:
+Since SpacetimeDB 2.16.3 the test datastore no longer builds the SpacetimeDB host (`spacetimedb-core`, OpenSSL, wasmtime): the tests need no Perl or C toolchain.
 
-```bash
-OPENSSL_SRC_PERL=C:/Strawberry/perl/bin/perl.exe cargo test -p purser
-```
-
-Dependency versions in `Cargo.lock` come from SpacetimeDB 2.12.0's own lockfile; the upgrades to 2.14.1 and 2.16.1 only updated the `spacetimedb*` crates (`cargo update -p spacetimedb --precise <version>`). Don't run a full `cargo update`: newer `icu_*` crates are incompatible with `temporal_rs`, which `spacetimedb-core` depends on.
+Dependency versions in `Cargo.lock` come from SpacetimeDB 2.12.0's own lockfile; the upgrades since only updated the `spacetimedb*` crates (`cargo update -p spacetimedb --precise <version>`). Don't run a full `cargo update`: it may pull crates newer than the ones SpacetimeDB is built and tested with.
 
 Locally: `spacetime start`, then `spacetime publish --server local … billing-local`. Note that a local server can't deliver to private addresses.
 

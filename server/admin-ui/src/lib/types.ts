@@ -3,7 +3,7 @@ import { STORE_SECRETS } from "./stores"
 /** `game_app.platform`; see `lib/stores.ts` for names and stores. */
 export type Platform = "android" | "ios" | "amazon" | "steam" | "web"
 export type Kind = "consumable" | "non_consumable" | "subscription"
-export type Delivery = "spacetimedb" | "webhook" | "none"
+export type Delivery = "spacetimedb" | "spacetimedb_idc" | "webhook" | "none"
 
 export interface GameApp {
   app_id: string

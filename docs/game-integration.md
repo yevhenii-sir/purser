@@ -72,6 +72,30 @@ public static void billing_grant(ReducerContext ctx, BillingEvent ev) {
 }
 ```
 
+- **`spacetimedb_idc`** — the game's SpacetimeDB database on the **same SpacetimeDB server or cluster** as billing (both on maincloud, or both on your server). Billing calls the game's reducers through [inter-database calls](https://spacetimedb.com/docs/databases/inter-database-communication): the call is written with the ledger step and SpacetimeDB delivers it **exactly once, in order**, after a restart too, with billing's database as `ctx.sender()`. No token, no HTTP; the game database may be down for a while and gets the calls when it is up. The build's `spacetime_db` is the game database's **identity** (`spacetime list`). The game declares two reducers with exactly this signature (SpacetimeDB checks the parameter name, the struct's field names, types and order, and the `Result<(), String>` return; a call that does not match fails):
+
+```rust
+#[derive(spacetimedb::SpacetimeType)]
+pub struct BillingEvent {
+    pub event: String, pub reason: String, pub store: String, pub environment: String,
+    pub app_id: String, pub product_id: String, pub kind: String,
+    pub transaction_id: String, pub original_transaction_id: String, pub user_id: String,
+    pub expires_at_ms: i64, pub price_micros: i64, pub currency: String, pub timestamp_ms: i64,
+    pub catalog_product_id: String,
+}
+
+#[spacetimedb::reducer]
+pub fn purser_grant(ctx: &ReducerContext, event: BillingEvent) -> Result<(), String> {
+    // accept ctx.sender() == billing's database identity only; apply once per (transaction_id, event)
+    Ok(())
+}
+
+#[spacetimedb::reducer]
+pub fn purser_revoke(ctx: &ReducerContext, event: BillingEvent) -> Result<(), String> { Ok(()) }
+```
+
+  `catalog_product_id` is always set here (the store id when the product has no catalog id). A reducer that returns `Err` rolls the game's transaction back; billing records the error and calls again with the usual backoff, so the reducers must be idempotent like every delivery. The reference module is [`server/game-receiver`](https://github.com/yevhenii-sir/purser/tree/main/server/game-receiver) (it also lets the owner allow billing's identity with `allow_purser`); the end-to-end check publishes it next to billing. The setup check shows billing's database identity for the game's allowlist. A TypeScript game module declares the same struct and reducers with `t.object` / `spacetimedb.reducer`; C# modules can receive these calls too (only declaring outboxes is limited to Rust and TypeScript).
+
 - **`webhook`** — `POST webhook_url` with the event as the body and the headers `X-Billing-Event` and `X-Billing-Signature: hex(HMAC-SHA256(webhook_secret, body))`. Verify the signature against the raw body. Any 2xx response counts as success. **Answer 2xx to `event` values you don't know and ignore them**: the setup check sends `{"event":"ping"}` (header `X-Billing-Event: ping`) from the admin panel's "Ping webhook" button.
 
 ### Games without a backend (`delivery = none`)

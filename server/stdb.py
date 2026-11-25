@@ -116,7 +116,7 @@ OPENER = urllib.request.build_opener(SameOriginAuthRedirect)
 def request(method, url, tok, body=None, content_type="text/plain", timeout=60):
     """One HTTP call; returns the response text or raises `StdbError`."""
     check_transport(url)
-    data = body.encode("utf-8") if body is not None else None
+    data = body if isinstance(body, bytes) or body is None else body.encode("utf-8")
     headers = {"Authorization": f"Bearer {tok}"}
     if data is not None:
         headers["Content-Type"] = content_type

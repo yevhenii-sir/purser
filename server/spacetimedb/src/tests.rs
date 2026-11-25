@@ -7978,3 +7978,201 @@ fn a_queue_that_falls_behind_is_alerted_and_resolved() {
     let states: Vec<String> = alert_messages(&w).iter().filter(|m| m.rule == "queue_behind").map(|m| m.state.clone()).collect();
     assert_eq!(states, ["alert", "resolved"]);
 }
+
+
+// --- Outbox attempts: a stand-in row covers an attempt that is cut short ---
+
+#[test]
+fn an_integration_attempt_leaves_no_stand_in_and_a_failed_one_one_retry() {
+    use crate::integrations::integration_outbox;
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "tenjin", json!({}));
+    w.set_secret(secret_name::TENJIN_SDK_KEY, "tenjin-key");
+    w.write(|tx| {
+        let mut p = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
+        p.price_micros = 990_000;
+        p.currency = "USD".into();
+        tx.db.product().key().update(p);
+    });
+    let r: VerifyRequest = serde_json::from_value(json!({
+        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "attribution": { "tenjin_id": "b1c5d7c4-1c4f-4d6e-9e2a-3a2f1f0a9b10", "os_version": "14", "advertising_id": "gaid-1" },
+    }))
+    .unwrap();
+    assert_eq!(verify(&mut w.ctx(), store::GOOGLE, &r).body["status"], "success");
+    let row = outbox(&w).into_iter().next().expect("queued event");
+    // The host deletes a one-shot row before it starts the call.
+    let take = |w: &World, id: u64| w.write(|tx| {
+        tx.db.integration_outbox().id().delete(id);
+    });
+    take(&w, row.id);
+
+    // Sent: nothing is left behind.
+    w.script("track.tenjin.com", 200, r#"{"code":200}"#);
+    crate::integrations::send_integration_event(&mut w.ctx(), row.clone());
+    assert_eq!(w.calls("tenjin.com"), 1);
+    assert!(outbox(&w).is_empty(), "{:?}", outbox(&w).iter().map(|r| r.id).collect::<Vec<_>>());
+
+    // Failed: one retry at the retry delay, no stand-in.
+    w.fake.borrow_mut().overrides.clear();
+    w.script("track.tenjin.com", 503, "");
+    crate::integrations::send_integration_event(&mut w.ctx(), row.clone());
+    let left = outbox(&w);
+    assert_eq!(left.len(), 1);
+    let due = match left[0].scheduled_at {
+        ScheduleAt::Time(t) => t.to_micros_since_unix_epoch(),
+        ScheduleAt::Interval(_) => unreachable!(),
+    };
+    assert_eq!((left[0].attempts, due), (1, NOW_MICROS + purser_core::retry_delay_secs(0) * 1_000_000));
+}
+
+
+// --- Backups: pages through an index ---
+
+#[test]
+fn a_backup_reads_every_row_once_in_pages_that_never_split_a_value() {
+    let w = World::new();
+    w.write(|tx| {
+        let product = Product::new(APP, "gems", kind::CONSUMABLE);
+        for i in 0..25 {
+            // Three rows per microsecond: a page must not end between them.
+            let p = Purchase::new("google", &format!("b-{i:02}"), APP, &product, "player-1", NOW_MICROS + i / 3);
+            ledger::insert_purchase(tx, p);
+        }
+    });
+    let page = |w: &World, from: i64| -> Value {
+        serde_json::from_str(&crate::backup::admin_backup_page(&mut w.ctx(), "purchase".into(), from, 10)).unwrap()
+    };
+    w.as_admin(false);
+    assert!(page(&w, i64::MIN)["error"].as_str().unwrap().contains("ERR_"), "owner only");
+    w.as_admin(true);
+    let (mut seen, mut from, mut pages) = (Vec::<String>::new(), i64::MIN, 0);
+    loop {
+        let p = page(&w, from);
+        let rows = p["rows"].as_array().unwrap();
+        assert!(rows.len() <= 12, "a page is the limit plus the rest of one value: {}", rows.len());
+        seen.extend(rows.iter().map(|r| r["id"].as_str().unwrap().to_string()));
+        pages += 1;
+        match p["next"].as_i64() {
+            Some(n) => from = n,
+            None => break,
+        }
+    }
+    let mut want: Vec<String> = (0..25).map(|i| format!("google:b-{i:02}")).collect();
+    want.sort();
+    seen.sort();
+    assert_eq!(seen, want, "every row once");
+    assert_eq!(pages, 3);
+    let bad: Value = serde_json::from_str(&crate::backup::admin_backup_page(&mut w.ctx(), "credential".into(), 0, 10)).unwrap();
+    assert!(bad["error"].as_str().unwrap().contains("ERR_BAD_TABLE"));
+}
+
+
+// --- Delivery through inter-database calls (spacetimedb_idc) ---
+
+const GAME_DB: &str = "c200abababababababababababababababababababababababababababababab";
+
+fn use_idc(w: &World) {
+    w.write(|tx| {
+        let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
+        app.delivery = purser_core::event::delivery::SPACETIMEDB_IDC.into();
+        app.spacetime_db = GAME_DB.into();
+        tx.db.game_app().app_id().update(app);
+    });
+}
+
+fn grant_calls(w: &World) -> Vec<crate::idc::GameGrantOutbox> {
+    use crate::idc::game_grant_outbox;
+    w.read(|tx| tx.db.game_grant_outbox().iter().collect())
+}
+
+fn answer(w: &World, row: crate::idc::GameGrantOutbox, result: Result<(), String>) {
+    w.test
+        .with_reducer_tx(TestAuth::internal(), |ctx| {
+            crate::idc::game_grant_answered(ctx, row, result.clone());
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn idc_delivery_sends_one_call_and_moves_on_with_the_answer() {
+    use crate::idc::idc_call;
+    let w = World::new();
+    keep_google_token_valid(&w, 2 * 3600);
+    use_idc(&w);
+    let o = w.verify("player-1", "gems");
+    assert_eq!(o.body["status"], "pending", "the game has not answered yet: {}", o.body);
+    let calls = grant_calls(&w);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].game.0.to_hex().to_string(), GAME_DB);
+    assert_eq!((calls[0].event.event.as_str(), calls[0].event.user_id.as_str(), calls[0].event.catalog_product_id.as_str()), ("grant", "player-1", "gems"));
+    assert_eq!(w.calls("/call/"), 0, "no HTTP delivery");
+    let p = w.purchase();
+    assert_eq!(p.status, status::VERIFIED);
+    assert_eq!(p.next_attempt_at_micros, NOW_MICROS + crate::idc::WAIT_MICROS, "waits for the answer");
+
+    // The worker looks again before the answer: it waits, nothing is sent twice.
+    w.advance_clock(3601);
+    w.run_worker();
+    assert_eq!(grant_calls(&w).len(), 1);
+
+    // The game applied it: the row goes on (consume) at once.
+    answer(&w, calls[0].clone(), Ok(()));
+    w.run_drainers();
+    assert_eq!(w.purchase().status, status::COMPLETED);
+    assert!(w.read(|tx| tx.db.idc_call().count()) == 0);
+}
+
+#[test]
+fn a_refused_idc_call_is_retried_with_backoff_as_a_new_call() {
+    use crate::idc::idc_call;
+    let w = World::new();
+    use_idc(&w);
+    w.verify("player-1", "gems");
+    let first = grant_calls(&w).remove(0);
+    answer(&w, first.clone(), Err("player not found".into()));
+    w.run_drainers();
+    let p = w.purchase();
+    assert_eq!((p.status.as_str(), p.attempts), (status::VERIFIED, 1));
+    assert!(p.last_error.contains("game database: player not found"), "{}", p.last_error);
+    assert_eq!(w.read(|tx| tx.db.idc_call().count()), 0);
+
+    w.advance_clock(61);
+    w.run_worker();
+    assert_eq!(grant_calls(&w).len(), 2, "a new call after the backoff");
+}
+
+#[test]
+fn an_idc_answer_from_a_client_is_ignored() {
+    let w = World::new();
+    use_idc(&w);
+    w.verify("player-1", "gems");
+    let row = grant_calls(&w).remove(0);
+    let auth = TestAuth::from_jwt_payload(r#"{"iss":"https://evil.example","sub":"mallory","iat":0}"#, spacetimedb::ConnectionId::ZERO).unwrap();
+    w.test
+        .with_reducer_tx(auth, |ctx| {
+            crate::idc::game_grant_answered(ctx, row.clone(), Ok(()));
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+    w.run_drainers();
+    assert_eq!(w.purchase().status, status::VERIFIED, "not granted on a forged answer");
+}
+
+#[test]
+fn idc_builds_need_the_game_database_identity() {
+    let w = World::new();
+    w.as_admin(false);
+    let upsert = |db: &str| {
+        w.test.with_reducer_tx(TestAuth::internal(), |ctx| {
+            crate::admin_upsert_game_app(
+                ctx,
+                json!({ "game_key": "game", "app_id": APP, "platform": "android", "delivery": "spacetimedb_idc", "spacetime_db": db }).to_string(),
+            )
+        })
+    };
+    assert!(upsert("my-game").unwrap_err().contains("identity"));
+    upsert(GAME_DB).unwrap();
+}

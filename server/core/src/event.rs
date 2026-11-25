@@ -8,6 +8,10 @@ use sha2::Sha256;
 pub mod delivery {
     /// Call reducers of a SpacetimeDB game database over its HTTP API.
     pub const SPACETIMEDB: &str = "spacetimedb";
+    /// Call `purser_grant` / `purser_revoke` of a SpacetimeDB game database on the same server or
+    /// cluster through inter-database calls (`spacetime_db` = its identity): exactly once, in order,
+    /// no token (see `server/game-receiver`).
+    pub const SPACETIMEDB_IDC: &str = "spacetimedb_idc";
     /// POST a signed JSON event to the game's own backend.
     pub const WEBHOOK: &str = "webhook";
     /// Nothing is pushed: the client grants the reward itself (games without a backend) and reads
@@ -15,7 +19,7 @@ pub mod delivery {
     pub const NONE: &str = "none";
 
     pub fn is_valid(d: &str) -> bool {
-        matches!(d, SPACETIMEDB | WEBHOOK | NONE)
+        matches!(d, SPACETIMEDB | SPACETIMEDB_IDC | WEBHOOK | NONE)
     }
 
     /// The reward is granted by the client, so the client also finishes the purchase in the store

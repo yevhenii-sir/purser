@@ -839,55 +839,90 @@ pub fn run_within(ctx: &mut impl Ctx, lease: Lease, budget: Budget) -> Option<Pu
 fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease {
     let Step { app, row: p, delivery, revoked_by_admin, mut store_auth, catalog_id, reinstated } = step;
     let billing_event = |p: &Purchase, event: &str, why: &str, now_ms: i64| BillingEvent { catalog_product_id: catalog_id.clone(), ..billing_event(p, event, why, now_ms) };
-    let creds = delivery.as_ref();
     let now_ms = ctx.now_ms();
-    let result: Result<(&str, Option<&str>), String> = match p.status.as_str() {
+    // The event the game gets in this step (none: nothing to deliver), the status after it and the
+    // integration event.
+    let (game_event, next, kind): (Option<BillingEvent>, &str, Option<&str>) = match p.status.as_str() {
         status::VERIFIED => {
             let next = if p.store_action.is_empty() { status::COMPLETED } else { status::GRANTED };
-            let ev = integrations::grant_kind(&p);
             let why = if reinstated { reason::REINSTATED } else { p.reason.as_str() };
-            delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::GRANT, why, now_ms))
-                .map(|_| (next, Some(ev)))
+            (Some(billing_event(&p, event_type::GRANT, why, now_ms)), next, Some(integrations::grant_kind(&p)))
         }
-        status::GRANTED => stores::finish(ctx, &app, &p, &mut store_auth).map(|_| (status::COMPLETED, None)),
+        status::GRANTED => {
+            return match stores::finish(ctx, &app, &p, &mut store_auth) {
+                Ok(()) => ctx.tx(|tx| {
+                    let lease_app = next_step.is_some_and(|b| b.allows(tx_now_micros(tx))).then_some(&app);
+                    transition(tx, &p.id, &p.status, status::COMPLETED, None, lease_app)
+                }),
+                Err(e) => Lease::Idle(ctx.tx(|tx| fail(tx, &p.id, &e))),
+            };
+        }
         // Not a refund: no integration event.
         status::TRANSFER_PENDING => {
             let mut ev = billing_event(&p, event_type::REVOKE, reason::TRANSFER, now_ms);
             ev.user_id = p.previous_user_id.clone();
-            let done = if ev.user_id.is_empty() { Ok(()) } else { delivery_client::deliver_with(ctx, &app, creds, &ev) };
-            done.map(|_| (status::VERIFIED, None))
+            ((!ev.user_id.is_empty()).then_some(ev), status::VERIFIED, None)
         }
         status::REVOKE_PENDING => {
             // An admin revoke is not a refund: no integration event (see `support`).
-            let (why, ev) = if revoked_by_admin { (reason::ADMIN, None) } else { (reason::REFUND, Some(event_kind::REFUND)) };
-            delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, why, now_ms))
-                .map(|_| (status::REVOKED, ev))
+            let (why, kind) = if revoked_by_admin { (reason::ADMIN, None) } else { (reason::REFUND, Some(event_kind::REFUND)) };
+            (Some(billing_event(&p, event_type::REVOKE, why, now_ms)), status::REVOKED, kind)
         }
         // A replaced subscription (upgrade) is no churn: no integration event.
         status::EXPIRE_PENDING if !p.replaced_by.is_empty() => {
-            delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, reason::REPLACED, now_ms))
-                .map(|_| (status::EXPIRED, None))
+            (Some(billing_event(&p, event_type::REVOKE, reason::REPLACED, now_ms)), status::EXPIRED, None)
         }
         // Paused by the player: not churn, it comes back.
         status::EXPIRE_PENDING if p.paused_until_ms > 0 => {
-            delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, reason::PAUSED, now_ms))
-                .map(|_| (status::EXPIRED, Some(event_kind::PAUSE)))
+            (Some(billing_event(&p, event_type::REVOKE, reason::PAUSED, now_ms)), status::EXPIRED, Some(event_kind::PAUSE))
         }
         status::EXPIRE_PENDING => {
-            delivery_client::deliver_with(ctx, &app, creds, &billing_event(&p, event_type::REVOKE, reason::EXPIRE, now_ms))
-                .map(|_| (status::EXPIRED, Some(event_kind::EXPIRE)))
+            (Some(billing_event(&p, event_type::REVOKE, reason::EXPIRE, now_ms)), status::EXPIRED, Some(event_kind::EXPIRE))
         }
         _ => return Lease::Idle(Some(p)),
     };
+    if let (Some(ev), true) = (&game_event, app.delivery == delivery::SPACETIMEDB_IDC) {
+        return idc_step(ctx, &app, &p, ev, next, kind, next_step);
+    }
+    let result = match &game_event {
+        Some(ev) => delivery_client::deliver_with(ctx, &app, delivery.as_ref(), ev),
+        None => Ok(()),
+    };
     match result {
-        Ok((next, ev)) => {
-            ctx.tx(|tx| {
-                let lease_app = next_step.is_some_and(|b| b.allows(tx_now_micros(tx))).then_some(&app);
-                transition(tx, &p.id, &p.status, next, ev, lease_app)
-            })
-        }
+        Ok(()) => ctx.tx(|tx| {
+            let lease_app = next_step.is_some_and(|b| b.allows(tx_now_micros(tx))).then_some(&app);
+            transition(tx, &p.id, &p.status, next, kind, lease_app)
+        }),
         Err(e) => Lease::Idle(ctx.tx(|tx| fail(tx, &p.id, &e))),
     }
+}
+
+/// A delivery step through an inter-database call (`idc`), in one transaction: send the call and
+/// park the row, keep waiting, or apply the game's answer (move on, or fail with backoff).
+fn idc_step(ctx: &mut impl Ctx, app: &GameApp, p: &Purchase, ev: &BillingEvent, next: &str, kind: Option<&str>, next_step: Option<Budget>) -> Lease {
+    ctx.tx(|tx| match crate::idc::next(tx, p) {
+        crate::idc::Next::Send => match crate::idc::target_of(app) {
+            Some(target) => {
+                crate::idc::send(tx, target, p, ev);
+                Lease::Idle(park(tx, &p.id))
+            }
+            None => Lease::Idle(fail(tx, &p.id, "spacetimedb_idc delivery: spacetime_db must be the game database's identity (64 hex digits)")),
+        },
+        crate::idc::Next::Wait => Lease::Idle(park(tx, &p.id)),
+        crate::idc::Next::Done => {
+            let lease_app = next_step.is_some_and(|b| b.allows(tx_now_micros(tx))).then_some(app);
+            transition(tx, &p.id, &p.status, next, kind, lease_app)
+        }
+        crate::idc::Next::Failed(e) => Lease::Idle(fail(tx, &p.id, &e)),
+    })
+}
+
+/// Lets a row wait for the game's answer to an inter-database call: the answer makes it due again
+/// (`idc::answered`), the worker looks again after `idc::WAIT_MICROS` otherwise.
+fn park(tx: &TxContext, id: &str) -> Option<Purchase> {
+    let mut p = tx.db.purchase().id().find(id.to_string())?;
+    p.next_attempt_at_micros = tx_now_micros(tx) + crate::idc::WAIT_MICROS;
+    Some(save_purchase(tx, p))
 }
 
 /// Worker (runs every minute): starts the queue drainers when purchases are due (`drain`, they

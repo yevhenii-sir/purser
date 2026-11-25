@@ -7,7 +7,9 @@ It creates a throwaway identity, publishes the module as it, configures an app w
 calls, grants purchases, then checks what unit tests cannot: the routes over HTTP (`/healthz`, the
 gzipped admin page and its ETag, `/entitlements`, `/server/entitlements` with a server key), the
 owner's `/sql` with `OR`, and a backup → `--delete-data` publish → restore round trip with
-`server/backup.py` (paged reads, the ledger reindex). Exit code 1 on the first failure.
+`server/backup.py` (paged reads, the ledger reindex). With `--game-wasm` (the reference receiver,
+`server/game-receiver`) it also publishes a game database and delivers a grant to it through an
+inter-database call (`delivery = spacetimedb_idc`). Exit code 1 on the first failure.
 """
 import argparse
 import gzip
@@ -29,6 +31,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--server", default="http://127.0.0.1:3000")
     p.add_argument("--wasm", required=True)
+    p.add_argument("--game-wasm", help="server/game-receiver's wasm: check delivery through inter-database calls")
     a = p.parse_args()
     base = a.server.rstrip("/")
     wasm = open(a.wasm, "rb").read()
@@ -109,6 +112,9 @@ def main():
     code, _, _ = req("POST", f"{route}/server/entitlements", json.dumps({"app_id": app, "user_id": "player-4"}).encode())
     check(code == 401, "/server/entitlements without a key is refused")
 
+    if a.game_wasm:
+        idc(a, base, tok, db, req, check, call, sql)
+
     # Backup, a --delete-data publish of the same name, restore.
     tables = ["game_app", "product", "purchase", "purchase_log", "admin", "credential", "alert_channel", "purchase_count", "server_key"]
     before = {t: len(sql(f"SELECT * FROM {t}")["rows"]) for t in tables}
@@ -127,6 +133,34 @@ def main():
     code, _, body = req("POST", f"{route}/entitlements", json.dumps({"app_id": app, "user_id": "player-3"}).encode())
     check(code == 200 and json.loads(body)["non_consumables"] == ["no_ads"], "/entitlements after the restore (owned purchases reindexed)")
     print("done")
+
+
+def idc(a, base, tok, db, req, check, call, sql):
+    """A game database on the same server gets a grant through an inter-database call, once."""
+    game_db = f"{db}-game"
+    code, _, body = req("PUT", f"{base}/v1/database/{game_db}", open(a.game_wasm, "rb").read(), "application/wasm", tok)
+    check(code == 200, f"publish the game receiver ({code} {body[:200]!r})")
+    game = json.loads(body)["Success"]["database_identity"]
+    billing = json.loads(req("GET", f"{base}/v1/database/{db}")[2])["database_identity"]
+    if isinstance(billing, dict):  # SATS JSON: {"__identity__": "0x..."}
+        billing = next(iter(billing.values()))
+    billing = billing[2:] if billing.startswith("0x") else billing
+    code, _, body = req("POST", f"{base}/v1/database/{game_db}/call/allow_purser", json.dumps([{"__identity__": "0x" + billing}]).encode(), tok=tok)
+    check(code == 200, f"the game allows billing's identity ({code} {body[:200]!r})")
+    app = "com.example.e2e.idc"
+    call("admin_upsert_game_app", json.dumps({"game_key": "e2e", "app_id": app, "platform": "android", "delivery": "spacetimedb_idc", "spacetime_db": game}))
+    call("admin_upsert_products", json.dumps([{"app_id": app, "product_id": "no_ads", "kind": "non_consumable"}]))
+    call("admin_grant_manual", json.dumps({"app_id": app, "user_id": "player-idc", "product_id": "no_ads", "transaction_id": "idc-1"}))
+    rows, status = [], ""
+    for _ in range(60):
+        code, _, body = req("POST", f"{base}/v1/database/{game_db}/sql", b"SELECT * FROM billing_event_log", "text/plain", tok)
+        rows = json.loads(body)[0]["rows"] if code == 200 else []
+        status = sql(f"SELECT status FROM purchase WHERE id = 'manual:idc-1'")["rows"]
+        if rows and status and status[0][0] == "completed":
+            break
+        time.sleep(1)
+    check(len(rows) == 1 and "grant|" in json.dumps(rows[0]), f"the game database got the grant once: {rows}")
+    check(status and status[0][0] == "completed", f"billing applied the game's answer: {status}")
 
 
 if __name__ == "__main__":

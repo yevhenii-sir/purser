@@ -3,7 +3,7 @@
 [![CI](https://github.com/yevhenii-sir/purser/actions/workflows/ci.yml/badge.svg)](https://github.com/yevhenii-sir/purser/actions/workflows/ci.yml)
 [![Docs](https://github.com/yevhenii-sir/purser/actions/workflows/docs.yml/badge.svg)](https://yevhenii-sir.github.io/purser/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![SpacetimeDB 2.16.1](https://img.shields.io/badge/SpacetimeDB-2.16.1-6f42c1.svg)](https://spacetimedb.com)
+[![SpacetimeDB 2.16.3](https://img.shields.io/badge/SpacetimeDB-2.16.3-6f42c1.svg)](https://spacetimedb.com)
 
 **In-app purchases for games on SpacetimeDB: live on maincloud in seconds, or self-hosted.** Purser is an open-source alternative to Adapty and RevenueCat: purchases from Google Play, the App Store, Amazon, Steam and the web are verified by your own SpacetimeDB module, rewards are delivered straight into the game, and the admin panel shows the setup status and the revenue.
 
@@ -26,7 +26,7 @@ flowchart LR
 
 ## Quick start
 
-Have a [SpacetimeDB](https://spacetimedb.com) account? There is nothing else to host: no server, no database, no containers. Install the [SpacetimeDB CLI](https://spacetimedb.com/install) 2.16.1 or newer, sign in with `spacetime login`, then, outside a SpacetimeDB project folder:
+Have a [SpacetimeDB](https://spacetimedb.com) account? There is nothing else to host: no server, no database, no containers. Install the [SpacetimeDB CLI](https://spacetimedb.com/install) 2.16.3 or newer, sign in with `spacetime login`, then, outside a SpacetimeDB project folder:
 
 ```bash
 curl -LO https://github.com/yevhenii-sir/purser/releases/latest/download/purser.wasm

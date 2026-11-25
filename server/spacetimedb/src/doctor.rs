@@ -334,6 +334,7 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
     // --- Delivery --------------------------------------------------------------------------
     match app.delivery.as_str() {
         delivery::SPACETIMEDB => check_spacetimedb_delivery(ctx, &s, opts, &mut r),
+        delivery::SPACETIMEDB_IDC => check_idc_delivery(ctx, &s, &mut r),
         delivery::WEBHOOK => check_webhook_delivery(ctx, &s, opts, &mut r),
         _ => r.add(
             "delivery",
@@ -550,6 +551,31 @@ fn check_amazon(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report
         },
     };
     r.add("amazon_api", "Amazon RVS", verdict);
+}
+
+/// Inter-database delivery: the game database's identity, and this database's identity the game
+/// must allow (`allow_purser` in `server/game-receiver`). Delivery itself cannot be tried from here
+/// without granting something.
+fn check_idc_delivery(ctx: &mut impl Ctx, s: &Snapshot, r: &mut Report) {
+    let app = &s.app;
+    r.add(
+        "delivery_host",
+        "Game database",
+        match crate::idc::target_of(app) {
+            Some(id) => v(Level::Ok, format!("{} (same SpacetimeDB server, inter-database calls)", id.to_hex()), ""),
+            None => v(
+                Level::Fail,
+                format!("'{}' is not a database identity", app.spacetime_db),
+                "Set the game database's identity (64 hex digits, `spacetime list`) as its database",
+            ),
+        },
+    );
+    let me = ctx.tx(|tx| tx.database_identity().to_hex().to_string());
+    r.add(
+        "delivery_identity",
+        "Billing identity",
+        v(Level::Ok, format!("{me}: the game's purser_grant / purser_revoke must accept calls from this database only"), ""),
+    );
 }
 
 fn check_spacetimedb_delivery(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report) {

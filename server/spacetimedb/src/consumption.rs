@@ -77,11 +77,28 @@ fn prepare(tx: &TxContext, row: &AppleConsumptionOutbox) -> Result<(GameApp, Str
     Ok((app, p.transaction_id, body))
 }
 
+/// Answers one refund request; an attempt cut short is made again before the deadline (a stand-in
+/// row, as in `integrations::send_integration_event`).
 #[spacetimedb::procedure]
 pub fn send_apple_consumption(ctx: &mut ProcedureContext, row: AppleConsumptionOutbox) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    let guard = ctx.tx(|tx| {
+        let at = tx_now_micros(tx) + crate::integrations::ATTEMPT_GUARD_SECS as i64 * 1_000_000;
+        (at <= row.deadline_at_micros).then(|| {
+            let at = ScheduleAt::Time(tx.timestamp + Duration::from_secs(crate::integrations::ATTEMPT_GUARD_SECS));
+            tx.db.apple_consumption_outbox().insert(AppleConsumptionOutbox { id: 0, attempts: row.attempts + 1, scheduled_at: at, ..row.clone() }).id
+        })
+    });
+    answer(ctx, &row);
+    if let Some(id) = guard {
+        ctx.tx(|tx| tx.db.apple_consumption_outbox().id().delete(id));
+    }
+}
+
+fn answer(ctx: &mut ProcedureContext, row: &AppleConsumptionOutbox) {
+    let row = row.clone();
     let note = |ctx: &mut ProcedureContext, event: &'static str, details: String| {
         ctx.tx(|tx| log_event(tx, &row.purchase_id, event, &details));
     };
