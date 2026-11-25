@@ -8,6 +8,14 @@
   purchase, so a game that grants on the client grants it in the same handler; a refused code is `Rejected` with the
   reason's code first in the message (`ErrorCodes.CodeInvalid`, `CodeExpired`, `CodeUsedUp`). A custom `IBillingApi`
   implements `IPromoCodeApi` for it.
+- `HuaweiStoreAdapter` (Huawei AppGallery) over an `IHuaweiIap` bridge to Huawei's IAP SDK (sample "Huawei AppGallery"
+  for the HMS Unity Plugin): verifies on `/verify/huawei` (purchase token; subscriptions with their subscription id),
+  consumes consumables after the server's answer, verifies unconsumed ones again at launch. `BillingPlatform.Huawei`,
+  `AndroidStore.HuaweiAppGallery` (`Auto` picks it when AppGallery installed the app), `BillingStores.Huawei`,
+  `BillingPlatforms.InstallerPackage()`.
+- `TelegramStoreAdapter` (Telegram Stars in a Telegram Mini App) over an `ITelegramWebApp` bridge (sample "Telegram Mini
+  App" with a jslib for `Telegram.WebApp.openInvoice`): checkout on `/checkout/telegram`, then `/checkout/telegram/status`
+  until granted; an invoice closed without paying ends the checks. `BillingStores.Telegram`.
 - `PurchaseResult.Quantity`: the units of a purchase of several at once (a Google Play product with multi-quantity, a
   StoreKit quantity); a game that grants on the client grants the product this many times. 1 otherwise.
 

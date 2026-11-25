@@ -350,7 +350,7 @@ to the portal's login link (docs/store-setup.md, Stripe → Customer portal). `P
 is where the portal's Return link leads. On WebGL a page opened after an await may be blocked as a popup. `PresentOfferCodeRedemption()` shows the App Store's sheet for redeeming an
 offer code (iOS 14 and later; false elsewhere); a redeemed code arrives as a purchase and is verified like any other.
 
-## Amazon Appstore, Steam, web
+## Amazon Appstore, Huawei AppGallery, Steam, web, Telegram
 
 Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `BillingDependencies.Store`:
 
@@ -360,6 +360,18 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
   Amazon Appstore as an Amazon build. The server verifies the receipt id with the Amazon user id
   (`/verify/amazon`); the adapter calls `NotifyFulfillment` after the server's answer (`UNAVAILABLE` when it
   rejected the receipt).
+- **Huawei AppGallery**: `HuaweiStoreAdapter` over a bridge to Huawei's IAP SDK (import the **Huawei AppGallery** sample,
+  it has a bridge to the HMS Unity Plugin). Add a `huawei` build with the app id of the Huawei build on the server and,
+  if the product ids differ, `huawei` rows in `storeIds`. `androidStore = Auto` treats an install by AppGallery as a
+  Huawei build (`HuaweiAppGallery` forces it). The server looks the purchase token up (`/verify/huawei`; for
+  subscriptions with the subscription id); the adapter consumes consumables after the server's answer. Unconsumed
+  purchases are verified again at the next launch.
+- **Telegram Stars** (a WebGL game as a Telegram Mini App): `TelegramStoreAdapter` with a bridge that opens invoices
+  (import the **Telegram Mini App** sample: a jslib calling `Telegram.WebApp.openInvoice`). Add a `telegram` build with
+  the app id of the Telegram build on the server, where products are priced in Stars (`XTR`). The server creates an
+  invoice link of the game's bot (`/checkout/telegram`); the adapter opens it and asks `/checkout/telegram/status` until
+  the bot's webhook reached the server; an invoice closed without paying ends the checks. Subscriptions renew every 30
+  days.
 - **Xsolla** (WebGL, desktop): `XsollaStoreAdapter`. Add an `xsolla` build with the app id of the Xsolla build; the
   product id is the Xsolla item SKU. A purchase asks the server for a payment token (`/checkout/xsolla`), opens
   Pay Station with `Application.OpenURL` and polls `/checkout/xsolla/status` until Xsolla's webhook reached the

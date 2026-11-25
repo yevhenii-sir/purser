@@ -49,6 +49,9 @@
     <type fullname="Purser.XsollaStoreAdapter/ClaimRequest" preserve="all" />
     <type fullname="Purser.XsollaStoreAdapter/CheckoutRequest" preserve="all" />
     <type fullname="Purser.XsollaStoreAdapter/StatusRequest" preserve="all" />
+    <type fullname="Purser.TelegramCheckoutResponse" preserve="all" />
+    <type fullname="Purser.TelegramStoreAdapter/CheckoutRequest" preserve="all" />
+    <type fullname="Purser.TelegramStoreAdapter/StatusRequest" preserve="all" />
   </assembly>
   <assembly fullname="Unity.Purchasing.Stores" ignoreIfMissing="1">
     <type fullname="UnityEngine.Purchasing.AppleStoreImpl" preserve="all" />

@@ -226,6 +226,14 @@ namespace Purser
                 log.Warning("Installed by the Amazon Appstore, but no AmazonStoreAdapter was given in BillingDependencies.Store: using Google Play.");
                 platform = BillingPlatform.Google;
             }
+            if (platform == BillingPlatform.Huawei)
+            {
+                if (config.androidStore == AndroidStore.HuaweiAppGallery)
+                    throw new BillingException("androidStore is Huawei AppGallery: pass a HuaweiStoreAdapter in BillingDependencies.Store " +
+                                               "(Unity IAP has no Huawei store)");
+                log.Warning("Installed by Huawei AppGallery, but no HuaweiStoreAdapter was given in BillingDependencies.Store: using Google Play.");
+                platform = BillingPlatform.Google;
+            }
             var factory = Billing.DefaultStoreFactory
                           ?? throw new BillingException("No store adapter: install Unity IAP (com.unity.purchasing) 5.4 or later for " +
                                                         "the default UnityIapStoreAdapter, or pass a store in BillingDependencies.Store " +

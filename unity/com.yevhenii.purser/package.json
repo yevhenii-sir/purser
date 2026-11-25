@@ -37,6 +37,16 @@
       "path": "Samples~/AmazonAppstore"
     },
     {
+      "displayName": "Huawei AppGallery",
+      "description": "Bridge from HuaweiStoreAdapter to the HMS Unity Plugin's In-App Purchases (Unity IAP has no Huawei store).",
+      "path": "Samples~/HuaweiAppGallery"
+    },
+    {
+      "displayName": "Telegram Mini App",
+      "description": "Opens Telegram Stars invoices of TelegramStoreAdapter with Telegram.WebApp.openInvoice (WebGL jslib).",
+      "path": "Samples~/TelegramMiniApp"
+    },
+    {
       "displayName": "Steam",
       "description": "Bridge from SteamStoreAdapter to Steamworks.NET (MicroTxnAuthorizationResponse_t, SteamID, language).",
       "path": "Samples~/Steam"

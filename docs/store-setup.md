@@ -148,7 +148,7 @@ AppGallery Connect → the app → **In-App Purchases → Settings → Server no
 
 ### Client
 
-Unity IAP has no Huawei store. Other clients post the `purchaseToken` as `purchase_token` to `/verify/huawei`, and for subscriptions the `subscriptionId` as `order_id`; after a success they consume the purchase (`consumeOwnedPurchase`). Sandbox purchases (`purchaseType` 0, test accounts) need **Sandbox purchases** on the build.
+Unity IAP has no Huawei store: the Unity package uses `HuaweiStoreAdapter` over a bridge to Huawei's IAP SDK (sample "Huawei AppGallery" for the HMS Unity Plugin). Other clients post the `purchaseToken` as `purchase_token` to `/verify/huawei`, and for subscriptions the `subscriptionId` as `order_id`; after a success they consume the purchase (`consumeOwnedPurchase`). Sandbox purchases (`purchaseType` 0, test accounts) need **Sandbox purchases** on the build.
 
 ## Telegram Stars
 
@@ -171,7 +171,7 @@ The setup check reads the bot (`getMe`) and its webhook (`getWebhookInfo`: where
 1. The client calls `POST /checkout/telegram` `{app_id, product_id, user_id}` → `{url, order_id}` and opens `url` with `Telegram.WebApp.openInvoice`.
 2. Telegram sends the pre-checkout query; the server accepts it when the order is known and the price unchanged (answered in the webhook's response, within Telegram's 10 seconds).
 3. `successful_payment` records the purchase for the order's player (`telegram:<telegram_payment_charge_id>`, the Telegram user id kept for refunds) and delivers it. A subscription's renewals are new payments of the same order.
-4. The client asks `POST /checkout/telegram/status` `{app_id, user_id, order_id}` (the shape of `/verify`) until it says `success`.
+4. The client (Unity: `TelegramStoreAdapter` with the sample "Telegram Mini App") asks `POST /checkout/telegram/status` `{app_id, user_id, order_id}` (the shape of `/verify`) until it says `success`.
 
 Unpaid orders are forgotten after 7 days (their links stop working). A subscription that was not paid again ends when its period is over (the worker re-checks it then).
 

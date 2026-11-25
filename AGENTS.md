@@ -9,7 +9,7 @@ then the file you are about to change. Human-facing docs: [README.md](README.md)
 A self-hosted, open-source (MIT) in-app purchase backend, an alternative to Adapty / RevenueCat for
 games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity package**:
 
-1. The client buys through Unity IAP (or a store adapter: Amazon Appstore, Steam, web) and posts the
+1. The client buys through Unity IAP (or a store adapter: Amazon Appstore, Huawei AppGallery, Steam, web, Telegram) and posts the
    receipt to `/verify/<store>` (`google`, `apple`, `amazon`, ...).
 2. The module verifies it with the store's API (Google Play Developer API, App Store Server API,
    Amazon RVS), writes the **ledger**, consumes / acknowledges Google purchases.
