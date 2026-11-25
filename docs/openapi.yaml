@@ -973,7 +973,7 @@ components:
           description: Queue drainers running or scheduled (at most the `worker_lanes` setting).
         stuck_purchases:
           type: integer
-          description: Rows retried 5 times or more.
+          description: Rows retried 3 times or more.
         queued_integration_events:
           type: integer
     ClientInfo:
@@ -1074,6 +1074,9 @@ components:
         offer_id:
           type: string
           description: The store offer the player bought (Google offer or base plan id, Apple promotional offer id).
+        client_finished:
+          type: boolean
+          description: The game finished the purchase in the store itself (observer mode); honored for builds where the client grants, so the server does not consume or acknowledge it.
         client:
           $ref: "#/components/schemas/ClientInfo"
 
@@ -1090,9 +1093,7 @@ components:
             - `pending`: verified and recorded; the worker delivers the reward shortly. Finish the transaction.
             - `pending_or_canceled`: the payment has not gone through (or was canceled). Retry later.
             - `expired` / `revoked`: subscription expired / purchase refunded.
-            - `forbidden`: see the 403 response.
-            - other ledger statuses (`revoke_pending`, `expire_pending`, `rejected`) may appear when the
-              purchase is already being revoked or was rejected.
+            - `forbidden`: see the 403 response (also a purchase the ledger rejected).
           examples: [success, pending, pending_or_canceled, expired, revoked]
         message:
           type: string
@@ -1246,6 +1247,9 @@ components:
           description: Firebase `app_instance_id`, for GA4.
         attribution:
           $ref: "#/components/schemas/Attribution"
+        client_finished:
+          type: boolean
+          description: As in `/verify`, for every item.
         client:
           $ref: "#/components/schemas/ClientInfo"
         purchases:
@@ -1319,7 +1323,7 @@ components:
       bearerFormat: JWT
       description: |
         Builds with `client_auth = signed`: an HS256 JWT `{"sub": <user_id>, "exp": <unix seconds>, "aud": <game_key>}`
-        (`aud` optional) signed with the build's `client_auth_secret` by the game's backend.
+        (`aud` required) signed with the build's `client_auth_secret` by the game's backend.
 
   responses:
     ServerKey:

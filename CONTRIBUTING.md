@@ -39,7 +39,7 @@ Unity: add the package to `"testables"` in a project's `manifest.json` and run t
 
 ## Dependencies
 
-`Cargo.lock` follows SpacetimeDB's own lockfile. Don't run a full `cargo update`: newer `icu_*` crates break `temporal_rs` in `spacetimedb-core`. Upgrade SpacetimeDB with `cargo update -p spacetimedb --precise <version>` and bump the version in `spacetimedb/Cargo.toml`.
+`Cargo.lock` follows SpacetimeDB's own lockfile. Don't run a full `cargo update` (keep the crates SpacetimeDB is built with). Upgrade SpacetimeDB with `cargo update -p spacetimedb --precise <version>` and bump the version in `spacetimedb/Cargo.toml`.
 
 ## Schema changes
 

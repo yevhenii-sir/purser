@@ -8,7 +8,7 @@ problems before they reach players; the Logs page shows what the module did.
 
 | Code | Where | What it means | What to do |
 |---|---|---|---|
-| `ERR_CLIENT_AUTH` | client routes, `401` | The build has `client_auth = signed` and the request has no player token, an expired one, or one for another `user_id` / app. | Have your backend sign a fresh HS256 token for this player ([game-integration.md](game-integration.md#client-requests-player-tokens-limits-signed-answers)). |
+| `ERR_CLIENT_AUTH` | client routes, `401` | The build has `client_auth = signed` and the request has no player token, an expired one, one for another `user_id` / app, or one without `aud` (the app's game key). | Have your backend sign a fresh HS256 token for this player ([game-integration.md](game-integration.md#client-requests-player-tokens-limits-signed-answers)). |
 | `ERR_RATE_LIMITED` | client and server routes, `429` | Too many requests of this player or build (client routes) or key (`/server/*`). | Wait `Retry-After` seconds; the Unity package does it by itself. A burst from one player id is usually a client loop. |
 | `ERR_TX_CLAIMED` | `/verify` | The store transaction belongs to another player id (consumables never move). | Normal for a replayed receipt; if the player id changed (reinstall), use stable ids. |
 | `ERR_CONSUMED_ELSEWHERE` | `/verify` (Google) | A consumable is consumed in Google Play but this ledger never had it: granted by another system or a replay. | When another billing system or the client still consumes, turn on *Client consumes purchases itself* on the build. |
@@ -18,7 +18,8 @@ problems before they reach players; the Logs page shows what the module did.
 | `ERR_PURCHASE_NOT_FOUND` | admin, `/server/revoke` | No such ledger id (or not one of the key's app). | Ledger ids are `{store}:{transaction_id}`. |
 | `ERR_NOT_REVOCABLE` | admin, `/server/revoke` | The purchase cannot be revoked in its state (still being verified, already ended). | Look at its history on the purchase page. |
 | `ERR_TX_EXISTS` | manual grant, `/server/grant` (`409`) | The `transaction_id` of a grant is already used (by another grant). | Use one id per grant; repeat the same request to get its result. |
-| `ERR_BAD_USER` | everywhere | A player id must be 1-128 characters of `A-Z a-z 0-9 - _ . :`. | — |
+| `ERR_BAD_USER` | admin, `/server/*` | A player id must be 1-128 characters of `A-Z a-z 0-9 - _ . :` (client routes answer `400 "invalid user_id"`). | The Unity SDK refuses other ids in `SetUserId`; hash an e-mail address, for example. |
+| `ERR_BAD_TABLE` | `backup.py` (`admin_backup_page`) | The module does not page that table: the backup reads it with `/sql`. | — |
 | `ERR_PLAYER_TOKENS_REQUIRED` | `/manage/stripe`, `403` | The customer portal acts for the player's Stripe customer: only builds with player tokens get a session. | Use player tokens, or Stripe's customer portal login link (`StripeCheckoutOptions.CustomerPortalLoginUrl`). |
 | `ERR_NO_SUBSCRIPTION` | `/manage/stripe`, `404` | The player has no active Stripe subscription in this build. | The login link still lets a customer in by email. |
 | `ERR_OFFER_KEY` | `/offers/apple/sign` | The App Store In-App Purchase key for promotional offers is not configured. | Keys tab ([apple-offers.md](apple-offers.md)). |
@@ -77,7 +78,7 @@ or use **Retry now**. `GET /healthz` reports `pending_purchases`, `due_purchases
 - **`/healthz` says `backlog`** (and the `queue_behind` alert fired): a purchase has waited 15 minutes after it became
   due. The errors of the waiting purchases on the Overview say why: usually a store or the game's server that answers
   slowly or not at all (its rows wait a minute after every call without a reply). When the calls succeed but there are
-  more purchases than the drainers take, raise `worker_lanes` (`admin_set_setting worker_lanes 4`, at most 8); each
+  more purchases than the drainers take, raise `worker_lanes` (Server page → Worker, or `spacetime call <db> admin_set_setting '"worker_lanes"' '"4"'`, at most 8); each
   drainer holds one module instance while it waits ([self-hosting.md](self-hosting.md#capacity)).
 - **An integration dropped events** (Integrations tab shows *The last event was dropped*): fix its key or settings,
   then send the dropped events again (`admin_replay_integration_events(app_id, kind)`; they are kept for 30 days).

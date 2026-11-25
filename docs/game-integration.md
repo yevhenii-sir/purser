@@ -145,7 +145,7 @@ var token = new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(
     expires: DateTime.UtcNow.AddHours(1), signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256)));
 ```
 
-`aud` (the app's key, `game_key`) is optional. Open builds take any player id: use ids nobody can guess (UUIDs), and personal attributes (`email`, `phone`, `name`) cannot be set there.
+`aud` (the app's key, `game_key`) is required: a token without it is refused (it would work for every app that shares the secret). Open builds take any player id: use ids nobody can guess (UUIDs), and personal attributes (`email`, `phone`, `name`) cannot be set there.
 
 **Rate limits** (always on). Over a limit the answer is `429` with `"code": "ERR_RATE_LIMITED"` and `Retry-After: <seconds>`: wait that long and retry; a purchase is not finished because of it.
 

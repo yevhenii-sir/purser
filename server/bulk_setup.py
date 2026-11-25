@@ -56,7 +56,7 @@ PRODUCT_COLUMNS = PRODUCT_FIELDS + ("price",)
 EMPTY_PRODUCT = {"kind": "", "catalog_id": "", "price_micros": 0, "currency": "", "title": "", "description": "",
                  "period": "", "apple_group": "", "access": ""}
 KINDS = ("consumable", "non_consumable", "subscription")  # purser_core::model::kind
-DELIVERIES = ("none", "spacetimedb", "webhook")  # purser_core::event::delivery
+DELIVERIES = ("none", "spacetimedb", "spacetimedb_idc", "webhook")  # purser_core::event::delivery
 REFUND_MODES = ("off", "inform", "prefer")  # purser_core::consumption::mode
 CLIENT_AUTH = ("open", "signed")  # purser_core::client_api::mode
 PERIODS = ("P1W", "P1M", "P3M", "P6M", "P1Y")  # purser_core::store_create::PERIODS

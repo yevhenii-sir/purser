@@ -4,7 +4,7 @@ A replacement for Adapty: a SpacetimeDB module that verifies Google Play, App St
 
 This is the server reference: tables, secrets, the HTTP API and admin calls. To get started, see the [quick start](../README.md#quick-start).
 
-- Your database name goes into `spacetime.json` (copy `spacetime.example.json`) for `seed.py`, `migrate.py` and `mcp_server.py`. The scripts use the token of `spacetime login`, or `PURSER_TOKEN` when it is set.
+- Your database name goes into `spacetime.json` (copy `spacetime.example.json`) for `seed.py`, `bulk_setup.py`, `setup_google.py` and `mcp_server.py`; `backup.py`, `migrate.py` and `publish_check.py` take it as an argument. The scripts use the token of `spacetime login`, or `PURSER_TOKEN` when it is set.
 - `mcp_server.py` — an MCP server for Claude and other MCP clients; see [docs/mcp.md](../docs/mcp.md).
 - SpacetimeDB **2.16.3**, HTTP handlers (`features = ["unstable"]`, beta).
 - `core/` — pure logic without SpacetimeDB (JWT, parsing store responses and notifications, delivery contract), covered by tests.
@@ -46,8 +46,8 @@ Google RTDN / App Store Notifications V2 / Amazon RTN ──▶ /notify/<store> 
 Features:
 - **Overview:** server status, counters (`admin_overview`), net revenue for 30 days, purchases by status, “stuck” purchases with errors.
 - **Revenue:** net revenue, refunds, purchases, subscriptions and MRR in USD, charts and breakdowns by app, product and currency; see [docs/analytics.md](../docs/analytics.md).
-- **Apps:** one page per app (its Android and iOS builds share a `game_key`) with the tabs **Setup** (setup check, URLs to paste into the stores), **Products** (one table for both builds, **Import from Google Play**, copy to iOS), **Delivery**, **Integrations**, **Keys** (every secret the builds need and where it comes from), **Purchases** and **Revenue**. The **Add an app** wizard creates an app end to end. The apps list reads one row per build from `admin_apps_summary`; each build keeps its own product price (e.g. a higher App Store price).
-- **Developer accounts:** keys shared by every app of an account. **Server:** allowed SpacetimeDB hosts, the public address, all secrets by scope.
+- **Apps:** one page per app (its Android and iOS builds share a `game_key`) with the tabs **Setup** (setup check, URLs to paste into the stores), **Products** (one table for both builds, **Import from Google Play**, copy to iOS), **Delivery** (also Steam settings of Steam builds), **Paywalls** (placements, paywalls and A/B tests, [docs/paywalls.md](../docs/paywalls.md)), **Integrations** (with **Resend** for dropped events), **Keys** (every secret the builds need and where it comes from), **Purchases** and **Revenue**. The **Add an app** wizard creates an app end to end. The apps list reads one row per build from `admin_apps_summary`; each build keeps its own product price (e.g. a higher App Store price).
+- **Developer accounts:** keys shared by every app of an account. **Server:** allowed SpacetimeDB hosts, the public address, the worker (`worker_lanes`, `retention_days`), all secrets by scope.
 - **Secrets:** list of names and writing new values (a `.json` / `.p8` file can be uploaded). The page never reads or displays values.
 - **Integrations:** connecting AppsFlyer, event names, “Send test event”.
 - **Purchases:** the newest purchases of a period, filtered by app and status on the server (`admin_list_purchases`); search by player, transaction id or token; purchase history; “Retry now”; manual grant; entitlements check.
@@ -205,7 +205,7 @@ Admins who are not the owner cannot read private tables with `/sql`. The admin p
 
 Every change is recorded in `admin_audit`: who, the reducer, the target and a short detail with secret-looking fields hidden. Rows are kept 180 days, at most 10 000.
 
-Other admin reducers: `admin_set_setting("public_base_url", url)` (also `store_commission_percent`, `store_commission_after_year_percent`, `store_commission_by_app` for the proceeds estimate, see [docs/analytics.md](../docs/analytics.md), and `retention_days`: player profiles, attribution ids of players without an active subscription and paywall view counts are deleted this many days after their last change, default 730; the ledger and revenue are kept), `admin_delete_game_app`, `admin_delete_product`, `admin_delete_credential`, `admin_upsert_admin`, `admin_remove_admin`, `admin_requeue_purchase(id)` (retry now), `admin_grant_manual(json)` (manual grant: compensations and promos; goes through the same ledger and delivery, not sent to GA4), `admin_revoke_purchase(purchase_id, reason)` (procedure: revokes a purchase the player owns through the ledger; the game receives `revoke` with `reason = admin`; idempotent), `admin_transfer_purchase(purchase_id, new_user_id)` (procedure, Support: moves an owned non-consumable or subscription to another player, `revoke` with `transfer` then `grant`), `admin_set_transfer_policy(game_key, json)` / `admin_transfer_policy(game_key)` (how restores move purchases between player ids: `{"mode": "always" | "cooldown" | "never", "cooldown_days", "max_transfers"}`; a refused restore answers `[ERR_TRANSFER_LIMIT]`), `admin_export_player(game_key, user_id)` (procedure, Support: everything stored about a player of an app, for a GDPR access request) and `admin_erase_player(game_key, user_id)` (Support: deletes the profile, attributes and attribution ids; purchases stay for revenue under `erased:<hash>`, also in their history and the audit log).
+Other admin reducers: `admin_set_setting("public_base_url", url)` (also `store_commission_percent`, `store_commission_after_year_percent`, `store_commission_by_app` for the proceeds estimate, see [docs/analytics.md](../docs/analytics.md), and `retention_days`: player profiles, attribution ids of players without an active subscription and paywall view counts are deleted this many days after their last change, default 730; the ledger and revenue are kept), `admin_delete_game_app`, `admin_delete_product`, `admin_delete_credential`, `admin_upsert_admin`, `admin_remove_admin`, `admin_requeue_purchase(id)` (retry now), `admin_grant_manual(json)` (manual grant: compensations and promos; goes through the same ledger and delivery, not sent to GA4; its ledger id is `manual:<game_key>.<transaction_id>`), `admin_revoke_purchase(purchase_id, reason)` (procedure: revokes a purchase the player owns through the ledger; the game receives `revoke` with `reason = admin`; idempotent), `admin_transfer_purchase(purchase_id, new_user_id)` (procedure, Support: moves an owned non-consumable or subscription to another player, `revoke` with `transfer` then `grant`), `admin_set_transfer_policy(game_key, json)` / `admin_transfer_policy(game_key)` (how restores move purchases between player ids: `{"mode": "always" | "cooldown" | "never", "cooldown_days", "max_transfers"}`; a refused restore answers `[ERR_TRANSFER_LIMIT]`), `admin_export_player(game_key, user_id)` (procedure, Support: everything stored about a player of an app, for a GDPR access request) and `admin_erase_player(game_key, user_id)` (Support: deletes the profile, attributes and attribution ids; purchases stay for revenue under `erased:<hash>`, also in their history and the audit log).
 
 **An admin revoke is not a refund.** Revenue and integrations stay as they are, because the store kept the money; the purchase is marked in the `admin_revoke` table. If the store refunds it later, the refund is counted then (and sent to integrations) without a second `revoke` to the game. A store purchase that the store still reports as active comes back when the player restores it: the store stays the source of truth for paid products.
 
@@ -215,8 +215,8 @@ Base: `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route`
 
 Client routes (`/verify/*`, `/restore`, `/entitlements`, `/attributes`, `/paywall`, `/paywall/event`, `/offers/apple/sign`, `/checkout/*`) go through one guard (`client_guard.rs`, rules in `purser_core::client_api`):
 
-- **Player tokens.** A build with `client_auth = signed` refuses requests without `Authorization: Bearer <token>`: an HS256 JWT `{"sub": <user_id>, "exp": <unix seconds>, "aud": <game_key>}` (`aud` optional) signed by the game's backend with the build's `client_auth_secret` (at least 32 characters; the Delivery tab creates one). The answer is `401 {"status": "error", "code": "ERR_CLIENT_AUTH"}`. An open build (the default) takes any `user_id`, so player ids must be hard to guess, and `/attributes` refuses personal keys (`email`, `phone`, `name`, `first_name`, `last_name`) there.
-- **Rate limits.** Token buckets per player of a build and, for routes that call the stores, per build (`client_api::limits`: `/verify` 30 a minute per player and 600 per build, `/restore` 6 and 600, `/entitlements` and `/paywall` 60 per player, ...). Over a limit: `429 {"code": "ERR_RATE_LIMITED"}` with `Retry-After: <seconds>`. Buckets live in `rate_bucket`; the worker deletes idle ones.
+- **Player tokens.** A build with `client_auth = signed` refuses requests without `Authorization: Bearer <token>`: an HS256 JWT `{"sub": <user_id>, "exp": <unix seconds>, "aud": <game_key>}` (`aud` required: a token without it would work for every app sharing the secret) signed by the game's backend with the build's `client_auth_secret` (at least 32 characters; the Delivery tab creates one). The answer is `401 {"status": "error", "code": "ERR_CLIENT_AUTH"}`. An open build (the default) takes any `user_id`, so player ids must be hard to guess, and `/attributes` refuses personal keys (`email`, `phone`, `name`, `first_name`, `last_name`) there.
+- **Rate limits.** Token buckets per player of a build, and per build for what costs the build something: store look-ups (`client_api::STORE_CALLS`, 600 a minute per build, taken by `/verify` and each `/restore` item only after the request was checked, so junk requests cannot use them up), `/attributes` (1,200) and `/paywall/event` (6,000). Per player (`client_api::limits`): `/verify` 30 a minute, `/restore` 6, `/entitlements` and `/paywall` 60, .... In open builds the player id is the client's word: anyone who knows a player's id can use up that player's bucket, so use ids nobody can guess, or player tokens (`client_auth = signed`). Over a limit: `429 {"code": "ERR_RATE_LIMITED"}` with `Retry-After: <seconds>`. Buckets live in `rate_bucket`; the worker deletes idle ones.
 - **Signed answers.** With a `response_signing_key` (Ed25519 seed, 32 bytes base64; the Delivery tab creates one in the browser), `/entitlements` and `/restore` answers carry `X-Purser-Signature: <base64 signature of the exact body>`; `admin_response_public_key(app_id)` shows the public key games check it with.
 
 ### `POST /verify/<store>`: `/verify/google`, `/verify/apple`, `/verify/amazon`, `/verify/steam`
@@ -247,7 +247,7 @@ One route per client-receipt store of the registry; a build's purchases go to it
 | 403 | `forbidden` | The consumable already belongs to another player or is bound to another account; the consumable was already consumed outside this server (`[ERR_CONSUMED_ELSEWHERE]`); sandbox is not allowed. |
 | 502 / 500 | `error` | Store unavailable / configuration error. Retry later. |
 
-The response also contains `transaction_id`, `product_id`, `is_sub`, `expires_date_ms`, `environment`, `token`.
+The response also contains `transaction_id`, `product_id`, `is_sub`, `expires_date_ms`, `environment`, `delivery` (`client`: the game grants the reward; `server`: billing delivers it) and `message`. Only `revoked`, `expired`, `forbidden`, `invalid`, `pending`, `pending_or_canceled`, `success` and `error` are answered as `status`.
 
 `/verify/steam` takes `{"app_id": "<Steam App ID>", "user_id": "...", "order_id": "<order_id from /checkout/steam>"}` (`product_id` optional: the order knows it) after the game received `MicroTxnAuthorizationResponse_t`. The server calls `FinalizeTxn`, then `QueryTxn` (or `GetUserAgreementInfo` for a subscription), and records `steam:<transid>`. Only the player who started the checkout can verify its order. A denied authorization answers `pending_or_canceled`. Calling it again is safe: a finalized order is only queried.
 
@@ -264,15 +264,18 @@ Orders live in `steam_order` (`initiated` → `authorized` → `finalized`, or `
 ```json
 {"access": {"premium": {"product_id": "month_sub", "store": "google", "expires_at_ms": 1793876523123, "purchased_at_ms": 1791188212478,
                         "will_renew": true, "in_grace": false, "billing_issue": false, "trial": false}},
- "subscriptions": {"month_sub": {"product_id": "month_sub", "store": "google", "expires_at_ms": 1793876523123, "...": "the same fields"}},
+ "subscriptions": {"month_sub": {"product_id": "month_sub", "store": "google", "expires_at_ms": 1793876523123, "family_shared": false, "...": "the same fields"}},
+ "paused": {"vip": {"product_id": "vip", "store": "google", "resumes_at_ms": 1800403200000}},
  "non_consumables": ["one_time_sub"], "server_time_ms": 1791188212478, "game_key": "...", "user_id": "..."}
 ```
+
+`paused` lists Google Play subscriptions the player paused (no access until `resumes_at_ms`); `family_shared` marks an App Store purchase a family member shared.
 
 `expires_at_ms` is when access ends (the store's grace period after a failed renewal included; 0 = never); `renews_to` names a pending downgrade.
 
 ### `POST /restore`
 
-`{"app_id": "...", "user_id": "...", "store_user_id": "<Amazon userId>", "purchases": [{"product_id": "...", "purchase_token": "..." | "order_id": "..."}]}` (up to 20; an item may carry its own `store_user_id`). Runs verify for every purchase the store SDK returned on “Restore purchases” and returns `{results, entitlements}`.
+`{"app_id": "...", "user_id": "...", "store_user_id": "<Amazon userId>", "purchases": [{"product_id": "...", "purchase_token": "..." | "order_id": "..."}]}` (up to 20; an item may carry its own `store_user_id`). Runs verify for every purchase the store SDK returned on “Restore purchases” and returns `{results, entitlements}`. The whole call spends at most 5 s on store and delivery calls: items past it answer `503` / `error` ("restore again") and the next call goes on; the same purchase twice is looked up once.
 
 ### `POST /offers/apple/sign`
 
@@ -377,7 +380,7 @@ Prices come from the event (minor units, zero- and three-decimal currencies hand
 
 ### `GET /healthz`
 
-For uptime monitors. `200` with `status`: `healthy`; `starting` right after a publish (the worker has not run yet); `backlog` when a purchase has been due for 15 minutes (the queue is not keeping up: a slow store or game, or more due than the drainers take). `503 worker_stopped` when the minute worker has not run for 5 minutes. The numbers: `pending_purchases` (rows the worker still has to finish, including those waiting for a later retry), `due_purchases` and `oldest_due_secs` (due now, and how long the oldest has waited), `queue_drainers` (running or scheduled), `stuck_purchases` (retried 5 times or more), `queued_integration_events`, `worker_age_secs`, `version`.
+For uptime monitors. `200` with `status`: `healthy`; `starting` right after a publish (the worker has not run yet); `backlog` when a purchase has been due for 15 minutes (the queue is not keeping up: a slow store or game, or more due than the drainers take). `503 worker_stopped` when the minute worker has not run for 5 minutes. The numbers: `pending_purchases` (rows the worker still has to finish, including those waiting for a later retry), `due_purchases` and `oldest_due_secs` (due now, and how long the oldest has waited), `queue_drainers` (running or scheduled), `stuck_purchases` (retried 3 times or more), `queued_integration_events`, `worker_age_secs`, `version`.
 
 ## Delivery to the game
 
@@ -385,11 +388,13 @@ The event format, the reducer / webhook contract, idempotency rules, transfers a
 
 ## Integrations (GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Mixpanel, Meta, webhook, Cloud Storage)
 
-Every significant purchase event — `purchase`, `subscription_start`, `renewal`, `refund`, `expire` — is queued in `integration_outbox` in the same transaction as the status change. The `send_integration_event` procedure sends the event to every integration enabled for the app. On network errors, 429 and 5xx it retries (up to 6 attempts, backoff 1m → 5m → 15m → 1h → 3h). A 4xx response is final: it is logged and raises the `integration_failed` alert.
+Every significant purchase event — `purchase`, `subscription_start`, `renewal`, `refund` (partial refunds too, with the refunded amount), `expire`, and the subscription changes `cancel`, `uncancel`, `billing_issue`, `billing_recovered`, `product_change`, `pause`, `resume` — is queued in `integration_outbox` in the same transaction as the status change. The `send_integration_event` procedure sends the event to every integration enabled for the app. On network errors, 429 and 5xx it retries (up to 6 attempts, backoff 1m → 5m → 15m → 1h → 3h, about 4.4 h). A 4xx response is final: it is logged and raises the `integration_failed` alert. Events an integration did not take are kept 30 days in `integration_dead`; the Integrations tab sends them again (**Resend**, `admin_replay_integration_events`). Platforms that deduplicate get the event's id (the same on retries).
+
+Every kind also takes `events` (the event kinds to send; empty: all) and `skip_client_purchases` (leave out first purchases of Google Play, the App Store and Amazon that the game's own SDK of that platform reports).
 
 `integration_health` keeps, per build and integration, when an event was last sent, the last failure (retried or dropped) and the last event skipped because the client did not send the device id the integration needs (`appsflyer_id`, `adjust_id`, ...). The Integrations tab shows it under each build ("Sent 5 min ago", "Failed, retrying", "Event dropped", "Skipped: no device id") and the setup check reports it: a failure or a skip after the last sent event is a warning (a dropped event is a failure).
 
-Integrations are configured per build on the app's **Integrations** tab in the admin panel, or with `admin_upsert_integration` (`{"app_id": "...", "kind": "...", "enabled": true, "settings": {...}}`) plus the integration's secret (`admin_set_credential`, resolved app → account → default like every secret):
+Integrations are configured per build on the app's **Integrations** tab in the admin panel, or with `admin_upsert_integration` (`{"app_id": "...", "kind": "...", "enabled": true, "settings": {...}}`; `admin_delete_integration(app_id, kind)` removes one) plus the integration's secret (`admin_set_credential`, resolved app → account → default like every secret):
 
 | `kind` | Settings | Secret | The client sends in `attribution` |
 |---|---|---|---|
@@ -405,6 +410,8 @@ Integrations are configured per build on the app's **Integrations** tab in the a
 | `gcs` (Cloud Storage export) | `bucket`, `folder`, `send_sandbox`, `events` (empty: all) | `gcs_service_account_json` | — |
 
 Sandbox / license-tester purchases are not sent unless `send_sandbox` is on.
+
+Child-directed apps: `admin_set_app_policy(game_key, true)` (`no_ad_ids`) stores no advertising ids (`advertising_id`, `idfa`, `oaid`, ...) the clients of the app's builds send, so no event carries them.
 
 The client passes device identifiers (`appsflyer_id`, `tenjin_id`, `adjust_id`, `appmetrica_device_id`, `amplitude_device_id`, `meta_anon_id`, `advertising_id`, `oaid`, `idfa`, `idfv`, `att`, `os_version`, `app_version`, and the Apple Ads ids `asa_org_id`, `asa_campaign_id`, `asa_ad_group_id`, `asa_keyword_id`, `asa_ad_id`, `asa_country`) in the `attribution` field of `/verify` and `/restore`. The server remembers the player's latest values (`user_attribution` table) and uses them for events without a client — renewals and refunds. An attribution integration skips (and logs) events of players without its id: AppsFlyer, Adjust, Tenjin, AppMetrica and Meta don't accept them.
 
@@ -440,7 +447,7 @@ spacetime logs <your-billing-db>
 Adding a new integration:
 1. A constant in `purser_core::integrations::integration_kind`.
 2. A settings struct and a `build(event, settings, key) -> Built` function (pure, with tests) in `core/src/integrations.rs`.
-3. Branches in `build_call`, `validate_settings` and `secret_for` in `spacetimedb/src/integrations.rs`, and a card in `admin-ui/src/pages/integrations.tsx`.
+3. Branches in `build_call`, `validate_settings` and `secret_for` in `spacetimedb/src/integrations.rs`, and an entry in `KINDS` of `admin-ui/src/components/integration-kinds.tsx` (its secret and `secretScope`) with its form fields in `components/integrations.tsx`.
 
 ## Client integration
 

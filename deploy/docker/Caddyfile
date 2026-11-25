@@ -19,6 +19,10 @@
 		not path_regexp ^/v1/database/[^/]+/route/admin(/.*)?$
 	}
 	handle @public {
+		# Billing reads a request body whole: no client needs more than this.
+		request_body {
+			max_size 1MB
+		}
 		reverse_proxy spacetimedb:3000
 	}
 	respond 404

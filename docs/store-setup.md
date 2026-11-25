@@ -246,7 +246,7 @@ The setup check fails for products that have no price at all.
 
 1. The game calls `POST /checkout/steam` with the product, the player's user id, SteamID64 (`ISteamUser::GetSteamID`), language (`ISteamApps::GetCurrentGameLanguage`) and a Web API auth ticket (`ISteamUser::GetAuthTicketForWebApi("purser")`, hex). The server checks that the ticket belongs to the SteamID, calls `GetUserInfo` and `InitTxn` and returns the order id. Steam shows the overlay.
 2. The game receives `MicroTxnAuthorizationResponse_t` and, when the player authorized, calls `POST /verify/steam` with the order id. The server calls `FinalizeTxn` and `QueryTxn`, records the purchase and delivers the reward like any other store.
-3. If the game dies in between, the worker finds the authorized order through `QueryTxn` and finishes it; the player gets the reward through delivery (or `/entitlements` / restore for owned products). Orders the player never authorizes are given up after a day.
+3. If the game dies in between, the worker finds the authorized order through `QueryTxn` and finishes it; the player gets the reward through delivery (or `/entitlements` / restore for owned products). Orders the player never authorizes are given up after the last re-check (10 min, 30 min, 2 h, 6 h, 12 h, 24 h: about 45 hours).
 
 ### Refunds and chargebacks
 

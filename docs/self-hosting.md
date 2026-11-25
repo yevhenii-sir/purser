@@ -34,6 +34,9 @@ Caddy:
 stdb.example.com {
     @public path_regexp ^/v1/(database/[^/]+/(route|call|subscribe|schema)(/.*)?|identity.*|ping)$
     handle @public {
+        request_body {
+            max_size 1MB
+        }
         reverse_proxy localhost:3000
     }
     respond 404
@@ -100,7 +103,9 @@ Admins → **Add admin** → name, role (Admin, Editor, Support or Viewer) → *
 
 ## Delivery to games on the same server
 
-The module cannot call private addresses (`127.0.0.1`, `10.x`, …). Deliveries to a game on the same machine go through the public hostname, which must be allowed by the database owner: Settings → Server → SpacetimeDB hosts → `stdb.example.com` (or `admin_add_spacetime_host`). The `call` path must be open in the proxy.
+A game database on the same SpacetimeDB server is best reached with the `spacetimedb_idc` delivery: inter-database calls inside the server, no HTTP, no token, nothing to open in the proxy ([game integration](game-integration.md)). The build's `spacetime_db` is the game database's identity.
+
+The `spacetimedb` delivery (HTTP) cannot call private addresses (`127.0.0.1`, `10.x`, …). Deliveries to a game on the same machine then go through the public hostname, which must be allowed by the database owner: Settings → Server → SpacetimeDB hosts → `stdb.example.com` (or `admin_add_spacetime_host`). The `call` path must be open in the proxy.
 
 ## Upgrading
 
@@ -156,5 +161,5 @@ The limit that matters is the store's latency. SpacetimeDB runs HTTP routes and 
 
 ## Backups and monitoring
 
-- **Backups:** `python backup.py backup --dir backups/$(date +%F)` from a scheduled job (cron, a CI schedule) with the owner token in `PURSER_TOKEN`. Keep the files private: they hold the store keys and secrets in `credential`.
+- **Backups:** `python backup.py backup --database <your-billing-db> --dir backups/$(date +%F)` from a scheduled job (cron, a CI schedule) with the owner token in `PURSER_TOKEN`. Keep the files private: they hold the store keys and secrets in `credential`.
 - **Monitoring:** watch `GET <route>/healthz` with any uptime monitor. It answers `200 {"status": "healthy"}` while the ledger worker runs, `503 {"status": "worker_stopped"}` when it has not run for 5 minutes (purchases, renewals and alerts wait until it runs again; the admin page's Overview offers to restart it), `starting` right after a publish, and `200 {"status": "backlog"}` when a purchase has waited in the queue for 15 minutes (`due_purchases`, `oldest_due_secs`; see [Capacity](#capacity)). A monitor that alerts on numbers can watch `oldest_due_secs`.

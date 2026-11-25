@@ -51,10 +51,10 @@ other-game,android,,com.example.othergame,publisher,webhook
 | `store` | empty = the platform's default store; `web` builds name `stripe` or `xsolla` |
 | `game_key` | the app the build belongs to; empty = the `app_id` |
 | `account` | the developer account whose keys the build uses; empty = `default` |
-| `delivery` | `none`, `spacetimedb` or `webhook`; required for a new build |
+| `delivery` | `none`, `spacetimedb`, `spacetimedb_idc` or `webhook`; required for a new build |
 
 Optional columns, as in `admin_upsert_game_app`: `spacetime_url`, `spacetime_db`, `grant_reducer`,
-`revoke_reducer` (needed by `spacetimedb` delivery), `webhook_url` (`webhook` delivery, https),
+`revoke_reducer` (needed by `spacetimedb` delivery; `spacetimedb_idc` needs only `spacetime_db`, the game database's identity), `webhook_url` (`webhook` delivery, https),
 `allow_sandbox`, `enabled`, `client_consumes` (`true` / `false`), `apple_refund_mode`
 (`off`, `inform`, `prefer`), `client_auth` (`open`, `signed`), `sns_topic_arn`.
 

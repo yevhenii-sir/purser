@@ -128,12 +128,13 @@ and the scheduled `send_alert` procedure sends them. Network errors, 408, 429 an
 | `admin_set_alert_rules(json)` | `{"delivery_failing": true, "delivery_attempts": 3, "store_auth": true, "integration_failed": true, "notifications_silent": true, "silent_days": 3, "notification_rejected": true, "fx_failing": true, "fx_failing_hours": 24, "queue_behind": true, "queue_behind_minutes": 15, "window_hours": 6, "send_resolved": true}`; missing fields take these defaults. Stored in `server_state` (`alert_rules`) |
 | `admin_test_alert(id)` (procedure) | sends a test message to the channel now, even when it is disabled; returns `{"ok": true}` or `{"error": "..."}` |
 | `admin_dismiss_alert(key)` | forgets an open problem (`alert_state.key` = `{rule}/{app_id}`, or `store_auth/@{account}`) |
+| `admin_dismiss_alerts(keys_json)` | forgets several at once (a JSON array of keys) |
 
-With the CLI:
+With the CLI (each argument is a JSON value: these calls take one JSON **string**, so the object is quoted and escaped):
 
 ```bash
-spacetime call <your-billing-db> admin_upsert_alert_channel '{"kind":"slack","secret":"https://hooks.slack.com/services/..."}'
-spacetime call <your-billing-db> admin_upsert_alert_channel '{"name":"mygame-slack","kind":"slack","secret":"https://hooks.slack.com/services/...","game_keys":["mygame"],"rules":["delivery_failing"]}'
+spacetime call <your-billing-db> admin_upsert_alert_channel '"{\"kind\":\"slack\",\"secret\":\"https://hooks.slack.com/services/...\"}"'
+spacetime call <your-billing-db> admin_upsert_alert_channel '"{\"name\":\"mygame-slack\",\"kind\":\"slack\",\"secret\":\"https://hooks.slack.com/services/...\",\"game_keys\":[\"mygame\"],\"rules\":[\"delivery_failing\"]}"'
 spacetime call <your-billing-db> admin_test_alert 1
-spacetime call <your-billing-db> admin_set_alert_rules '{"window_hours":12,"fx_failing":false}'
+spacetime call <your-billing-db> admin_set_alert_rules '"{\"window_hours\":12,\"fx_failing\":false}"'
 ```

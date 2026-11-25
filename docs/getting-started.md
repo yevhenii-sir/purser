@@ -58,10 +58,11 @@ The last step checks everything and shows the URLs to paste into Play Console (R
 
 ## 3. Connect the game
 
-**Unity:** add the package to `Packages/manifest.json` and create the config (Tools → Purser → Create Config):
+**Unity:** add the package and Unity IAP 5.4 or later to `Packages/manifest.json` (without Unity IAP the Google Play / App Store adapter is not compiled and `BillingService` asks for another store adapter), then create the config (Tools → Purser → Create Config):
 
 ```json
-"com.yevhenii.purser": "https://github.com/yevhenii-sir/purser.git?path=/unity/com.yevhenii.purser"
+"com.yevhenii.purser": "https://github.com/yevhenii-sir/purser.git?path=/unity/com.yevhenii.purser",
+"com.unity.purchasing": "5.4.4"
 ```
 
 The config and the admin panel exchange one JSON (server address, the builds by store, the products with their store-specific ids), in either direction:

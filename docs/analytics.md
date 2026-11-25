@@ -27,7 +27,7 @@ Every purchase keeps the buyer's billing country (ISO 3166-1 alpha-2): Google's 
 
 Proceeds = net revenue − estimated store fee. The fee is a commission percent applied at report time (changing it needs no rebuild):
 
-- **Default commission**: 15% (Google Play's first $1M a year and the App Store Small Business Program), or 30% (standard rate).
+- **Default commission**: each store's usual fee: 15% for Google Play and the App Store (their small business rates), 20% Amazon Appstore, 30% Steam, about 3% Stripe and 5% Xsolla (payment fees). Setting a server-wide percent replaces it for every store.
 - **Per build**: a different percent for some apps (e.g. 30% for a big title, 15% for the Android build because Google Play takes 15% on all subscriptions).
 - **Subscriptions after 12 paid months**: both stores charge 15% on a subscription after its first year of paid service. A renewal recorded 365 days or more after the subscription's first paid period uses `min(app percent, this percent)` (default 15).
 - Refunds return the commission too: the fee is taken on net revenue.
@@ -36,10 +36,10 @@ Taxes (VAT, digital services taxes) are not modelled, so real payouts are lower 
 
 ## Subscriptions
 
-- **New subscriptions** = paid starts (no trial) + trial conversions. **Trials started** counts free trials.
+- **New subscriptions** = paid starts without a trial. The first paid period after a free trial counts as a **renewal** (and in **Trial → paid**). **Trials started** counts free trials.
 - **Trial → paid**: of the free trials started in the period, the share that has a later paid period of the same subscription. Trials still running (not expired, not paid yet) are left out of the rate.
 - **Renewal rate** = renewals ÷ (renewals + expirations): of the subscription periods that ended, the share that continued. Renewals include the first paid period after a trial; expirations include trials that ended unpaid.
-- **Churn** = expirations ÷ active subscriptions at the first daily snapshot of the period (or month), per 30 days. The snapshots start on the day the analytics version was installed, so churn is empty before that.
+- **Churn** = expirations ÷ active subscriptions at the first daily snapshot of the period (or month), per 30 days. Active subscriptions include running free trials, and expirations include trials that ended unpaid: both are a blend of trial funnel and paid retention. The snapshots start on the day the analytics version was installed, so churn is empty before that.
 - **Subscriptions by month** shows these per calendar month.
 - **Active subscriptions** also says how many of them will not renew (auto-renew off), had a renewal payment fail, and are in the store's grace period after it (`auto_renew_off_now`, `billing_issue_now`, `in_grace_now`). A subscription replaced by another (upgrade, downgrade) is not an expiration.
 
@@ -58,12 +58,12 @@ Active subscriptions and MRR are those of the last daily snapshot of the period.
 
 ## Payer cohorts
 
-Payers (user ids with a granted, non-trial store purchase) are grouped by the month of their first payment, for cohorts that start in the selected period. Each cell is the cohort's cumulative net revenue per payer by month since the first payment (M0 = that month), up to today; refunded purchases count as 0. Computed from the ledger when the report is opened.
+Payers (players of one app with a granted, non-trial store purchase; the same id in two apps is two payers; Family Sharing purchases are not payments) are grouped by the month of their first payment, for cohorts that start in the selected period. Each cell is the cohort's cumulative net revenue per payer by month since the first payment (M0 = that month), up to today; refunded purchases count as 0. Computed from the ledger when the report is opened.
 
 ## ARPPU and LTV
 
 - **ARPPU**: net revenue of the period's paid purchases ÷ the users who paid in the period (`arppu`).
-- **LTV, N months**: cumulative net revenue per payer N months after the first payment (1, 3, 6, 12), over the payer cohorts of the period that are that old already (`ltv`). Empty until a cohort is old enough.
+- **LTV, N months**: cumulative net revenue per payer N months after the first payment (1, 3, 6, 12), over the payer cohorts of the period whose first N months are over (`ltv`; the current month is not). Empty until a cohort is old enough.
 
 ## Apple Ads
 
@@ -73,7 +73,7 @@ When the Unity package resolves the install's Apple Ads attribution (`asa_campai
 
 Every amount is kept in its own currency and converted to USD with the European Central Bank reference rate of that day ([frankfurter.dev](https://frankfurter.dev), no key needed; weekends use Friday's rate). The worker fetches the latest rates every 6 hours and backfills history as far back as the first sale.
 
-The ECB publishes about 30 currencies. Others (UAH, VND, …) are listed as *No rate for …* and left out of USD totals until you set a manual rate: Revenue → By currency → **Set rate** (`admin_set_fx_override("UAH", 41.5)`: units per 1 USD). Totals per currency are always shown in the original currency.
+The ECB publishes about 30 currencies. Others (UAH, VND, …) are listed as *No rate for …* and left out of USD totals until you set a manual rate: Revenue → By currency → **Set rate** (`admin_set_fx_override("UAH", 41.5)`: units per 1 USD; `admin_delete_fx_override("UAH")` goes back to the ECB rate). **Rates** on the Revenue page fetches the latest ECB rates now (`admin_refresh_fx`). A currency the ECB stopped publishing for more than two weeks is converted at its last rate and listed under `fx.stale`. Totals per currency are always shown in the original currency.
 
 ## Data and API
 

@@ -35,9 +35,10 @@ spacetime publish --server maincloud --bin-path purser.wasm <your-billing-db>
 
 1. Open `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin` and sign in with your token (`spacetime login show --token`).
 2. Apps → **Add an app**: package / bundle ids, how rewards reach the game, store keys ([store setup](docs/store-setup.md)), products. The last step checks everything and shows the URLs to paste into Play Console and App Store Connect.
-3. Unity: add the package, create the config (Tools → Purser → Create Config) and press **Paste config from admin panel**:
+3. Unity: add the package and Unity IAP (it stores the purchases in Google Play and the App Store), create the config (Tools → Purser → Create Config) and press **Paste config from admin panel**:
    ```json
-   "com.yevhenii.purser": "https://github.com/yevhenii-sir/purser.git?path=/unity/com.yevhenii.purser"
+   "com.yevhenii.purser": "https://github.com/yevhenii-sir/purser.git?path=/unity/com.yevhenii.purser",
+   "com.unity.purchasing": "5.4.4"
    ```
    Other engines use plain HTTP + JSON ([OpenAPI spec](docs/openapi.yaml)); the game grants rewards in its own reducers, a webhook or on the client ([game integration](docs/game-integration.md)).
 
@@ -87,12 +88,15 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 |---|---|
 | [docs/store-setup.md](docs/store-setup.md) | Google Play service account and RTDN, App Store keys and notifications |
 | [docs/game-integration.md](docs/game-integration.md) | Delivery contract (reducers, webhook), games without a backend, other engines |
+| [docs/observer-mode.md](docs/observer-mode.md) | Games that keep their own IAP code: report purchases to the server |
 | [docs/analytics.md](docs/analytics.md) | What the revenue dashboard counts, currencies |
+| [docs/bigquery.md](docs/bigquery.md) | Raw events to Cloud Storage and BigQuery |
 | [docs/apple-offers.md](docs/apple-offers.md) | App Store promotional offers signed by the server, offer codes, win-back offers |
 | [docs/alerts.md](docs/alerts.md) | Telegram / Slack / Discord / webhook alerts about failing deliveries, rejected keys, silent notifications |
 | [docs/paywalls.md](docs/paywalls.md) | Paywalls, remote config and A/B tests: placements, assignment, results |
 | [docs/self-hosting.md](docs/self-hosting.md) | Running on your own SpacetimeDB server behind a proxy |
 | [deploy/docker/](deploy/docker/README.md) | Docker Compose: SpacetimeDB, module publishing, Caddy with automatic HTTPS |
+| [docs/bulk-setup.md](docs/bulk-setup.md) | Hundreds of apps at once from CSV (`server/bulk_setup.py`) |
 | [docs/openapi.yaml](docs/openapi.yaml) | OpenAPI 3.1 description of the public HTTP API |
 | [docs/mcp.md](docs/mcp.md) | MCP server: ask Claude about revenue, players, purchases and the setup (`server/mcp_server.py`) |
 | [docs/migrating-from-adapty.md](docs/migrating-from-adapty.md) | Running next to Adapty, moving the ledger between servers |

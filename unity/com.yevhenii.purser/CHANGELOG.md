@@ -248,7 +248,7 @@ signed responses).
   `/checkout/steam` carries `ticket`, the hex-encoded Steam Web API auth ticket for the identity `purser`
   (`SteamStoreAdapter.WebApiTicketIdentity`); `SteamOptions.TicketTimeout` (10 s) bounds the wait. The Steam sample's
   bridge implements it with Steamworks.NET (20.2+). Servers can require the ticket with the Steam build setting
-  `steam_require_ticket`: update custom bridges before turning it on.
+  `require_ticket`: update custom bridges before turning it on.
 
 ### Changed
 

@@ -20,7 +20,7 @@ fires as for any store. Declining is reported as `Cancelled`.
 
 The bridge also implements `ISteamWebApiTicketProvider`: every checkout carries a Steam Web API auth ticket
 (`SteamUser.GetAuthTicketForWebApi("purser")`, hex-encoded), so the server can check the player's SteamID. Servers
-whose Steam build sets `steam_require_ticket` refuse checkouts without it.
+whose Steam build sets `require_ticket` (admin page → Delivery → Steam, or `admin_set_steam_build`) refuse checkouts without it.
 
 Other wrappers (Facepunch.Steamworks, your own) need the three values and the `MicroTxnAuthorizationResponse_t`
 callback of `ISteamMicroTxnBridge`, and `ISteamWebApiTicketProvider` for the ticket. Server setup:

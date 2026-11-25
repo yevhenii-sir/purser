@@ -34,7 +34,7 @@ namespace Purser
     /// <summary>
     /// Optional part of an <see cref="ISteamMicroTxnBridge"/>: a Steam Web API auth ticket, so the server can check
     /// that the checkout really comes from the player whose SteamID it names (<c>ISteamUserAuth/AuthenticateUserTicket</c>).
-    /// Servers whose Steam build sets <c>steam_require_ticket</c> refuse checkouts without one.
+    /// Servers whose Steam build sets <c>require_ticket</c> refuse checkouts without one.
     /// </summary>
     public interface ISteamWebApiTicketProvider
     {

@@ -423,7 +423,7 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
   was restarted. Prices are set on the server and shown by the overlay (`StoreProduct.LocalizedPrice` is empty).
   A bridge that also implements `ISteamWebApiTicketProvider` (the sample's does) sends a Steam Web API auth ticket
   for the identity `purser` (`ISteamUser::GetAuthTicketForWebApi`) with every checkout, so the server can check that
-  the SteamID really belongs to the player. A server whose Steam build sets `steam_require_ticket` refuses checkouts
+  the SteamID really belongs to the player. A server whose Steam build sets `require_ticket` (admin page → Delivery → Steam, or `admin_set_steam_build`) refuses checkouts
   without one: custom bridges must implement the interface before that setting is turned on.
 
   ```csharp
