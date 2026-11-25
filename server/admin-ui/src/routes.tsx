@@ -44,7 +44,7 @@ export const PAGES: Record<string, PageDef> = {
   alerts: { title: "Alerts", icon: BellRingIcon, component: AlertsPage, group: "Settings", everyApp: true },
 }
 
-export const APP_TABS = ["setup", "products", "paywalls", "delivery", "integrations", "keys", "purchases", "revenue"] as const
+export const APP_TABS = ["setup", "products", "paywalls", "promo", "delivery", "integrations", "keys", "purchases", "revenue"] as const
 export type AppTab = (typeof APP_TABS)[number]
 
 export type Route =

@@ -273,6 +273,20 @@
       }
     },
     {
+      "route": "/redeem",
+      "body": {
+        "app_id": "com.studio.game",
+        "user_id": "player-1",
+        "code": "SUMMER-2026",
+        "client": {
+          "device": "Xiaomi 23117RA68G",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.10.0"
+        }
+      }
+    },
+    {
       "route": "/attributes",
       "replay": true,
       "body": {

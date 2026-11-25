@@ -40,6 +40,7 @@ mod paywalls;
 mod player_data;
 mod players;
 mod poll;
+mod promo;
 mod refund_sweep;
 mod revenue;
 mod server_api;

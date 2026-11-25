@@ -440,6 +440,16 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
 `BillingBootstrap` takes a component implementing `IStoreAdapterFactory` for these adapters; the VContainer and
 Zenject registrations use a bound `IStoreAdapter`.
 
+## Promo codes
+
+Codes made on the admin page (the app → Promo codes) give a product to each player once, without a payment:
+
+```csharp
+var r = await billing.RedeemCodeAsync(input.text);
+if (r.IsSuccess) ShowToast($"You got {r.ProductId}!");        // PurchaseSucceeded fired too: grant there if GrantOnClient
+else if (r.Status == PurchaseStatus.Rejected) ShowToast("This code is not valid");  // r.Message: ERR_CODE_EXPIRED: ...
+```
+
 ## Player profile
 
 Every request carries the device (`SystemInfo.deviceModel`, `SystemInfo.operatingSystem`), `Application.version` and

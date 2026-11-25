@@ -144,6 +144,10 @@ pub fn admin_export_player(ctx: &mut ProcedureContext, game_key: String, user_id
             "profiles": profiles,
             "attribution": attribution,
             "paywalls_seen": paywalls_seen,
+            "promo_codes": crate::promo::redeemed_by(tx, &game_key, &user_id)
+                .into_iter()
+                .map(|(code, purchase_id, at)| json!({ "code": code, "purchase_id": purchase_id, "at_micros": at }))
+                .collect::<Vec<_>>(),
         }))
     })
     .unwrap_or_else(|e| json!({ "error": e }))
@@ -188,5 +192,6 @@ pub fn admin_erase_player(ctx: &ReducerContext, game_key: String, user_id: Strin
         ctx.db.user_attribution().key().delete(attribution_key(app, &user_id));
     }
     crate::paywalls::forget_viewers(ctx, &game_key, Some(&user_id));
+    crate::promo::erase_player(ctx, &game_key, &user_id, &erased);
     Ok(())
 }

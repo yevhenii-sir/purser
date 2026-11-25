@@ -100,7 +100,7 @@ macro_rules! client_request {
         }
     )*};
 }
-client_request!(EntitlementsRequest, RestoreRequest, PaywallRequest, AttributesRequest, PaywallEventRequest);
+client_request!(EntitlementsRequest, RestoreRequest, PaywallRequest, AttributesRequest, PaywallEventRequest, RedeemRequest);
 
 pub(crate) fn valid_user_id(u: &str) -> bool {
     purser_core::is_valid_user_id(u)
@@ -449,6 +449,62 @@ struct EntitlementsRequest {
     user_id: String,
     #[serde(default)]
     client: ClientInfo,
+}
+
+#[derive(Deserialize)]
+struct RedeemRequest {
+    app_id: String,
+    user_id: String,
+    code: String,
+    #[serde(default)]
+    client: ClientInfo,
+}
+
+/// `POST /redeem`: a promo code of the app ([`crate::promo`]) gives its product to the player. The
+/// answer has the shape of `/verify`: `success` (granted), `pending` (on its way to the game), or
+/// `invalid` with `code` `ERR_CODE_INVALID` (404), `ERR_CODE_EXPIRED`, `ERR_CODE_USED_UP` or
+/// `ERR_CODE_ALREADY_REDEEMED` (409). Redeeming a code again answers its grant.
+#[handler]
+fn redeem(ctx: &mut HandlerContext, req: Request) -> Response {
+    client_guard::run(ctx, req, "redeem", false, |ctx, r: &RedeemRequest| redeem_code(ctx, r).into())
+}
+
+fn redeem_code(ctx: &mut impl Ctx, r: &RedeemRequest) -> Outcome {
+    if !valid_user_id(&r.user_id) {
+        return Outcome::status(400, "error", "invalid user_id");
+    }
+    let redeemed = ctx.tx(|tx| {
+        let app = enabled_app(tx, &r.app_id).map_err(Err)?;
+        players::touch(tx, &app.app_id, &r.user_id, &r.client);
+        crate::promo::redeem(tx, &app, &r.user_id, &r.code).map(|p| (app.clone(), p)).map_err(Ok)
+    });
+    let (app, p) = match redeemed {
+        Ok(v) => v,
+        Err(Err(o)) => return o,
+        Err(Ok((http, code, message))) => return Outcome::new(http, json!({ "status": "invalid", "code": code, "message": message })),
+    };
+    let row = if p.next_attempt_at_micros > 0 { ledger::advance(ctx, &p.id, Budget::new(ctx, crate::ctx::REQUEST_BUDGET_SECS)).unwrap_or(p) } else { p };
+    let (http, status) = match row.status.as_str() {
+        status::GRANTED | status::COMPLETED => (200, "success"),
+        status::REVOKE_PENDING | status::REVOKED => (200, status::REVOKED),
+        status::EXPIRE_PENDING | status::EXPIRED => (200, status::EXPIRED),
+        _ => (202, "pending"),
+    };
+    let catalog_id = ctx.tx(|tx| crate::catalog_id_of(tx, &row.app_id, &row.product_id));
+    Outcome::new(
+        http,
+        json!({
+            "status": status,
+            "transaction_id": row.transaction_id,
+            "product_id": row.product_id,
+            "catalog_product_id": catalog_id,
+            "is_sub": row.kind == kind::SUBSCRIPTION,
+            "quantity": 1,
+            "expires_date_ms": row.expires_at_ms,
+            "environment": row.environment,
+            "delivery": if delivery::grants_on_client(&app.delivery) { "client" } else { "server" },
+        }),
+    )
 }
 
 /// An enabled build, inside a transaction.
@@ -1349,6 +1405,7 @@ fn routes() -> Router {
         .post("/paywall", paywall)
         .post("/paywall/event", paywall_event)
         .post("/attributes", player_attributes)
+        .post("/redeem", redeem)
         .post("/offers/apple/sign", offers_apple_sign)
         .post("/checkout/xsolla", crate::xsolla::checkout_route)
         .post("/checkout/xsolla/status", crate::xsolla::checkout_status_route)

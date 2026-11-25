@@ -303,6 +303,17 @@ A paywall view for A/B test results (counted per day and variant).
 `a-z0-9_` (up to 40 characters, at most 30 per player and build), values strings / numbers / booleans stored as text,
 `null` or `""` removes a key.
 
+### `POST /redeem`
+
+`{"app_id": "...", "user_id": "...", "code": "SUMMER-2026"}` → the shape of `/verify`: `200 success` (granted) or `202
+pending` (on its way to the game) with `transaction_id`, `product_id`, `catalog_product_id`, `is_sub`, `expires_date_ms`,
+`delivery`; `404 invalid` with `code: ERR_CODE_INVALID` (no such code, or turned off), `409 invalid` with
+`ERR_CODE_EXPIRED` / `ERR_CODE_USED_UP`. A promo code of the app (`promo_code`, admin page → the app → Promo codes,
+`admin_upsert_promo_code` / `admin_delete_promo_code`) gives its catalog product to each player once, through the
+ledger like a manual grant (store `manual`, no revenue; a subscription code lasts its `duration_days`); redeeming it
+again answers that grant. Rate limit: 10 a minute per player, 600 per build (codes are guessed by trying: generate
+long random codes, the admin page does, and use player tokens).
+
 ### `POST /server/entitlements`, `/server/grant`, `/server/revoke`
 
 For the game's backend, with `Authorization: Bearer psk_…` (a server key of the app, table `server_key`: only the

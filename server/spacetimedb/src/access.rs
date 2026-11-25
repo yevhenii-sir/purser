@@ -8,6 +8,7 @@ use crate::health::app_check;
 use crate::integrations::{integration, integration_dead, integration_health};
 use crate::steam::steam_build;
 use crate::paywalls::{paywall, paywall_test, placement};
+use crate::promo::promo_code;
 use crate::settings::server_state;
 use crate::store_create::store_create_job;
 use std::collections::BTreeSet;
@@ -354,6 +355,8 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
         "placement" => rows(db.placement().iter()),
         "paywall_test" if column == "placement_key" => rows(db.paywall_test().placement_key().filter(value)),
         "paywall_test" => rows(db.paywall_test().iter()),
+        "promo_code" if column == "game_key" => rows(db.promo_code().game_key().filter(value)),
+        "promo_code" => rows(db.promo_code().iter()),
         "store_create_job" if column == "app_id" => rows(db.store_create_job().app_id().filter(value)),
         "store_create_job" => rows(db.store_create_job().iter()),
         "alert_channel" => rows(db.alert_channel().iter()),

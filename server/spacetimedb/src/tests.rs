@@ -6078,6 +6078,7 @@ fn parse_sdk_request(route: &str, body: &Value) -> Result<(), String> {
         "/paywall" => p::<PaywallRequest>(body),
         "/paywall/event" => p::<PaywallEventRequest>(body),
         "/attributes" => p::<AttributesRequest>(body),
+        "/redeem" => p::<RedeemRequest>(body),
         "/offers/apple/sign" => p::<crate::offers::AppleOfferRequest>(body),
         "/checkout/steam" => p::<crate::steam::CheckoutRequest>(body),
         "/checkout/stripe" => p::<crate::stripe::CheckoutRequest>(body),
@@ -9083,4 +9084,75 @@ fn support_moves_a_google_renewal_later_and_the_game_gets_the_new_expiry() {
     assert!(defer.contains(&format!("/purchases/subscriptions/vip/tokens/{TOKEN}:defer")), "{defer}");
     assert_eq!(find(&w, &id).unwrap().expires_at_ms, before + 7 * 86_400_000);
     assert_eq!(w.calls("/call/billing_grant"), 2, "granted again with the new expiry");
+}
+
+
+// --- Promo codes (/redeem) ---
+
+fn promo(w: &World, v: Value) -> Result<(), String> {
+    admin_call(w, |ctx| crate::promo::admin_upsert_promo_code(ctx, v.to_string()))
+}
+
+fn redeem_as(w: &World, user: &str, code: &str) -> Outcome {
+    let r: RedeemRequest = serde_json::from_value(json!({ "app_id": APP, "user_id": user, "code": code })).unwrap();
+    redeem_code(&mut w.ctx(), &r)
+}
+
+#[test]
+fn a_promo_code_gives_its_product_once_per_player_up_to_its_limit() {
+    let w = World::new();
+    price_products(&w, "USD");
+    w.as_admin(false);
+    assert!(promo(&w, json!({ "game_key": "game", "code": "ab", "product_id": "gems" })).unwrap_err().contains("ERR_BAD_CODE"));
+    assert!(promo(&w, json!({ "game_key": "game", "code": "SUMMER-2026", "product_id": "nope" })).unwrap_err().contains("catalog"));
+    promo(&w, json!({ "game_key": "game", "code": "summer-2026", "product_id": "gems", "max_redemptions": 2 })).unwrap();
+
+    let o = redeem_as(&w, "player-1", " Summer-2026 ");
+    assert_eq!((o.http, o.body["status"].as_str(), o.body["delivery"].as_str()), (200, Some("success"), Some("server")), "{}", o.body);
+    assert_eq!(w.reducer_calls(), ["billing_grant player-1 purchase"]);
+    // The same player again: the same grant, nothing new.
+    let again = redeem_as(&w, "player-1", "SUMMER-2026");
+    assert_eq!((again.http, again.body["transaction_id"].clone()), (200, o.body["transaction_id"].clone()));
+    assert_eq!(w.calls("/call/billing_grant"), 1);
+
+    assert_eq!(redeem_as(&w, "player-2", "SUMMER-2026").http, 200);
+    let full = redeem_as(&w, "player-3", "SUMMER-2026");
+    assert_eq!((full.http, full.body["code"].as_str()), (409, Some("ERR_CODE_USED_UP")));
+    let unknown = redeem_as(&w, "player-3", "WINTER-2026");
+    assert_eq!((unknown.http, unknown.body["code"].as_str()), (404, Some("ERR_CODE_INVALID")));
+
+    // Disabled: the same answer as an unknown code.
+    promo(&w, json!({ "game_key": "game", "code": "SUMMER-2026", "product_id": "gems", "enabled": false })).unwrap();
+    assert_eq!(redeem_as(&w, "player-4", "SUMMER-2026").body["code"], "ERR_CODE_INVALID");
+    // A free grant: no revenue.
+    assert!(revenue_rows(&w).is_empty());
+    let codes: Vec<u32> = w.read(|tx| {
+        use crate::promo::promo_code;
+        tx.db.promo_code().iter().map(|c| c.redeemed).collect()
+    });
+    assert_eq!(codes, [2], "the counter survives an edit");
+}
+
+#[test]
+fn a_subscription_code_lasts_its_duration_and_expired_codes_are_refused() {
+    let w = World::new();
+    add_subscription_product(&w);
+    w.as_admin(false);
+    assert!(promo(&w, json!({ "game_key": "game", "code": "VIP-WEEK", "product_id": "vip" })).unwrap_err().contains("duration_days"));
+    promo(&w, json!({ "game_key": "game", "code": "VIP-WEEK", "product_id": "vip", "duration_days": 7, "expires_at_ms": NOW_MICROS / 1000 + 3_600_000 })).unwrap();
+    let o = redeem_as(&w, "player-1", "VIP-WEEK");
+    assert_eq!(o.body["expires_date_ms"].as_i64(), Some(NOW_MICROS / 1000 + 7 * 86_400_000));
+    assert_eq!(w.entitlements("player-1")["subscriptions"]["vip"]["expires_at_ms"].as_i64(), Some(NOW_MICROS / 1000 + 7 * 86_400_000));
+    w.advance_clock(3601);
+    assert_eq!(redeem_as(&w, "player-2", "VIP-WEEK").body["code"], "ERR_CODE_EXPIRED");
+
+    // Erasing the player keeps the code redeemed for the erased id; the export lists it before.
+    let export: Value = serde_json::from_str(&crate::player_data::admin_export_player(&mut w.ctx(), "game".into(), "player-1".into())).unwrap();
+    assert_eq!(export["promo_codes"][0]["code"], "VIP-WEEK", "{export}");
+    admin_call(&w, |ctx| crate::player_data::admin_erase_player(ctx, "game".into(), "player-1".into())).unwrap();
+    let left: Vec<String> = w.read(|tx| {
+        use crate::promo::promo_redemption;
+        tx.db.promo_redemption().iter().map(|r| r.user_id).collect()
+    });
+    assert!(left.len() == 1 && left[0].starts_with("erased:"), "{left:?}");
 }

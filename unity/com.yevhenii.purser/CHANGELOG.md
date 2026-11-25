@@ -4,6 +4,10 @@
 
 ### Added
 
+- `RedeemCodeAsync(code)`: redeems a promo code of the app (server `POST /redeem`). `PurchaseSucceeded` fires as for a
+  purchase, so a game that grants on the client grants it in the same handler; a refused code is `Rejected` with the
+  reason's code first in the message (`ErrorCodes.CodeInvalid`, `CodeExpired`, `CodeUsedUp`). A custom `IBillingApi`
+  implements `IPromoCodeApi` for it.
 - `PurchaseResult.Quantity`: the units of a purchase of several at once (a Google Play product with multi-quantity, a
   StoreKit quantity); a game that grants on the client grants the product this many times. 1 otherwise.
 

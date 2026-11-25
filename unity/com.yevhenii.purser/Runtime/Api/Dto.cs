@@ -256,6 +256,14 @@ namespace Purser
         public const string ClientAuth = "ERR_CLIENT_AUTH";
         /// <summary>429: too many requests; retry after <see cref="ApiResult{T}.RetryAfter"/>.</summary>
         public const string RateLimited = "ERR_RATE_LIMITED";
+        /// <summary>404 from <c>/redeem</c>: no such code (or it is turned off).</summary>
+        public const string CodeInvalid = "ERR_CODE_INVALID";
+        /// <summary>409 from <c>/redeem</c>: the code's end date passed.</summary>
+        public const string CodeExpired = "ERR_CODE_EXPIRED";
+        /// <summary>409 from <c>/redeem</c>: as many players as allowed redeemed it.</summary>
+        public const string CodeUsedUp = "ERR_CODE_USED_UP";
+        /// <summary>409 from <c>/redeem</c>: this player redeemed it before.</summary>
+        public const string CodeAlreadyRedeemed = "ERR_CODE_ALREADY_REDEEMED";
     }
 
     /// <summary>Generic <c>{status, code, message}</c> answer.</summary>

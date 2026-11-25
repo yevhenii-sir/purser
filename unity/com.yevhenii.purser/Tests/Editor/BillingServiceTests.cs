@@ -168,6 +168,43 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void RedeemCode_RaisesPurchaseSucceededForTheGameToGrant()
+        {
+            CreateService();
+            m_Api.RedeemResult = new ApiResult<VerifyResponse>(200, new VerifyResponse
+            {
+                Status = VerifyStatus.Success, ProductId = "gems_100", TransactionId = "game.promo.SUMMER.player", Delivery = VerifyDelivery.Client,
+            }, null);
+            PurchaseResult granted = null;
+            m_Service.PurchaseSucceeded += r => granted = r;
+
+            var result = Sync.Run(m_Service.RedeemCodeAsync("  summer-2026 "));
+
+            Assert.AreEqual(PurchaseStatus.Success, result.Status);
+            Assert.IsTrue(result.GrantOnClient);
+            Assert.AreSame(result, granted, "granted in the same handler as a purchase");
+            Assert.AreEqual(("summer-2026", User), (m_Api.RedeemRequests.Single().Code, m_Api.RedeemRequests.Single().UserId));
+        }
+
+        [Test]
+        public void RedeemCode_ARefusedCodeIsRejectedWithItsReason()
+        {
+            CreateService();
+            m_Api.RedeemResult = new ApiResult<VerifyResponse>(409, new VerifyResponse { Status = VerifyStatus.Invalid, Message = "this code has been used up" },
+                "HTTP 409", ErrorCodes.CodeUsedUp);
+            var raised = false;
+            m_Service.PurchaseSucceeded += _ => raised = true;
+
+            var result = Sync.Run(m_Service.RedeemCodeAsync("SUMMER-2026"));
+
+            Assert.AreEqual(PurchaseStatus.Rejected, result.Status);
+            StringAssert.StartsWith(ErrorCodes.CodeUsedUp, result.Message);
+            Assert.IsFalse(raised);
+            Assert.AreEqual(PurchaseStatus.Failed, Sync.Run(m_Service.RedeemCodeAsync(" ")).Status, "an empty code is not sent");
+            Assert.AreEqual(1, m_Api.RedeemRequests.Count);
+        }
+
+        [Test]
         public void Purchase_OfSeveralUnits_SaysHowManyToGrant()
         {
             CreateService();

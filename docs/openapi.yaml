@@ -802,6 +802,42 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/StatusMessage" }
 
+  /redeem:
+    post:
+      tags: [Purchases]
+      operationId: redeem
+      summary: Redeem a promo code
+      description: |
+        Gives the product of one of the app's promo codes to the player, once per player, through the ledger
+        like a manual grant (no revenue). Redeeming a code again answers its grant. 10 requests a minute per
+        player, 600 per build.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, user_id, code]
+              properties:
+                app_id: { type: string, description: Package / bundle id of the build. }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                code: { type: string, description: "4-32 characters of A-Z, 0-9 and -, not case-sensitive." }
+                client: { $ref: "#/components/schemas/ClientInfo" }
+      responses:
+        "200":
+          description: Granted (`success`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerifyResult" }
+        "202":
+          description: Granted, on its way to the game (`pending`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VerifyResult" }
+        "404":
+          description: "`ERR_CODE_INVALID`: no such code, or it is turned off."
+        "409":
+          description: "`ERR_CODE_EXPIRED` or `ERR_CODE_USED_UP`."
   /attributes:
     post:
       tags: [Players]

@@ -128,6 +128,8 @@ pub fn limits(route: &str) -> (Option<Limit>, Option<Limit>) {
         "manage" => (l(10, 5), l(300, 150)),
         // Once per player in a transition version of the game; each call reads Xsolla pages.
         "claim" => (l(3, 3), l(300, 150)),
+        // Codes are guessed by trying: few tries per player, a ceiling per build (random player ids).
+        "redeem" => (l(10, 5), l(600, 300)),
         _ => (None, None),
     }
 }

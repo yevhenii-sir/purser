@@ -23,6 +23,7 @@
     <type fullname="Purser.ObservedPurchases/Entry" preserve="all" />
     <type fullname="Purser.PaywallCache/Snapshot" preserve="all" />
     <type fullname="Purser.PaywallEventRequest" preserve="all" />
+    <type fullname="Purser.RedeemRequest" preserve="all" />
     <type fullname="Purser.PaywallProductDto" preserve="all" />
     <type fullname="Purser.PaywallRequest" preserve="all" />
     <type fullname="Purser.PaywallResponse" preserve="all" />

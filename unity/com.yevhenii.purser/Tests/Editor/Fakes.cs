@@ -383,6 +383,18 @@ namespace Purser.Tests
         }
     }
 
+    internal sealed partial class FakeApi : IPromoCodeApi
+    {
+        public readonly List<RedeemRequest> RedeemRequests = new List<RedeemRequest>();
+        public ApiResult<VerifyResponse> RedeemResult;
+
+        public Task<ApiResult<VerifyResponse>> RedeemAsync(RedeemRequest request, CancellationToken ct = default)
+        {
+            RedeemRequests.Add(request);
+            return Task.FromResult(RedeemResult ?? new ApiResult<VerifyResponse>(500, null, "not configured"));
+        }
+    }
+
     internal sealed partial class FakeApi : IApplePromotionalOfferApi
     {
         public readonly List<ApplePromotionalOfferRequest> OfferRequests = new List<ApplePromotionalOfferRequest>();

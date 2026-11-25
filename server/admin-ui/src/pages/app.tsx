@@ -1,8 +1,5 @@
 import { useMemo, useState } from "react"
-import {
-  BellRingIcon, ChartLineIcon, PencilIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PlugIcon, ReceiptIcon,
-  RefreshCwIcon, SendIcon, SmartphoneIcon, SparklesIcon, Trash2Icon, WebhookIcon, type LucideIcon,
-} from "lucide-react"
+import { BellRingIcon, ChartLineIcon, KeyRoundIcon, LayoutTemplateIcon, ListChecksIcon, PackageIcon, PencilIcon, PlugIcon, ReceiptIcon, RefreshCwIcon, SendIcon, SmartphoneIcon, SparklesIcon, TicketIcon, Trash2Icon, WebhookIcon, type LucideIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -30,6 +27,7 @@ import type { GameApp, IntegrationHealth, Level, Report } from "@/lib/types"
 import { cn, parseJsonOr } from "@/lib/utils"
 import { AppIntegrationsTab } from "@/pages/app-integrations"
 import { AppPaywallsTab } from "@/pages/app-paywalls"
+import { AppPromoTab } from "@/pages/app-promo"
 import { AppProductsTab } from "@/pages/app-products"
 import { PurchasesPage } from "@/pages/purchases"
 import { RevenuePage } from "@/pages/revenue"
@@ -37,11 +35,11 @@ import { APP_TABS, appRoute, type AppTab, type PageProps } from "@/routes"
 import { useCan } from "@/lib/roles"
 
 const TAB_TITLES: Record<AppTab, string> = {
-  setup: "Setup", products: "Products", paywalls: "Paywalls", delivery: "Delivery", integrations: "Integrations", keys: "Keys", purchases: "Purchases", revenue: "Revenue",
+  setup: "Setup", products: "Products", paywalls: "Paywalls", promo: "Promo codes", delivery: "Delivery", integrations: "Integrations", keys: "Keys", purchases: "Purchases", revenue: "Revenue",
 }
 
 const TAB_ICONS: Record<AppTab, LucideIcon> = {
-  setup: ListChecksIcon, products: PackageIcon, paywalls: LayoutTemplateIcon, delivery: SendIcon, integrations: PlugIcon, keys: KeyRoundIcon, purchases: ReceiptIcon, revenue: ChartLineIcon,
+  setup: ListChecksIcon, products: PackageIcon, paywalls: LayoutTemplateIcon, promo: TicketIcon, delivery: SendIcon, integrations: PlugIcon, keys: KeyRoundIcon, purchases: ReceiptIcon, revenue: ChartLineIcon,
 }
 
 export interface AppData {
@@ -223,6 +221,7 @@ export function AppPage({ appKey, tab, go, me }: PageProps & { appKey: string; t
       {tab === "setup" && <SetupTab {...props} />}
       {tab === "products" && <AppProductsTab {...props} />}
       {tab === "paywalls" && <AppPaywallsTab {...props} />}
+      {tab === "promo" && <AppPromoTab {...props} />}
       {tab === "delivery" && <DeliveryTab {...props} />}
       {tab === "integrations" && <AppIntegrationsTab {...props} />}
       {tab === "keys" && <KeysTab {...props} />}

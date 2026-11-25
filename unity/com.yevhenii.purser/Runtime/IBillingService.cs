@@ -137,6 +137,15 @@ namespace Purser
         /// (<see cref="PurchaseOptions"/>).</summary>
         Task<PurchaseResult> PurchaseAsync(string productId, PurchaseOptions options, CancellationToken ct = default);
 
+        /// <summary>
+        /// Redeems a promo code of the app (admin page → the app → Promo codes): the server gives its product to the
+        /// player once, without a payment. <see cref="PurchaseSucceeded"/> fires as for a purchase (grant it there when
+        /// <see cref="PurchaseResult.GrantOnClient"/>). A code that does not exist, expired, was used up or was already
+        /// redeemed by this player is <see cref="PurchaseStatus.Rejected"/>, its <see cref="PurchaseResult.Message"/>
+        /// starting with the code (<see cref="ErrorCodes.CodeInvalid"/>, ...); redeeming a code again answers its grant.
+        /// </summary>
+        Task<PurchaseResult> RedeemCodeAsync(string code, CancellationToken ct = default);
+
         /// <summary>"Restore purchases": re-verifies what the store reports and returns fresh customer info (purchases
         /// that are being verified at that moment included).</summary>
         Task<CustomerInfo> RestoreAsync(CancellationToken ct = default);

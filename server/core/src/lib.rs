@@ -20,6 +20,7 @@ pub mod model;
 pub mod money;
 pub mod offers;
 pub mod paywall;
+pub mod promo;
 pub mod player;
 pub mod registry;
 pub mod revenue;
