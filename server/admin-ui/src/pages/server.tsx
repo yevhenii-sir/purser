@@ -23,6 +23,7 @@ export function ServerPage() {
         <HostsSection />
         <PublicAddressSection />
         <WorkerSection />
+        <AnalyticsSection />
         <MetricsSection />
       </div>
       <RawSecrets />
@@ -118,6 +119,32 @@ function WorkerSection() {
           </div>
         </Field>
       </div>
+    </Section>
+  )
+}
+
+const ANALYTICS_MODES = [
+  { value: "full", label: "Full", hint: "Daily totals, and the full report (payer cohorts, LTV, ARPPU, Apple Ads campaigns, trials, subscriptions running now) counted in the background a batch at a time." },
+  { value: "light", label: "Light", hint: "Daily totals only: the Revenue page, Overview, business alerts and /metrics work; nothing reads the purchase ledger for a report." },
+  { value: "off", label: "Off", hint: "No revenue numbers (you count them elsewhere, e.g. the Cloud Storage export). Turned on again, the totals are rebuilt from the ledger." },
+]
+
+/** How much revenue analytics the server keeps (`analytics`). */
+function AnalyticsSection() {
+  const { data, error, loading, reload } = useAsync(() => getSetting("analytics"))
+  const current = data || "full"
+  const set = async (value: string) => {
+    if (value === current) return
+    if (value === "off" && !confirm("Turn revenue analytics off? Nothing is counted until you turn them on again (then the totals are rebuilt from the ledger).")) return
+    if ((await tryAct(() => call("admin_set_setting", "analytics", value), "Saved")) !== undefined) reload()
+  }
+  return (
+    <Section title="Analytics" description={ANALYTICS_MODES.find((m) => m.value === current)?.hint}>
+      {error && <ErrorBox error={error} />}
+      <Select value={current} disabled={loading || !!error} onValueChange={set}>
+        <SelectTrigger className="w-48" aria-label="Analytics"><SelectValue /></SelectTrigger>
+        <SelectContent>{ANALYTICS_MODES.map((m) => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}</SelectContent>
+      </Select>
     </Section>
   )
 }

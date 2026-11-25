@@ -18,7 +18,7 @@ use purser_core::revenue::{
     self as rv, ChainRow, Commission, CountryRow, Delta, DayRow, LedgerRow, PeriodFacts, Phase, Query, Rebuild, ReportInput, SubRow,
 };
 use purser_core::time::{day_of_micros, format_day, parse_day, MICROS_PER_DAY};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use spacetimedb::{ProcedureContext, ReducerContext, ScheduleAt, Table};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -254,6 +254,10 @@ impl Batch {
     }
 
     fn save(self, tx: &ReducerContext) {
+        // Analytics off: nothing is counted (the ledger logs what a rebuild counts later).
+        if analytics_mode(tx) == rv::analytics::OFF {
+            return;
+        }
         for r in self.daily.into_values() {
             match tx.db.revenue_daily().key().find(&r.key) {
                 Some(mut stored) => {
@@ -290,6 +294,14 @@ fn apply(tx: &ReducerContext, p: &Purchase, day: i32, d: &Delta) {
 fn today(tx: &ReducerContext) -> i32 {
     day_of_micros(crate::ctx::tx_now_micros(tx))
 }
+
+/// The `analytics` server setting (`purser_core::revenue::analytics`).
+pub(crate) fn analytics_mode(tx: &ReducerContext) -> &'static str {
+    rv::analytics::of_setting(settings::get(tx, key::ANALYTICS).as_deref())
+}
+
+/// The answer to every revenue report while analytics are off.
+pub const ANALYTICS_OFF_ERROR: &str = "[ERR_ANALYTICS_OFF] revenue analytics are off on this server (Server page: Analytics)";
 
 /// Trial / conversion / paid-year facts of a purchase (`purser_core::revenue::period_facts`), as
 /// `ledger::insert_purchase` wrote them on the row.
@@ -804,6 +816,10 @@ fn subscription_states(tx: &ReducerContext, apps: &BTreeSet<String>, include_san
 }
 
 fn snapshot_subscriptions(tx: &ReducerContext, day: i32) {
+    if analytics_mode(tx) == rv::analytics::OFF {
+        settings::set(tx, key::SUB_SNAPSHOT_DAY, &day.to_string());
+        return;
+    }
     for ((app_id, product_id, environment, currency), Running { active, trials, monthly_micros }) in active_subscriptions(tx, &BTreeSet::new()) {
         let row = SubscriptionDaily {
             key: row_key(day, &app_id, &product_id, &environment, &currency),
@@ -988,8 +1004,8 @@ pub fn catch_up(ctx: &mut impl Ctx, u: &Upkeep) {
 
 // --- Report ----------------------------------------------------------------------------------
 
-#[derive(Deserialize, Default)]
-struct StatsQuery {
+#[derive(Deserialize, Serialize, Default, Clone)]
+pub(crate) struct StatsQuery {
     /// `YYYY-MM-DD`; default: 29 days before `to`.
     #[serde(default)]
     from: String,
@@ -1045,22 +1061,96 @@ fn month_start(month: i32) -> i32 {
 ///
 /// The Apple Ads campaign is looked up (once per user) only for purchases in the range.
 fn ledger_rows(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32) -> Vec<LedgerRow> {
-    let window_start = month_start(rv::month_index(from));
-    let window_end = month_start(rv::month_index(to) + 1) - 1;
-    let start_micros = window_start as i64 * MICROS_PER_DAY;
-    let wanted = |p: &Purchase| !not_a_sale(p) && (apps.is_empty() || apps.contains(&p.app_id));
+    let (start_micros, window_end) = window(from, to);
+    let mut reader = RowReader::new(tx, from, to);
+    // Selected builds through `(app_id, created_at)`; the whole server through `created_at`.
+    let recent: Vec<Purchase> = if apps.is_empty() {
+        tx.db.purchase().created_at_micros().filter(start_micros..).filter(|p| is_sale_of(apps, p)).collect()
+    } else {
+        apps.iter().flat_map(|a| tx.db.purchase().app_created().filter((a.as_str(), start_micros..)).filter(|p| is_sale_of(apps, p)).collect::<Vec<_>>()).collect()
+    };
+    let mut payers: BTreeSet<String> = BTreeSet::new();
+    let mut trial_chains: BTreeSet<String> = BTreeSet::new();
+    for p in &recent {
+        if let Some(payer) = payer_of(p, window_end) {
+            payers.insert(payer);
+        }
+        if let Some(chain) = trial_chain_of(p, from, to) {
+            trial_chains.insert(chain);
+        }
+    }
+    // Earlier rows (created before the window) of those users and subscriptions.
+    let mut earlier: BTreeMap<String, Purchase> = BTreeMap::new();
+    for user in &payers {
+        for p in earlier_of_payer(tx, apps, user, start_micros) {
+            earlier.insert(p.id.clone(), p);
+        }
+    }
+    for chain in &trial_chains {
+        for p in earlier_of_chain(tx, apps, chain, start_micros) {
+            earlier.insert(p.id.clone(), p);
+        }
+    }
+    recent.into_iter().chain(earlier.into_values()).map(|p| reader.row(p)).collect()
+}
 
-    let mut campaigns: BTreeMap<(String, String), String> = BTreeMap::new();
-    let games: BTreeMap<String, String> = tx.db.game_app().iter().map(|a| (a.app_id, a.game_key)).collect();
-    let mut row_of = |p: Purchase| {
+/// The first micro of the month of `from` and the last day of the month of `to`: the window of
+/// purchases the ledger part of the report reads in full.
+pub(crate) fn window(from: i32, to: i32) -> (i64, i32) {
+    let window_start = month_start(rv::month_index(from));
+    (window_start as i64 * MICROS_PER_DAY, month_start(rv::month_index(to) + 1) - 1)
+}
+
+/// A store sale of the report's builds (empty `apps`: every build).
+pub(crate) fn is_sale_of(apps: &BTreeSet<String>, p: &Purchase) -> bool {
+    !not_a_sale(p) && (apps.is_empty() || apps.contains(&p.app_id))
+}
+
+/// The user of a paid purchase of the window: their first payment decides their cohort.
+pub(crate) fn payer_of(p: &Purchase, window_end: i32) -> Option<String> {
+    (p.was_granted && !p.trial && day_of_micros(p.created_at_micros) <= window_end).then(|| p.user_id.clone())
+}
+
+/// The subscription of a trial that started in the range: its earlier periods are read too.
+pub(crate) fn trial_chain_of(p: &Purchase, from: i32, to: i32) -> Option<String> {
+    let day = day_of_micros(p.created_at_micros);
+    (p.trial && day >= from && day <= to && !p.original_transaction_id.is_empty()).then(|| p.original_transaction_id.clone())
+}
+
+/// A payer's sales before the window.
+pub(crate) fn earlier_of_payer(tx: &ReducerContext, apps: &BTreeSet<String>, user: &str, start_micros: i64) -> Vec<Purchase> {
+    tx.db.purchase().user_id().filter(user).filter(|p| p.created_at_micros < start_micros && is_sale_of(apps, p)).collect()
+}
+
+/// A subscription's periods before the window.
+pub(crate) fn earlier_of_chain(tx: &ReducerContext, apps: &BTreeSet<String>, chain: &str, start_micros: i64) -> Vec<Purchase> {
+    tx.db.purchase().original_transaction_id().filter(chain).filter(|p| p.created_at_micros < start_micros && is_sale_of(apps, p)).collect()
+}
+
+/// Turns purchases into report rows; the Apple Ads campaign is looked up once per user, only for
+/// purchases in the range.
+pub(crate) struct RowReader<'a> {
+    tx: &'a ReducerContext,
+    from: i32,
+    to: i32,
+    games: BTreeMap<String, String>,
+    campaigns: BTreeMap<(String, String), String>,
+}
+
+impl<'a> RowReader<'a> {
+    pub(crate) fn new(tx: &'a ReducerContext, from: i32, to: i32) -> Self {
+        let games = tx.db.game_app().iter().map(|a| (a.app_id, a.game_key)).collect();
+        RowReader { tx, from, to, games, campaigns: BTreeMap::new() }
+    }
+
+    pub(crate) fn row(&mut self, p: Purchase) -> LedgerRow {
         let day = day_of_micros(p.created_at_micros);
-        let asa_campaign = if day >= from && day <= to {
-            campaigns
+        let tx = self.tx;
+        let asa_campaign = if day >= self.from && day <= self.to {
+            self.campaigns
                 .entry((p.app_id.clone(), p.user_id.clone()))
                 .or_insert_with(|| {
-                    crate::integrations::load_attribution(tx, &p.app_id, &p.user_id)
-                        .remove(attribution_key::ASA_CAMPAIGN_ID)
-                        .unwrap_or_default()
+                    crate::integrations::load_attribution(tx, &p.app_id, &p.user_id).remove(attribution_key::ASA_CAMPAIGN_ID).unwrap_or_default()
                 })
                 .clone()
         } else {
@@ -1069,7 +1159,7 @@ fn ledger_rows(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32)
         LedgerRow {
             refunded: matches!(p.status.as_str(), status::REVOKE_PENDING | status::REVOKED),
             granted: p.was_granted,
-            game_key: games.get(&p.app_id).cloned().unwrap_or_default(),
+            game_key: self.games.get(&p.app_id).cloned().unwrap_or_default(),
             app_id: p.app_id,
             user_id: p.user_id,
             environment: p.environment,
@@ -1081,42 +1171,7 @@ fn ledger_rows(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32)
             expires_at_ms: p.expires_at_ms,
             asa_campaign,
         }
-    };
-
-    // Selected builds through `(app_id, created_at)`; the whole server through `created_at`.
-    let recent: Vec<Purchase> = if apps.is_empty() {
-        tx.db.purchase().created_at_micros().filter(start_micros..).filter(|p| wanted(p)).collect()
-    } else {
-        apps.iter().flat_map(|a| tx.db.purchase().app_created().filter((a.as_str(), start_micros..)).filter(|p| wanted(p)).collect::<Vec<_>>()).collect()
-    };
-    let mut payers: BTreeSet<String> = BTreeSet::new();
-    let mut trial_chains: BTreeSet<String> = BTreeSet::new();
-    for p in &recent {
-        let day = day_of_micros(p.created_at_micros);
-        if p.was_granted && !p.trial && day <= window_end {
-            payers.insert(p.user_id.clone());
-        }
-        if p.trial && day >= from && day <= to && !p.original_transaction_id.is_empty() {
-            trial_chains.insert(p.original_transaction_id.clone());
-        }
     }
-    // Earlier rows (created before the window) of those users and subscriptions.
-    let mut earlier: BTreeMap<String, Purchase> = BTreeMap::new();
-    for user in &payers {
-        for p in tx.db.purchase().user_id().filter(user.as_str()) {
-            if p.created_at_micros < start_micros && wanted(&p) {
-                earlier.insert(p.id.clone(), p);
-            }
-        }
-    }
-    for chain in &trial_chains {
-        for p in tx.db.purchase().original_transaction_id().filter(chain.as_str()) {
-            if p.created_at_micros < start_micros && wanted(&p) {
-                earlier.insert(p.id.clone(), p);
-            }
-        }
-    }
-    recent.into_iter().chain(earlier.into_values()).map(&mut row_of).collect()
 }
 
 /// `admin_revenue_stats` with `"summary": true`: the parts of the report built from the daily
@@ -1178,8 +1233,11 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
     report(ctx, &q, false)
 }
 
+/// `(from, to, today, apps)` of a report (empty `apps`: every build).
+pub(crate) type Resolved = (i32, i32, i32, BTreeSet<String>);
+
 /// The caller's range and builds of `q`: `(from, to, today, apps)` (empty `apps`: every build).
-fn resolve(tx: &ReducerContext, q: &StatsQuery) -> Result<(i32, i32, i32, BTreeSet<String>), String> {
+pub(crate) fn resolve(tx: &ReducerContext, q: &StatsQuery) -> Result<Resolved, String> {
     let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read)?;
     let today = today(tx);
     let to = if q.to.is_empty() { today } else { parse_day(&q.to).ok_or("bad 'to' date")? };
@@ -1213,133 +1271,163 @@ fn resolve(tx: &ReducerContext, q: &StatsQuery) -> Result<(i32, i32, i32, BTreeS
 /// The report of `q`; `overview`: only [`overview_of`] (no subscriptions or product kinds).
 fn report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<serde_json::Value, String> {
     ctx.tx(|tx| {
-        let (from, to, today, apps) = resolve(tx, q)?;
-        // A filter reads each build through its `(app_id, day)` index, the whole server by `day`.
-        let daily: Vec<RevenueDaily> = if apps.is_empty() {
-            tx.db.revenue_daily().day().filter(from..=to).collect()
-        } else {
-            apps.iter().flat_map(|a| tx.db.revenue_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
-        };
-        let rows: Vec<DayRow> = daily
-            .into_iter()
-            .map(|r| DayRow {
-                day: r.day,
-                delta: delta_of!(r),
-                app_id: r.app_id,
-                product_id: r.product_id,
-                environment: r.environment,
-                currency: r.currency,
-            })
-            .collect();
-        let table = load_fx(tx, from, to);
-        let commission = commission(tx);
-        let query = Query { from, to, include_sandbox: q.include_sandbox };
-        let sub_rows: Vec<SubscriptionDaily> = if overview {
-            Vec::new()
-        } else if apps.is_empty() {
-            tx.db.subscription_daily().day().filter(from..=to).collect()
-        } else {
-            apps.iter().flat_map(|a| tx.db.subscription_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
-        };
-        let subs: Vec<SubRow> = sub_rows
-            .into_iter()
-            .map(|s| SubRow {
-                day: s.day,
-                app_id: s.app_id,
-                product_id: s.product_id,
-                environment: s.environment,
-                currency: s.currency,
-                active: s.active,
-                trials: s.trials,
-                monthly_micros: s.monthly_micros,
-            })
-            .collect();
-        if overview {
-            let mut report = rv::build_full_report(&ReportInput {
-                rows: &rows,
-                subs: &subs,
-                active_now: &[],
-                countries: &[],
-                commission: &commission,
-                fx: &table,
-                q: &query,
-                today,
-            });
-            return Ok(overview_of(&mut report, rebuilding(tx)));
-        }
-        if q.summary {
-            let report = rv::build_full_report(&ReportInput {
-                rows: &rows,
-                subs: &subs,
-                active_now: &[],
-                countries: &[],
-                commission: &commission,
-                fx: &table,
-                q: &query,
-                today,
-            });
-            let games: Option<BTreeSet<String>> = (!apps.is_empty()).then(|| {
-                let mut g: BTreeSet<String> = apps.iter().filter_map(|a| tx.db.game_app().app_id().find(a)).map(|a| a.game_key).collect();
-                if !q.game_key.is_empty() {
-                    g.insert(q.game_key.clone());
-                }
-                g
-            });
-            return Ok(summary_of(tx, report, paywall_views(tx, games.as_ref(), from, to)));
-        }
+        let resolved = resolve(tx, q)?;
+        let heavy = if analytics_mode(tx) == rv::analytics::LIGHT { Heavy::Skip } else { Heavy::Live };
+        report_in(tx, q, resolved, overview, heavy)
+    })
+}
 
-        let country_rows: Vec<RevenueCountryDaily> = if apps.is_empty() {
-            tx.db.revenue_country_daily().day().filter(from..=to).collect()
-        } else {
-            apps.iter().flat_map(|a| tx.db.revenue_country_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
-        };
-        let countries: Vec<CountryRow> = country_rows
-            .into_iter()
-            .map(|r| CountryRow {
-                day: r.day,
-                delta: delta_of!(r),
-                app_id: r.app_id,
-                country: r.country,
-                environment: r.environment,
-                currency: r.currency,
-            })
-            .collect();
-        let active_now: Vec<rv::ActiveNow> = active_subscriptions(tx, &apps)
-            .into_iter()
-            .map(|((_, _, environment, currency), r)| rv::ActiveNow {
-                environment,
-                currency,
-                active: r.active,
-                trials: r.trials,
-                monthly_micros: r.monthly_micros,
-            })
-            .collect();
+/// Where the ledger part of the full report comes from (payer cohorts, LTV, ARPPU, campaigns,
+/// trials) and whether subscriptions running now are counted.
+pub(crate) enum Heavy {
+    /// Read now, in this transaction.
+    Live,
+    /// Read before, a batch at a time (`report_job`).
+    Rows(Vec<LedgerRow>),
+    /// Not counted (`analytics` = `light`): those parts are empty.
+    Skip,
+}
 
+/// The report of `q` for the range and builds `resolved`.
+pub(crate) fn report_in(
+    tx: &ReducerContext,
+    q: &StatsQuery,
+    (from, to, today, apps): Resolved,
+    overview: bool,
+    heavy: Heavy,
+) -> Result<serde_json::Value, String> {
+    // A filter reads each build through its `(app_id, day)` index, the whole server by `day`.
+    let daily: Vec<RevenueDaily> = if apps.is_empty() {
+        tx.db.revenue_daily().day().filter(from..=to).collect()
+    } else {
+        apps.iter().flat_map(|a| tx.db.revenue_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
+    };
+    let rows: Vec<DayRow> = daily
+        .into_iter()
+        .map(|r| DayRow {
+            day: r.day,
+            delta: delta_of!(r),
+            app_id: r.app_id,
+            product_id: r.product_id,
+            environment: r.environment,
+            currency: r.currency,
+        })
+        .collect();
+    let table = load_fx(tx, from, to);
+    let commission = commission(tx);
+    let query = Query { from, to, include_sandbox: q.include_sandbox };
+    let sub_rows: Vec<SubscriptionDaily> = if overview {
+        Vec::new()
+    } else if apps.is_empty() {
+        tx.db.subscription_daily().day().filter(from..=to).collect()
+    } else {
+        apps.iter().flat_map(|a| tx.db.subscription_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
+    };
+    let subs: Vec<SubRow> = sub_rows
+        .into_iter()
+        .map(|s| SubRow {
+            day: s.day,
+            app_id: s.app_id,
+            product_id: s.product_id,
+            environment: s.environment,
+            currency: s.currency,
+            active: s.active,
+            trials: s.trials,
+            monthly_micros: s.monthly_micros,
+        })
+        .collect();
+    if overview {
         let mut report = rv::build_full_report(&ReportInput {
             rows: &rows,
             subs: &subs,
-            active_now: &active_now,
-            countries: &countries,
+            active_now: &[],
+            countries: &[],
             commission: &commission,
             fx: &table,
             q: &query,
             today,
         });
-        report["fx"]["overrides"] = json!(tx.db.fx_override().iter().map(|o| (o.currency, o.units_per_usd)).collect::<BTreeMap<_, _>>());
-        let (auto_renew_off, in_grace, billing_issue) = subscription_states(tx, &apps, q.include_sandbox);
-        report["subscriptions"]["auto_renew_off_now"] = json!(auto_renew_off);
-        report["subscriptions"]["in_grace_now"] = json!(in_grace);
-        report["subscriptions"]["billing_issue_now"] = json!(billing_issue);
+        return Ok(overview_of(&mut report, rebuilding(tx)));
+    }
+    if q.summary {
+        let report = rv::build_full_report(&ReportInput {
+            rows: &rows,
+            subs: &subs,
+            active_now: &[],
+            countries: &[],
+            commission: &commission,
+            fx: &table,
+            q: &query,
+            today,
+        });
+        let games: Option<BTreeSet<String>> = (!apps.is_empty()).then(|| {
+            let mut g: BTreeSet<String> = apps.iter().filter_map(|a| tx.db.game_app().app_id().find(a)).map(|a| a.game_key).collect();
+            if !q.game_key.is_empty() {
+                g.insert(q.game_key.clone());
+            }
+            g
+        });
+        return Ok(summary_of(tx, report, paywall_views(tx, games.as_ref(), from, to)));
+    }
 
-        // Cohorts reach up to today: they need the rates after `to` too.
-        let ledger_fx = if to >= today { table } else { load_fx(tx, from, today) };
-        let ledger = rv::ledger_metrics(&ledger_rows(tx, &apps, from, to), &ledger_fx, &query, crate::ctx::tx_now_micros(tx));
-        if let (Some(r), Some(l)) = (report.as_object_mut(), ledger.as_object()) {
-            r.extend(l.clone());
-        }
-        report["rebuilding"] = json!(rebuilding(tx));
-        Ok(report)
-    })
+    let country_rows: Vec<RevenueCountryDaily> = if apps.is_empty() {
+        tx.db.revenue_country_daily().day().filter(from..=to).collect()
+    } else {
+        apps.iter().flat_map(|a| tx.db.revenue_country_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
+    };
+    let countries: Vec<CountryRow> = country_rows
+        .into_iter()
+        .map(|r| CountryRow {
+            day: r.day,
+            delta: delta_of!(r),
+            app_id: r.app_id,
+            country: r.country,
+            environment: r.environment,
+            currency: r.currency,
+        })
+        .collect();
+    let skip = matches!(heavy, Heavy::Skip);
+    let active_now: Vec<rv::ActiveNow> = if skip { BTreeMap::new() } else { active_subscriptions(tx, &apps) }
+        .into_iter()
+        .map(|((_, _, environment, currency), r)| rv::ActiveNow {
+            environment,
+            currency,
+            active: r.active,
+            trials: r.trials,
+            monthly_micros: r.monthly_micros,
+        })
+        .collect();
+
+    let mut report = rv::build_full_report(&ReportInput {
+        rows: &rows,
+        subs: &subs,
+        active_now: &active_now,
+        countries: &countries,
+        commission: &commission,
+        fx: &table,
+        q: &query,
+        today,
+    });
+    report["fx"]["overrides"] = json!(tx.db.fx_override().iter().map(|o| (o.currency, o.units_per_usd)).collect::<BTreeMap<_, _>>());
+    let (auto_renew_off, in_grace, billing_issue) = if skip { (0, 0, 0) } else { subscription_states(tx, &apps, q.include_sandbox) };
+    report["subscriptions"]["auto_renew_off_now"] = json!(auto_renew_off);
+    report["subscriptions"]["in_grace_now"] = json!(in_grace);
+    report["subscriptions"]["billing_issue_now"] = json!(billing_issue);
+
+    // Cohorts reach up to today: they need the rates after `to` too.
+    let ledger_fx = if to >= today { table } else { load_fx(tx, from, today) };
+    let purchases = match heavy {
+        Heavy::Live => ledger_rows(tx, &apps, from, to),
+        Heavy::Rows(rows) => rows,
+        Heavy::Skip => Vec::new(),
+    };
+    let ledger = rv::ledger_metrics(&purchases, &ledger_fx, &query, crate::ctx::tx_now_micros(tx));
+    if let (Some(r), Some(l)) = (report.as_object_mut(), ledger.as_object()) {
+        r.extend(l.clone());
+    }
+    report["rebuilding"] = json!(rebuilding(tx));
+    report["analytics"] = json!(analytics_mode(tx));
+    Ok(report)
 }
 
 /// Dashboard data. `query_json`: `{"from": "2026-10-01", "to": "2026-10-31", "game_key": "...",
@@ -1380,8 +1468,9 @@ pub struct RevenueReport {
     pub report_json: String,
 }
 
-/// The answer to a report another admin is counting for the first time: the UI asks again.
-pub const COUNTING_ERROR: &str = "[ERR_REPORT_COUNTING] another admin is counting this report now: try again in a few seconds";
+/// The answer to a report that is being counted for the first time (by another admin's request, or
+/// in the background): the UI asks again.
+pub const COUNTING_ERROR: &str = "[ERR_REPORT_COUNTING] this report is being counted now: try again in a few seconds";
 
 /// `server_state` key: bumped whenever kept reports are forgotten.
 const REPORT_GENERATION: &str = "revenue_report_generation";
@@ -1443,29 +1532,44 @@ fn with_meta(mut report: serde_json::Value, computed_at: i64, kept: bool, counti
     report
 }
 
-/// What [`kept_report`] decided: the report key, when it started, what it is counted for (day,
-/// rebuild state, generation) and the kept answer if it is answered from it.
-type Decided = (String, i64, (i32, bool, i64), Option<serde_json::Value>);
+/// What a request for a kept report does after its first transaction.
+enum Next {
+    /// Answered (a kept report, or the old one while the background job counts it again).
+    Answer(serde_json::Value),
+    /// The background job counts it for the first time: asked again later ([`COUNTING_ERROR`]).
+    Wait,
+    /// Counted now in this call: the key, when it started, and what it is counted for (day,
+    /// rebuild state, generation).
+    Count(String, i64, (i32, bool, i64)),
+}
 
-/// [`report`] answered from [`RevenueReport`] when it was slow before (see [`kept_plan`]).
+/// [`report`] answered from [`RevenueReport`] when it was slow before (see [`kept_plan`]). The full
+/// report of `analytics` = `full` is counted by a background job a batch at a time
+/// (`report_job`), never in the request.
 fn kept_report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<serde_json::Value, String> {
-    // The day, rebuild state and generation the report is counted for: saved with it only if
-    // nothing forgot the kept reports meanwhile (new rates, an override, a rebuild).
-    let decided = ctx.tx(|tx| -> Result<Decided, String> {
+    let next = ctx.tx(|tx| -> Result<Next, String> {
+        let mode = analytics_mode(tx);
+        if mode == rv::analytics::OFF {
+            return Err(ANALYTICS_OFF_ERROR.to_string());
+        }
+        let background = !overview && !q.summary && mode == rv::analytics::FULL;
         let key = report_key(tx, q, overview)?;
         let now = crate::ctx::tx_now_micros(tx);
+        // The day, rebuild state and generation the report is counted for: saved with it only if
+        // nothing forgot the kept reports meanwhile (new rates, an override, a rebuild).
         let counted_for = (today(tx), rebuilding(tx), settings::get_i64(tx, REPORT_GENERATION));
         let kept = tx.db.revenue_report().key().find(&key);
         match kept_plan(kept.as_ref(), now, today(tx), rebuilding(tx), q.refresh) {
-            KeptPlan::Wait => return Err(COUNTING_ERROR.to_string()),
+            KeptPlan::Wait => return Ok(Next::Wait),
             KeptPlan::Answer => {
                 let k = kept.expect("answered from a kept report");
                 let counting = k.computing_since_micros > now - COUNTING_MICROS;
                 let report = serde_json::from_str(&k.report_json).unwrap_or_default();
-                return Ok((key, now, counted_for, Some(with_meta(report, k.computed_at_micros, true, counting))));
+                return Ok(Next::Answer(with_meta(report, k.computed_at_micros, true, counting)));
             }
             KeptPlan::Count => {}
         }
+        let old = kept.as_ref().filter(|k| !k.report_json.is_empty()).map(|k| (k.report_json.clone(), k.computed_at_micros));
         // A kept report counted again: others get the old one until this count is done. The first
         // count leaves a placeholder: others wait for it (at midnight every open page asks at once).
         match kept {
@@ -1484,50 +1588,88 @@ fn kept_report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<ser
                 });
             }
         }
-        Ok((key, now, counted_for, None))
-    });
-    let (key, started, (counted_day, counted_rebuilding, generation), answer) = decided?;
-    if let Some(v) = answer {
-        return Ok(v);
-    }
+        if !background {
+            return Ok(Next::Count(key, now, counted_for));
+        }
+        crate::report_job::start(tx, &key, q, resolve(tx, q)?, counted_for);
+        Ok(match old {
+            Some((json, at)) => Next::Answer(with_meta(serde_json::from_str(&json).unwrap_or_default(), at, true, true)),
+            None => Next::Wait,
+        })
+    })?;
+    let (key, started, counted_for) = match next {
+        Next::Answer(v) => return Ok(v),
+        Next::Wait => return Err(COUNTING_ERROR.to_string()),
+        Next::Count(key, started, counted_for) => (key, started, counted_for),
+    };
     let counted = report(ctx, q, overview);
     let report_json = counted.as_ref().map(|r| r.to_string()).unwrap_or_default();
     let (computed_at, keep) = ctx.tx(|tx| {
         let now = crate::ctx::tx_now_micros(tx);
-        let current = settings::get_i64(tx, REPORT_GENERATION) == generation;
-        let keep = counted.is_ok() && current && now - started >= KEEP_AFTER_MICROS;
-        let old = tx.db.revenue_report().key().find(&key);
-        match (old, keep) {
-            (Some(row), true) => {
-                tx.db.revenue_report().key().update(RevenueReport {
-                    computed_at_micros: now,
-                    counted_day,
-                    rebuilding: counted_rebuilding,
-                    computing_since_micros: 0,
-                    report_json: report_json.clone(),
-                    ..row
-                });
-            }
-            (None, true) => {
-                tx.db.revenue_report().insert(RevenueReport {
-                    key: key.clone(),
-                    computed_at_micros: now,
-                    counted_day,
-                    rebuilding: counted_rebuilding,
-                    computing_since_micros: 0,
-                    report_json: report_json.clone(),
-                });
-            }
-            // Fast now (or failed): not kept, answered live.
-            (Some(_), false) => {
-                tx.db.revenue_report().key().delete(&key);
-            }
-            (None, false) => {}
-        }
-        prune_kept(tx, now);
-        (now, keep)
+        let keep = counted.is_ok() && now - started >= KEEP_AFTER_MICROS;
+        (now, keep_report(tx, &key, counted_for, keep.then_some(report_json.as_str())))
     });
     Ok(with_meta(counted?, computed_at, keep, false))
+}
+
+/// Saves a counted report (`None`: it was fast or failed: answered live, not kept) unless the
+/// kept reports were forgotten while it was counted (its numbers are old). True when kept.
+pub(crate) fn keep_report(tx: &ReducerContext, key: &str, (counted_day, counted_rebuilding, generation): (i32, bool, i64), report_json: Option<&str>) -> bool {
+    let now = crate::ctx::tx_now_micros(tx);
+    let current = settings::get_i64(tx, REPORT_GENERATION) == generation;
+    let old = tx.db.revenue_report().key().find(key.to_string());
+    let keep = report_json.filter(|_| current);
+    match (old, keep) {
+        (Some(row), Some(json)) => {
+            tx.db.revenue_report().key().update(RevenueReport {
+                computed_at_micros: now,
+                counted_day,
+                rebuilding: counted_rebuilding,
+                computing_since_micros: 0,
+                report_json: json.to_string(),
+                ..row
+            });
+        }
+        (None, Some(json)) => {
+            tx.db.revenue_report().insert(RevenueReport {
+                key: key.to_string(),
+                computed_at_micros: now,
+                counted_day,
+                rebuilding: counted_rebuilding,
+                computing_since_micros: 0,
+                report_json: json.to_string(),
+            });
+        }
+        (Some(_), None) => {
+            tx.db.revenue_report().key().delete(key.to_string());
+        }
+        (None, None) => {}
+    }
+    prune_kept(tx, now);
+    keep.is_some()
+}
+
+/// A background count of `key` is still running: its placeholder stays "being counted".
+pub(crate) fn still_counting(tx: &ReducerContext, key: &str) {
+    if let Some(row) = tx.db.revenue_report().key().find(key.to_string()) {
+        let now = crate::ctx::tx_now_micros(tx);
+        tx.db.revenue_report().key().update(RevenueReport { computing_since_micros: now, ..row });
+    }
+}
+
+/// The `analytics` setting changes to `mode`. Turned on again after `off`, the aggregates are
+/// rebuilt from the ledger (nothing was counted meanwhile). Kept reports and background counts are
+/// dropped either way.
+pub fn analytics_changed(tx: &ReducerContext, mode: &str) {
+    let old = analytics_mode(tx);
+    if old == mode {
+        return;
+    }
+    if old == rv::analytics::OFF {
+        invalidate_apps(tx, &[]);
+    }
+    crate::report_job::cancel_all(tx);
+    forget_reports(tx);
 }
 
 /// Drops expired kept reports and the oldest beyond [`KEPT_MAX`].

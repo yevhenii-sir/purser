@@ -5,9 +5,9 @@ import type { RevenueOverview, Stats } from "./types"
 /** Revenue reports are kept this long in the session, so switching pages does not recompute them. */
 const TTL_MS = 30_000
 const PREFIX = "revenue:"
-/** How long a page waits for a report another admin counts for the first time (the server gives
- * up on such a count after 2 minutes), and how often it asks again meanwhile. */
-const COUNTING_WAIT_MS = 120_000
+/** How long a page waits for a report counted for the first time (by another admin's request, or the
+ * full report in the server's background job), and how often it asks again meanwhile. */
+const COUNTING_WAIT_MS = 600_000
 const COUNTING_POLL_MS = 3_000
 
 /** `load`, asked again while the server answers `ERR_REPORT_COUNTING`: another admin is counting

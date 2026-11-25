@@ -52,6 +52,9 @@ pub mod key {
     /// Queue drainers that may run at once (default `drain::DEFAULT_LANES`): each holds one module
     /// instance while it waits for a store, and calls the stores one at a time.
     pub const WORKER_LANES: &str = "worker_lanes";
+    /// How much revenue analytics the server keeps: `full` (default), `light` or `off`
+    /// (`purser_core::revenue::analytics`).
+    pub const ANALYTICS: &str = "analytics";
 }
 
 /// A worker that has not run for this long has stopped (it runs every minute).
@@ -71,6 +74,7 @@ pub const ADMIN_KEYS: &[&str] = &[
     key::STORE_COMMISSION_AFTER_YEAR_PERCENT,
     key::RETENTION_DAYS,
     key::WORKER_LANES,
+    key::ANALYTICS,
 ];
 
 pub fn get(ctx: &ReducerContext, key: &str) -> Option<String> {
@@ -113,6 +117,10 @@ pub fn admin_set_setting(ctx: &ReducerContext, key: String, value: String) -> Re
     if matches!(key.as_str(), key::STORE_COMMISSION_PERCENT | key::STORE_COMMISSION_BY_APP | key::STORE_COMMISSION_AFTER_YEAR_PERCENT) {
         crate::revenue::forget_reports(ctx);
     }
+    if key == key::ANALYTICS {
+        let mode = purser_core::revenue::analytics::parse(&value).map_err(|e| format!("[ERR_BAD_SETTING] {e}"))?;
+        crate::revenue::analytics_changed(ctx, mode);
+    }
     if value.is_empty() {
         ctx.db.server_state().key().delete(&key);
         return Ok(());
@@ -132,6 +140,7 @@ pub fn admin_set_setting(ctx: &ReducerContext, key: String, value: String) -> Re
             Ok(n) if (1..=crate::drain::MAX_LANES).contains(&n) => n.to_string(),
             _ => return Err(format!("[ERR_BAD_SETTING] {key}: a whole number from 1 to {}", crate::drain::MAX_LANES)),
         },
+        key::ANALYTICS => purser_core::revenue::analytics::parse(&value).map_err(|e| format!("[ERR_BAD_SETTING] {e}"))?.to_string(),
         key::STORE_COMMISSION_BY_APP => {
             let by_app = purser_core::revenue::parse_percent_by_app(&value).map_err(|e| format!("[ERR_BAD_SETTING] {key}: {e}"))?;
             serde_json::to_string(&by_app).unwrap_or_default()

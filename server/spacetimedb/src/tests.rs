@@ -1496,7 +1496,11 @@ fn revenue_reports_are_kept_per_question() {
     let same = ask(json!({ "summary": true, "from": from, "to": today }));
     assert_eq!(same["computed_at_micros"], first["computed_at_micros"]);
     ask(json!({ "summary": true, "include_sandbox": true }));
-    ask(json!({}));
+    // The full report is counted in the background: asked again once it is done.
+    let full = crate::revenue::kept_stats(&mut w.ctx(), "{}").unwrap_err();
+    assert!(full.contains("ERR_REPORT_COUNTING"), "{full}");
+    crate::report_job::run_all(&mut w.ctx());
+    assert_eq!(ask(json!({}))["totals"]["gross_usd_micros"], 990_000);
     assert_eq!(w.read(|tx| tx.db.revenue_report().iter().count()), 3);
     // A new day counts again.
     w.advance_clock(86_400);
@@ -1504,6 +1508,97 @@ fn revenue_reports_are_kept_per_question() {
     assert_ne!(next_day["computed_at_micros"], first["computed_at_micros"]);
 }
 
+
+/// Paid purchases of several players over two months, some before the report's window.
+fn paying_players(w: &World) {
+    let product = w.read(|tx| tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap());
+    let day = 86_400_000_000i64;
+    w.write(|tx| {
+        for (i, (user, days_ago)) in [("p1", 50), ("p1", 2), ("p2", 1), ("p3", 40), ("p3", 3), ("p4", 5), ("p5", 6), ("p2", 45)].iter().enumerate() {
+            let at = NOW_MICROS - days_ago * day;
+            let mut p = Purchase::new("google", &format!("GPA.{i}"), APP, &product, user, at);
+            p.status = status::COMPLETED.into();
+            p.was_granted = true;
+            p.price_micros = 1_000_000 * (i as i64 + 1);
+            p.currency = "USD".into();
+            p.created_at_micros = at;
+            crate::ledger::insert_purchase(tx, p);
+        }
+    });
+}
+
+/// A report without the fields that say when and how it was counted.
+fn numbers_of(mut r: Value) -> Value {
+    for k in ["computed_at_micros", "refresh_after_micros", "stale_after_micros", "kept", "counting"] {
+        r.as_object_mut().unwrap().remove(k);
+    }
+    r
+}
+
+#[test]
+fn the_full_report_counted_in_the_background_equals_one_counted_at_once() {
+    use crate::report_job::{revenue_report_job, revenue_report_row, revenue_report_visit};
+    let w = World::new();
+    paying_players(&w);
+    w.as_admin(false);
+    let at_once = crate::revenue::stats(&mut w.ctx(), "{}").unwrap();
+    assert!(at_once["cohorts"].as_array().is_some_and(|c| !c.is_empty()), "{at_once}");
+    assert!(crate::revenue::kept_stats(&mut w.ctx(), "{}").unwrap_err().contains("ERR_REPORT_COUNTING"));
+    let steps = std::cell::Cell::new(0);
+    while w.read(|tx| tx.db.revenue_report_job().iter().count()) > 0 {
+        let id = w.read(|tx| tx.db.revenue_report_job().iter().next().unwrap().id);
+        w.write(|tx| {
+            crate::report_job::step(tx, id);
+        });
+        steps.set(steps.get() + 1);
+    }
+    assert!(steps.get() > 3, "several small steps ({})", steps.get());
+    assert_eq!(w.read(|tx| (tx.db.revenue_report_row().iter().count(), tx.db.revenue_report_visit().iter().count())), (0, 0), "cleaned up");
+    let background = crate::revenue::kept_stats(&mut w.ctx(), "{}").unwrap();
+    assert_eq!(background["kept"], true);
+    assert_eq!(numbers_of(background), numbers_of(at_once));
+}
+
+fn set_analytics(w: &World, mode: &str) {
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::settings::admin_set_setting(ctx, "analytics".into(), mode.into())).unwrap();
+}
+
+#[test]
+fn light_analytics_answer_at_once_without_the_ledger_part() {
+    let w = World::new();
+    paying_players(&w);
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    w.as_admin(false);
+    set_analytics(&w, "light");
+    let r = crate::revenue::kept_stats(&mut w.ctx(), "{}").unwrap();
+    assert_eq!((r["analytics"].as_str(), r["totals"]["gross_usd_micros"].as_i64()), (Some("light"), Some(990_000)));
+    assert_eq!(r["cohorts"].as_array().map(|c| c.len()), Some(0), "no ledger part");
+    let jobs = w.read(|tx| {
+        use crate::report_job::revenue_report_job;
+        tx.db.revenue_report_job().iter().count()
+    });
+    assert_eq!(jobs, 0, "nothing in the background");
+    assert!(w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::settings::admin_set_setting(ctx, "analytics".into(), "half".into())).is_err());
+}
+
+#[test]
+fn analytics_off_count_nothing_and_turned_on_again_rebuild_from_the_ledger() {
+    use crate::revenue::revenue_daily;
+    let w = World::new();
+    w.as_admin(false);
+    set_analytics(&w, "off");
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    assert_eq!(w.read(|tx| tx.db.revenue_daily().iter().count()), 0, "nothing counted");
+    assert!(crate::revenue::kept_stats(&mut w.ctx(), "{}").unwrap_err().contains("ERR_ANALYTICS_OFF"));
+    assert!(crate::revenue::overview(&mut w.ctx(), "{}").unwrap_err().contains("ERR_ANALYTICS_OFF"));
+
+    set_analytics(&w, "");
+    while !crate::revenue::run_rebuild(&mut w.ctx(), 1) {}
+    let rows = revenue_rows(&w);
+    assert_eq!(rows.values().map(|r| r.3).sum::<i64>(), 990_000, "the purchase made while off is counted");
+}
 
 #[test]
 fn the_apps_summary_has_one_row_per_build() {

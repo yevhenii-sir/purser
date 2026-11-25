@@ -191,6 +191,8 @@ export interface Kept {
 }
 
 export interface Stats extends Partial<Kept> {
+  /** How much analytics the server keeps (`analytics` setting): `light` leaves the ledger part empty. */
+  analytics?: "full" | "light" | "off"
   from: string
   to: string
   totals: Money & { refund_rate: number }

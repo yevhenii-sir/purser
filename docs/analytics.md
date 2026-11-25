@@ -2,6 +2,23 @@
 
 The admin panel's **Revenue** page shows what the stores paid, in USD: net revenue, estimated proceeds, refunds, purchases, subscriptions (new, trials, trial conversion, renewals, churn), active subscriptions and MRR, a daily chart and breakdowns by app, product, currency, billing country and Apple Ads campaign, plus payer cohorts. It works from the purchase ledger, so no analytics SDK is needed. The same page is on every app's **Revenue** tab, limited to that app's builds.
 
+## Analytics modes
+
+The server setting `analytics` (admin page → Server → Analytics, or `admin_set_setting("analytics", …)`) says how much
+the server counts:
+
+| Mode | What runs | What you get |
+|---|---|---|
+| `full` (default) | Every purchase change adds to the daily totals (a few row writes). The full report is counted **in the background**, a batch of purchases per scheduled call, when the Revenue page asks for it. | Everything on this page. |
+| `light` | The daily totals only; no report reads the purchase ledger. | Totals, the daily series, products, countries, subscription snapshots, the revenue tree, business alerts, `/metrics`. Payer cohorts, LTV, ARPPU, Apple Ads campaigns, trials and the subscriptions running now stay empty. |
+| `off` | Nothing is counted. The ledger still logs what each change would count. | No revenue numbers; the reports answer `ERR_ANALYTICS_OFF`. Count elsewhere from the [Cloud Storage export](../server/README.md#integrations-ga4-appsflyer-adjust-tenjin-appmetrica-amplitude-mixpanel-meta-webhook-cloud-storage). Turned on again, the totals are rebuilt from the ledger, the time it was off included. |
+
+Why the background: SpacetimeDB computes one call of a database at a time, so a report that reads the ledger for
+seconds in one call would hold every purchase and request for that long. In the background each call reads a
+batch (2,000 purchases of the range, then 200 payers' or trial subscriptions' earlier purchases) and other calls run
+in between; the last call builds the report from what was read and keeps it for an hour. While it is counted, the page
+shows the previous report, or waits for the first one.
+
 ## What is counted
 
 | Metric | When | Day |

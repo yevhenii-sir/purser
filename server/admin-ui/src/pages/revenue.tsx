@@ -200,6 +200,16 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
         <Loading rows={6} />
       ) : (
         <>
+          {r.analytics === "light" && (
+            <Alert>
+              <TriangleAlertIcon />
+              <AlertTitle>Light analytics</AlertTitle>
+              <AlertDescription>
+                Totals, products, countries and subscriptions come from the daily totals; payer cohorts, LTV, ARPPU, Apple Ads
+                campaigns, trials and the subscriptions running now are not counted (Server → Analytics).
+              </AlertDescription>
+            </Alert>
+          )}
           {r.rebuilding && (
             <Alert>
               <RotateCcwIcon />

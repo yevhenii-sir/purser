@@ -428,6 +428,34 @@ impl Default for Commission {
 }
 
 /// A commission percent setting: a number from 0 to 100.
+/// How much revenue analytics the server keeps (the `analytics` server setting).
+pub mod analytics {
+    /// Everything: the daily aggregates, and the full report (payer cohorts, LTV, ARPPU, Apple Ads
+    /// campaigns, trials, subscriptions running now) counted in the background, a batch at a time.
+    pub const FULL: &str = "full";
+    /// The daily aggregates only (totals, series, products, countries, subscription snapshots,
+    /// business alerts, `/metrics`): nothing reads the ledger for a report.
+    pub const LIGHT: &str = "light";
+    /// No aggregates: the ledger still logs what it counted, so turning analytics on again rebuilds
+    /// the numbers of the time it was off.
+    pub const OFF: &str = "off";
+
+    /// The mode a stored setting names; missing or unknown: [`FULL`].
+    pub fn of_setting(value: Option<&str>) -> &'static str {
+        parse(value.unwrap_or("")).unwrap_or(FULL)
+    }
+
+    /// An admin's input (empty: [`FULL`]).
+    pub fn parse(value: &str) -> Result<&'static str, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | FULL => Ok(FULL),
+            LIGHT => Ok(LIGHT),
+            OFF => Ok(OFF),
+            other => Err(format!("analytics must be full, light or off, not '{other}'")),
+        }
+    }
+}
+
 pub fn parse_percent(s: &str) -> Result<f64, String> {
     match s.trim().parse::<f64>() {
         Ok(v) if v.is_finite() && (0.0..=100.0).contains(&v) => Ok(v),
@@ -1033,6 +1061,13 @@ pub fn ledger_metrics(rows: &[LedgerRow], fx: &FxTable, q: &Query, now_micros: i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn analytics_modes() {
+        assert_eq!((analytics::of_setting(None), analytics::of_setting(Some("light")), analytics::of_setting(Some("bogus"))), ("full", "light", "full"));
+        assert_eq!(analytics::parse(" OFF "), Ok("off"));
+        assert!(analytics::parse("half").is_err());
+    }
     use crate::fx::Rates;
     use crate::time::parse_day;
 

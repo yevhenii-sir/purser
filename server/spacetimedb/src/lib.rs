@@ -43,6 +43,7 @@ mod players;
 mod poll;
 mod promo;
 mod refund_sweep;
+mod report_job;
 mod revenue;
 mod server_api;
 mod settings;

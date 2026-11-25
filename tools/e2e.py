@@ -103,6 +103,15 @@ def main():
     rows = sql(f"SELECT app_id FROM game_app WHERE app_id = '{app}' OR app_id = 'none'")["rows"]
     check(len(rows) == 1, "/sql with OR")
 
+    # The full revenue report is counted by a scheduled job, a batch per call: asked again until it is done.
+    report = {}
+    for _ in range(60):
+        report = json.loads(json.loads(call("admin_revenue_stats", "{}")))
+        if "ERR_REPORT_COUNTING" not in str(report.get("error", "")):
+            break
+        time.sleep(1)
+    check("totals" in report and report.get("kept") is True, f"full revenue report counted in the background {str(report)[:200]}")
+
     # A server key, made here as the admin page does.
     key_id = secrets.token_hex(6)
     key = f"psk_{key_id}_{secrets.token_urlsafe(32)}"
