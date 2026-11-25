@@ -159,6 +159,30 @@ The limit that matters is the store's latency. SpacetimeDB runs HTTP routes and 
 - The pool helps with waiting, not with computing: a database computes one call at a time. A server-wide revenue report over a long range counted in one call would keep everything else waiting (2,000 builds, 90 days: ~13 s); the full report is counted in the background a batch per call instead, and kept for an hour; `analytics` = `light` or `off` does not count it at all (see [Analytics](analytics.md#analytics-modes)). The purchase worker never reads a purchase's history: what it needs is kept on the row.
 - A request spends at most 3 s on outbound calls (a store that hangs cannot hold an instance longer), and the queue drainers hold at most `worker_lanes` instances (server setting, default 2, up to 8). With a store answering in 300 ms, 2 drainers finish ~6 queued purchases a second, 8 about 25: raise it when `/healthz` says `backlog` although the calls succeed.
 
+## Large games
+
+What grows with a game is what Purser keeps, not the purchases per second: a purchase costs under a millisecond of
+the database's time, so even a few hundred a second are far from the limit, while a year of a large game is tens of
+millions of ledger rows and millions of players who own something. For games of that size:
+
+- **One Purser database per game** (or per game and region), each with its own builds: a database computes one call
+  at a time, so separate games should not wait for each other. They can share a SpacetimeDB server; give each its own
+  admin page link and secrets.
+- **`analytics` = `off`** (Server → Analytics): the database keeps only what purchases need (the ledger, what players
+  own, delivery, store notifications, integrations). Nothing walks over all subscriptions every day and no report
+  reads the ledger. Revenue goes to your attribution and analytics tools as it happens (every purchase, renewal and
+  refund is an [integration](../server/README.md#integrations-ga4-appsflyer-adjust-tenjin-appmetrica-amplitude-mixpanel-meta-webhook-cloud-storage)
+  event: Tenjin, AppsFlyer, Adjust, GA4, ...) and to BigQuery through the Cloud Storage export
+  ([docs/bigquery.md](bigquery.md)), where cohorts and LTV over years of purchases are counted without holding the
+  database that takes payments. Business alerts (purchases that stopped, refund spikes, revenue drops) and `/metrics`
+  keep working: they read each build's daily sales, counted in every mode.
+- `full` analytics count the full report in the background a batch at a time, so even a large ledger does not hold
+  purchases while it is counted; but the daily subscription snapshot and the last step of the report read every
+  subscription players own in one call (~1 s per ~25,000 owned items in a wasm module), which is what `off` avoids.
+
+`cargo test -p purser --release profile -- --ignored --nocapture` (`PROFILE_SIZES=1000,100000`) times every feature of
+the module at growing ledger sizes on your machine.
+
 ## Backups and monitoring
 
 - **Backups:** `python backup.py backup --database <your-billing-db> --dir backups/$(date +%F)` from a scheduled job (cron, a CI schedule) with the owner token in `PURSER_TOKEN`. Keep the files private: they hold the store keys and secrets in `credential`. On Linux and macOS the script writes them readable by you only; on Windows they get the folder's permissions, so keep the folder private (or on an encrypted drive).

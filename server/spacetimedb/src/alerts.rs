@@ -15,13 +15,13 @@
 
 use crate::config::{self, secret_name};
 use crate::ctx::Ctx;
-use crate::revenue::revenue_daily;
+use crate::revenue::build_sales_daily;
 use crate::settings::{self, key, server_state};
 use crate::store_health;
 use crate::{credential, game_app, net, purchase, GameApp, Purchase};
 use purser_core::alerts::{self as al, channel_kind, rule, state, ChannelSettings, DaySales, Message, Rules, Throttle};
 use purser_core::integrations::{is_retryable_status, HttpCall};
-use purser_core::model::{environment, store};
+use purser_core::model::store;
 use purser_core::retry_delay_secs;
 use purser_core::time::day_of_micros;
 use serde::Deserialize;
@@ -491,10 +491,8 @@ pub fn check_tx(tx: &ReducerContext) {
         settings::set(tx, SILENT_CHECKED_AT, &now.to_string());
         let today = day_of_micros(now);
         let mut sales: BTreeMap<String, u32> = BTreeMap::new();
-        for r in tx.db.revenue_daily().day().filter((today - rules.silent_days as i32)..=(today - 1)) {
-            if r.environment == environment::PRODUCTION {
-                *sales.entry(r.app_id.clone()).or_default() += r.purchases + r.new_subscriptions + r.renewals;
-            }
+        for r in tx.db.build_sales_daily().day().filter((today - rules.silent_days as i32)..=(today - 1)) {
+            *sales.entry(r.app_id.clone()).or_default() += r.paid;
         }
         for app in tx.db.game_app().iter().filter(|a| a.enabled) {
             let Some((last, source)) = last_notification(tx, &app) else {
@@ -562,18 +560,16 @@ pub fn check_tx(tx: &ReducerContext) {
 
 /// Production sales per (build, day) of the days `from..=to`, in USD (from the daily revenue rows:
 /// an index read of a few days, whatever the history).
+/// Production sales per build and day (`revenue::BuildSalesDaily`, counted in every analytics mode).
 fn daily_sales(tx: &ReducerContext, from: i32, to: i32) -> BTreeMap<(String, i32), DaySales> {
     let fx = crate::revenue::fx_table(tx, from - 14, to);
     let mut out: BTreeMap<(String, i32), DaySales> = BTreeMap::new();
-    for r in tx.db.revenue_daily().day().filter(from..=to) {
-        if r.environment != environment::PRODUCTION {
-            continue;
-        }
+    for r in tx.db.build_sales_daily().day().filter(from..=to) {
         let usd = |micros: i64| if micros == 0 { 0 } else { fx.to_usd_micros(micros, &r.currency, r.day).unwrap_or(0) };
         out.entry((r.app_id.clone(), r.day)).or_default().add(&DaySales {
             gross_usd_micros: usd(r.gross_micros),
             refunded_usd_micros: usd(r.refunded_micros),
-            paid: r.purchases + r.new_subscriptions + r.renewals,
+            paid: r.paid,
             new_subscriptions: r.new_subscriptions,
             renewals: r.renewals,
             refunds: r.refunds,
@@ -583,15 +579,31 @@ fn daily_sales(tx: &ReducerContext, from: i32, to: i32) -> BTreeMap<(String, i32
 }
 
 /// When a build last recorded a paid store purchase at or after `since` (0: none).
+/// The latest paid purchase of a build since `since` (0: none). Read backwards from now in windows
+/// that double: a build that sells reads its last hour, not a day of purchases (a range scan reads
+/// every row of its range).
 fn last_paid_since(tx: &ReducerContext, app_id: &str, since: i64) -> i64 {
-    tx.db
-        .purchase()
-        .app_created()
-        .filter((app_id, since..))
-        .filter(|p| p.store != store::MANUAL && p.price_micros > 0)
-        .map(|p| p.created_at_micros)
-        .max()
-        .unwrap_or(0)
+    let mut hi = crate::ctx::tx_now_micros(tx).max(since);
+    let mut window = 3_600_000_000i64;
+    loop {
+        let lo = hi.saturating_sub(window - 1).max(since);
+        let last = tx
+            .db
+            .purchase()
+            .app_created()
+            .filter((app_id, lo..=hi))
+            .filter(|p| p.store != store::MANUAL && p.price_micros > 0)
+            .map(|p| p.created_at_micros)
+            .max();
+        if let Some(at) = last {
+            return at;
+        }
+        if lo <= since {
+            return 0;
+        }
+        hi = lo - 1;
+        window = window.saturating_mul(2);
+    }
 }
 
 /// Revenue drop, refund spike, no purchases (hourly; the first two judge yesterday against the week

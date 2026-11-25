@@ -8,6 +8,7 @@
 use crate::integrations::user_attribution;
 use crate::paywalls::{paywall_daily, paywall_viewer};
 use crate::players::player_profile;
+use crate::revenue::build_sales_daily;
 use crate::settings::{self, key};
 use crate::{access_token_cache, game_app};
 use purser_core::model::kind;
@@ -75,6 +76,12 @@ pub fn prune(tx: &ReducerContext, now: i64) {
         tx.db.access_token_cache().key().delete(k);
     }
     let orders = crate::telegram::prune_unpaid(tx, now, BATCH);
+    // The builds' daily sales: only alerts and `/metrics` read them, never further back than a month.
+    let sales_cutoff = purser_core::time::day_of_micros(now) - crate::revenue::SALES_DAYS;
+    let sales: Vec<String> = tx.db.build_sales_daily().day().filter(..sales_cutoff).take(BATCH).map(|r| r.key).collect();
+    for k in &sales {
+        tx.db.build_sales_daily().key().delete(k);
+    }
     if profiles.len() + attribution.len() + views.len() + viewers.len() + tokens.len() + orders > 0 {
         log::info!(
             "Retention: {} player profile(s), {} attribution row(s), {} paywall day(s), {} paywall viewer(s), {} expired token(s), {} unpaid Telegram order(s) deleted",

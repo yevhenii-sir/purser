@@ -2421,30 +2421,55 @@ fn recording_ctx(w: &World, status: u16) -> (ProcedureContext, Seen) {
 
 /// Production USD sales of the Android build on `day`.
 fn sales_day(w: &World, day: i32, gross_usd_micros: i64, paid: u32, refunds: u32) {
-    use crate::revenue::{revenue_daily, RevenueDaily};
-    w.write(|tx| {
-        tx.db.revenue_daily().insert(RevenueDaily {
-            key: format!("{day}|{APP}|gems|production|USD"),
-            day,
-            app_id: APP.into(),
-            product_id: "gems".into(),
-            environment: "production".into(),
-            currency: "USD".into(),
-            purchases: paid,
-            new_subscriptions: 0,
-            renewals: 0,
-            refunds,
-            transfers: 0,
-            expirations: 0,
-            gross_micros: gross_usd_micros,
-            refunded_micros: refunds as i64 * 1_000_000,
-            trials: 0,
-            trial_conversions: 0,
-            trial_expirations: 0,
-            gross_after_year_micros: 0,
-            refunded_after_year_micros: 0,
-        });
+    w.write(|tx| put_sales(tx, APP, day, gross_usd_micros, paid, refunds));
+}
+
+/// A build's production sales in USD on `day` (`revenue::BuildSalesDaily`).
+fn put_sales(tx: &spacetimedb::ReducerContext, app_id: &str, day: i32, gross_usd_micros: i64, paid: u32, refunds: u32) {
+    use crate::revenue::{build_sales_daily, BuildSalesDaily};
+    tx.db.build_sales_daily().insert(BuildSalesDaily {
+        key: format!("{day}|{app_id}|USD"),
+        day,
+        app_id: app_id.into(),
+        currency: "USD".into(),
+        paid,
+        new_subscriptions: 0,
+        renewals: 0,
+        refunds,
+        gross_micros: gross_usd_micros,
+        refunded_micros: refunds as i64 * 1_000_000,
     });
+}
+
+#[test]
+fn with_analytics_off_the_builds_sales_still_feed_alerts_and_metrics() {
+    use crate::revenue::{build_sales_daily, revenue_daily};
+    let w = World::new();
+    w.as_admin(false);
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::settings::admin_set_setting(ctx, "analytics".into(), "off".into())).unwrap();
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    assert_eq!(w.read(|tx| tx.db.revenue_daily().iter().count()), 0, "no revenue aggregates");
+    let today = (NOW_MICROS / 86_400_000_000) as i32;
+    let sales: Vec<_> = w.read(|tx| tx.db.build_sales_daily().iter().map(|r| (r.app_id, r.day, r.paid, r.gross_micros)).collect());
+    assert_eq!(sales, vec![(APP.to_string(), today, 1, 990_000)]);
+    w.set_secret(config::secret_name::METRICS_TOKEN, "scrape-me-0123456789");
+    let (_, text) = crate::metrics::render(&mut w.ctx(), "Bearer scrape-me-0123456789");
+    assert!(text.contains(&format!("purser_revenue_today_gross_usd{{app_id=\"{APP}\"}} 0.99")), "{text}");
+
+    // A build that sold every day and stopped: the alert comes without analytics.
+    setup_alerts(&w, false);
+    for day in (today - 8)..today {
+        sales_day(&w, day, 100_000_000, 10, 0);
+    }
+    w.advance_clock(30 * 3_600);
+    w.run_worker();
+    assert!(alert_messages(&w).iter().any(|m| m.rule == "no_purchases" && m.state == "alert"), "{:?}", alert_messages(&w));
+
+    // Kept two months, then pruned.
+    w.write(|tx| put_sales(tx, APP, today - crate::revenue::SALES_DAYS - 1, 1, 1, 0));
+    w.write(|tx| crate::retention::prune(tx, NOW_MICROS + 30 * 3_600_000_000));
+    assert_eq!(w.read(|tx| tx.db.build_sales_daily().day().filter(..(today - crate::revenue::SALES_DAYS)).count()), 0);
 }
 
 fn set_alert_rules(w: &World, rules: Value) {
@@ -6471,7 +6496,6 @@ fn active_subscriptions_are_read_from_the_expiry_index() {
 #[test]
 fn silent_notification_alerts_follow_the_store_of_each_build() {
     use crate::alerts::{alert_state, AlertState};
-    use crate::revenue::{revenue_daily, RevenueDaily};
     use crate::store_health::{store_notify_health, StoreNotifyHealth};
     let w = World::new();
     setup_alerts(&w, false);
@@ -6483,27 +6507,7 @@ fn silent_notification_alerts_follow_the_store_of_each_build() {
             tx.db.game_app().insert(GameApp { app_id: app_id.into(), platform: platform.into(), store: store.into(), ..base.clone() });
         }
         for app_id in [APP, builds[0].0, builds[1].0, builds[2].0] {
-            tx.db.revenue_daily().insert(RevenueDaily {
-                key: format!("{yesterday}|{app_id}|gems|production|USD"),
-                day: yesterday,
-                app_id: app_id.into(),
-                product_id: "gems".into(),
-                environment: "production".into(),
-                currency: "USD".into(),
-                purchases: 2,
-                new_subscriptions: 0,
-                renewals: 0,
-                refunds: 0,
-                transfers: 0,
-                expirations: 0,
-                gross_micros: 1,
-                refunded_micros: 0,
-                trials: 0,
-                trial_conversions: 0,
-                trial_expirations: 0,
-                gross_after_year_micros: 0,
-                refunded_after_year_micros: 0,
-            });
+            put_sales(tx, app_id, yesterday, 1, 2, 0);
         }
         // Amazon notified an hour ago; Stripe never did.
         tx.db.store_notify_health().insert(StoreNotifyHealth {

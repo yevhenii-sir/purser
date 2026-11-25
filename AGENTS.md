@@ -96,7 +96,10 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - **Revenue**: `revenue_daily` (day × app × product × environment × currency), `revenue_country_daily`
   (day × app × billing country × environment × currency), `subscription_daily`
   snapshots, ECB rates (`fx_day`, `fx_override`). Rules in `purser_core::revenue` are used both live
-  and by `admin_rebuild_revenue`, so both give the same numbers.
+  and by `admin_rebuild_revenue`, so both give the same numbers. `build_sales_daily` (day × build ×
+  currency, production) is counted live in every `analytics` mode, `off` included, and read by business
+  alerts and `/metrics` (never by reports; the rebuild does not touch it). `analytics` = `off` is the
+  mode for large games: keep anything that walks over all players or subscriptions out of it.
 
 ## SpacetimeDB facts that bite (version 2.16.3, `features = ["unstable"]`)
 

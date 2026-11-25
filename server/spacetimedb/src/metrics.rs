@@ -9,11 +9,10 @@ use crate::ctx::Ctx;
 use crate::integrations::{integration_dead, integration_outbox};
 use crate::ledger::purchase_count;
 use crate::ledger_index::pending_purchase;
-use crate::revenue::revenue_daily;
+use crate::revenue::build_sales_daily;
 use crate::store_health::store_notify_health;
 use crate::{credential, game_app};
 use purser_core::metrics::Exposition;
-use purser_core::model::environment;
 use purser_core::time::day_of_micros;
 use spacetimedb::{ReducerContext, Table};
 use std::collections::BTreeMap;
@@ -74,15 +73,13 @@ fn exposition(tx: &ReducerContext) -> String {
     let today = day_of_micros(now);
     let fx = crate::revenue::fx_table(tx, today - 14, today);
     let mut by_app: BTreeMap<String, (f64, f64, u32, u32)> = BTreeMap::new();
-    for r in tx.db.revenue_daily().day().filter(today) {
-        if r.environment != environment::PRODUCTION {
-            continue;
-        }
+    // The builds' sales, counted in every analytics mode.
+    for r in tx.db.build_sales_daily().day().filter(today) {
         let usd = |m: i64| if m == 0 { 0.0 } else { fx.to_usd_micros(m, &r.currency, today).unwrap_or(0) as f64 / 1e6 };
         let a = by_app.entry(r.app_id.clone()).or_default();
         a.0 += usd(r.gross_micros);
         a.1 += usd(r.refunded_micros);
-        a.2 += r.purchases + r.new_subscriptions + r.renewals;
+        a.2 += r.paid;
         a.3 += r.refunds;
     }
     for (app, (gross, refunded, paid, refunds)) in &by_app {

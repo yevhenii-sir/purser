@@ -81,6 +81,31 @@ pub struct RevenueDaily {
     pub refunded_after_year_micros: i64,
 }
 
+/// Production sales of a build per day and currency, counted live in every analytics mode (`off`
+/// too): what business alerts and `/metrics` read, so a server that leaves analytics to other tools
+/// still notices that purchases stopped. A few rows per build and day, kept [`SALES_DAYS`] days. The
+/// revenue rebuild does not touch them.
+#[spacetimedb::table(accessor = build_sales_daily, cache_policy = required_in_memory)]
+pub struct BuildSalesDaily {
+    /// `{day}|{app_id}|{currency}`
+    #[primary_key]
+    pub key: String,
+    #[index(btree)]
+    pub day: i32,
+    pub app_id: String,
+    pub currency: String,
+    /// One-time purchases, new subscriptions and renewals.
+    pub paid: u32,
+    pub new_subscriptions: u32,
+    pub renewals: u32,
+    pub refunds: u32,
+    pub gross_micros: i64,
+    pub refunded_micros: i64,
+}
+
+/// Days of [`BuildSalesDaily`] kept (`retention::prune`; the longest rule, `silent_days`, looks 60 back).
+pub const SALES_DAYS: i32 = 62;
+
 /// The same aggregates per billing country instead of product (`country`: ISO 3166-1 alpha-2,
 /// empty when the store did not report it).
 #[spacetimedb::table(accessor = revenue_country_daily, cache_policy = no_requirement, index(accessor = app_day, btree(columns = [app_id, day])))]
@@ -244,6 +269,9 @@ fn country_row(day: i32, p: &Purchase) -> RevenueCountryDaily {
 struct Batch {
     daily: BTreeMap<String, RevenueDaily>,
     country: BTreeMap<String, RevenueCountryDaily>,
+    /// Counted live (not by a rebuild): the build's sales too.
+    live: bool,
+    sales: BTreeMap<String, BuildSalesDaily>,
 }
 
 impl Batch {
@@ -255,10 +283,47 @@ impl Batch {
         let r = country_row(day, p);
         let row = self.country.entry(r.key.clone()).or_insert(r);
         add_delta!(*row, d);
+        if self.live && p.environment == purser_core::model::environment::PRODUCTION {
+            let key = format!("{day}|{}|{}", p.app_id, p.currency);
+            let s = self.sales.entry(key.clone()).or_insert_with(|| BuildSalesDaily {
+                key,
+                day,
+                app_id: p.app_id.clone(),
+                currency: p.currency.clone(),
+                paid: 0,
+                new_subscriptions: 0,
+                renewals: 0,
+                refunds: 0,
+                gross_micros: 0,
+                refunded_micros: 0,
+            });
+            s.paid = s.paid.saturating_add(d.purchases + d.new_subscriptions + d.renewals);
+            s.new_subscriptions = s.new_subscriptions.saturating_add(d.new_subscriptions);
+            s.renewals = s.renewals.saturating_add(d.renewals);
+            s.refunds = s.refunds.saturating_add(d.refunds);
+            s.gross_micros = s.gross_micros.saturating_add(d.gross_micros);
+            s.refunded_micros = s.refunded_micros.saturating_add(d.refunded_micros);
+        }
     }
 
     fn save(self, tx: &ReducerContext) {
-        // Analytics off: nothing is counted (the ledger logs what a rebuild counts later).
+        for s in self.sales.into_values() {
+            match tx.db.build_sales_daily().key().find(&s.key) {
+                Some(mut stored) => {
+                    stored.paid = stored.paid.saturating_add(s.paid);
+                    stored.new_subscriptions = stored.new_subscriptions.saturating_add(s.new_subscriptions);
+                    stored.renewals = stored.renewals.saturating_add(s.renewals);
+                    stored.refunds = stored.refunds.saturating_add(s.refunds);
+                    stored.gross_micros = stored.gross_micros.saturating_add(s.gross_micros);
+                    stored.refunded_micros = stored.refunded_micros.saturating_add(s.refunded_micros);
+                    tx.db.build_sales_daily().key().update(stored);
+                }
+                None => {
+                    tx.db.build_sales_daily().insert(s);
+                }
+            }
+        }
+        // Analytics off: no aggregates (the ledger logs what a rebuild counts later).
         if analytics_mode(tx) == rv::analytics::OFF {
             return;
         }
@@ -289,7 +354,7 @@ impl Batch {
 
 /// Adds `d` to the aggregate rows of `p` on `day` (per product and per country).
 fn apply(tx: &ReducerContext, p: &Purchase, day: i32, d: &Delta) {
-    let mut b = Batch::default();
+    let mut b = Batch { live: true, ..Batch::default() };
     b.add(p, day, d);
     b.save(tx);
 }

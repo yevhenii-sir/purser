@@ -125,8 +125,8 @@ function WorkerSection() {
 
 const ANALYTICS_MODES = [
   { value: "full", label: "Full", hint: "Daily totals, and the full report (payer cohorts, LTV, ARPPU, Apple Ads campaigns, trials, subscriptions running now) counted in the background a batch at a time." },
-  { value: "light", label: "Light", hint: "Daily totals only: the Revenue page, Overview, business alerts and /metrics work; nothing reads the purchase ledger for a report." },
-  { value: "off", label: "Off", hint: "No revenue numbers (you count them elsewhere, e.g. the Cloud Storage export). Turned on again, the totals are rebuilt from the ledger." },
+  { value: "light", label: "Light", hint: "Daily totals only: the Revenue page and Overview show them; nothing reads the purchase ledger for a report." },
+  { value: "off", label: "Off (large games)", hint: "Only what purchases need: no revenue pages or reports (count revenue in Tenjin, AppsFlyer and the like, or the Cloud Storage export to BigQuery). Business alerts and /metrics keep working. Turned on again, the totals are rebuilt from the ledger." },
 ]
 
 /** How much revenue analytics the server keeps (`analytics`). */
@@ -135,7 +135,7 @@ function AnalyticsSection() {
   const current = data || "full"
   const set = async (value: string) => {
     if (value === current) return
-    if (value === "off" && !confirm("Turn revenue analytics off? Nothing is counted until you turn them on again (then the totals are rebuilt from the ledger).")) return
+    if (value === "off" && !confirm("Turn revenue analytics off? The Revenue page and reports stay empty until you turn them on again (then the totals are rebuilt from the ledger); business alerts and /metrics keep working.")) return
     if ((await tryAct(() => call("admin_set_setting", "analytics", value), "Saved")) !== undefined) reload()
   }
   return (
