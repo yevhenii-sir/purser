@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `PurchaseResult.Quantity`: the units of a purchase of several at once (a Google Play product with multi-quantity, a
+  StoreKit quantity); a game that grants on the client grants the product this many times. 1 otherwise.
+
 ## [0.10.0] - 2026-11-25
 
 Checked in Unity 2022.3, 6.0, 6.3 and 6.6: the package compiles without warnings and the EditMode tests pass. The core

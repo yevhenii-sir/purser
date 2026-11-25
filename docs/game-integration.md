@@ -27,7 +27,7 @@ Event (`v1` argument or webhook body; the webhook body also has `catalog_product
 `expires_at_ms` of a subscription is when access ends: the paid period, or the store's grace period after a failed renewal payment.
 
 An event may arrive again on retries, so the game **must be idempotent**: apply each **`event_id`** once. It is the same on every retry of an event and different for every other event of the purchase (a `reinstated` grant after a `revoke`, a second refund, a transfer to another `user_id`, a renewal with a new `expires_at_ms`). `occurred_at_ms` is when it happened (the same on every retry); `timestamp_ms` is when this attempt was sent.
-- **consumable** — grant or take back the amount once per `event_id`;
+- **consumable** — grant or take back the amount once per `event_id`, `quantity` times: a Google Play product with multi-quantity or a StoreKit purchase may carry several units (`price_micros` is what all of them cost; `quantity` is 1 otherwise);
 - **non-consumables and subscriptions** — apply as state: “`user_id` has / doesn't have `product_id` until `expires_at_ms`”, and keep the latest `expires_at_ms` per player and product: a `grant` never shortens access (periods of a subscription are separate purchases, retried independently, so an older period's grant may arrive after a newer one's).
 
 **Retries and ordering.** Delivery is at least once (`spacetimedb_idc`: exactly once per call). A call that gets no 2xx within 10 s, or any non-2xx answer (4xx too), is retried with backoff from 1 minute to 12 hours until it succeeds; the `delivery_failing` alert fires after 3 failed attempts. A request the game applied but answered too late arrives again: `event_id` makes that harmless. Events of one purchase go out one step at a time (a `revoke` waits until the `grant` in flight ended); events of different purchases are not ordered.
@@ -40,7 +40,7 @@ An event may arrive again on retries, so the game **must be idempotent**: apply 
 #[derive(spacetimedb::SpacetimeType)]
 pub struct BillingEvent {
     pub event: String, pub reason: String, pub store: String, pub environment: String,
-    pub app_id: String, pub product_id: String, pub kind: String,
+    pub app_id: String, pub product_id: String, pub kind: String, pub quantity: u32,
     pub transaction_id: String, pub original_transaction_id: String, pub user_id: String,
     pub expires_at_ms: i64, pub price_micros: i64, pub currency: String, pub timestamp_ms: i64,
     pub event_id: String, pub occurred_at_ms: i64,
@@ -63,7 +63,7 @@ pub fn billing_grant(ctx: &ReducerContext, ev: BillingEvent) -> Result<(), Strin
 [SpacetimeDB.Type]
 public partial struct BillingEvent {
     public string @event; public string reason; public string store; public string environment;
-    public string app_id; public string product_id; public string kind;
+    public string app_id; public string product_id; public string kind; public uint quantity;
     public string transaction_id; public string original_transaction_id; public string user_id;
     public long expires_at_ms; public long price_micros; public string currency; public long timestamp_ms;
     public string event_id; public long occurred_at_ms;
@@ -82,7 +82,7 @@ public static void billing_grant(ReducerContext ctx, BillingEvent ev) {
 #[derive(spacetimedb::SpacetimeType)]
 pub struct BillingEvent {
     pub event: String, pub reason: String, pub store: String, pub environment: String,
-    pub app_id: String, pub product_id: String, pub kind: String,
+    pub app_id: String, pub product_id: String, pub kind: String, pub quantity: u32,
     pub transaction_id: String, pub original_transaction_id: String, pub user_id: String,
     pub expires_at_ms: i64, pub price_micros: i64, pub currency: String, pub timestamp_ms: i64,
     pub event_id: String, pub occurred_at_ms: i64, pub catalog_product_id: String,

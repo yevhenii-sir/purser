@@ -3188,6 +3188,7 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
         step_at_micros: 0,
         last_error: String::new(),
         blocked: false,
+        quantity: 1,
         created_at_micros: NOW_MICROS,
         updated_at_micros: NOW_MICROS,
         previous_user_id: String::new(),
@@ -4882,6 +4883,7 @@ impl World {
             step_at_micros: 0,
             last_error: String::new(),
             blocked: false,
+            quantity: 1,
             created_at_micros: updated,
             updated_at_micros: updated,
             previous_user_id: String::new(),
@@ -5492,6 +5494,7 @@ fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -
         step_at_micros: 0,
         last_error: String::new(),
         blocked: false,
+        quantity: 1,
         created_at_micros,
         updated_at_micros: created_at_micros,
         previous_user_id: String::new(),
@@ -8987,4 +8990,26 @@ fn the_worker_applies_an_app_store_refund_from_the_notification_history() {
     assert_eq!((row.found_total, row.last_error.as_str()), (1, ""));
     let events = purchase_events(&w, "apple:2000000123");
     assert!(events.iter().any(|(_, d)| d.contains("refund sweep")), "{events:?}");
+}
+
+
+// --- Purchases of several units at once ---
+
+#[test]
+fn a_google_purchase_of_several_units_is_granted_and_counted_for_all_of_them() {
+    let w = World::new();
+    price_products(&w, "USD");
+    w.script(
+        "GET https://androidpublisher",
+        200,
+        &json!({ "orderId": ORDER, "purchaseState": 0, "acknowledgementState": 0, "quantity": 3 }).to_string(),
+    );
+    let o = w.verify("player-1", "gems");
+    assert_eq!((o.body["status"].as_str(), o.body["quantity"].as_u64()), (Some("success"), Some(3)));
+    let p = w.purchase();
+    assert_eq!((p.quantity, p.price_micros, p.status.as_str()), (3, 2_970_000, status::COMPLETED));
+    let grant = w.fake.borrow().calls.iter().find(|c| c.contains("/call/billing_grant")).cloned().unwrap();
+    assert!(grant.contains(r#""quantity":3"#) && grant.contains(r#""price_micros":2970000"#), "{grant}");
+    let rows: Vec<_> = revenue_rows(&w).into_values().collect();
+    assert_eq!(rows.iter().map(|r| r.3).sum::<i64>(), 2_970_000, "gross of all three units");
 }

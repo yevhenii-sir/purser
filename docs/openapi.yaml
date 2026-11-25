@@ -1107,6 +1107,10 @@ components:
           type: string
         is_sub:
           type: boolean
+        quantity:
+          type: integer
+          minimum: 1
+          description: Units bought at once (Google Play multi-quantity, StoreKit quantity); 1 otherwise.
         expires_date_ms:
           type: integer
           format: int64
@@ -1380,6 +1384,7 @@ components:
             transaction_id: GPA.1234-5678-9012-34567
             product_id: diamonds_150
             is_sub: false
+            quantity: 1
             expires_date_ms: 0
             environment: production
             delivery: server
@@ -1395,6 +1400,7 @@ components:
             transaction_id: GPA.1234-5678-9012-34567
             product_id: diamonds_150
             is_sub: false
+            quantity: 1
             expires_date_ms: 0
             environment: production
             delivery: server

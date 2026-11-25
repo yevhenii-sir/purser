@@ -214,6 +214,7 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         country: p.country.clone(),
         commission_percent: crate::revenue::commission(tx).percent_for_period(&p.app_id, crate::revenue::period_facts(p).after_first_year),
         previous_product_id: String::new(),
+        quantity: p.quantity.max(1),
         event_id: format!("{}#{}", p.id, p.step_seq),
     }
 }
@@ -284,6 +285,7 @@ pub fn enqueue_partial_refund(tx: &ReducerContext, p: &Purchase, amount_micros: 
     }
     let mut event = out_event(tx, &app, p, event_kind::REFUND);
     event.price_micros = amount_micros;
+    event.quantity = 1;
     // Each partial refund is an event of its own.
     event.event_id = format!("{}#{}+{}", p.id, p.step_seq, p.refunded_micros);
     enqueue_event(tx, &app, &p.id, &event, None);

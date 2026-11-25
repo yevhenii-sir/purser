@@ -193,6 +193,8 @@ pub struct OutEvent {
     pub commission_percent: f64,
     /// `product_change`: the product the subscription was before; empty otherwise.
     pub previous_product_id: String,
+    /// Units of the purchase (1 for a partial refund: its amount is the price).
+    pub quantity: u32,
     /// The same on every retry of the event, another for every other event of the purchase
     /// (empty: `transaction_id:kind`). Platforms that deduplicate get it.
     #[serde(default)]
@@ -280,6 +282,11 @@ pub struct Amounts {
 }
 
 impl OutEvent {
+    /// Units, at least 1.
+    pub fn units(&self) -> u32 {
+        self.quantity.max(1)
+    }
+
     /// What platforms deduplicate a retried event by.
     pub fn dedup_id(&self) -> String {
         if self.event_id.is_empty() { format!("{}:{}", self.transaction_id, self.kind) } else { format!("{}:{}", self.event_id, self.kind) }
@@ -460,7 +467,7 @@ pub mod ga4 {
             "transaction_id": ev.transaction_id,
             "currency": ev.currency_or_usd(),
             "value": value,
-            "items": [{ "item_id": ev.product_id, "item_name": ev.product_id, "item_category": ev.product_kind, "quantity": 1 }],
+            "items": [{ "item_id": ev.product_id, "item_name": ev.product_id, "item_category": ev.product_kind, "quantity": ev.units() }],
             "store": ev.store,
             "environment": ev.environment,
             "product_kind": ev.product_kind,
@@ -566,7 +573,7 @@ pub mod appsflyer {
             "af_content_id": ev.product_id,
             "af_content_type": ev.product_kind,
             "af_order_id": ev.transaction_id,
-            "af_quantity": 1,
+            "af_quantity": ev.units(),
         });
         if revenue != 0.0 {
             value["af_revenue"] = json!(revenue);
@@ -725,8 +732,9 @@ pub mod tenjin {
                 return Ok(Built::Skip(format!("no revenue for '{}'", ev.kind)));
             }
             params.push(("product_id", ev.product_id.clone()));
-            params.push(("price", format!("{revenue:.2}")));
-            params.push(("quantity", "1".to_string()));
+            // Tenjin multiplies the price by the quantity.
+            params.push(("price", format!("{:.2}", revenue / ev.units() as f64)));
+            params.push(("quantity", ev.units().to_string()));
             params.push(("currency", ev.currency_or_usd().to_string()));
             PURCHASE_API
         };
@@ -997,11 +1005,12 @@ pub mod appmetrica {
             };
             params.push(("revenue_event_type", kind.into()));
             // Refunds carry the refunded amount; expirations no money.
-            let price = if ev.kind == event_kind::EXPIRE { 0 } else { ev.price_micros.abs() };
+            // AppMetrica multiplies the price by the quantity.
+            let price = if ev.kind == event_kind::EXPIRE { 0 } else { ev.price_micros.abs() / ev.units() as i64 };
             params.push(("price", crate::money::to_decimal(price)));
             params.push(("currency", ev.currency_or_usd().to_string()));
             params.push(("product_id", ev.product_id.clone()));
-            params.push(("quantity", "1".into()));
+            params.push(("quantity", ev.units().to_string()));
             // Its own parameter: AppMetrica deduplicates a retried event by it.
             params.push(("transaction_id", format!("{}:{}", ev.transaction_id, ev.kind)));
             let payload = json!({ "transaction_id": ev.transaction_id, "store": ev.store, "environment": ev.environment });
@@ -1209,8 +1218,8 @@ pub mod amplitude {
             // Amplitude stores price × quantity: the price carries the sign of a refund.
             let revenue = ev.revenue();
             event["productId"] = json!(ev.product_id);
-            event["price"] = json!(revenue);
-            event["quantity"] = json!(1);
+            event["price"] = json!(revenue / ev.units() as f64);
+            event["quantity"] = json!(ev.units());
             event["revenue"] = json!(revenue);
             event["revenueType"] = json!(ev.kind);
             event["currency"] = json!(ev.currency_or_usd());
@@ -1511,6 +1520,7 @@ mod tests {
             country: String::new(),
             commission_percent: crate::revenue::DEFAULT_COMMISSION_PERCENT,
             previous_product_id: String::new(),
+            quantity: 1,
             event_id: String::new(),
         }
     }
@@ -1688,6 +1698,11 @@ mod tests {
 
         let refund = form(&send(tenjin::build(&tenjin_event("refund", "ios"), &s, "K").unwrap()).body);
         assert_eq!(refund["price"], "-4.99");
+
+        // Three units for 4.99 in total: Tenjin multiplies the unit price by the quantity.
+        let three = OutEvent { quantity: 3, ..tenjin_event("purchase", "android") };
+        let p = form(&send(tenjin::build(&three, &s, "K").unwrap()).body);
+        assert_eq!((p["price"].as_str(), p["quantity"].as_str()), ("1.66", "3"));
         assert_eq!(refund["platform"], "ios");
         assert_eq!(refund["advertising_id"], "AAAA-BBBB");
         assert_eq!(refund["developer_device_id"], "A1B2C3D4-0000-1111-2222-333344445555");
@@ -1957,6 +1972,9 @@ mod tests {
         assert_eq!(body["options"]["min_id_length"], 1);
         let e = &body["events"][0];
         assert_eq!((e["event_type"].as_str(), e["time"].as_i64()), (Some("purser_purchase"), Some(1_791_198_123_123)));
+        let three = json_body(&send(amplitude::build(&OutEvent { quantity: 2, ..ev.clone() }, &s, "AMPKEY").unwrap()));
+        let t = &three["events"][0];
+        assert_eq!((t["price"].as_f64(), t["quantity"].as_u64(), t["revenue"].as_f64()), (Some(2.495), Some(2), Some(4.99)), "{t}");
         assert_eq!(e["user_id"].as_str().unwrap().len(), 64);
         assert_eq!(e["device_id"], "f2a1c3e4-5b6d-7e8f-9a0b-1c2d3e4f5a6bR");
         assert_eq!((e["insert_id"].as_str(), e["platform"].as_str(), e["country"].as_str()), (Some("GPA.1:purchase"), Some("android"), Some("DE")));

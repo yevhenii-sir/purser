@@ -164,7 +164,9 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
         } else {
             environment::PRODUCTION
         },
-        // price is in milliunits of the currency
+        // price is in milliunits of the currency, of one unit: Apple's reference says the total of
+        // the quantity, but transactions with a quantity above 1 report the unit price
+        // (developer.apple.com/forums/thread/805271).
         price_micros: ms("price").saturating_mul(1000),
         currency: s("currency"),
         account_id: s("appAccountToken"),
@@ -177,6 +179,7 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
         offer_id: s("offerIdentifier"),
         offer_type: offer_type(p["offerType"].as_i64()).to_string(),
         promotional: false,
+        quantity: (ms("quantity").clamp(1, crate::google::MAX_QUANTITY as i64)) as u32,
         paused_until_ms: 0,
         grace_until_ms: 0,
         billing_issue: false,

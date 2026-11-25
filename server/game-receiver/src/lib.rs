@@ -31,6 +31,8 @@ pub struct BillingEvent {
     pub product_id: String,
     /// `consumable` | `non_consumable` | `subscription`
     pub kind: String,
+    /// Units bought at once: grant the product this many times (`price_micros` is what all cost).
+    pub quantity: u32,
     /// The store's transaction.
     pub transaction_id: String,
     pub original_transaction_id: String,

@@ -139,6 +139,7 @@ fn to_game(ev: &BillingEvent) -> game::BillingEvent {
         app_id: ev.app_id.clone(),
         product_id: ev.product_id.clone(),
         kind: ev.kind.clone(),
+        quantity: ev.quantity,
         transaction_id: ev.transaction_id.clone(),
         original_transaction_id: ev.original_transaction_id.clone(),
         user_id: ev.user_id.clone(),

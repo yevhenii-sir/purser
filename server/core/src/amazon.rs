@@ -156,6 +156,7 @@ fn tx(app_id: &str, user_id: &str, receipt_id: &str, product_id: &str, state: Tx
         offer_id: String::new(),
         offer_type: String::new(),
         promotional: false,
+        quantity: 1,
     }
 }
 

@@ -13,6 +13,7 @@ pub struct BillingEvent {
     pub app_id: ::std::string::String,
     pub product_id: ::std::string::String,
     pub kind: ::std::string::String,
+    pub quantity: ::core::primitive::u32,
     pub transaction_id: ::std::string::String,
     pub original_transaction_id: ::std::string::String,
     pub user_id: ::std::string::String,

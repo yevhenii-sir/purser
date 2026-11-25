@@ -434,6 +434,7 @@ fn store_tx(m: &Meta, transaction_id: &str, original: &str, token: &str, livemod
         offer_id: String::new(),
         offer_type: String::new(),
         promotional: false,
+        quantity: 1,
     }
 }
 

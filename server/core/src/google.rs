@@ -121,6 +121,9 @@ pub fn parse_voided_purchases(body: &str) -> Result<(Vec<Voided>, Option<String>
     Ok((list, next))
 }
 
+/// The most units one purchase can carry (Google allows up to 99 per purchase).
+pub const MAX_QUANTITY: u32 = 1000;
+
 /// Stable id for purchases without an orderId (some test purchases).
 fn token_tx_id(token: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -140,13 +143,8 @@ pub fn parse_product_purchase(
     body: &str,
 ) -> Result<StoreTx, String> {
     let v: Value = serde_json::from_str(body).map_err(|e| format!("bad ProductPurchase: {e}"))?;
-    // Several units in one purchase (multi-quantity turned on in Play Console) would be granted as
-    // one: refused until the ledger carries a quantity, so the purchase stays unacknowledged and
-    // Google refunds it after three days unless a later version grants it.
-    let quantity = v["quantity"].as_i64().unwrap_or(1);
-    if quantity > 1 {
-        return Err(format!("purchases of {quantity} units at once are not supported (turn off multi-quantity for this product)"));
-    }
+    // Several units in one purchase (multi-quantity turned on in Play Console): granted together.
+    let quantity = v["quantity"].as_i64().unwrap_or(1).clamp(1, MAX_QUANTITY as i64) as u32;
     // purchaseState: 0 purchased, 1 canceled, 2 pending; a reply without one grants nothing.
     let state = match v["purchaseState"].as_i64() {
         Some(0) => TxState::Active,
@@ -188,6 +186,7 @@ pub fn parse_product_purchase(
         offer_type: String::new(),
         // purchaseType 1 promo code, 2 rewarded (watched an ad): access without a payment.
         promotional: matches!(v["purchaseType"].as_i64(), Some(1 | 2)),
+        quantity,
     })
 }
 
@@ -303,6 +302,7 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
         offer_id,
         offer_type: String::new(),
         promotional: false,
+        quantity: 1,
     })
 }
 
@@ -445,11 +445,13 @@ mod tests {
     }
 
     #[test]
-    fn a_purchase_of_several_units_is_refused() {
+    fn a_purchase_of_several_units_carries_its_quantity() {
         let body = r#"{"purchaseState":0,"orderId":"GPA.1","quantity":3}"#;
-        assert!(parse_product_purchase("com.game", "gems", "tok", body).unwrap_err().contains("3 units"));
-        let one = r#"{"purchaseState":0,"orderId":"GPA.1","quantity":1}"#;
-        assert!(parse_product_purchase("com.game", "gems", "tok", one).is_ok());
+        assert_eq!(parse_product_purchase("com.game", "gems", "tok", body).unwrap().quantity, 3);
+        let one = r#"{"purchaseState":0,"orderId":"GPA.1"}"#;
+        assert_eq!(parse_product_purchase("com.game", "gems", "tok", one).unwrap().quantity, 1);
+        let silly = r#"{"purchaseState":0,"orderId":"GPA.1","quantity":-4}"#;
+        assert_eq!(parse_product_purchase("com.game", "gems", "tok", silly).unwrap().quantity, 1);
     }
 
     #[test]

@@ -94,6 +94,8 @@ namespace Purser
         [JsonProperty("transaction_id")] public string TransactionId;
         [JsonProperty("product_id")] public string ProductId;
         [JsonProperty("is_sub")] public bool IsSubscription;
+        /// <summary>Units bought at once (Google multi-quantity, StoreKit quantity); 1 otherwise.</summary>
+        [JsonProperty("quantity")] public int Quantity = 1;
         [JsonProperty("expires_date_ms")] public long ExpiresDateMs;
         [JsonProperty("environment")] public string Environment;
         /// <summary>Who grants the reward (<see cref="VerifyDelivery"/>); always sent with a verified purchase.</summary>

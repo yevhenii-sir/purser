@@ -2,7 +2,13 @@
 
 ## Unreleased
 
+### Breaking
+
+- Publish with `--delete-data` (keep the data with `backup.py`): `purchase` gains `quantity`. The delivery event (`BillingEvent`, the webhook body, the `spacetimedb_idc` struct) gains `quantity` after `kind`: game modules add it to their struct (`server/game-receiver`, docs/game-integration.md).
+
 ### Added
+
+- Purchases of several units at once: a Google Play product with multi-quantity (refused until now) and a StoreKit purchase with a quantity are granted with `quantity` in the game event and the `/verify` answer (Unity: `PurchaseResult.Quantity`); the ledger row keeps it and its price is the unit price × the quantity (App Store transactions report the unit price, although Apple's reference says the total). Integrations get the quantity (GA4 items, AppsFlyer `af_quantity`) and, where they multiply the price by it (Tenjin, AppMetrica, Amplitude), the unit price. A refund of some units of such a purchase is not applied yet.
 
 - Refunds a store notification missed are found by the stores themselves: every 6 hours per build the worker reads Google Play's Voided Purchases API (the last 30 days, then from where it stopped) and the App Store notification history (`REFUND`), and revokes what the ledger still has as paid. The setup check shows the last reading and how many refunds the notifications had missed (a sign the notification setup is broken); `admin_sweep_refunds(app_id)` reads them now. New table `refund_sweep`: publish in place.
 

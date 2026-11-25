@@ -168,6 +168,18 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void Purchase_OfSeveralUnits_SaysHowManyToGrant()
+        {
+            CreateService();
+            var verify = FakeApi.Verify(200, VerifyStatus.Success, delivery: VerifyDelivery.Client);
+            verify.Value.Quantity = 3;
+            m_Api.DefaultVerify = verify;
+            var result = Buy("gems_100", FakeStore.GoogleOrder("gems_100"));
+            Assert.AreEqual(3, result.Quantity);
+            Assert.AreEqual(1, new PurchaseResult(PurchaseStatus.Success, "gems_100").Quantity, "no answer: one unit");
+        }
+
+        [Test]
         public void Purchase_ClientDelivery_HandlerFailure_LeavesThePurchaseForTheStoreToDeliverAgain()
         {
             CreateService();

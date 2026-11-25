@@ -343,6 +343,8 @@ fn verify_with(
         "transaction_id": st.transaction_id,
         "product_id": product.product_id,
         "is_sub": product.kind == kind::SUBSCRIPTION,
+        // Units of the purchase: a client that grants it grants the product this many times.
+        "quantity": st.quantity.max(1),
         "expires_date_ms": st.expires_at_ms,
         "environment": st.environment,
         // `client`: no game backend, the client grants the reward and then finishes the purchase

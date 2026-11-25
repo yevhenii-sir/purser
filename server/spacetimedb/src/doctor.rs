@@ -846,6 +846,7 @@ fn probe_ga4(ctx: &mut impl Ctx, app: &GameApp, firebase_app_id: &str, api_secre
         country: String::new(),
         commission_percent: purser_core::revenue::DEFAULT_COMMISSION_PERCENT,
         previous_product_id: String::new(),
+        quantity: 1,
         event_id: String::new(),
     };
     match ga4::build(&event, firebase_app_id, api_secret, true) {

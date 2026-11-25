@@ -392,8 +392,12 @@ fn record_row(
     let today = (crate::ctx::tx_now_micros(tx) / 86_400_000_000) as i32;
     let fx = (claim.price_micros > 0).then(|| crate::revenue::fx_table(tx, today - 14, today));
     let usd = |micros: i64, ccy: &str| fx.as_ref()?.to_usd_micros(micros, ccy, today);
-    let (price_micros, currency) = pick_price(st, product, claim.price_micros, &claim.currency, usd);
+    let (unit_micros, currency) = pick_price(st, product, claim.price_micros, &claim.currency, usd);
+    // Every price source is the price of one unit.
+    let quantity = st.quantity.max(1);
+    let price_micros = unit_micros.saturating_mul(quantity as i64);
     let mut row = Purchase {
+        quantity,
         original_transaction_id: st.original_transaction_id.clone(),
         purchase_token: st.purchase_token.clone(),
         reason: if st.transaction_id == st.original_transaction_id { reason::PURCHASE } else { reason::RENEWAL }.to_string(),
@@ -941,6 +945,7 @@ fn billing_event(p: &Purchase, event: &str, why: &str, now_ms: i64) -> BillingEv
         app_id: p.app_id.clone(),
         product_id: p.product_id.clone(),
         kind: p.kind.clone(),
+        quantity: p.quantity.max(1),
         transaction_id: p.transaction_id.clone(),
         original_transaction_id: p.original_transaction_id.clone(),
         user_id: p.user_id.clone(),

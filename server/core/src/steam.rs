@@ -839,6 +839,7 @@ pub fn store_tx(p: &Purchase) -> StoreTx {
         offer_id: String::new(),
         offer_type: String::new(),
         promotional: false,
+        quantity: 1,
     }
 }
 

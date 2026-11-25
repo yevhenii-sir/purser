@@ -183,7 +183,7 @@ billing.PurchaseSucceeded += r =>
 {
     if (!r.GrantOnClient) return;                         // the game server granted the reward
     if (PlayerPrefs.HasKey("iap." + r.TransactionId)) return; // already granted
-    AddGems(r.ProductId);
+    AddGems(r.ProductId, r.Quantity);                    // several units of a multi-quantity purchase
     PlayerPrefs.SetInt("iap." + r.TransactionId, 1);
     PlayerPrefs.Save();                                   // save before leaving the handler
 };

@@ -63,6 +63,13 @@ namespace Purser
         /// </summary>
         public bool GrantOnClient => Server?.Delivery == VerifyDelivery.Client || (Provisional && Status == PurchaseStatus.Success);
 
+        /// <summary>
+        /// Units bought at once (a Google Play product with multi-quantity, a StoreKit purchase with a quantity); 1
+        /// for everything else, and for a provisional grant. A game that grants on the client grants the product this
+        /// many times; with server delivery the game's backend gets it in the event's <c>quantity</c>.
+        /// </summary>
+        public int Quantity => System.Math.Max(1, Server?.Quantity ?? 1);
+
         /// <summary>Creates a result (custom adapters, tests).</summary>
         public PurchaseResult(PurchaseStatus status, string productId, string storeProductId = null,
             string transactionId = null, string message = null, VerifyResponse server = null, bool provisional = false)

@@ -261,6 +261,8 @@ pub struct Purchase {
     /// When the current step began (the events' `occurred_at_ms`).
     pub step_at_micros: i64,
     pub last_error: String,
+    /// Units bought at once (`StoreTx::quantity`); `price_micros` is what all of them cost.
+    pub quantity: u32,
     /// The last step failed in a way only a change of the setup fixes (`last_error` says what):
     /// it waits for that change (`ledger::unblock`) instead of being retried with backoff.
     pub blocked: bool,
@@ -343,6 +345,7 @@ impl Purchase {
             step_at_micros: 0,
             last_error: String::new(),
             blocked: false,
+            quantity: 1,
             created_at_micros: now_micros,
             updated_at_micros: now_micros,
             previous_user_id: String::new(),
@@ -1223,6 +1226,7 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             step_at_micros: 0,
             last_error: r.last_error,
             blocked: false,
+            quantity: 1,
             created_at_micros: r.created_at_micros,
             updated_at_micros: r.updated_at_micros,
             previous_user_id: r.previous_user_id,
@@ -1358,6 +1362,7 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
         country: String::new(),
         commission_percent: crate::revenue::commission(ctx).percent_for_period(&app.app_id, false),
         previous_product_id: String::new(),
+        quantity: 1,
         event_id: String::new(),
     };
     let only = if i.kind.is_empty() { None } else { Some(i.kind.as_str()) };

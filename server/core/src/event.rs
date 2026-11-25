@@ -67,6 +67,9 @@ pub struct BillingEvent {
     pub product_id: String,
     /// `consumable` | `non_consumable` | `subscription`
     pub kind: String,
+    /// Units bought at once (Google multi-quantity, StoreKit quantity; 1 otherwise): the game grants
+    /// the product this many times. `price_micros` is what all of them cost.
+    pub quantity: u32,
     /// The store's transaction (`event_id` is the key to apply an event once).
     pub transaction_id: String,
     pub original_transaction_id: String,
@@ -162,6 +165,7 @@ mod tests {
             app_id: "com.game".into(),
             product_id: "month_sub".into(),
             kind: kind.into(),
+            quantity: 1,
             transaction_id: "GPA.1".into(),
             original_transaction_id: "GPA.1".into(),
             user_id: "c200".into(),

@@ -135,6 +135,9 @@ pub struct StoreTx {
     pub offer_type: String,
     /// Access without a payment (a Google promo code or rewarded product): counted at price 0.
     pub promotional: bool,
+    /// Units bought at once (Google multi-quantity, StoreKit quantity): 1 for everything else.
+    /// `price_micros` is the price of one unit.
+    pub quantity: u32,
 }
 
 impl StoreTx {
