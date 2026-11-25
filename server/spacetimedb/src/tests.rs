@@ -1213,6 +1213,78 @@ fn currencies_without_a_rate_are_reported_until_overridden() {
 }
 
 #[test]
+fn the_revenue_overview_is_kept_and_counted_again_only_when_asked_for_after_a_while() {
+    use crate::revenue::{revenue_report, KEPT_TTL_MICROS, REFRESH_COOLDOWN_MICROS};
+    let w = World::new();
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    w.as_admin(false);
+    let ask = |refresh: bool| crate::revenue::overview(&mut w.ctx(), &json!({ "refresh": refresh }).to_string()).unwrap();
+    let counted_at = |v: &Value| v["computed_at_micros"].as_i64().unwrap();
+
+    let first = ask(false);
+    assert_eq!(first["totals"]["gross_usd_micros"], 990_000);
+    assert_eq!(first["by_app"][0]["app_id"], APP);
+    assert!(first.get("by_product").is_none() && first.get("subscriptions").is_none(), "{first}");
+    assert_eq!(first["refresh_after_micros"].as_i64().unwrap(), counted_at(&first) + REFRESH_COOLDOWN_MICROS);
+    assert_eq!((first["kept"].clone(), first["counting"].clone()), (json!(true), json!(false)));
+
+    // Within the cooldown a refresh gets the kept report; after it, a refresh counts again.
+    w.advance_clock(30);
+    assert_eq!(counted_at(&ask(true)), counted_at(&first));
+    assert_eq!(counted_at(&ask(false)), counted_at(&first));
+    w.advance_clock(31);
+    let refreshed = ask(true);
+    assert!(counted_at(&refreshed) > counted_at(&first));
+
+    // Without a refresh it is counted again once it is older than the TTL, not before.
+    w.advance_clock(KEPT_TTL_MICROS / 1_000_000 - 1);
+    assert_eq!(counted_at(&ask(false)), counted_at(&refreshed));
+    w.advance_clock(2);
+    let later = ask(false);
+    assert!(counted_at(&later) > counted_at(&refreshed));
+
+    // While another admin counts it again, the kept (here stale) report is answered.
+    w.advance_clock(KEPT_TTL_MICROS / 1_000_000 + 1);
+    w.write(|tx| {
+        let mut row = tx.db.revenue_report().iter().next().unwrap();
+        row.computing_since_micros = crate::ctx::tx_now_micros(tx);
+        tx.db.revenue_report().key().update(row);
+    });
+    let meanwhile = ask(true);
+    assert_eq!((counted_at(&meanwhile), meanwhile["counting"].clone()), (counted_at(&later), json!(true)));
+
+    // A rate change forgets it.
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::revenue::admin_set_fx_override(ctx, "uah".into(), 0.99)).unwrap();
+    assert_eq!(w.read(|tx| tx.db.revenue_report().iter().count()), 0);
+}
+
+#[test]
+fn revenue_reports_are_kept_per_question() {
+    use crate::revenue::revenue_report;
+    let w = World::new();
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    w.as_admin(false);
+    let ask = |q: Value| crate::revenue::kept_stats(&mut w.ctx(), &q.to_string()).unwrap();
+    let first = ask(json!({ "summary": true }));
+    assert_eq!(first["totals"]["gross_usd_micros"], 990_000);
+    // The default range and the same range spelled out are one question; sandbox is another.
+    let today = first["to"].as_str().unwrap().to_string();
+    let from = first["from"].as_str().unwrap().to_string();
+    let same = ask(json!({ "summary": true, "from": from, "to": today }));
+    assert_eq!(same["computed_at_micros"], first["computed_at_micros"]);
+    ask(json!({ "summary": true, "include_sandbox": true }));
+    ask(json!({}));
+    assert_eq!(w.read(|tx| tx.db.revenue_report().iter().count()), 3);
+    // A new day counts again.
+    w.advance_clock(86_400);
+    let next_day = ask(json!({ "summary": true }));
+    assert_ne!(next_day["computed_at_micros"], first["computed_at_micros"]);
+}
+
+
+#[test]
 fn the_apps_summary_has_one_row_per_build() {
     let w = apple_offer_world(true);
     w.as_admin(false);

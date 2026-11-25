@@ -161,7 +161,19 @@ export interface AsaCampaign {
   net_usd_micros: number
 }
 
-export interface Stats {
+/** When a revenue report was counted. Slow ones are kept on the server for 10 minutes (times in µs). */
+export interface Kept {
+  computed_at_micros: number
+  /** A refresh before this time gets the kept report. */
+  refresh_after_micros: number
+  stale_after_micros: number
+  /** Answered from the kept reports (it was slow to count). */
+  kept: boolean
+  /** Another admin is counting it again now. */
+  counting: boolean
+}
+
+export interface Stats extends Partial<Kept> {
   from: string
   to: string
   totals: Money & { refund_rate: number }
@@ -219,6 +231,9 @@ export interface StatsSummary {
   by_app: (Money & { app_id: string })[]
   rebuilding?: boolean
 }
+
+/** `admin_revenue_overview`: the summary's totals, series and per-app numbers. */
+export interface RevenueOverview extends StatsSummary, Kept {}
 
 /** `integration_health`: what happened to the events of one integration of a build (times in µs, 0 = never). */
 export interface IntegrationHealth {

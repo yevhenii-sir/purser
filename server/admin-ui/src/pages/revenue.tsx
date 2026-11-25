@@ -12,6 +12,7 @@ import { Switch } from "@/components/ui/switch"
 import { AppCombobox } from "@/components/app-combobox"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Section, Stat } from "@/components/common"
 import { RevenueTree } from "@/components/revenue-tree"
+import { RevenueUpdated } from "@/components/revenue-updated"
 import { RichTable, type RichColumn } from "@/components/rich-table"
 import { call, proc } from "@/lib/api"
 import { useAppIndex, type AppGroup } from "@/lib/apps"
@@ -124,6 +125,8 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
   const [sandbox, setSandbox] = useState(false)
   const [fxDialog, setFxDialog] = useState<string | null>(null)
   const [feeDialog, setFeeDialog] = useState(false)
+  /** Manual refreshes so far: the revenue tree counts its kept reports again on each. */
+  const [refreshes, setRefreshes] = useState(0)
 
   const { groupOf, builds } = useAppIndex()
   const { data: r, error, loading, reload } = useAsync(async ({ fresh }) => {
@@ -169,6 +172,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
           <Label htmlFor="sandbox" className="font-normal">Include sandbox</Label>
         </div>
         <div className="ms-auto flex flex-wrap items-center gap-2">
+          <RevenueUpdated stats={r} onRefresh={() => { setRefreshes((n) => n + 1); reload() }} className="text-xs text-muted-foreground" />
           <CsvButton onClick={exportCsv} disabled={!r} />
           <Button variant="outline" size="sm" onClick={() => setFeeDialog(true)} disabled={!r}><PercentIcon /> Store fee</Button>
           <Button variant="outline" size="sm" onClick={() => tryAct(() => proc("admin_refresh_fx"), "Rates updated").then(reload)}><RefreshCwIcon /> Rates</Button>
@@ -226,7 +230,7 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
               hint={`churn ${pct(subs.churn_rate)} a month · ${subs.expirations} expired`} />
           </div>
 
-          <RevenueTree days={Number(days)} gameKey={game === ALL ? "" : game} sandbox={sandbox} refreshKey={r} />
+          <RevenueTree days={Number(days)} gameKey={game === ALL ? "" : game} sandbox={sandbox} refreshKey={r} refreshes={refreshes} />
 
           <Section title="Net revenue per day" description="Hover a day for gross, refunds, estimated proceeds and payments.">
             <ChartContainer config={netConfig} className="aspect-auto h-64 w-full">

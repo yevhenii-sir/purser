@@ -115,6 +115,10 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   waits short and bounded (the request deadline, `worker_lanes` drainers). Delivery to self-hosted SpacetimeDB hosts needs them in the `spacetime_host` allowlist.
 - The module RNG is seeded by the timestamp: never use it for secrets.
 - Maincloud tokens have no `hex_identity` claim; the UI asks the `whoami` procedure.
+- The pool lets calls **wait** side by side; the database's **computation** runs one call at a time
+  (measured: four 3.6 s reports started together each took 14 s). A call that computes for seconds
+  holds every route, reducer and even `/sql` reads for that long, however many transactions it splits
+  into. Keep per-request work small and keep the results of heavy reads (see `revenue_report`).
 - Open transactions through `Ctx::tx` (see `ctx.rs`), not `with_tx` directly: it records the time the
   `Budget` reads, and tests count transactions through it.
 - Write ledger rows only through `ledger::insert_purchase` / `ledger::save_purchase`: they keep the

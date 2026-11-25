@@ -101,7 +101,23 @@ The ECB publishes about 30 currencies. Others (UAH, VND, …) are listed as *No 
 
 Rates are `null` when there is nothing to divide by. Cohorts, Apple Ads and trial conversion read the purchase ledger at report time (only the purchases the range needs); everything else comes from the daily aggregates.
 
-With `"summary": true` (same filters) the report has only `from`, `to`, `include_sandbox`, `totals`, `series`, `by_app`, `by_product` (each with the product's `kind`, empty for a deleted product), `subscriptions` (from the daily snapshots: no `active_now` / `mrr_usd_micros`), `fx` (`as_of`, `missing`), `paywall_views` (views of the placements of the selected apps' games in the range), `summary` and `rebuilding`, read from the daily aggregates without touching the ledger: cheap enough for overview pages and the revenue tree.
+With `"summary": true` (same filters) the report has only `from`, `to`, `include_sandbox`, `totals`, `series`, `by_app`, `by_product` (each with the product's `kind`, empty for a deleted product), `subscriptions` (from the daily snapshots: no `active_now` / `mrr_usd_micros`), `fx` (`as_of`, `missing`), `paywall_views` (views of the placements of the selected apps' games in the range), `summary` and `rebuilding`, read from the daily aggregates without touching the ledger: cheap enough for the revenue tree.
+
+`admin_revenue_overview(query_json)` is what the Overview and Apps pages show: `from`, `to`, `include_sandbox`, `totals`, `series`, `by_app`, `fx` and `rebuilding` of the last 30 days (shapes as above).
+
+**Kept reports.** A report that took 300 ms or more to count is kept on the server for an hour and answered again to the same question (kind, range, sandbox and the builds the admin sees: two admins who see the same builds share it). Nothing is counted in the background: a kept report is counted again only when someone asks after an hour, on a new day, after a rebuild, or with `"refresh": true`, which the server honors at most once a minute (sooner, the kept one is answered). New exchange rates, a rate override and a rebuild drop every kept report. While one admin counts a kept report again, others get the previous one. Every answer of both procedures carries `computed_at_micros`, `refresh_after_micros`, `stale_after_micros`, `kept` and `counting`; the pages show "updated … ago" with a refresh button that waits for `refresh_after_micros`. Reports of one game are fast and counted on every request.
+
+A report's cost grows with the rows it reads (days × builds × products × currencies), and SpacetimeDB computes one call of a database at a time: while a report is counted, purchases and every other request wait. Measured on a local SpacetimeDB 2.16.1 with synthetic aggregates (about 25 daily rows per build on average, a few big games):
+
+| Builds | Rows per 30 days | Summary, 30 days | Summary, 90 days |
+|---|---|---|---|
+| 500 | ~220k | 0.8 s | 2.3 s |
+| 1,000 | ~440k | 1.6 s | 5.2 s |
+| 2,000 | ~880k | 4.0 s | 12.9 s |
+
+The Overview's totals with 2,000 builds: 3.1 s when counted, 30 ms when kept.
+
+Reports of one game read through its builds' indexes and take milliseconds. Server-wide reports over long ranges are the ones to open sparingly on a large server.
 
 `admin_rebuild_revenue(app_ids_json)` recomputes the aggregates from the ledger with the same rules, of the builds in the JSON array (`""` or `[]`: every build). It only starts the rebuild: a scheduled step counts the ledger in batches (2,500 purchases per transaction, one a second: about two minutes for 200k purchases) and `rebuilding` is `true` until it is done; builds outside the rebuild keep counting live. After importing a ledger it happens automatically for the imported builds, once the imports have stopped for 5 minutes.
 

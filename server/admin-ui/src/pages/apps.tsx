@@ -13,8 +13,9 @@ import { useApps } from "@/lib/apps"
 import { buildLabel, PLATFORM_ICON, platformById } from "@/lib/stores"
 import { usd } from "@/lib/format"
 import { useAsync } from "@/lib/hooks"
-import { revenueSummary } from "@/lib/revenue"
-import type { Level } from "@/lib/types"
+import { revenueOverview } from "@/lib/revenue"
+import { RevenueUpdated } from "@/components/revenue-updated"
+import type { Level, RevenueOverview } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { appRoute, type PageProps } from "@/routes"
 
@@ -59,14 +60,21 @@ export function AppsPage({ go }: PageProps) {
   }, [])
 
   const { groups, error: appsError } = useApps()
-  const loaded = useAsync(async ({ fresh }) => {
+  /** A report counted again with the refresh button (newer than the one loaded with the page). */
+  const [counted, setCounted] = useState<RevenueOverview | null>(null)
+  const loaded = useAsync(async () => {
     const [builds, stats] = await Promise.all([
       proc<BuildSummary[]>("admin_apps_summary"),
-      revenueSummary(fresh).catch(() => null),
+      revenueOverview().catch(() => null),
     ])
     return { builds: new Map(builds.map((b) => [b.app_id, b])), stats }
   })
-  const data = useMemo(() => (groups && loaded.data ? { groups, ...loaded.data } : undefined), [groups, loaded.data])
+  const data = useMemo(() => {
+    if (!groups || !loaded.data) return undefined
+    const loadedStats = loaded.data.stats
+    const stats = counted && counted.computed_at_micros > (loadedStats?.computed_at_micros ?? 0) ? counted : loadedStats
+    return { groups, ...loaded.data, stats }
+  }, [groups, loaded.data, counted])
   const error = appsError || loaded.error
   const loading = !data
   /** Per app: worst check, revenue, products and integrations; built once per load, not per keystroke. */
@@ -119,6 +127,7 @@ export function AppsPage({ go }: PageProps) {
           </Select>}
           {view === "cards" && <span className="text-sm text-muted-foreground">{data.groups.length} app{data.groups.length === 1 ? "" : "s"}</span>}
           {data.stats?.rebuilding && <span className="text-xs text-muted-foreground">· revenue totals are being rebuilt</span>}
+          {data.stats && <RevenueUpdated stats={data.stats} onRefresh={async () => setCounted(await revenueOverview(true))} prefix="· revenue" className="text-xs text-muted-foreground" />}
           <Tabs value={view} onValueChange={(v) => setView(v as View)} className="ms-auto">
             <TabsList>
               <TabsTrigger value="cards" title="Cards"><LayoutGridIcon /> Cards</TabsTrigger>

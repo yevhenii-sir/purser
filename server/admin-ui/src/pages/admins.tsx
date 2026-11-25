@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
+import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
+import { RoleAccess, RoleMatrix } from "@/components/role-matrix"
 import { AppsPicker } from "@/components/apps-picker"
 import { call, createIdentity, select } from "@/lib/api"
 import { ago, errorText } from "@/lib/format"
@@ -122,11 +123,8 @@ export function AdminsPage({ me }: PageProps) {
           />
         )}
       </Section>
-      <Section title="Roles">
-        <ul className="space-y-1 text-sm">
-          <li><b>Owner</b> <span className="text-muted-foreground">— the identity that published the database: everything, including delivery hosts, purchase import and admins with the Admin role.</span></li>
-          {ROLES.map((r) => <li key={r.id}><b>{r.label}</b> <span className="text-muted-foreground">— {r.description}.</span></li>)}
-        </ul>
+      <Section title="What each role may do" description="The Owner is the identity that published the database. Limiting an admin to some apps narrows any role to those apps.">
+        <RoleMatrix highlight={myRole} />
       </Section>
       <AddAdminDialog open={adding} onClose={() => setAdding(false)} onAdded={reload} roles={ROLES.filter((r) => manageable(r.id))} />
       <Dialog open={!!editingApps} onOpenChange={(o) => !o && setEditingApps(null)}>
@@ -249,7 +247,7 @@ function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: (
         <DialogTitle>Add admin</DialogTitle>
         <DialogDescription>Generate a token to hand to a coworker, or add the identity of someone who already has a SpacetimeDB login.</DialogDescription>
       </DialogHeader>
-      <div className="space-y-4">
+      <DialogBody className="space-y-4">
         <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Anna (support)" autoFocus /></Field>
         <Field label="Role">
           <Select value={role} onValueChange={setRole}>
@@ -261,6 +259,9 @@ function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: (
         <Field label="Apps">
           <AdminAppsPicker value={apps} onChange={setApps} />
         </Field>
+        <Field label="This admin will be able to">
+          <RoleAccess role={role as Role} limited={apps.length > 0} />
+        </Field>
         <Button className="w-full" onClick={generate} disabled={busy}><KeyRoundIcon /> Generate a token</Button>
         <div className="space-y-2 border-t pt-4">
           <p className="text-xs text-muted-foreground">Or add an existing identity (theirs: <code>spacetime login show --identity</code>):</p>
@@ -269,7 +270,7 @@ function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: (
             <Button variant="outline" onClick={addExisting} disabled={busy || !identity.trim()}>Add</Button>
           </div>
         </div>
-      </div>
+      </DialogBody>
     </>
   )
 }

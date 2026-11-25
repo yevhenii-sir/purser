@@ -181,17 +181,21 @@ const HALF_ROW = 56
  * middle, net revenue on the right; every number with its change against the previous period of
  * the same length. Reads two summary reports (daily aggregates only).
  */
-export function RevenueTree({ days, gameKey, sandbox, refreshKey }: { days: number; gameKey: string; sandbox: boolean; refreshKey: unknown }) {
+/** `refreshes`: manual refreshes of the page; a new one counts the tree's kept reports again too. */
+export function RevenueTree({ days, gameKey, sandbox, refreshKey, refreshes = 0 }: { days: number; gameKey: string; sandbox: boolean; refreshKey: unknown; refreshes?: number }) {
+  const seen = useRef(refreshes)
   const { data, error, loading } = useAsync(async () => {
+    const fresh = refreshes !== seen.current
+    seen.current = refreshes
     const to = new Date()
     const from = new Date(to.getTime() - (days - 1) * DAY)
     const q = (f: Date, t: Date) => ({ from: isoDay(f), to: isoDay(t), include_sandbox: sandbox, game_key: gameKey, summary: true })
     const [cur, prev] = await Promise.all([
-      revenueStats(q(from, to)),
-      revenueStats(q(new Date(from.getTime() - days * DAY), new Date(from.getTime() - DAY))),
+      revenueStats(q(from, to), fresh),
+      revenueStats(q(new Date(from.getTime() - days * DAY), new Date(from.getTime() - DAY)), fresh),
     ])
     return { cur: metrics(cur as unknown as TreeSummary), prev: metrics(prev as unknown as TreeSummary) }
-  }, [days, gameKey, sandbox, refreshKey])
+  }, [days, gameKey, sandbox, refreshKey, refreshes])
 
   return (
     <Section

@@ -8,8 +8,9 @@ import { call, proc, route } from "@/lib/api"
 import { fmtTime, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { useCan } from "@/lib/roles"
-import { revenueSummary } from "@/lib/revenue"
-import { STATUSES, type Overview, type PurchaseStatus } from "@/lib/types"
+import { revenueOverview } from "@/lib/revenue"
+import { RevenueUpdated } from "@/components/revenue-updated"
+import { STATUSES, type Overview, type PurchaseStatus, type RevenueOverview } from "@/lib/types"
 import type { PageProps } from "@/routes"
 
 /** Listed even when no purchase is in them. */
@@ -17,11 +18,13 @@ const ALWAYS_LISTED: readonly PurchaseStatus[] = ["completed", "verified"]
 
 export function OverviewPage({ go }: PageProps) {
   const [open, setOpen] = useState<string | null>(null)
-  const { data, error, loading, reload } = useAsync(async ({ fresh }) => {
+  /** A report counted again with the refresh button (newer than the one loaded with the page). */
+  const [counted, setCounted] = useState<RevenueOverview | null>(null)
+  const { data, error, loading, reload } = useAsync(async () => {
     const [health, overview, stats] = await Promise.all([
       route<{ version?: string } | null>("/healthz"),
       proc<Overview>("admin_overview"),
-      revenueSummary(fresh).catch(() => null),
+      revenueOverview().catch(() => null),
     ])
     const byStatus = STATUSES.map((s) => ({ status: s, n: Number(overview.by_status[s] || 0) }))
     return { health, overview, byStatus, stats }
@@ -30,7 +33,8 @@ export function OverviewPage({ go }: PageProps) {
   if (error) return <ErrorBox error={error} hint="Make sure the token belongs to the database owner or an admin." />
   if (loading && !data) return <Loading rows={6} />
   if (!data) return null
-  const { health, stats, overview: ov } = data
+  const { health, overview: ov } = data
+  const stats = counted && counted.computed_at_micros > (data.stats?.computed_at_micros ?? 0) ? counted : data.stats
   const stopped = ov.worker_age_secs !== null && ov.worker_age_secs > ov.worker_stale_after_secs
   const waitedSecs = ov.due_total > 0 ? Math.max(0, Math.round((Date.now() * 1000 - Number(ov.oldest_due_micros)) / 1e6)) : 0
   const behind = !stopped && waitedSecs >= ov.backlog_after_secs
@@ -45,7 +49,7 @@ export function OverviewPage({ go }: PageProps) {
           value={health.status === 200 ? <Tone tone="ok">healthy</Tone> : <Tone tone="bad">{health.status}</Tone>}
           hint={health.json?.version ? `module ${health.json.version}` : undefined}
         />
-        <Stat label="Net revenue, 30 days" value={stats ? usd(stats.totals.net_usd_micros) : "—"} hint={stats?.rebuilding ? "USD, totals are being rebuilt" : "USD, without sandbox"} onClick={() => go("revenue")} />
+        <Stat label="Net revenue, 30 days" value={stats ? usd(stats.totals.net_usd_micros) : "—"} hint={<>{stats?.rebuilding ? "USD, totals are being rebuilt" : "USD, without sandbox"}{stats && " · "}<RevenueUpdated stats={stats} onRefresh={async () => setCounted(await revenueOverview(true))} /></>} onClick={() => go("revenue")} />
         <Stat label="Apps / builds" value={`${ov.apps} / ${ov.builds}`} onClick={() => go("apps")} />
         <Stat label="Purchases" value={Number(ov.total).toLocaleString()} hint={`${ov.pending_total} waiting (${ov.due_total} due) · ${ov.outbox} events queued`} onClick={() => go("purchases")} />
       </div>

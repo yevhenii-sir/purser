@@ -25,6 +25,31 @@ export const ROLES: { id: Exclude<Role, "owner">; label: string; description: st
   { id: "viewer", label: "Viewer", description: "Read-only: revenue, purchases, players and the configuration" },
 ]
 
+/** What each role may do, for the matrix on the Admins page: every admin action of the server, by
+ * the capability it checks (`purser_core::roles::Cap`). `everyApp`: refused to admins limited to some
+ * apps (the server's `access::require`). */
+export const ACTIONS: { group: string; action: string; cap: Cap; everyApp?: boolean }[] = [
+  { group: "See", action: "Revenue, purchases, players, apps, products, paywalls and settings", cap: "read" },
+  { group: "See", action: "Which keys are set (never their values)", cap: "read" },
+  { group: "Players", action: "Grant, revoke, retry and move purchases", cap: "support" },
+  { group: "Players", action: "Export or erase a player's data", cap: "support" },
+  { group: "Apps", action: "Builds, products, store catalogs, creating products in the stores", cap: "configure" },
+  { group: "Apps", action: "App settings: name, child-directed, purchase transfers", cap: "configure" },
+  { group: "Apps", action: "Paywalls, placements and A/B tests", cap: "configure" },
+  { group: "Apps", action: "Integrations: set up, test, send events again", cap: "configure" },
+  { group: "Keys", action: "Store and integration keys of a build", cap: "secrets" },
+  { group: "Keys", action: "Server keys for a game's backend", cap: "secrets" },
+  { group: "Keys", action: "Keys of developer accounts and default keys, Google Cloud setup", cap: "secrets", everyApp: true },
+  { group: "Server", action: "Server settings, exchange rates, store fee, revenue rebuild, worker restart", cap: "configure", everyApp: true },
+  { group: "Server", action: "Owner alerts: rules and channels", cap: "configure", everyApp: true },
+  { group: "Admins", action: "Add, change and remove editors, support and viewers; the audit log", cap: "admins", everyApp: true },
+  { group: "Owner", action: "Add, change and remove admins with the Admin role", cap: "owner" },
+  { group: "Owner", action: "Delivery hosts, purchase import, ledger reindex", cap: "owner" },
+]
+
+/** Every role, the owner first (the matrix columns). */
+export const ALL_ROLES: Role[] = ["owner", "admin", "editor", "support", "viewer"]
+
 export const roleLabel = (r: Role) => (r === "owner" ? "Owner" : ROLES.find((x) => x.id === r)?.label || r)
 
 export const RoleContext = createContext<Role>("owner")

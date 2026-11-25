@@ -161,6 +161,10 @@ const PROCS: Record<string, (...args: never[]) => unknown> = {
     }
   }),
   admin_revenue_stats: revenue,
+  admin_revenue_overview: () => {
+    const now = Date.now() * 1000
+    return { ...(revenue(JSON.stringify({ summary: true })) as object), computed_at_micros: now, refresh_after_micros: now + 60e6, stale_after_micros: now + 600e6, counting: false }
+  },
   admin_list_purchases: listPurchases,
   admin_find_player: findPlayer,
   admin_user_profile: (user: string) => {

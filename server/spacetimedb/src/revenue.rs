@@ -687,6 +687,7 @@ pub fn invalidate(tx: &ReducerContext) {
 pub fn invalidate_apps(tx: &ReducerContext, apps: &[String]) {
     let next = rebuild_state(tx).merged_with(apps);
     set_rebuild_state(tx, &next);
+    forget_reports(tx);
 }
 
 /// Ledger rows of these builds were imported: their aggregates are rebuilt once imports have
@@ -712,6 +713,7 @@ pub fn admin_set_fx_override(ctx: &ReducerContext, currency: String, units_per_u
     } else {
         ctx.db.fx_override().insert(row);
     }
+    forget_reports(ctx);
     Ok(())
 }
 
@@ -720,6 +722,7 @@ pub fn admin_delete_fx_override(ctx: &ReducerContext, currency: String) -> Resul
     let who = crate::access::require(ctx, purser_core::roles::Cap::Configure)?;
     crate::access::audit(ctx, &who, "admin_delete_fx_override", &currency, "");
     ctx.db.fx_override().currency().delete(currency.trim().to_uppercase());
+    forget_reports(ctx);
     Ok(())
 }
 
@@ -808,6 +811,7 @@ fn store_rates(tx: &ReducerContext, day: i32, rates: &Rates) {
     } else {
         tx.db.fx_day().insert(row);
     }
+    forget_reports(tx);
 }
 
 fn fetch(ctx: &mut impl Ctx, url: &str) -> Result<String, String> {
@@ -980,6 +984,9 @@ struct StatsQuery {
     /// Only the totals, daily series and per-app numbers, from the aggregates alone.
     #[serde(default)]
     summary: bool,
+    /// Count a kept report again now (at most once per [`REFRESH_COOLDOWN_MICROS`]).
+    #[serde(default)]
+    refresh: bool,
 }
 
 /// Exchange rates from `from - 31` to `to` (or all of them when none are near the range), plus the
@@ -1121,40 +1128,63 @@ fn paywall_views(tx: &ReducerContext, games: Option<&BTreeSet<String>>, from: i3
         .sum()
 }
 
+/// The Overview and Apps pages' part of the summary: totals, the daily series and per-app numbers.
+fn overview_of(report: &mut serde_json::Value, rebuilding: bool) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    for k in ["from", "to", "include_sandbox", "totals", "series", "by_app", "fx"] {
+        out.insert(k.to_string(), report[k].take());
+    }
+    out.insert("rebuilding".into(), json!(rebuilding));
+    serde_json::Value::Object(out)
+}
+
+/// The report counted now, never kept (tests; requests go through [`kept_stats`]).
+#[cfg(test)]
 pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, String> {
     let q: StatsQuery = if query_json.trim().is_empty() {
         StatsQuery::default()
     } else {
         serde_json::from_str(query_json).map_err(|e| format!("bad query: {e}"))?
     };
+    report(ctx, &q, false)
+}
+
+/// The caller's range and builds of `q`: `(from, to, today, apps)` (empty `apps`: every build).
+fn resolve(tx: &ReducerContext, q: &StatsQuery) -> Result<(i32, i32, i32, BTreeSet<String>), String> {
+    let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read)?;
+    let today = today(tx);
+    let to = if q.to.is_empty() { today } else { parse_day(&q.to).ok_or("bad 'to' date")? };
+    let from = if q.from.is_empty() { to - 29 } else { parse_day(&q.from).ok_or("bad 'from' date")? };
+    if from > to || to - from > MAX_RANGE_DAYS {
+        return Err(format!("the range must be 1..{MAX_RANGE_DAYS} days"));
+    }
+    let mut apps: Vec<String> = q.app_ids.clone();
+    if !q.game_key.is_empty() {
+        apps.extend(tx.db.game_app().game_key().filter(q.game_key.as_str()).map(|a| a.app_id));
+        if apps.is_empty() {
+            return Err(format!("no apps with game_key {}", q.game_key));
+        }
+    }
+    let mut apps: BTreeSet<String> = apps.into_iter().collect();
+    // A limited admin's report covers their builds: the asked ones, or all of theirs.
+    if let Some(mine) = who.app_ids(tx) {
+        if let Some(other) = apps.iter().find(|a| !mine.contains(*a)) {
+            return Err(format!("{} build {other}", crate::access::SCOPE_ERROR));
+        }
+        if apps.is_empty() {
+            apps = mine;
+        }
+        if apps.is_empty() {
+            return Err(format!("{} any app", crate::access::SCOPE_ERROR));
+        }
+    }
+    Ok((from, to, today, apps))
+}
+
+/// The report of `q`; `overview`: only [`overview_of`] (no subscriptions or product kinds).
+fn report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<serde_json::Value, String> {
     ctx.tx(|tx| {
-        let who = crate::access::require_scoped(tx, purser_core::roles::Cap::Read)?;
-        let today = today(tx);
-        let to = if q.to.is_empty() { today } else { parse_day(&q.to).ok_or("bad 'to' date")? };
-        let from = if q.from.is_empty() { to - 29 } else { parse_day(&q.from).ok_or("bad 'from' date")? };
-        if from > to || to - from > MAX_RANGE_DAYS {
-            return Err(format!("the range must be 1..{MAX_RANGE_DAYS} days"));
-        }
-        let mut apps: Vec<String> = q.app_ids.clone();
-        if !q.game_key.is_empty() {
-            apps.extend(tx.db.game_app().game_key().filter(q.game_key.as_str()).map(|a| a.app_id));
-            if apps.is_empty() {
-                return Err(format!("no apps with game_key {}", q.game_key));
-            }
-        }
-        let mut apps: BTreeSet<String> = apps.into_iter().collect();
-        // A limited admin's report covers their builds: the asked ones, or all of theirs.
-        if let Some(mine) = who.app_ids(tx) {
-            if let Some(other) = apps.iter().find(|a| !mine.contains(*a)) {
-                return Err(format!("{} build {other}", crate::access::SCOPE_ERROR));
-            }
-            if apps.is_empty() {
-                apps = mine;
-            }
-            if apps.is_empty() {
-                return Err(format!("{} any app", crate::access::SCOPE_ERROR));
-            }
-        }
+        let (from, to, today, apps) = resolve(tx, q)?;
         // A filter reads each build through its `(app_id, day)` index, the whole server by `day`.
         let daily: Vec<RevenueDaily> = if apps.is_empty() {
             tx.db.revenue_daily().day().filter(from..=to).collect()
@@ -1175,7 +1205,9 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
         let table = load_fx(tx, from, to);
         let commission = commission(tx);
         let query = Query { from, to, include_sandbox: q.include_sandbox };
-        let sub_rows: Vec<SubscriptionDaily> = if apps.is_empty() {
+        let sub_rows: Vec<SubscriptionDaily> = if overview {
+            Vec::new()
+        } else if apps.is_empty() {
             tx.db.subscription_daily().day().filter(from..=to).collect()
         } else {
             apps.iter().flat_map(|a| tx.db.subscription_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
@@ -1192,6 +1224,19 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
                 monthly_micros: s.monthly_micros,
             })
             .collect();
+        if overview {
+            let mut report = rv::build_full_report(&ReportInput {
+                rows: &rows,
+                subs: &subs,
+                active_now: &[],
+                countries: &[],
+                commission: &commission,
+                fx: &table,
+                q: &query,
+                today,
+            });
+            return Ok(overview_of(&mut report, rebuilding(tx)));
+        }
         if q.summary {
             let report = rv::build_full_report(&ReportInput {
                 rows: &rows,
@@ -1269,10 +1314,209 @@ pub fn stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, 
 /// `by_product` (with the product `kind`), `subscriptions` (from the daily snapshots, without
 /// `active_now` / `mrr_usd_micros`) and `fx` (same shapes as the full report), plus `paywall_views`,
 /// `summary` and `rebuilding`, read from the daily aggregates without touching the ledger (for
-/// overview pages and the revenue tree).
+/// the revenue tree; the Overview and Apps pages read [`admin_revenue_overview`]).
 #[spacetimedb::procedure]
 pub fn admin_revenue_stats(ctx: &mut ProcedureContext, query_json: String) -> String {
-    match stats(ctx, &query_json) {
+    match kept_stats(ctx, &query_json) {
+        Ok(v) => v.to_string(),
+        Err(e) => json!({ "error": e }).to_string(),
+    }
+}
+
+// --- Kept reports ----------------------------------------------------------------------------
+
+/// A revenue report that was slow to count, kept for [`KEPT_TTL_MICROS`] and answered again to the
+/// same question. SpacetimeDB computes one call of a database at a time: a server-wide report
+/// keeps purchases and every other request waiting while it is counted, so each one is counted at
+/// most every few minutes, and only when an admin asks (nothing runs in the background).
+#[spacetimedb::table(accessor = revenue_report, cache_policy = required_in_memory)]
+pub struct RevenueReport {
+    /// The question: kind, range, sandbox and the builds it covers ([`report_key`]).
+    #[primary_key]
+    pub key: String,
+    pub computed_at_micros: i64,
+    /// `today` and `rebuilding` when it was counted: a new day or a finished rebuild counts again.
+    pub counted_day: i32,
+    pub rebuilding: bool,
+    /// An admin started counting it again at this time (0: nobody): others get this one meanwhile.
+    pub computing_since_micros: i64,
+    pub report_json: String,
+}
+
+/// How long a kept report is answered without counting it again.
+pub const KEPT_TTL_MICROS: i64 = 60 * 60 * 1_000_000;
+/// A refresh asked for sooner than this after the last count gets the kept report.
+pub const REFRESH_COOLDOWN_MICROS: i64 = 60 * 1_000_000;
+/// Reports that took at least this long to count are kept (tests keep every one).
+const KEEP_AFTER_MICROS: i64 = if cfg!(test) { 0 } else { 300_000 };
+/// A count that has not finished in this time (the call failed) no longer stops others.
+const COUNTING_MICROS: i64 = 2 * 60 * 1_000_000;
+/// Kept reports at most (the oldest go first): server-wide ones are megabytes.
+const KEPT_MAX: usize = 20;
+
+/// What a request for a report does.
+#[derive(Debug, PartialEq)]
+pub enum KeptPlan {
+    /// Answer the kept report.
+    Answer,
+    /// Count it (and keep it if it was slow).
+    Count,
+}
+
+/// Answer the kept report unless it is missing, older than [`KEPT_TTL_MICROS`], of another day, of
+/// another rebuild state, or a refresh was asked for at least [`REFRESH_COOLDOWN_MICROS`] after it
+/// was counted. While another admin counts it again, the kept one is answered.
+pub fn kept_plan(kept: Option<&RevenueReport>, now: i64, today: i32, rebuilding: bool, refresh: bool) -> KeptPlan {
+    let Some(k) = kept else { return KeptPlan::Count };
+    if k.computing_since_micros > now - COUNTING_MICROS {
+        return KeptPlan::Answer;
+    }
+    let age = now - k.computed_at_micros;
+    let stale = age >= KEPT_TTL_MICROS || k.counted_day != today || k.rebuilding != rebuilding || (refresh && age >= REFRESH_COOLDOWN_MICROS);
+    if stale { KeptPlan::Count } else { KeptPlan::Answer }
+}
+
+/// The question a report answers, after defaults and the caller's scope are applied: the same
+/// report for two admins who see the same builds.
+fn report_key(tx: &ReducerContext, q: &StatsQuery, overview: bool) -> Result<String, String> {
+    let (from, to, _, apps) = resolve(tx, q)?;
+    let kind = if overview { "overview" } else if q.summary { "summary" } else { "full" };
+    let apps = if apps.is_empty() { "*".to_string() } else { apps.into_iter().collect::<Vec<_>>().join(",") };
+    Ok(format!("{kind}|{from}|{to}|{}|{apps}", q.include_sandbox))
+}
+
+/// `report` with the time it was counted: `computed_at_micros`, `refresh_after_micros` (a refresh
+/// before it gets this one), `stale_after_micros`, `kept` and `counting` (another admin is counting
+/// it again now).
+fn with_meta(mut report: serde_json::Value, computed_at: i64, kept: bool, counting: bool) -> serde_json::Value {
+    report["computed_at_micros"] = json!(computed_at);
+    report["refresh_after_micros"] = json!(if kept { computed_at + REFRESH_COOLDOWN_MICROS } else { computed_at });
+    report["stale_after_micros"] = json!(computed_at + KEPT_TTL_MICROS);
+    report["kept"] = json!(kept);
+    report["counting"] = json!(counting);
+    report
+}
+
+/// [`report`] answered from [`RevenueReport`] when it was slow before (see [`kept_plan`]).
+fn kept_report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<serde_json::Value, String> {
+    let decided = ctx.tx(|tx| -> Result<(String, i64, Option<serde_json::Value>), String> {
+        let key = report_key(tx, q, overview)?;
+        let now = crate::ctx::tx_now_micros(tx);
+        let kept = tx.db.revenue_report().key().find(&key);
+        if kept_plan(kept.as_ref(), now, today(tx), rebuilding(tx), q.refresh) == KeptPlan::Answer {
+            let k = kept.expect("answered from a kept report");
+            let counting = k.computing_since_micros > now - COUNTING_MICROS;
+            let report = serde_json::from_str(&k.report_json).unwrap_or_default();
+            return Ok((key, now, Some(with_meta(report, k.computed_at_micros, true, counting))));
+        }
+        // A kept report counted again: others get the old one until this count is done.
+        if let Some(k) = kept {
+            tx.db.revenue_report().key().update(RevenueReport { computing_since_micros: now, ..k });
+        }
+        Ok((key, now, None))
+    });
+    let (key, started, answer) = decided?;
+    if let Some(v) = answer {
+        return Ok(v);
+    }
+    let counted = report(ctx, q, overview);
+    let report_json = counted.as_ref().map(|r| r.to_string()).unwrap_or_default();
+    let (computed_at, keep) = ctx.tx(|tx| {
+        let now = crate::ctx::tx_now_micros(tx);
+        let keep = counted.is_ok() && now - started >= KEEP_AFTER_MICROS;
+        let old = tx.db.revenue_report().key().find(&key);
+        match (old, keep) {
+            (Some(row), true) => {
+                tx.db.revenue_report().key().update(RevenueReport {
+                    computed_at_micros: now,
+                    counted_day: today(tx),
+                    rebuilding: rebuilding(tx),
+                    computing_since_micros: 0,
+                    report_json: report_json.clone(),
+                    ..row
+                });
+            }
+            (None, true) => {
+                tx.db.revenue_report().insert(RevenueReport {
+                    key: key.clone(),
+                    computed_at_micros: now,
+                    counted_day: today(tx),
+                    rebuilding: rebuilding(tx),
+                    computing_since_micros: 0,
+                    report_json: report_json.clone(),
+                });
+            }
+            // Fast now (or failed): not kept, answered live.
+            (Some(_), false) => {
+                tx.db.revenue_report().key().delete(&key);
+            }
+            (None, false) => {}
+        }
+        prune_kept(tx, now);
+        (now, keep)
+    });
+    Ok(with_meta(counted?, computed_at, keep, false))
+}
+
+/// Drops expired kept reports and the oldest beyond [`KEPT_MAX`].
+fn prune_kept(tx: &ReducerContext, now: i64) {
+    let mut rows: Vec<(i64, String)> = tx
+        .db
+        .revenue_report()
+        .iter()
+        .filter(|r| r.computing_since_micros <= now - COUNTING_MICROS)
+        .map(|r| (r.computed_at_micros, r.key))
+        .collect();
+    rows.sort();
+    let over = rows.len().saturating_sub(KEPT_MAX);
+    for (i, (at, key)) in rows.into_iter().enumerate() {
+        if i < over || at < now - KEPT_TTL_MICROS {
+            tx.db.revenue_report().key().delete(&key);
+        }
+    }
+}
+
+/// Forgets the kept reports (rates or aggregates changed): the next request counts again.
+pub fn forget_reports(tx: &ReducerContext) {
+    let keys: Vec<String> = tx.db.revenue_report().iter().map(|r| r.key).collect();
+    for k in keys {
+        tx.db.revenue_report().key().delete(&k);
+    }
+}
+
+fn parse_query<T: serde::de::DeserializeOwned + Default>(query_json: &str) -> Result<T, String> {
+    if query_json.trim().is_empty() {
+        Ok(T::default())
+    } else {
+        serde_json::from_str(query_json).map_err(|e| format!("bad query: {e}"))
+    }
+}
+
+/// `admin_revenue_stats`: [`stats`] through the kept reports.
+pub fn kept_stats(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, String> {
+    let q: StatsQuery = parse_query(query_json)?;
+    kept_report(ctx, &q, false)
+}
+
+#[derive(Deserialize, Default)]
+struct OverviewQuery {
+    /// Count it again now (at most once per [`REFRESH_COOLDOWN_MICROS`]).
+    #[serde(default)]
+    refresh: bool,
+}
+
+pub fn overview(ctx: &mut impl Ctx, query_json: &str) -> Result<serde_json::Value, String> {
+    let q: OverviewQuery = parse_query(query_json)?;
+    kept_report(ctx, &StatsQuery { refresh: q.refresh, ..StatsQuery::default() }, true)
+}
+
+/// Totals, the daily series and per-app numbers of the last 30 days (USD, without sandbox) for the
+/// Overview and Apps pages: `from`, `to`, `include_sandbox`, `totals`, `series`, `by_app`, `fx` and
+/// `rebuilding` (shapes of `admin_revenue_stats`), plus the times of [`with_meta`]. Kept like every
+/// slow revenue report; `{"refresh": true}` counts it again, at most once a minute.
+#[spacetimedb::procedure]
+pub fn admin_revenue_overview(ctx: &mut ProcedureContext, query_json: String) -> String {
+    match overview(ctx, &query_json) {
         Ok(v) => v.to_string(),
         Err(e) => json!({ "error": e }).to_string(),
     }
