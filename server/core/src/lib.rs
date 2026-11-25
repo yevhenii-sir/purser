@@ -3,6 +3,7 @@
 pub mod alerts;
 pub mod amazon;
 pub mod apple;
+pub mod audience;
 pub mod catalog;
 pub mod client_api;
 pub mod consumption;

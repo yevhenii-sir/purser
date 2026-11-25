@@ -7,9 +7,11 @@
 
 use crate::config;
 use crate::ctx::Ctx;
-use crate::{game_app, purchase, GameApp};
+use crate::players::player_profile;
+use crate::{game_app, product, purchase, GameApp};
 use purser_core::event::reason;
 use purser_core::fx::FxTable;
+use purser_core::audience::{self, Audience};
 use purser_core::paywall::{self as pw, AttributedPurchase, Attribution, Variant};
 use purser_core::time::{day_of_micros, format_day, parse_day, MICROS_PER_DAY};
 use serde::Deserialize;
@@ -50,6 +52,9 @@ pub struct Placement {
     pub placement_id: String,
     /// JSON `[{variant_id, paywall_id, weight}]`. Without a running test the first one is served.
     pub variants_json: String,
+    /// JSON `[{audience_id, name, paywall_id, rules}]` (`purser_core::audience`): players in one get
+    /// its paywall instead of the variants; the first that matches wins.
+    pub audiences_json: String,
     /// Running or last test; empty when there never was one.
     pub test_id: String,
     pub test_started_at_micros: i64,
@@ -142,7 +147,7 @@ fn find_placement(ctx: &ReducerContext, game_key: &str, placement_id: &str) -> O
 
 /// Answer of `POST /paywall`: the variant for this player and the paywall with the products
 /// configured for this build (catalog products missing in the build are left out).
-pub fn serve(ctx: &ReducerContext, app: &GameApp, placement_id: &str, user_id: &str) -> Result<Value, ClientError> {
+pub fn serve(ctx: &ReducerContext, app: &GameApp, placement_id: &str, user_id: &str, client: &purser_core::player::ClientInfo) -> Result<Value, ClientError> {
     let not_found = || {
         client_error(404, "ERR_PLACEMENT_NOT_FOUND", format!("no placement '{placement_id}' for {}", app.app_id))
     };
@@ -151,7 +156,14 @@ pub fn serve(ctx: &ReducerContext, app: &GameApp, placement_id: &str, user_id: &
     }
     let pl = find_placement(ctx, &app.game_key, placement_id).filter(|p| p.enabled).ok_or_else(not_found)?;
     let variants = pw::parse_variants(&pl.variants_json);
-    let (variant, test_id) = pw::serve(&variants, pl.running_test(), user_id).ok_or_else(not_found)?;
+    let audiences = audience::parse(&pl.audiences_json);
+    let in_audience = (!audiences.is_empty()).then(|| facts(ctx, app, user_id, client, &audiences)).and_then(|f| audience::pick(&audiences, &f).cloned());
+    let audience_variant = in_audience.map(|a| Variant { variant_id: audience::variant_id(&a.audience_id), paywall_id: a.paywall_id, weight: 1 });
+    let (variant, test_id) = match &audience_variant {
+        // An audience's players are outside the placement's test.
+        Some(v) => (v, ""),
+        None => pw::serve(&variants, pl.running_test(), user_id).ok_or_else(not_found)?,
+    };
     let paywall = ctx
         .db
         .paywall()
@@ -179,6 +191,37 @@ pub fn serve(ctx: &ReducerContext, app: &GameApp, placement_id: &str, user_id: &
     }))
 }
 
+/// What the audiences of a placement may ask about the player: the build's platform, the client's
+/// app version, how long the server has known the player in this build, their attributes and what
+/// they own in the game (read only when an audience asks).
+fn facts(ctx: &ReducerContext, app: &GameApp, user_id: &str, client: &purser_core::player::ClientInfo, audiences: &[Audience]) -> audience::Facts {
+    let mut f = audience::Facts { platform: app.platform.clone(), app_version: client.app_version.clone(), ..Default::default() };
+    if user_id.is_empty() {
+        return f;
+    }
+    let now = crate::ctx::tx_now_micros(ctx);
+    if let Some(profile) = ctx.db.player_profile().key().find(format!("{}/{user_id}", app.app_id)) {
+        f.days = Some(((now - profile.first_seen_micros).max(0) / MICROS_PER_DAY) as u32);
+        f.attributes = serde_json::from_str(&profile.attributes_json).unwrap_or_default();
+        if f.app_version.is_empty() {
+            f.app_version = serde_json::from_str::<purser_core::player::ClientInfo>(&profile.client_json).map(|c| c.app_version).unwrap_or_default();
+        }
+    }
+    if audience::needs_ownership(audiences) {
+        let now_ms = now / 1000;
+        for p in crate::ledger_index::owned_by(ctx, user_id) {
+            let same_game = p.app_id == app.app_id || ctx.db.game_app().app_id().find(&p.app_id).is_some_and(|a| a.game_key == app.game_key);
+            if !same_game || (p.access_until_ms() != 0 && p.access_until_ms() <= now_ms) {
+                continue;
+            }
+            f.subscriber |= p.kind == purser_core::model::kind::SUBSCRIPTION;
+            let catalog = ctx.db.product().key().find(crate::product_key(&p.app_id, &p.product_id)).map_or(p.product_id.clone(), |pr| pr.catalog_id().to_string());
+            f.owns.insert(catalog);
+        }
+    }
+    f
+}
+
 /// `POST /paywall/event`: counts a view of a variant. The variant must belong to the placement's
 /// current variants (no test) or to the snapshot of `test_id`. With a player id the player counts
 /// as a viewer once per test (outside tests once a day), and in a test only for the variant the
@@ -197,7 +240,14 @@ pub fn record_event(
     }
     let pl = find_placement(ctx, &app.game_key, placement_id)
         .ok_or_else(|| client_error(404, "ERR_PLACEMENT_NOT_FOUND", format!("no placement '{placement_id}'")))?;
-    let variants = if test_id.is_empty() {
+    let variants = if let Some(a) = audience::of_variant(variant_id).filter(|_| test_id.is_empty()) {
+        // The paywall of an audience (never in a test).
+        audience::parse(&pl.audiences_json)
+            .into_iter()
+            .filter(|x| x.audience_id == a)
+            .map(|x| Variant { variant_id: variant_id.to_string(), paywall_id: x.paywall_id, weight: 1 })
+            .collect()
+    } else if test_id.is_empty() {
         pw::parse_variants(&pl.variants_json)
     } else {
         ctx.db
@@ -420,7 +470,10 @@ pub fn admin_delete_paywall(ctx: &ReducerContext, game_key: String, paywall_id: 
         .placement()
         .game_key()
         .filter(game_key.as_str())
-        .filter(|p| pw::parse_variants(&p.variants_json).iter().any(|v| v.paywall_id == paywall_id))
+        .filter(|p| {
+            pw::parse_variants(&p.variants_json).iter().any(|v| v.paywall_id == paywall_id)
+                || audience::parse(&p.audiences_json).iter().any(|a| a.paywall_id == paywall_id)
+        })
         .map(|p| p.placement_id)
         .collect();
     if !used.is_empty() {
@@ -436,12 +489,15 @@ struct PlacementInput {
     game_key: String,
     placement_id: String,
     variants: Vec<Variant>,
+    #[serde(default)]
+    audiences: Vec<Audience>,
     #[serde(default = "crate::default_true")]
     enabled: bool,
 }
 
 /// Creates or replaces a placement. `json`: `{game_key, placement_id, variants: [{variant_id,
-/// paywall_id, weight}], enabled}`. While a test runs only `enabled` may change.
+/// paywall_id, weight}], audiences: [{audience_id, name, paywall_id, rules}], enabled}`
+/// (`purser_core::audience`). While a test runs the variants may not change.
 #[spacetimedb::reducer]
 pub fn admin_upsert_placement(ctx: &ReducerContext, json: String) -> Result<(), String> {
     let who = crate::access::require_scoped(ctx, purser_core::roles::Cap::Configure)?;
@@ -458,6 +514,13 @@ pub fn admin_upsert_placement(ctx: &ReducerContext, json: String) -> Result<(), 
             return Err(bad("ERR_BAD_PLACEMENT", format!("variant '{}': no paywall '{}'", v.variant_id, v.paywall_id)));
         }
     }
+    audience::validate(&i.audiences).map_err(|e| bad("ERR_BAD_PLACEMENT", e))?;
+    for a in &i.audiences {
+        if ctx.db.paywall().key().find(scoped_key(&i.game_key, &a.paywall_id)).is_none() {
+            return Err(bad("ERR_BAD_PLACEMENT", format!("audience '{}': no paywall '{}'", a.audience_id, a.paywall_id)));
+        }
+    }
+    let audiences_json = json!(i.audiences).to_string();
     let key = scoped_key(&i.game_key, &i.placement_id);
     let now = crate::ctx::tx_now_micros(ctx);
     let variants_json = json!(i.variants).to_string();
@@ -467,6 +530,7 @@ pub fn admin_upsert_placement(ctx: &ReducerContext, json: String) -> Result<(), 
                 return Err(bad("ERR_TEST_RUNNING", "stop the test before changing variants"));
             }
             p.variants_json = variants_json;
+            p.audiences_json = audiences_json;
             p.enabled = i.enabled;
             p.updated_at_micros = now;
             ctx.db.placement().key().update(p);
@@ -477,6 +541,7 @@ pub fn admin_upsert_placement(ctx: &ReducerContext, json: String) -> Result<(), 
                 game_key: i.game_key,
                 placement_id: i.placement_id,
                 variants_json,
+                audiences_json,
                 test_id: String::new(),
                 test_started_at_micros: 0,
                 test_stopped_at_micros: 0,
@@ -706,7 +771,7 @@ pub fn admin_preview_paywall(ctx: &mut ProcedureContext, app_id: String, placeme
     let r: Result<Value, String> = ctx.tx(|tx| {
         crate::access::require_app(tx, purser_core::roles::Cap::Read, &app_id)?;
         let app = config::find_app(tx, &app_id).ok_or_else(|| bad("ERR_BAD_APP", format!("unknown app {app_id}")))?;
-        serve(tx, &app, &placement_id, &user_id).map_err(|e| format!("[{}] {}", e.code, e.message))
+        serve(tx, &app, &placement_id, &user_id, &Default::default()).map_err(|e| format!("[{}] {}", e.code, e.message))
     });
     match r {
         Ok(v) => v.to_string(),

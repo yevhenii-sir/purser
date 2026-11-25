@@ -4,13 +4,14 @@
 
 ### Breaking
 
-- Publish with `--delete-data` (keep the data with `backup.py`): `purchase` gains `price_change` and `price_change_micros`, `owned_purchase` gains `sub_until_ms` and `chain`, `revenue_report_job` gains `subs_next_ms` and `subs_json` (neither is backed up: the restore rebuilds `owned_purchase`, reports are counted again).
+- Publish with `--delete-data` (keep the data with `backup.py`): `purchase` gains `price_change` and `price_change_micros`, `placement` gains `audiences_json`, `owned_purchase` gains `sub_until_ms` and `chain`, `revenue_report_job` gains `subs_next_ms` and `subs_json` (neither is backed up: the restore rebuilds `owned_purchase`, reports are counted again).
 
 ### Added
 
 - Large ledgers: the subscriptions running now are counted a batch per scheduled call, in windows of when their access ends (`subs_count.rs`): the daily snapshot (`subscription_daily`) is a walk of its own (new tables `subscription_snapshot_job`, `subscription_snapshot_tick`), and the full report counts `active_now`, MRR and the renewal states in a phase of its background job. Both read every subscription players own in one call until now (~0.3 s of native code at 100,000 purchases, growing with the subscribers).
 - Google Play subscription add-ons: the other line items of a subscription purchase (products bought and billed with it) are recorded as subscriptions of their own (ledger id `google:{order}+{product}`, token `{token}#{product}`): granted to the purchase's owner, counted in revenue and `/entitlements`, renewed and ended with the purchase, and ended alone when the player removes one. Only the first line item was recorded until now. The subscription is the purchase's first line item.
 - Price changes of subscriptions: a price increase announced by Google Play (`priceChangeDetails`) or the App Store (`priceIncreaseStatus`, `renewalPrice`) is kept on the purchase (`price_change`: `consent_needed`, `accepted`, `scheduled`; `price_change_micros`). The purchase page shows it, the purchase list filters the subscriptions whose player has not accepted an increase (they end with their period unless the player does), and the full report counts them (`price_consent_needed_now`, on the Revenue page). `purchase` gains `price_change` and `price_change_micros`.
+- Audiences of a placement (docs/paywalls.md "Audiences"): groups of players who get their own paywall instead of the variants and the A/B test, by the build's platform, the client's app version, days since the player was first seen, a running subscription, products owned and player attributes (`/attributes`: country, spender segment, ...). The first matching audience wins; its paywall is served and counted as variant `audience.{id}`. Edited in the placement dialog of the Paywalls tab. `placement` gains `audiences_json`.
 - Imported purchases of the last 62 days count in the builds' sales (`build_sales_daily`), so business alerts work right after moving from another backend (`admin_import_purchases`, `import_revenuecat.py`) instead of a week later.
 
 ## 0.11.0 - 2026-11-26

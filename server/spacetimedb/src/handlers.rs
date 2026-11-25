@@ -709,7 +709,7 @@ fn paywall_tx(tx: &TxContext, r: &PaywallRequest) -> Result<Outcome, Outcome> {
     }
     let app = enabled_app(tx, &r.app_id)?;
     players::touch(tx, &app.app_id, &r.user_id, &r.client);
-    paywalls::serve(tx, &app, &r.placement, &r.user_id).map_err(paywall_error).map(|body| Outcome::new(200, body))
+    paywalls::serve(tx, &app, &r.placement, &r.user_id, &r.client.sanitized()).map_err(paywall_error).map(|body| Outcome::new(200, body))
 }
 
 #[cfg(test)]

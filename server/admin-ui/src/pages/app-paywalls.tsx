@@ -35,11 +35,32 @@ interface Variant {
   weight: number
 }
 
+/** `purser_core::audience::Rules`: an empty rule matches everyone. */
+interface AudienceRules {
+  platforms?: string[]
+  min_app_version?: string
+  max_app_version?: string
+  min_days?: number
+  max_days?: number
+  subscriber?: "" | "active" | "none"
+  owns_any?: string[]
+  owns_none?: string[]
+  attributes?: Record<string, string[]>
+}
+
+interface Audience {
+  audience_id: string
+  name: string
+  paywall_id: string
+  rules: AudienceRules
+}
+
 interface PlacementRow {
   key: string
   game_key: string
   placement_id: string
   variants_json: string
+  audiences_json: string
   test_id: string
   test_started_at_micros: number
   test_stopped_at_micros: number
@@ -124,7 +145,9 @@ export function AppPaywallsTab({ data }: TabProps) {
   const d = loaded.data!
   /** The app's catalog ids (a product's own id, the same in every store). */
   const catalog = [...new Set(d.products.map(catalogIdOf))].sort()
-  const usedBy = (paywallId: string) => d.placements.filter((p) => parseList<Variant>(p.variants_json).some((v) => v.paywall_id === paywallId)).map((p) => p.placement_id)
+  const usedBy = (paywallId: string) => d.placements
+    .filter((p) => parseList<Variant>(p.variants_json).some((v) => v.paywall_id === paywallId) || parseList<Audience>(p.audiences_json).some((a) => a.paywall_id === paywallId))
+    .map((p) => p.placement_id)
   const selected = d.placements.find((p) => p.placement_id === resultsFor) || d.placements[0]
 
   const removePaywall = async (p: PaywallRow) => {
@@ -161,6 +184,11 @@ export function AppPaywallsTab({ data }: TabProps) {
                       <span key={v.variant_id} className="min-w-0">
                         <Mono>{v.variant_id}</Mono> → <Mono>{v.paywall_id}</Mono>
                         {running(p) ? <span className="text-muted-foreground"> {pct(sh[i], 0)}</span> : i === 0 ? <span className="text-muted-foreground"> (served)</span> : null}
+                      </span>
+                    ))}
+                    {parseList<Audience>(p.audiences_json).map((a) => (
+                      <span key={`aud-${a.audience_id}`} className="min-w-0 text-muted-foreground" title={describeRules(a.rules)}>
+                        audience <Mono>{a.audience_id}</Mono> → <Mono>{a.paywall_id}</Mono>
                       </span>
                     ))}
                   </div>
@@ -361,13 +389,16 @@ function PlacementForm({ gameKey, row, paywalls, onClose, onSaved }: {
   const sh = shares(variants)
   const set = (i: number, patch: Partial<Variant>) => setVariants((vs) => vs.map((v, j) => (j === i ? { ...v, ...patch } : v)))
   const nextId = () => "abcdefghij".split("").find((c) => !variants.some((v) => v.variant_id === c)) || `v${variants.length + 1}`
+  const [audiences, setAudiences] = useState<Audience[]>(() => (row ? parseList<Audience>(row.audiences_json) : []))
 
   const save = async () => {
     const pid = id.trim()
     if (!ID_RE.test(pid)) return toast.error("Placement id: 1-64 of A-Z a-z 0-9 _ - .")
     if (variants.some((v) => !ID_RE.test(v.variant_id) || !v.paywall_id)) return toast.error("Every variant needs an id and a paywall")
+    if (audiences.some((a) => !AUDIENCE_ID_RE.test(a.audience_id) || !a.paywall_id)) return toast.error("Every audience needs an id (1-48 of A-Z a-z 0-9 _ - .) and a paywall")
     const ok = await tryAct(() => call("admin_upsert_placement", JSON.stringify({
       game_key: gameKey, placement_id: pid, enabled, variants: variants.map((v) => ({ ...v, weight: Math.max(0, Math.round(Number(v.weight) || 0)) })),
+      audiences: audiences.map((a) => ({ ...a, rules: cleanRules(a.rules) })),
     })), "Saved")
     if (ok !== undefined) { onSaved(); onClose() }
   }
@@ -405,9 +436,115 @@ function PlacementForm({ gameKey, row, paywalls, onClose, onSaved }: {
             <PlusIcon /> Add variant
           </Button>
         </div>
+        <AudiencesEditor audiences={audiences} onChange={setAudiences} paywalls={paywalls} />
       </DialogBody>
       <DialogFooter><Button onClick={save}>Save</Button></DialogFooter>
     </>
+  )
+}
+
+const AUDIENCE_ID_RE = /^[A-Za-z0-9_.-]{1,48}$/
+const list = (text: string) => text.split(",").map((s) => s.trim()).filter(Boolean)
+
+/** Rules without empty values (the server matches an empty rule for everyone). */
+function cleanRules(r: AudienceRules): AudienceRules {
+  const out: AudienceRules = {}
+  if (r.platforms?.length) out.platforms = r.platforms
+  if (r.min_app_version?.trim()) out.min_app_version = r.min_app_version.trim()
+  if (r.max_app_version?.trim()) out.max_app_version = r.max_app_version.trim()
+  if (r.min_days !== undefined && !Number.isNaN(r.min_days)) out.min_days = Math.max(0, Math.round(r.min_days))
+  if (r.max_days !== undefined && !Number.isNaN(r.max_days)) out.max_days = Math.max(0, Math.round(r.max_days))
+  if (r.subscriber) out.subscriber = r.subscriber
+  if (r.owns_any?.length) out.owns_any = r.owns_any
+  if (r.owns_none?.length) out.owns_none = r.owns_none
+  const attrs = Object.entries(r.attributes || {}).filter(([k, v]) => k && v.length)
+  if (attrs.length) out.attributes = Object.fromEntries(attrs)
+  return out
+}
+
+/** One line per rule, for a tooltip. */
+function describeRules(r: AudienceRules): string {
+  const parts: string[] = []
+  if (r.platforms?.length) parts.push(`platform ${r.platforms.join(" or ")}`)
+  if (r.min_app_version || r.max_app_version) parts.push(`app version ${r.min_app_version || "any"} to ${r.max_app_version || "any"}`)
+  if (r.min_days !== undefined || r.max_days !== undefined) parts.push(`known ${r.min_days ?? 0} to ${r.max_days ?? "∞"} days`)
+  if (r.subscriber) parts.push(r.subscriber === "active" ? "has a running subscription" : "has no running subscription")
+  if (r.owns_any?.length) parts.push(`owns ${r.owns_any.join(" or ")}`)
+  if (r.owns_none?.length) parts.push(`owns none of ${r.owns_none.join(", ")}`)
+  for (const [k, v] of Object.entries(r.attributes || {})) parts.push(`${k} is ${v.join(" or ")}`)
+  return parts.length ? parts.join("\n") : "every player"
+}
+
+/** `key: value, value` per line. */
+const attributesText = (a: Record<string, string[]> | undefined) => Object.entries(a || {}).map(([k, v]) => `${k}: ${v.join(", ")}`).join("\n")
+const parseAttributes = (text: string): Record<string, string[]> =>
+  Object.fromEntries(text.split("\n").map((l) => l.split(":")).filter((p) => p.length >= 2 && p[0].trim()).map(([k, ...v]) => [k.trim(), list(v.join(":"))]))
+
+function AudiencesEditor({ audiences, onChange, paywalls }: { audiences: Audience[]; onChange: (a: Audience[]) => void; paywalls: string[] }) {
+  const set = (i: number, patch: Partial<Audience>) => onChange(audiences.map((a, j) => (j === i ? { ...a, ...patch } : a)))
+  const setRules = (i: number, patch: Partial<AudienceRules>) => set(i, { rules: { ...audiences[i].rules, ...patch } })
+  const move = (i: number, by: number) => {
+    const next = [...audiences]
+    const [a] = next.splice(i, 1)
+    next.splice(i + by, 0, a)
+    onChange(next)
+  }
+  const num = (v: string) => (v.trim() === "" ? undefined : Number(v))
+  return (
+    <div className="space-y-2">
+      <div>
+        <h3 className="text-sm font-medium">Audiences</h3>
+        <p className="text-xs text-muted-foreground">
+          Players in an audience get its paywall instead of the variants (and stay out of the test); the first audience a player is in
+          wins. Empty rules match every player. Country, spender status and the like come from player attributes the game sets with <Mono>/attributes</Mono>.
+        </p>
+      </div>
+      {audiences.map((a, i) => (
+        <div key={i} className="space-y-3 rounded-md border p-3">
+          <div className="grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-2">
+            <Field label="Id"><Input className="font-mono text-xs" value={a.audience_id} onChange={(e) => set(i, { audience_id: e.target.value })} /></Field>
+            <Field label="Name"><Input value={a.name} onChange={(e) => set(i, { name: e.target.value })} placeholder="Big spenders" /></Field>
+            <Field label="Paywall">
+              <Select value={a.paywall_id} onValueChange={(p) => set(i, { paywall_id: p })}>
+                <SelectTrigger className="w-full min-w-0"><SelectValue placeholder="Paywall" /></SelectTrigger>
+                <SelectContent>{paywalls.map((p) => <SelectItem key={p} value={p}>{p}</SelectItem>)}</SelectContent>
+              </Select>
+            </Field>
+            <div className="flex shrink-0 gap-1 pb-0.5">
+              <Button size="icon-sm" variant="ghost" aria-label="Move up" disabled={i === 0} onClick={() => move(i, -1)}><ArrowUpIcon /></Button>
+              <Button size="icon-sm" variant="ghost" aria-label="Move down" disabled={i === audiences.length - 1} onClick={() => move(i, 1)}><ArrowDownIcon /></Button>
+              <Button size="icon-sm" variant="ghost" aria-label="Remove audience" onClick={() => onChange(audiences.filter((_, j) => j !== i))}><XIcon /></Button>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Field label="Platforms (comma-separated)"><Input value={(a.rules.platforms || []).join(", ")} placeholder="android, ios" onChange={(e) => setRules(i, { platforms: list(e.target.value) })} /></Field>
+            <Field label="App version from"><Input value={a.rules.min_app_version || ""} placeholder="1.2" onChange={(e) => setRules(i, { min_app_version: e.target.value })} /></Field>
+            <Field label="App version up to"><Input value={a.rules.max_app_version || ""} onChange={(e) => setRules(i, { max_app_version: e.target.value })} /></Field>
+            <Field label="Days since first seen, from"><Input type="number" min="0" value={a.rules.min_days ?? ""} onChange={(e) => setRules(i, { min_days: num(e.target.value) })} /></Field>
+            <Field label="Days since first seen, up to"><Input type="number" min="0" value={a.rules.max_days ?? ""} onChange={(e) => setRules(i, { max_days: num(e.target.value) })} /></Field>
+            <Field label="Subscription">
+              <Select value={a.rules.subscriber || "any"} onValueChange={(v) => setRules(i, { subscriber: v === "any" ? "" : (v as "active" | "none") })}>
+                <SelectTrigger className="w-full min-w-0"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="any">Any player</SelectItem>
+                  <SelectItem value="active">Has a running subscription</SelectItem>
+                  <SelectItem value="none">Has no running subscription</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Owns any of (catalog ids)"><Input value={(a.rules.owns_any || []).join(", ")} onChange={(e) => setRules(i, { owns_any: list(e.target.value) })} /></Field>
+            <Field label="Owns none of (catalog ids)"><Input value={(a.rules.owns_none || []).join(", ")} onChange={(e) => setRules(i, { owns_none: list(e.target.value) })} /></Field>
+          </div>
+          <Field label="Player attributes (one per line: key: value, value)">
+            <Textarea className="min-h-14 font-mono text-xs" defaultValue={attributesText(a.rules.attributes)} placeholder="country: DE, AT" onChange={(e) => setRules(i, { attributes: parseAttributes(e.target.value) })} />
+          </Field>
+        </div>
+      ))}
+      <Button size="sm" variant="outline" disabled={audiences.length >= 20}
+        onClick={() => onChange([...audiences, { audience_id: `audience${audiences.length + 1}`, name: "", paywall_id: paywalls[0] || "", rules: {} }])}>
+        <PlusIcon /> Add audience
+      </Button>
+    </div>
   )
 }
 

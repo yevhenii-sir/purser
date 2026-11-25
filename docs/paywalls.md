@@ -10,7 +10,7 @@ between paywalls. This is the Adapty "placements / paywalls / A/B tests" model, 
 | Thing | What it is | Stored in |
 |---|---|---|
 | Paywall | `paywall_id`, name, catalog product ids in display order, remote config (any JSON, up to 16 KB) | `paywall` (`{game_key}/{paywall_id}`) |
-| Placement | `placement_id`, variants `[{variant_id, paywall_id, weight}]`, enabled, the running or last test | `placement` (`{game_key}/{placement_id}`) |
+| Placement | `placement_id`, variants `[{variant_id, paywall_id, weight}]`, audiences `[{audience_id, name, paywall_id, rules}]`, enabled, the running or last test | `placement` (`{game_key}/{placement_id}`) |
 | Test | test id, the variants and weights when it started, start / stop time, winner | `paywall_test` |
 | Views | views and new viewers per day × placement × test × variant (one row, incremented) | `paywall_daily` |
 | Viewers | the players who saw a placement: once per test, outside tests once a day; kept for `retention_days` after the last view, erased with the player | `paywall_viewer` |
@@ -33,6 +33,28 @@ Store id). Each build answers with the products configured for it, in the paywal
   known if you want the player in the test.
 - **Disabled or unknown placement:** `404` with `code: "ERR_PLACEMENT_NOT_FOUND"`. The game shows its
   built-in fallback screen.
+- **A player in an audience** (below): that audience's paywall, `variant_id` `audience.{audience_id}`,
+  `test_id` empty. Audiences come before the variants and the test.
+
+### Audiences
+
+A placement can show other paywalls to groups of players: returning subscribers, players of an old app
+version, a country, the game's big spenders. Audiences are checked in order and the first one the player
+is in wins; a player in none gets the variants (or the test). Every rule left empty matches everyone:
+
+| Rule | The player is in when |
+|---|---|
+| `platforms` | the build asked for is on one of them (`android`, `ios`, `web`, ...) |
+| `min_app_version`, `max_app_version` | the client's `app_version` (sent with the request, else the last one the player's client reported) is within them, compared as dotted numbers (`1.10` > `1.9`) |
+| `min_days`, `max_days` | the server first heard from the player in this build that many whole days ago |
+| `subscriber` | `active`: has a subscription of the app that gives access now; `none`: has none |
+| `owns_any`, `owns_none` | owns at least one / none of these catalog ids (non-consumables and running subscriptions) |
+| `attributes` | each listed player attribute (`/attributes`) has one of the listed values, e.g. `{"country": ["DE", "AT"]}`, `{"segment": ["whale"]}` |
+
+A rule needs what it reads: a request without `user_id`, or a player the server never heard from, is in
+no audience with a version, days or attribute rule. Country and spender status are what the game knows
+best: set them as attributes. Views of an audience's paywall count under its `variant_id`; audiences are
+not part of A/B results.
 
 While a test runs its variants and weights are frozen (stop it to change them) and its paywalls cannot
 be deleted; the paywalls' products and remote config can still be edited, which changes the test.
@@ -131,7 +153,7 @@ Invalid ids are dropped; the first attribution of a purchase wins (a replayed ve
 |---|---|---|
 | `admin_upsert_paywall` | reducer | `{"game_key", "paywall_id", "name", "product_ids": [...], "remote_config": {...}}` (or `remote_config_json` as text) |
 | `admin_delete_paywall` | reducer | `game_key`, `paywall_id` (refused while a placement uses it) |
-| `admin_upsert_placement` | reducer | `{"game_key", "placement_id", "variants": [{"variant_id", "paywall_id", "weight"}], "enabled"}` |
+| `admin_upsert_placement` | reducer | `{"game_key", "placement_id", "variants": [{"variant_id", "paywall_id", "weight"}], "audiences": [{"audience_id", "name", "paywall_id", "rules": {...}}], "enabled"}` |
 | `admin_delete_placement` | reducer | `game_key`, `placement_id` (refused while a test runs; history is kept) |
 | `admin_start_paywall_test` | reducer | `game_key`, `placement_id`, `test_id` (empty: `{placement_id}-{yyyymmdd}`) |
 | `admin_stop_paywall_test` | reducer | `game_key`, `placement_id`, `winner_variant_id` (empty: keep the order) |

@@ -63,6 +63,9 @@ pub fn parse_variants(json_text: &str) -> Vec<Variant> {
 
 /// A placement's variants: 1..=MAX_VARIANTS, unique valid ids, weights up to MAX_WEIGHT.
 pub fn validate_variants(variants: &[Variant]) -> Result<(), String> {
+    if let Some(v) = variants.iter().find(|v| v.variant_id.starts_with(crate::audience::VARIANT_PREFIX)) {
+        return Err(format!("variant '{}': ids starting with '{}' are the audiences'", v.variant_id, crate::audience::VARIANT_PREFIX));
+    }
     if variants.is_empty() {
         return Err("a placement needs at least one variant".into());
     }

@@ -3316,6 +3316,51 @@ fn paywall_results(w: &World, query: Value) -> Result<Value, String> {
 }
 
 #[test]
+fn players_in_an_audience_get_its_paywall_outside_the_test() {
+    let w = World::new();
+    setup_paywalls(&w);
+    let placement = |audiences: Value| {
+        admin_call(&w, |ctx| {
+            crate::paywalls::admin_upsert_placement(
+                ctx,
+                json!({ "game_key": "game", "placement_id": "main_paywall", "variants": [{ "variant_id": "a", "paywall_id": "pw_a" }], "audiences": audiences })
+                    .to_string(),
+            )
+        })
+    };
+    placement(json!([
+        { "audience_id": "owners", "paywall_id": "pw_b", "rules": { "owns_any": ["no_ads"] } },
+        { "audience_id": "whales", "name": "Big spenders", "paywall_id": "pw_b", "rules": { "attributes": { "segment": ["whale"] }, "platforms": ["android"] } },
+    ]))
+    .unwrap();
+    let served = |user: &str| {
+        let o = get_paywall_for(&w, "main_paywall", user);
+        assert_eq!(o.http, 200, "{}", o.body);
+        (o.body["variant_id"].as_str().unwrap().to_string(), o.body["paywall_id"].as_str().unwrap().to_string(), o.body["test_id"].clone())
+    };
+    assert_eq!(served("player-1"), ("a".into(), "pw_a".into(), json!("")), "in no audience: the variants");
+
+    let r: AttributesRequest = serde_json::from_value(json!({ "app_id": APP, "user_id": "player-2", "attributes": { "segment": "whale" } })).unwrap();
+    assert_eq!(set_attributes(&mut w.ctx(), &r).unwrap_or_else(|o| o).http, 200);
+    assert_eq!(served("player-2"), ("audience.whales".into(), "pw_b".into(), json!("")));
+
+    price_products(&w, "USD");
+    w.script("GET https://androidpublisher", 200, &json!({ "orderId": ORDER, "purchaseState": 0, "acknowledgementState": 0 }).to_string());
+    assert_eq!(w.verify("player-3", "no_ads").body["status"], "success");
+    assert_eq!(served("player-3").0, "audience.owners", "owns no_ads");
+    // A view of the audience's paywall is counted under its variant.
+    assert_eq!(paywall_view_by(&w, "player-3", "audience.owners", "").http, 200);
+    assert_eq!(paywall_view_by(&w, "player-3", "audience.nobody", "").http, 400);
+
+    let err = placement(json!([{ "audience_id": "x", "paywall_id": "missing" }])).unwrap_err();
+    assert!(err.contains("no paywall 'missing'"), "{err}");
+    let err = set_placement(&w, json!([{ "variant_id": "audience.x", "paywall_id": "pw_a" }]), true).unwrap_err();
+    assert!(err.contains("audiences'"), "{err}");
+    let err = admin_call(&w, |ctx| crate::paywalls::admin_delete_paywall(ctx, "game".into(), "pw_b".into())).unwrap_err();
+    assert!(err.contains("ERR_PAYWALL_IN_USE"), "an audience's paywall is in use: {err}");
+}
+
+#[test]
 fn paywall_route_serves_the_default_variant_with_the_build_products() {
     let w = World::new();
     setup_paywalls(&w);
