@@ -9,6 +9,7 @@
 
 ### Changed
 
+- CI: the release workflow runs the whole CI on the tagged commit before it builds anything; GitHub actions are pinned to commits (Dependabot keeps them current); the private-hostname check reads its pattern from the secret `PRIVATE_NAMES_RE` (move it from the repository variable: a variable is printed in the logs) and lists only the files that match. Script tests check that `backup.py` skips every scheduled table and renumbers every auto-increment one; the end-to-end check compares restored rows with the backup and writes the log after a restore.
 - SpacetimeDB 2.16.3 (was 2.16.1; publish to a 2.16.3+ server, the Docker image and CI use it). The module tests no longer build the SpacetimeDB host: no Perl, OpenSSL or wasmtime build.
 - Integration events, owner alerts and answers to Apple refund requests are no longer lost when an attempt is cut short (a restart, a trap): the host deletes a one-shot row before the call, so each attempt puts a stand-in row back (due 5 minutes later, counting as one attempt more) and removes it when it ends.
 - `backup.py` reads the large tables through the new owner-only procedure `admin_backup_page`, which walks the column's index: `/sql` uses an index only for equality, so every window scanned the whole table and held the database meanwhile. A database of an older module is still read with `/sql`. Restores skip the new outbox tables.

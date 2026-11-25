@@ -7,13 +7,22 @@ on:
 permissions: {}
 
 jobs:
+  # The whole CI on the tagged commit (tests, end to end, admin page freshness): a tag on a commit
+  # that does not pass publishes nothing.
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+    secrets: inherit
+
   # Runs dependency build scripts, so it gets a read-only token that is not kept in the checkout.
   build:
+    needs: ci
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Tag matches package versions
@@ -36,7 +45,7 @@ jobs:
           cp server/target/wasm32-unknown-unknown/release/purser.wasm dist/
           (cd dist && sha256sum purser.wasm > purser.wasm.sha256)
           (cd server && zip -qr ../dist/seed.example.zip seed.example seed.py stdb.py backup.py publish_check.py migrate.py setup_google.py bulk_setup.py mcp_server.py import_revenuecat.py spacetime.example.json README.md admin-ui/src/lib/registry.json)
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-assets
           path: dist/
@@ -49,7 +58,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-assets
           path: dist

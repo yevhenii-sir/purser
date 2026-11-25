@@ -89,7 +89,8 @@ PROGRESS = "restore.progress.json"
 
 
 def write_private(path, data, indent=None):
-    """JSON to a file only its owner may read (the backup holds every secret)."""
+    """JSON to a file only its owner may read (the backup holds every secret). Windows ignores the
+    mode: there the file gets the folder's permissions (docs/self-hosting.md says so)."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=indent)

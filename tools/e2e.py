@@ -118,6 +118,11 @@ def main():
     # Backup, a --delete-data publish of the same name, restore.
     tables = ["game_app", "product", "purchase", "purchase_log", "admin", "credential", "alert_channel", "purchase_count", "server_key"]
     before = {t: len(sql(f"SELECT * FROM {t}")["rows"]) for t in tables}
+    # Contents, not only counts: rows restored as they were (the log without its renumbered ids).
+    same = ["game_app", "product", "purchase", "server_key"]
+    content = lambda: {t: sorted(json.dumps(r, sort_keys=True) for r in sql(f"SELECT * FROM {t}")["rows"]) for t in same}
+    log_rows = lambda: sorted(json.dumps(r[1:]) for r in sql("SELECT * FROM purchase_log")["rows"])
+    content_before, log_before = content(), log_rows()
     out = tempfile.mkdtemp(prefix="purser-e2e-")
     env = dict(os.environ, PURSER_TOKEN=tok)
     run = lambda *args: subprocess.run([sys.executable, "backup.py", *args], cwd=os.path.join(ROOT, "server"), env=env, capture_output=True, text=True)
@@ -130,6 +135,13 @@ def main():
     check(r.returncode == 0, "backup.py restore" + ("" if r.returncode == 0 else f" {r.stdout[-300:]} {r.stderr[-500:]}"))
     after = {t: len(sql(f"SELECT * FROM {t}")["rows"]) for t in tables}
     check(after == before, f"rows after the restore {after} == {before}")
+    changed = [t for t, rows in content().items() if rows != content_before[t]]
+    if log_rows() != log_before:
+        changed.append("purchase_log")
+    check(not changed, "restored rows are the same as backed up" + (f" (differ: {', '.join(changed)})" if changed else ""))
+    # New rows of auto-increment tables (the log, the audit) get ids that do not collide with restored ones.
+    call("admin_grant_manual", json.dumps({"app_id": app, "user_id": "player-9", "product_id": "no_ads", "transaction_id": "after-restore"}))
+    check(len(sql("SELECT * FROM purchase_log")["rows"]) > before["purchase_log"], "a grant after the restore writes the log (no id collision)")
     code, _, body = req("POST", f"{route}/entitlements", json.dumps({"app_id": app, "user_id": "player-3"}).encode())
     check(code == 200 and json.loads(body)["non_consumables"] == ["no_ads"], "/entitlements after the restore (owned purchases reindexed)")
     print("done")

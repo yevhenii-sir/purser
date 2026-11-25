@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release runs it on the tagged commit first.
+  workflow_call:
 
 permissions:
   contents: read
@@ -22,7 +24,7 @@ jobs:
     name: purser-core tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -34,7 +36,7 @@ jobs:
     name: module tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -48,14 +50,14 @@ jobs:
     name: wasm build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: server
       - run: cargo build -p purser -p purser-game-receiver --target wasm32-unknown-unknown --release --locked
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: purser.wasm
           path: |
@@ -70,14 +72,14 @@ jobs:
       run:
         working-directory: .
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: purser.wasm
           path: wasm
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
       # The version the module is built with (server/spacetimedb/Cargo.toml).
@@ -95,10 +97,10 @@ jobs:
       run:
         working-directory: server/admin-ui
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "24"
           cache: npm
@@ -118,21 +120,23 @@ jobs:
       run:
         working-directory: .
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
       - run: python -m py_compile server/*.py tools/*.py
       - run: python -m unittest discover -s server/tests
+      # The names are a secret (masked in logs; a variable would be printed with the step), and
+      # only the files that match are listed, never the matching lines.
       - name: No personal infrastructure in the repository
         env:
-          PRIVATE_NAMES_RE: ${{ vars.PRIVATE_NAMES_RE }}
+          PRIVATE_NAMES_RE: ${{ secrets.PRIVATE_NAMES_RE }}
         run: |
           if [ -z "$PRIVATE_NAMES_RE" ]; then
-            echo "::notice::Repository variable PRIVATE_NAMES_RE is not set: skipping the check"; exit 0
+            echo "::notice::Repository secret PRIVATE_NAMES_RE is not set: skipping the check"; exit 0
           fi
-          if git grep -n -iE "$PRIVATE_NAMES_RE" -- . ':!*.lock'; then
-            echo "::error::Replace personal infrastructure with placeholders"; exit 1
+          if git grep -l -iE "$PRIVATE_NAMES_RE" -- . ':!*.lock'; then
+            echo "::error::Replace personal infrastructure with placeholders in the files above"; exit 1
           fi

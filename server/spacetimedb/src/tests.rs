@@ -574,6 +574,25 @@ fn a_refund_while_the_grant_is_in_flight_is_revoked_after_it() {
 }
 
 #[test]
+fn a_row_leased_by_a_request_that_died_is_taken_after_the_lease() {
+    let w = World::new();
+    w.fake.borrow_mut().failing_reducer = "billing_grant".into();
+    w.verify("player-1", "gems");
+    w.fake.borrow_mut().failing_reducer.clear();
+    w.advance_clock(61);
+    // A request takes the row and dies before its step (the lease is dropped, never run).
+    let lease = w.ctx().tx(|tx| ledger::lease(tx, LEDGER_ID, None));
+    assert!(lease.leased_id().is_some());
+    drop(lease);
+    w.run_worker();
+    assert_eq!(w.purchase().status, status::VERIFIED, "held while the lease lasts");
+    w.advance_clock(121);
+    w.run_worker();
+    assert_eq!(w.purchase().status, status::COMPLETED, "taken once the lease ran out");
+    assert_eq!(w.purchase().lease_until_micros, 0);
+}
+
+#[test]
 fn voided_purchase_is_revoked_in_the_game() {
     let w = World::new();
     w.verify("player-1", "gems");
