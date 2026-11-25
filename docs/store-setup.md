@@ -29,7 +29,7 @@ Organizations created after May 3, 2024 forbid service account keys by default (
 2. On the account: **Keys → Add key → JSON**. This file is the `google_service_account_json` secret.
 3. Play Console → **Users and permissions → Invite new users** → the service account's email (`…@….iam.gserviceaccount.com`). For the app (or the whole account) grant:
    - **View app information and download bulk reports** — product import;
-   - **View financial data, orders, and cancellation survey responses** — purchase lookups;
+   - **View financial data, orders, and cancellation survey responses** — purchase lookups and the voided purchases the worker reads every 6 hours (refunds a notification missed);
    - **Manage orders and subscriptions** — consume, acknowledge.
 
 New permissions can take up to 24 hours to apply. Until then the setup check reports *Google Play rejected the service account*.

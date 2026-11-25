@@ -48,7 +48,7 @@ use crate::client_guard::{self, ClientRequest};
 /// Max purchases per `/restore` call (each one is several store calls).
 const MAX_RESTORE_ITEMS: usize = 20;
 
-struct Outcome {
+pub(crate) struct Outcome {
     http: u16,
     body: Value,
 }
@@ -1026,24 +1026,31 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     if !accepted {
         return Outcome::status(401, "error", "unauthorized");
     }
-    if is_test || n.transaction_id.is_empty() {
+    apply_apple_notification(ctx, &app, &n, &mut auth, "")
+}
+
+/// Applies an App Store notification Apple signed to the ledger: what `/notify/apple` accepted, or
+/// one the refund sweep read from Apple's notification history (`via`: said in the purchase history).
+pub(crate) fn apply_apple_notification(ctx: &mut impl Ctx, app: &GameApp, n: &apple::AppleNotification, auth: &mut Auth, via: &str) -> Outcome {
+    let app = app.clone();
+    if n.notification_type == "TEST" || n.transaction_id.is_empty() {
         log::info!("App Store notification {} ({}) for {}", n.notification_type, n.notification_uuid, app.app_id);
         return Outcome::status(200, "ok", "no transaction");
     }
 
-    let st = match stores::apple_fetch(ctx, &app, &n.transaction_id, &n.environment, &mut auth) {
+    let st = match stores::apple_fetch(ctx, &app, &n.transaction_id, &n.environment, auth) {
         Ok(st) => st,
         Err(e) => return notification_fetch_error(e),
     };
     if st.app_id != app.app_id {
         return Outcome::status(200, "ignored", "transaction belongs to another app");
     }
-    let source = format!("apple {} {}", n.notification_type, n.subtype);
+    let source = format!("apple {} {}{via}", n.notification_type, n.subtype);
     // A refund Apple took back: the revoked row of that transaction (not the subscription's latest
     // one) is granted again and its money counts again, unless Apple says it is revoked now (a
     // late redelivery after a new refund).
     if n.notification_type == "REFUND_REVERSED" {
-        let reversed = match stores::apple_fetch_transaction(ctx, &app, &n.transaction_id, &n.environment, &mut auth) {
+        let reversed = match stores::apple_fetch_transaction(ctx, &app, &n.transaction_id, &n.environment, auth) {
             Ok(t) => t,
             Err(e) => return notification_fetch_error(e),
         };
@@ -1082,12 +1089,12 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
 /// kept for the setup check: it is pasted into the Developer Console.
 /// The root an App Store signing chain must end in (a test chain of our own in tests).
 #[cfg(not(test))]
-fn apple_root() -> &'static [u8] {
+pub(crate) fn apple_root() -> &'static [u8] {
     apple::ROOT_CA_G3
 }
 
 #[cfg(test)]
-fn apple_root() -> &'static [u8] {
+pub(crate) fn apple_root() -> &'static [u8] {
     apple::testing::root()
 }
 

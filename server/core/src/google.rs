@@ -67,6 +67,60 @@ pub fn voided_purchases_url(package: &str) -> Result<String, String> {
     Ok(format!("{API}/{}/purchases/voidedpurchases?maxResults=1", sanitize_segment(package)?))
 }
 
+/// One page of the purchases voided in `[start_ms, end_ms]`: refunds, chargebacks and revocations of
+/// one-time products and subscriptions (`type=1`), up to 1000, after the page of `page_token`. Only
+/// whole refunds: a refund of some units of a multi-quantity purchase is left out.
+pub fn voided_purchases_page_url(package: &str, start_ms: i64, end_ms: i64, page_token: &str) -> Result<String, String> {
+    let mut url = format!(
+        "{API}/{}/purchases/voidedpurchases?type=1&maxResults=1000&startTime={start_ms}&endTime={end_ms}",
+        sanitize_segment(package)?
+    );
+    if !page_token.is_empty() {
+        url.push_str("&token=");
+        url.push_str(&crate::encoding::percent_encode(page_token));
+    }
+    Ok(url)
+}
+
+/// A purchase Google voided ([`parse_voided_purchases`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Voided {
+    pub purchase_token: String,
+    /// The order of the purchase or of the subscription period (`GPA.….…..3`); may be empty.
+    pub order_id: String,
+    pub voided_time_ms: i64,
+    /// 0 user, 1 developer, 2 Google.
+    pub source: i64,
+    /// 0 other, 1 remorse, 2 not received, 3 defective, 4 accidental purchase, 5 fraud, 6 friendly
+    /// fraud, 7 chargeback, 8 unacknowledged purchase.
+    pub reason: i64,
+}
+
+/// `voidedpurchases` answer: the voided purchases and the token of the next page (`None`: the last).
+pub fn parse_voided_purchases(body: &str) -> Result<(Vec<Voided>, Option<String>), String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("voided purchases: bad json: {e}"))?;
+    let num = |x: &Value| x.as_i64().or_else(|| x.as_str().and_then(|s| s.parse().ok())).unwrap_or(0);
+    let list = v["voidedPurchases"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|p| {
+                    let token = p["purchaseToken"].as_str().filter(|t| !t.is_empty())?;
+                    Some(Voided {
+                        purchase_token: token.to_string(),
+                        order_id: p["orderId"].as_str().unwrap_or("").to_string(),
+                        voided_time_ms: num(&p["voidedTimeMillis"]),
+                        source: num(&p["voidedSource"]),
+                        reason: num(&p["voidedReason"]),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let next = v["tokenPagination"]["nextPageToken"].as_str().filter(|t| !t.is_empty()).map(str::to_string);
+    Ok((list, next))
+}
+
 /// Stable id for purchases without an orderId (some test purchases).
 fn token_tx_id(token: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -324,6 +378,24 @@ pub fn is_already_done_error(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voided_purchases_are_paged_and_parsed() {
+        let url = voided_purchases_page_url("com.example.mygame", 10, 20, "a b").unwrap();
+        assert_eq!(
+            url,
+            "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/com.example.mygame/purchases/voidedpurchases?type=1&maxResults=1000&startTime=10&endTime=20&token=a%20b"
+        );
+        assert!(voided_purchases_page_url("../x", 0, 1, "").is_err());
+        let body = r#"{"voidedPurchases":[
+            {"purchaseToken":"tok-1","orderId":"GPA.1..2","voidedTimeMillis":"1700000000000","voidedSource":1,"voidedReason":7},
+            {"orderId":"no-token"}],
+            "tokenPagination":{"nextPageToken":"next"}}"#;
+        let (list, next) = parse_voided_purchases(body).unwrap();
+        assert_eq!(list, vec![Voided { purchase_token: "tok-1".into(), order_id: "GPA.1..2".into(), voided_time_ms: 1_700_000_000_000, source: 1, reason: 7 }]);
+        assert_eq!(next.as_deref(), Some("next"));
+        assert_eq!(parse_voided_purchases("{}").unwrap(), (vec![], None));
+    }
 
     #[test]
     fn segments_cannot_walk_the_path_and_a_missing_state_grants_nothing() {

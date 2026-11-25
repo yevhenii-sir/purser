@@ -8877,3 +8877,114 @@ fn idc_builds_need_the_game_database_identity() {
     assert!(upsert("my-game").unwrap_err().contains("identity"));
     upsert(GAME_DB).unwrap();
 }
+
+
+// --- Refunds no store notification reported (refund_sweep) ---
+
+fn sweep_row(w: &World, app_id: &str) -> Option<crate::refund_sweep::RefundSweep> {
+    use crate::refund_sweep::refund_sweep;
+    w.read(|tx| tx.db.refund_sweep().app_id().find(app_id.to_string()))
+}
+
+#[test]
+fn the_worker_revokes_a_google_refund_whose_notification_never_came() {
+    let w = World::new();
+    keep_google_token_valid(&w, 30);
+    w.verify("player-1", "no_ads");
+    let voided = json!({ "voidedPurchases": [
+        { "purchaseToken": TOKEN, "orderId": ORDER, "voidedTimeMillis": (NOW_MICROS / 1000).to_string(), "voidedSource": 0, "voidedReason": 1 },
+        { "purchaseToken": "someone-elses-token", "orderId": "GPA.0000-0000-0000-00000" },
+    ]});
+    w.script("purchases/voidedpurchases?type=1", 200, &voided.to_string());
+    w.run_worker();
+
+    let p = w.purchase();
+    assert_eq!(p.status, status::REVOKED);
+    assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_revoke player-1 refund"));
+    let row = sweep_row(&w, APP).expect("swept");
+    assert_eq!((row.found_total, row.last_found, row.last_error.as_str()), (1, 1, ""));
+    assert_eq!(row.covered_until_ms, NOW_MICROS / 1000);
+    let first = w.fake.borrow().calls.iter().find(|c| c.contains("voidedpurchases?type=1")).cloned().unwrap();
+    assert!(first.contains(&format!("startTime={}", NOW_MICROS / 1000 - 30 * 86_400_000)), "{first}");
+
+    // Not again for hours; then from where it stopped (with an overlap), finding nothing new.
+    w.advance_clock(3600);
+    w.run_worker();
+    assert_eq!(w.calls("voidedpurchases?type=1"), 1);
+    w.advance_clock(6 * 3600);
+    w.run_worker();
+    assert_eq!(w.calls("voidedpurchases?type=1"), 2);
+    let second = w.fake.borrow().calls.iter().filter(|c| c.contains("voidedpurchases?type=1")).nth(1).cloned().unwrap();
+    assert!(second.contains(&format!("startTime={}", NOW_MICROS / 1000 - 2 * 86_400_000)), "{second}");
+    let row = sweep_row(&w, APP).unwrap();
+    assert_eq!((row.found_total, row.last_found), (1, 0));
+    assert_eq!(w.calls("/call/billing_revoke"), 1, "revoked once");
+    w.as_admin(false);
+    let doctor = w.doctor(false).unwrap();
+    assert_eq!(doctor["refund_sweep"].0, "warn", "a missed notification: {:?}", doctor["refund_sweep"]);
+}
+
+#[test]
+fn a_refund_sweep_google_refuses_says_which_permission_is_missing() {
+    let w = World::new();
+    keep_google_token_valid(&w, 30);
+    w.script("purchases/voidedpurchases?type=1", 403, r#"{"error":{"code":403}}"#);
+    w.run_worker();
+    let row = sweep_row(&w, APP).unwrap();
+    assert!(row.last_error.contains("financial data"), "{}", row.last_error);
+    assert_eq!(row.covered_until_ms, 0, "nothing was read");
+    w.as_admin(false);
+    let doctor = w.doctor(false).unwrap();
+    assert_eq!(doctor["refund_sweep"].0, "warn");
+    assert!(doctor["refund_sweep"].1.contains("financial data"));
+
+    // Fixed: read again now from the admin page, without waiting for the worker.
+    w.fake.borrow_mut().overrides.retain(|(needle, ..)| !needle.contains("voidedpurchases"));
+    w.script("purchases/voidedpurchases?type=1", 200, r#"{"voidedPurchases":[]}"#);
+    let r: Value = serde_json::from_str(&crate::refund_sweep::admin_sweep_refunds(&mut w.ctx(), APP.into())).unwrap();
+    assert_eq!((r["found"].as_u64(), r["error"].is_null()), (Some(0), true), "{r}");
+    assert_eq!(sweep_row(&w, APP).unwrap().last_error, "");
+    w.write(|tx| {
+        tx.db.admin().identity().delete(Identity::ZERO);
+    });
+    let r: Value = serde_json::from_str(&crate::refund_sweep::admin_sweep_refunds(&mut w.ctx(), APP.into())).unwrap();
+    assert!(r["error"].as_str().unwrap().contains("ERR_ADMIN_UNAUTHORIZED"), "{r}");
+}
+
+#[test]
+fn the_worker_applies_an_app_store_refund_from_the_notification_history() {
+    let w = refund_world(None, "off");
+    // Apple reports the transaction refunded now.
+    let revoked = json!({
+        "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_APP,
+        "productId": "gems", "type": "Consumable", "environment": "Sandbox", "revocationDate": NOW_MICROS / 1000,
+    });
+    w.fake.borrow_mut().overrides.retain(|(needle, ..)| !needle.contains("/inApps/v1/transactions/2000000123"));
+    w.script(
+        "storekit-sandbox.itunes.apple.com/inApps/v1/transactions/2000000123",
+        200,
+        &json!({ "signedTransactionInfo": apple_jws(revoked) }).to_string(),
+    );
+    let sign = |v: Value| purser_core::apple::testing::sign(&v.to_string());
+    let notification = sign(json!({
+        "notificationType": "REFUND", "notificationUUID": "n-refund",
+        "data": { "bundleId": IOS_APP, "environment": "Sandbox",
+                  "signedTransactionInfo": sign(json!({ "transactionId": "2000000123", "bundleId": IOS_APP })) },
+    }));
+    // Another app's notification in the same history is left alone.
+    let other = sign(json!({ "notificationType": "REFUND", "notificationUUID": "n-other", "data": { "bundleId": "com.other.app", "environment": "Sandbox" } }));
+    w.script("api.storekit.itunes.apple.com/inApps/v1/notifications/history", 200, r#"{"notificationHistory":[],"hasMore":false}"#);
+    w.script(
+        "api.storekit-sandbox.itunes.apple.com/inApps/v1/notifications/history",
+        200,
+        &json!({ "notificationHistory": [{ "signedPayload": notification }, { "signedPayload": other }], "hasMore": false }).to_string(),
+    );
+    w.run_worker();
+
+    let p = find(&w, "apple:2000000123").unwrap();
+    assert_eq!(p.status, status::REVOKED);
+    let row = sweep_row(&w, IOS_APP).unwrap();
+    assert_eq!((row.found_total, row.last_error.as_str()), (1, ""));
+    let events = purchase_events(&w, "apple:2000000123");
+    assert!(events.iter().any(|(_, d)| d.contains("refund sweep")), "{events:?}");
+}

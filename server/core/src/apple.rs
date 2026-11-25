@@ -51,6 +51,42 @@ pub fn consumption_url(base: &str, transaction_id: &str) -> Result<String, Strin
 }
 
 /// `POST`: asks Apple to send a TEST notification to the app's notification URL.
+/// `POST /inApps/v1/notifications/history`, after the page of `pagination_token`.
+pub fn notification_history_url(base: &str, pagination_token: &str) -> String {
+    if pagination_token.is_empty() {
+        format!("{base}/inApps/v1/notifications/history")
+    } else {
+        format!("{base}/inApps/v1/notifications/history?paginationToken={}", crate::encoding::percent_encode(pagination_token))
+    }
+}
+
+/// The notifications of one type Apple sent (or tried to send) in `[start_ms, end_ms]` (at most 180
+/// days back).
+pub fn notification_history_body(start_ms: i64, end_ms: i64, notification_type: &str) -> String {
+    serde_json::json!({ "startDate": start_ms, "endDate": end_ms, "notificationType": notification_type }).to_string()
+}
+
+/// A history page: the notifications as their `{"signedPayload": …}` bodies (what `/notify/apple`
+/// gets) and the token of the next page (`None`: the last).
+pub fn parse_notification_history(body: &str) -> Result<(Vec<String>, Option<String>), String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| format!("notification history: bad json: {e}"))?;
+    let bodies = v["notificationHistory"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|n| n["signedPayload"].as_str())
+                .map(|p| serde_json::json!({ "signedPayload": p }).to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    let next = if v["hasMore"].as_bool() == Some(true) {
+        v["paginationToken"].as_str().filter(|t| !t.is_empty()).map(str::to_string)
+    } else {
+        None
+    };
+    Ok((bodies, next))
+}
+
 pub fn test_notification_url(base: &str) -> String {
     format!("{base}/inApps/v1/notifications/test")
 }
@@ -443,6 +479,23 @@ mod tests {
     use super::*;
     use crate::jwt::b64url;
     use crate::model::{kind, store_action};
+
+    #[test]
+    fn notification_history_pages() {
+        assert_eq!(notification_history_url(PRODUCTION_API, ""), "https://api.storekit.itunes.apple.com/inApps/v1/notifications/history");
+        assert_eq!(
+            notification_history_url(SANDBOX_API, "t/1"),
+            "https://api.storekit-sandbox.itunes.apple.com/inApps/v1/notifications/history?paginationToken=t%2F1"
+        );
+        let body: Value = serde_json::from_str(&notification_history_body(1, 2, "REFUND")).unwrap();
+        assert_eq!(body, serde_json::json!({ "startDate": 1, "endDate": 2, "notificationType": "REFUND" }));
+        let page = r#"{"notificationHistory":[{"signedPayload":"a.b.c","sendAttempts":[]}],"hasMore":true,"paginationToken":"p2"}"#;
+        let (bodies, next) = parse_notification_history(page).unwrap();
+        assert_eq!(bodies, vec![r#"{"signedPayload":"a.b.c"}"#.to_string()]);
+        assert_eq!(next.as_deref(), Some("p2"));
+        let last = r#"{"notificationHistory":[],"hasMore":false,"paginationToken":"p3"}"#;
+        assert_eq!(parse_notification_history(last).unwrap(), (vec![], None));
+    }
 
     #[test]
     fn the_apple_root_certificate_signs_itself() {

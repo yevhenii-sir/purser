@@ -1133,6 +1133,9 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
         crate::poll::due(tx)
     });
     crate::poll::run_due(ctx, due, budget);
+    // Refunds no store notification reported, every few hours per build.
+    let sweeps = ctx.tx(crate::refund_sweep::due);
+    crate::refund_sweep::run_due(ctx, sweeps, budget);
     crate::revenue::catch_up(ctx, &upkeep);
     // A rebuild of the derived tables goes on while this run has time.
     let mut steps = 0;

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Refunds a store notification missed are found by the stores themselves: every 6 hours per build the worker reads Google Play's Voided Purchases API (the last 30 days, then from where it stopped) and the App Store notification history (`REFUND`), and revokes what the ledger still has as paid. The setup check shows the last reading and how many refunds the notifications had missed (a sign the notification setup is broken); `admin_sweep_refunds(app_id)` reads them now. New table `refund_sweep`: publish in place.
+
 ## 0.10.0 - 2026-11-25
 
 ### Breaking

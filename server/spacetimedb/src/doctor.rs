@@ -47,6 +47,35 @@ impl Options {
     }
 }
 
+/// How the worker's reading of the store's refunds (`refund_sweep`) went for the build.
+fn refund_sweep_verdict(ctx: &mut impl Ctx, app: &GameApp) -> Verdict {
+    use crate::refund_sweep::refund_sweep;
+    let (row, now) = ctx.tx(|tx| (tx.db.refund_sweep().app_id().find(&app.app_id), crate::ctx::tx_now_micros(tx)));
+    let every_hours = crate::refund_sweep::EVERY_MICROS / 3_600_000_000;
+    match row {
+        None => v(Level::Info, format!("not read yet: the worker reads the store's refunds every {every_hours} hours"), ""),
+        Some(r) if !r.last_error.is_empty() => v(
+            Level::Warn,
+            format!("the last reading failed: {}", r.last_error),
+            "Refunds a store notification missed stay granted until it works: fix the cause, then the worker reads them again within hours (admin_sweep_refunds(app_id) reads them now)",
+        ),
+        Some(r) => {
+            let hours = (now - r.last_run_micros).max(0) / 3_600_000_000;
+            let found = if r.found_total == 0 {
+                "none the notifications missed".to_string()
+            } else {
+                format!("{} refund(s) the notifications missed were applied", r.found_total)
+            };
+            let verdict = format!("read {hours} h ago: {found}");
+            if r.found_total > 0 {
+                v(Level::Warn, verdict, "A store notification did not arrive: check the notification URL in the store console (Store notifications above)")
+            } else {
+                v(Level::Ok, verdict, "")
+            }
+        }
+    }
+}
+
 fn v(level: Level, detail: impl Into<String>, fix: impl Into<String>) -> Verdict {
     (level, detail.into(), fix.into())
 }
@@ -335,6 +364,9 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
                 )
             },
         );
+    }
+    if matches!(store.id, store::GOOGLE | store::APPLE) {
+        r.add("refund_sweep", "Missed refunds", refund_sweep_verdict(ctx, app));
     }
 
     // --- Delivery --------------------------------------------------------------------------
