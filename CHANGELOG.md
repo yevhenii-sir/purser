@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-11-25
+
 ### Breaking
 
 - Publish with `--delete-data` and keep the data with `backup.py` around it (docs/self-hosting.md, Upgrading): `purchase` gains `lease_until_micros`, `step_seq`, `step_at_micros` and `blocked`, `pending_purchase` gains `blocked`, `store_notify_health` gains `other_topic`, `revenue_daily` / `revenue_country_daily` gain `trial_expirations`, `subscription_daily` gains `trials`, `paywall_daily` gains `viewers`. Run `admin_rebuild_revenue` after the restore: trial conversions and expired trials are counted by the new rules.

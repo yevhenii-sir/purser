@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-25
+
 Checked in Unity 2022.3, 6.0, 6.3 and 6.6: the package compiles without warnings and the EditMode tests pass. The core
 also compiles and passes its tests without Unity IAP and with Unity IAP 4.13.
 
