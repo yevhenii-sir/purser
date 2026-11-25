@@ -144,7 +144,7 @@ Measured on a local SpacetimeDB 2.16.1 with the data on disk (Windows, NVMe SSD,
 | a store that does not answer | 8 | the request answers after 3 s, the purchase is retried | |
 | a queue of 3,700 due purchases (calls that succeed at once) | | emptied ~12 s after the drainers started | |
 
-In memory (`spacetime start --in-memory`, no disk) the same machine answered ~7,500 reads and ~2,500 purchases a second at 16 concurrent requests: on your server, the disk sets the pace of everything that writes, and every request writes (rate limits, the ledger). A drainer starts at once for work a request leaves; a retry that becomes due later waits for the minute worker to start one.
+In memory (`spacetime start --in-memory`, no disk) the same machine answered ~7,500 reads and ~2,500 purchases a second at 16 concurrent requests (with SpacetimeDB 2.16.3 and the 0.11 module: ~5,800 reads at 16 and at 64, where the per-build rate limit starts answering 429, and ~2,000 purchases at 16; purchases whose game answers in 300 ms: ~110 a second at 64): on your server, the disk sets the pace of everything that writes, and every request writes (rate limits, the ledger). A drainer starts at once for work a request leaves; a retry that becomes due later waits for the minute worker to start one.
 
 The limit that matters is the store's latency. SpacetimeDB runs HTTP routes and procedures on a pool of module instances, one per CPU thread by default, and a route that waits for a store keeps its instance for the whole wait: purchases per second ≈ pool size ÷ the store's answer time, and while every instance waits, the other routes (`/entitlements` at a game's start) wait in line behind them. Nothing is lost meanwhile: requests queue, and a purchase the client did not get an answer for stays unfinished in the store and is sent again.
 
@@ -156,7 +156,7 @@ The limit that matters is the store's latency. SpacetimeDB runs HTTP routes and 
   ```
 
 - On maincloud the pool is not configurable.
-- The pool helps with waiting, not with computing: a database computes one call at a time. A server-wide revenue report over a long range keeps everything else waiting while it is counted (2,000 builds, 90 days: ~13 s); slow reports are kept for an hour for that reason (see [Analytics](analytics.md)).
+- The pool helps with waiting, not with computing: a database computes one call at a time. A server-wide revenue report over a long range counted in one call would keep everything else waiting (2,000 builds, 90 days: ~13 s); the full report is counted in the background a batch per call instead, and kept for an hour; `analytics` = `light` or `off` does not count it at all (see [Analytics](analytics.md#analytics-modes)). The purchase worker never reads a purchase's history: what it needs is kept on the row.
 - A request spends at most 3 s on outbound calls (a store that hangs cannot hold an instance longer), and the queue drainers hold at most `worker_lanes` instances (server setting, default 2, up to 8). With a store answering in 300 ms, 2 drainers finish ~6 queued purchases a second, 8 about 25: raise it when `/healthz` says `backlog` although the calls succeed.
 
 ## Backups and monitoring

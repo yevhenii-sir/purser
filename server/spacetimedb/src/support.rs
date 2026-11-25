@@ -62,20 +62,22 @@ pub fn on_store_revoke(tx: &TxContext, p: &Purchase, details: &str) -> Option<Op
 /// Errors are clipped to this many characters in the purchase history.
 const ERROR_DETAIL_CHARS: usize = 900;
 
-/// Logs a failed step of a purchase (`ledger::fail`). The same error right after the last one (a
-/// retry that keeps failing) updates that row instead of adding one, so the history of a purchase
-/// that fails for days stays short: `<error> (repeated 12 times, last 2026-11-10 12:00 UTC)`.
-pub fn log_error(tx: &TxContext, purchase_id: &str, error: &str) {
+/// Logs a failed step of a purchase (`ledger::fail`, before it saves the row). The same error as the
+/// last one of the current status (a retry that keeps failing) updates that history row instead of
+/// adding one, so the history of a purchase that fails for days stays short: `<error> (repeated 12
+/// times, last 2026-11-10 12:00 UTC)`. The row is found by its id (`error_log_id`), never by reading
+/// the purchase's history.
+pub fn log_error(tx: &TxContext, p: &mut Purchase, error: &str) {
     let base: String = error.chars().take(ERROR_DETAIL_CHARS).collect();
-    let last = tx.db.purchase_log().purchase_id().filter(purchase_id).max_by_key(|l| l.id);
-    if let Some(mut row) = last.filter(|l| l.event == "error") {
+    let last = (p.error_log_id > 0).then(|| tx.db.purchase_log().id().find(p.error_log_id)).flatten();
+    if let Some(mut row) = last.filter(|l| l.event == "error" && l.purchase_id == p.id) {
         if let Some(times) = error_repeats(&row.details, &base) {
             row.details = format!("{base} (repeated {} times, last {})", times + 1, format_ms_utc(tx_now_micros(tx) / 1000));
             tx.db.purchase_log().id().update(row);
             return;
         }
     }
-    ledger::log_event(tx, purchase_id, "error", &base);
+    p.error_log_id = ledger::log_event(tx, &p.id, "error", &base);
 }
 
 /// How many times the logged error `details` says `error` happened; `None` for another error.

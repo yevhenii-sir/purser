@@ -104,9 +104,14 @@ pub fn save_purchase(tx: &ReducerContext, mut p: Purchase) -> Purchase {
             bump(tx, &old.app_id, &old.status, false);
             bump(tx, &p.app_id, &p.status, true);
         }
-        // A blocked step of the old status no longer says anything about the new one.
+        // A blocked step and the errors of the old status say nothing about the new one; a
+        // reinstatement lasts until the row leaves `verified`.
         if old.status != p.status {
             p.blocked = false;
+            p.error_log_id = 0;
+            if p.status != status::VERIFIED {
+                p.reinstated = false;
+            }
         }
         // A new step for the game: another status, owner or access end (not a retry, a lease).
         if old.status != p.status || old.user_id != p.user_id || old.access_until_ms() != p.access_until_ms() {
@@ -118,14 +123,17 @@ pub fn save_purchase(tx: &ReducerContext, mut p: Purchase) -> Purchase {
     tx.db.purchase().id().update(p)
 }
 
-pub fn log_event(ctx: &ReducerContext, purchase_id: &str, event: &str, details: &str) {
-    ctx.db.purchase_log().insert(PurchaseLog {
-        id: 0,
-        purchase_id: purchase_id.to_string(),
-        event: event.to_string(),
-        details: details.chars().take(1000).collect(),
-        at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
-    });
+pub fn log_event(ctx: &ReducerContext, purchase_id: &str, event: &str, details: &str) -> u64 {
+    ctx.db
+        .purchase_log()
+        .insert(PurchaseLog {
+            id: 0,
+            purchase_id: purchase_id.to_string(),
+            event: event.to_string(),
+            details: details.chars().take(1000).collect(),
+            at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+        })
+        .id
 }
 
 fn is_terminal(s: &str) -> bool {
@@ -212,7 +220,8 @@ fn record(
     leased: bool,
 ) -> Result<(String, Option<Purchase>), String> {
     let recorded = record_row(tx, app, product, st, claim, leased)?;
-    if product.kind == kind::SUBSCRIPTION {
+    // Only a row that changed can replace others: a repeated look-up reads no chain.
+    if product.kind == kind::SUBSCRIPTION && recorded.1.is_some() {
         replace_older(tx, st, &recorded.0);
     }
     if st.refunded_quantity > 0 {
@@ -564,18 +573,8 @@ pub fn reinstate(tx: &TxContext, mut p: Purchase, details: &str) -> Option<Strin
     // The refund is undone: a later one says again how much it returns.
     p.refund_share_milli = 0;
     let now = tx_now_micros(tx);
-    if p.kind != kind::CONSUMABLE {
-        let before = tx
-            .db
-            .purchase_log()
-            .purchase_id()
-            .filter(p.id.as_str())
-            .filter(|l| l.event == ACCESS_WAS_UNTIL)
-            .max_by_key(|l| (l.at_micros, l.id))
-            .and_then(|l| l.details.parse().ok());
-        if let Some(until) = before {
-            p.expires_at_ms = until;
-        }
+    if p.kind != kind::CONSUMABLE && p.access_was_until_ms > 0 {
+        p.expires_at_ms = p.access_was_until_ms;
     }
     let ended = p.kind == kind::SUBSCRIPTION && p.access_until_ms() > 0 && p.access_until_ms() <= now / 1000;
     if ended {
@@ -589,6 +588,7 @@ pub fn reinstate(tx: &TxContext, mut p: Purchase, details: &str) -> Option<Strin
         return None;
     }
     p.status = status::VERIFIED.to_string();
+    p.reinstated = true;
     p.attempts = 0;
     p.last_error.clear();
     p.next_attempt_at_micros = now;
@@ -599,17 +599,9 @@ pub fn reinstate(tx: &TxContext, mut p: Purchase, details: &str) -> Option<Strin
     Some(id)
 }
 
-/// The last status change of a row was [`reinstate`]: its next grant says so.
-fn is_reinstated(tx: &TxContext, p: &Purchase) -> bool {
-    p.status == status::VERIFIED
-        && tx
-            .db
-            .purchase_log()
-            .purchase_id()
-            .filter(p.id.as_str())
-            .filter(|l| l.event == "reinstated" || l.event == status::VERIFIED || l.event == "reverified" || l.event == status::REVOKED)
-            .max_by_key(|l| (l.at_micros, l.id))
-            .is_some_and(|l| l.event == "reinstated")
+/// The row was [`reinstate`]d and its grant is not delivered yet: the grant says so.
+fn is_reinstated(p: &Purchase) -> bool {
+    p.status == status::VERIFIED && p.reinstated
 }
 
 /// Moves an owned purchase to `new_user_id` (an admin's transfer): the owner gets `revoke`
@@ -661,6 +653,9 @@ fn set_inactive(tx: &TxContext, mut p: Purchase, new_status: &str, expires_at_ms
     let access_was_until = p.expires_at_ms;
     if p.kind != kind::CONSUMABLE {
         p.expires_at_ms = expires_at_ms;
+        if access_was_until != expires_at_ms {
+            p.access_was_until_ms = access_was_until;
+        }
     }
     p.attempts = 0;
     p.next_attempt_at_micros = now;
@@ -764,7 +759,7 @@ fn prepare(tx: &TxContext, app: GameApp, row: Purchase) -> Lease {
         stores::Auth::default()
     };
     let catalog_id = if delivers { crate::catalog_id_of(tx, &row.app_id, &row.product_id) } else { String::new() };
-    let reinstated = row.was_granted && is_reinstated(tx, &row);
+    let reinstated = row.was_granted && is_reinstated(&row);
     Lease::Step(Box::new(Step { app, row, delivery, revoked_by_admin, store_auth, catalog_id, reinstated }))
 }
 
@@ -932,10 +927,10 @@ fn failed(tx: &TxContext, id: &str, ran_for: &str, error: &str, blocked: bool) -
         log::warn!("Purchase {id} step failed (attempt {}), retry in {delay}s: {error}", p.attempts);
         crate::alerts::on_purchase_failed(tx, &p);
     }
-    crate::ledger::save_purchase(tx, p.clone());
     if !blocked || newly_blocked {
-        crate::support::log_error(tx, id, &error);
+        crate::support::log_error(tx, &mut p, &error);
     }
+    crate::ledger::save_purchase(tx, p.clone());
     Some(p)
 }
 

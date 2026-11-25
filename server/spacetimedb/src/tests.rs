@@ -3478,6 +3478,7 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
     let w = World::new();
     setup_paywalls(&w);
     let first = Purchase {
+        reinstated: false, access_was_until_ms: 0, error_log_id: 0,
         tax_micros: 0, refund_share_milli: 0,
         id: "apple:1000".into(),
         store: "apple".into(),
@@ -5436,6 +5437,7 @@ impl World {
     fn put_purchase(&self, id: &str, app: &str, st: &str, hours_ago: i64) {
         let updated = NOW_MICROS - hours_ago * HOUR_MICROS;
         let row = Purchase {
+            reinstated: false, access_was_until_ms: 0, error_log_id: 0,
             tax_micros: 0, refund_share_milli: 0,
             id: id.into(),
             store: "google".into(),
@@ -6048,6 +6050,7 @@ fn a_rebuild_of_one_app_leaves_the_others_alone() {
 fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -> Purchase {
     let tx_id = id.split_once(':').map_or(id, |(_, t)| t).to_string();
     let mut p = Purchase {
+        reinstated: false, access_was_until_ms: 0, error_log_id: 0,
         tax_micros: 0, refund_share_milli: 0,
         id: id.into(),
         store: "google".into(),

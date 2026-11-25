@@ -306,6 +306,14 @@ pub struct Purchase {
     /// A store refund that returned part of the price (Apple prorated refund): the part, in
     /// thousandths of a percent of what was left (`ledger::refund_amount`); 0: all of it.
     pub refund_share_milli: u32,
+    /// Granted again after a refund was reversed (`ledger::reinstate`) and not delivered since: its
+    /// grant says `reinstated`. Kept here so the worker never reads the history for it.
+    pub reinstated: bool,
+    /// The access end a store revoke or expiry replaced: what `ledger::reinstate` gives back; 0: none.
+    pub access_was_until_ms: i64,
+    /// History row of the last error of the current status (`support::log_error` counts repeats on
+    /// it); 0: none.
+    pub error_log_id: u64,
     /// The store offer of the purchase: what the store reports (Google offer / base plan id, Apple
     /// `offerIdentifier`), else what the client said; empty when none.
     pub offer_id: String,
@@ -372,6 +380,9 @@ impl Purchase {
             refunded_micros: 0,
             tax_micros: 0,
             refund_share_milli: 0,
+            reinstated: false,
+            access_was_until_ms: 0,
+            error_log_id: 0,
             offer_id: String::new(),
             offer_type: String::new(),
             paused_until_ms: 0,
@@ -1256,6 +1267,9 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             refunded_micros: r.refunded_micros,
             tax_micros: 0,
             refund_share_milli: 0,
+            reinstated: false,
+            access_was_until_ms: 0,
+            error_log_id: 0,
             offer_id: r.offer_id,
             offer_type: String::new(),
             paused_until_ms: 0,
