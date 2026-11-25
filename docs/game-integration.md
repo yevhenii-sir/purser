@@ -26,9 +26,11 @@ Event (`v1` argument or webhook body; the webhook body also has `catalog_product
 
 `expires_at_ms` of a subscription is when access ends: the paid period, or the store's grace period after a failed renewal payment.
 
-An event may arrive again on retries, so the game **must be idempotent**:
-- **consumable** — grant once per `(transaction_id, event, reason)`: a `reinstated` grant follows a `revoke` of the same transaction;
-- **non-consumables and subscriptions** — apply as state: “`user_id` has / doesn't have `product_id` until `expires_at_ms`”. Applying state is idempotent by itself. Don't drop repeats by `(transaction_id, event)` alone: after a transfer the same transaction legitimately arrives as a `grant` for a different `user_id`.
+An event may arrive again on retries, so the game **must be idempotent**: apply each **`event_id`** once. It is the same on every retry of an event and different for every other event of the purchase (a `reinstated` grant after a `revoke`, a second refund, a transfer to another `user_id`, a renewal with a new `expires_at_ms`). `occurred_at_ms` is when it happened (the same on every retry); `timestamp_ms` is when this attempt was sent.
+- **consumable** — grant or take back the amount once per `event_id`;
+- **non-consumables and subscriptions** — apply as state: “`user_id` has / doesn't have `product_id` until `expires_at_ms`”, and keep the latest `expires_at_ms` per player and product: a `grant` never shortens access (periods of a subscription are separate purchases, retried independently, so an older period's grant may arrive after a newer one's).
+
+**Retries and ordering.** Delivery is at least once (`spacetimedb_idc`: exactly once per call). A call that gets no 2xx within 10 s, or any non-2xx answer (4xx too), is retried with backoff from 1 minute to 12 hours until it succeeds; the `delivery_failing` alert fires after 3 failed attempts. A request the game applied but answered too late arrives again: `event_id` makes that harmless. Events of one purchase go out one step at a time (a `revoke` waits until the `grant` in flight ended); events of different purchases are not ordered.
 
 **Transfer (`transfer`).** Non-consumables and subscriptions belong to the store account. If a player restores them on a different `user_id` (reinstall, second profile), billing first sends the previous owner a `revoke` with `reason = transfer` and their `user_id`, and only after it is delivered successfully, a `grant` to the new one. The game must **remove the reward from the previous `user_id`**: otherwise one purchase would unlock several profiles. Until the `revoke` is delivered, the purchase is in `transfer_pending` status in the ledger (the previous owner is in `previous_user_id`), no `grant` is sent to the new owner, the worker retries the `revoke` with the usual backoff, and `/verify` and `/restore` respond `pending`. If a refund or subscription expiration arrives before delivery, the transfer is canceled and the previous owner receives the `revoke`. Transfers are not sent to GA4 or AppsFlyer. Consumables are never transferred (`ERR_TX_CLAIMED`). An app can limit transfers against account sharing (Delivery tab → Restores on another player: at most one per N days, at most N per purchase, or never); a refused restore answers `[ERR_TRANSFER_LIMIT]`, and support can still move a purchase on the player page.
 
@@ -41,6 +43,7 @@ pub struct BillingEvent {
     pub app_id: String, pub product_id: String, pub kind: String,
     pub transaction_id: String, pub original_transaction_id: String, pub user_id: String,
     pub expires_at_ms: i64, pub price_micros: i64, pub currency: String, pub timestamp_ms: i64,
+    pub event_id: String, pub occurred_at_ms: i64,
 }
 
 const BILLING_IDENTITY_HEX: &str = "<identity of the spacetime_token>";
@@ -50,7 +53,7 @@ pub fn billing_grant(ctx: &ReducerContext, ev: BillingEvent) -> Result<(), Strin
     if ctx.sender() != Identity::from_hex(BILLING_IDENTITY_HEX).unwrap() {
         return Err("unauthorized".into());
     }
-    // if already applied (ev.transaction_id, ev.event) { return Ok(()) }
+    // if already applied (ev.event_id) { return Ok(()) }
     // grant ev.product_id to ev.user_id, subscription until ev.expires_at_ms
     Ok(())
 }
@@ -63,16 +66,17 @@ public partial struct BillingEvent {
     public string app_id; public string product_id; public string kind;
     public string transaction_id; public string original_transaction_id; public string user_id;
     public long expires_at_ms; public long price_micros; public string currency; public long timestamp_ms;
+    public string event_id; public long occurred_at_ms;
 }
 
 [SpacetimeDB.Reducer]
 public static void billing_grant(ReducerContext ctx, BillingEvent ev) {
     if (ctx.Sender != Identity.FromHexString(BillingIdentityHex)) throw new Exception("unauthorized");
-    // idempotent grant by ev.transaction_id
+    // apply once per ev.event_id
 }
 ```
 
-- **`spacetimedb_idc`** — the game's SpacetimeDB database on the **same SpacetimeDB server or cluster** as billing (both on maincloud, or both on your server). Billing calls the game's reducers through [inter-database calls](https://spacetimedb.com/docs/databases/inter-database-communication): the call is written with the ledger step and SpacetimeDB delivers it **exactly once, in order**, after a restart too, with billing's database as `ctx.sender()`. No token, no HTTP; the game database may be down for a while and gets the calls when it is up. The build's `spacetime_db` is the game database's **identity** (`spacetime list`). The game declares two reducers with exactly this signature (SpacetimeDB checks the parameter name, the struct's field names, types and order, and the `Result<(), String>` return; a call that does not match fails):
+- **`spacetimedb_idc`** — the game's SpacetimeDB database on the **same SpacetimeDB server or cluster** as billing (both on maincloud, or both on your server). Billing calls the game's reducers through [inter-database calls](https://spacetimedb.com/docs/databases/inter-database-communication): the call is written with the ledger step and SpacetimeDB delivers it once, in order, after a restart too, with billing's database as `ctx.sender()`. No token, no HTTP; the game database may be down for a while and gets the calls when it is up. The build's `spacetime_db` is the game database's **identity** (`spacetime list`). The game declares two reducers with exactly this signature (SpacetimeDB checks the parameter name, the struct's field names, types and order, and the `Result<(), String>` return; a call that does not match fails):
 
 ```rust
 #[derive(spacetimedb::SpacetimeType)]
@@ -81,12 +85,12 @@ pub struct BillingEvent {
     pub app_id: String, pub product_id: String, pub kind: String,
     pub transaction_id: String, pub original_transaction_id: String, pub user_id: String,
     pub expires_at_ms: i64, pub price_micros: i64, pub currency: String, pub timestamp_ms: i64,
-    pub catalog_product_id: String,
+    pub event_id: String, pub occurred_at_ms: i64, pub catalog_product_id: String,
 }
 
 #[spacetimedb::reducer]
 pub fn purser_grant(ctx: &ReducerContext, event: BillingEvent) -> Result<(), String> {
-    // accept ctx.sender() == billing's database identity only; apply once per (transaction_id, event)
+    // accept ctx.sender() == billing's database identity only; apply once per event.event_id
     Ok(())
 }
 
@@ -96,7 +100,20 @@ pub fn purser_revoke(ctx: &ReducerContext, event: BillingEvent) -> Result<(), St
 
   `catalog_product_id` is always set here (the store id when the product has no catalog id). A reducer that returns `Err` rolls the game's transaction back; billing records the error and calls again with the usual backoff, so the reducers must be idempotent like every delivery. The reference module is [`server/game-receiver`](https://github.com/yevhenii-sir/purser/tree/main/server/game-receiver) (it also lets the owner allow billing's identity with `allow_purser`); the end-to-end check publishes it next to billing. The setup check shows billing's database identity for the game's allowlist. A TypeScript game module declares the same struct and reducers with `t.object` / `spacetimedb.reducer`; C# modules can receive these calls too (only declaring outboxes is limited to Rust and TypeScript).
 
-- **`webhook`** — `POST webhook_url` with the event as the body and the headers `X-Billing-Event` and `X-Billing-Signature: hex(HMAC-SHA256(webhook_secret, body))`. Verify the signature against the raw body. Any 2xx response counts as success. **Answer 2xx to `event` values you don't know and ignore them**: the setup check sends `{"event":"ping"}` (header `X-Billing-Event: ping`) from the admin panel's "Ping webhook" button.
+- **`webhook`** — `POST webhook_url` with the event as the body and the headers `X-Billing-Event`, `X-Billing-Event-Id` (the `event_id`) and `X-Billing-Signature: t=<unix seconds>,v1=<hex(HMAC-SHA256(webhook_secret, "<t>." + body))>`. Verify against the raw body: recompute the HMAC of `t`, a dot and the body, compare in constant time, and refuse a `t` more than 5 minutes from your clock (a captured request cannot be replayed later; every retry is signed anew). While rotating `webhook_secret`, accept either secret for a while. Any 2xx response counts as success.
+
+```python
+import hashlib, hmac, time
+def verify(header, body: bytes, secrets):
+    parts = dict(p.split("=", 1) for p in header.split(","))
+    t = int(parts["t"])
+    if abs(time.time() - t) > 300:
+        return False
+    signed = f"{t}.".encode() + body
+    return any(hmac.compare_digest(parts["v1"], hmac.new(s.encode(), signed, hashlib.sha256).hexdigest()) for s in secrets)
+```
+
+  Integration webhooks and owner alert webhooks are signed the same way. **Answer 2xx to `event` values you don't know and ignore them**: the setup check sends `{"event":"ping"}` (header `X-Billing-Event: ping`) from the admin panel's "Ping webhook" button.
 
 ### Games without a backend (`delivery = none`)
 

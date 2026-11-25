@@ -214,6 +214,9 @@ pub struct AttributedPurchase {
     pub price_micros: i64,
     pub currency: String,
     pub created_at_micros: i64,
+    /// Reached the game (`was_granted`) and was paid by this player (not a family member's shared
+    /// purchase, not an item moved from the old Xsolla inventory): only those convert.
+    pub granted: bool,
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -226,25 +229,36 @@ struct Counts {
     refunded_usd: i64,
 }
 
-/// Normal CDF via erf (Abramowitz & Stegun 7.1.26, |error| < 1.5e-7).
-fn normal_cdf(z: f64) -> f64 {
-    let x = z / std::f64::consts::SQRT_2;
-    let t = 1.0 / (1.0 + 0.3275911 * x.abs());
-    let poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
-    let erf = 1.0 - poly * (-x * x).exp();
-    0.5 * (1.0 + if x >= 0.0 { erf } else { -erf })
-}
-
-fn normal_pdf(z: f64) -> f64 {
-    (-0.5 * z * z).exp() / (2.0 * std::f64::consts::PI).sqrt()
+/// ln Γ(x) for x > 0 (Lanczos, g = 7): accurate to ~1e-13.
+fn ln_gamma(x: f64) -> f64 {
+    const G: [f64; 9] = [
+        0.999_999_999_999_809_9,
+        676.520_368_121_885_1,
+        -1_259.139_216_722_402_8,
+        771.323_428_777_653_1,
+        -176.615_029_162_140_6,
+        12.507_343_278_686_905,
+        -0.138_571_095_265_720_12,
+        9.984_369_578_019_572e-6,
+        1.505_632_735_149_311_6e-7,
+    ];
+    if x < 0.5 {
+        return (std::f64::consts::PI / (std::f64::consts::PI * x).sin()).ln() - ln_gamma(1.0 - x);
+    }
+    let x = x - 1.0;
+    let mut a = G[0];
+    let t = x + 7.5;
+    for (i, g) in G.iter().enumerate().skip(1) {
+        a += g / (x + i as f64);
+    }
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + a.ln()
 }
 
 /// Probability that each variant has the highest conversion rate. `arms`: (conversions, trials).
 ///
-/// Each rate gets a Beta(1 + conversions, 1 + trials - conversions) posterior (uniform prior),
-/// approximated by a normal distribution with the same mean and variance; then
-/// `P(i is best) = ∫ pdf_i(x) · Π_{j≠i} cdf_j(x) dx`, integrated numerically. The approximation is
-/// good once a variant has a few dozen views; with little data every variant stays near 1/n.
+/// Each rate gets its exact Beta(1 + conversions, 1 + trials - conversions) posterior (uniform
+/// prior), and `P(i is best) = ∫ pdf_i(x) · Π_{j≠i} cdf_j(x) dx` is integrated numerically over
+/// the range where the posteriors have their mass (cdfs as running sums on the same grid).
 pub fn probability_best(arms: &[(u64, u64)]) -> Vec<f64> {
     if arms.is_empty() {
         return Vec::new();
@@ -256,24 +270,44 @@ pub fn probability_best(arms: &[(u64, u64)]) -> Vec<f64> {
         .iter()
         .map(|&(s, n)| {
             let n = n.max(s);
-            let (a, b) = (1.0 + s as f64, 1.0 + (n - s) as f64);
-            let mean = a / (a + b);
-            let var = a * b / ((a + b) * (a + b) * (a + b + 1.0));
-            (mean, var.sqrt())
+            (1.0 + s as f64, 1.0 + (n - s) as f64)
         })
         .collect();
-    let lo = post.iter().map(|(m, s)| m - 7.0 * s).fold(f64::INFINITY, f64::min);
-    let hi = post.iter().map(|(m, s)| m + 7.0 * s).fold(f64::NEG_INFINITY, f64::max);
-    const STEPS: usize = 4000;
+    // Where the mass is: mean ± 12 standard deviations of each posterior, inside (0, 1).
+    let spread = |&(a, b): &(f64, f64)| {
+        let mean = a / (a + b);
+        let sd = (a * b / ((a + b) * (a + b) * (a + b + 1.0))).sqrt();
+        (mean - 12.0 * sd, mean + 12.0 * sd)
+    };
+    let lo = post.iter().map(|p| spread(p).0).fold(f64::INFINITY, f64::min).max(1e-12);
+    let hi = post.iter().map(|p| spread(p).1).fold(f64::NEG_INFINITY, f64::max).min(1.0 - 1e-12);
+    const STEPS: usize = 6000;
     let dx = (hi - lo) / STEPS as f64;
+    let ln_beta = |a: f64, b: f64| ln_gamma(a) + ln_gamma(b) - ln_gamma(a + b);
+    // pdf of every arm at every grid point (midpoints), and the running cdfs.
+    let xs: Vec<f64> = (0..STEPS).map(|k| lo + dx * (k as f64 + 0.5)).collect();
+    let pdfs: Vec<Vec<f64>> = post
+        .iter()
+        .map(|&(a, b)| {
+            let lb = ln_beta(a, b);
+            xs.iter().map(|&x| ((a - 1.0) * x.ln() + (b - 1.0) * (1.0 - x).ln() - lb).exp()).collect()
+        })
+        .collect();
+    let cdfs: Vec<Vec<f64>> = pdfs
+        .iter()
+        .map(|pdf| {
+            let mut acc = 0.0;
+            pdf.iter().map(|v| {
+                acc += v * dx;
+                acc - v * dx / 2.0
+            }).collect()
+        })
+        .collect();
     let mut p = vec![0.0; arms.len()];
-    for k in 0..=STEPS {
-        let x = lo + dx * k as f64;
-        let w = if k == 0 || k == STEPS { 0.5 } else { 1.0 };
-        let cdfs: Vec<f64> = post.iter().map(|(m, s)| normal_cdf((x - m) / s)).collect();
-        for (i, (m, s)) in post.iter().enumerate() {
-            let others: f64 = cdfs.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, c)| *c).product();
-            p[i] += w * normal_pdf((x - m) / s) / s * others * dx;
+    for k in 0..STEPS {
+        for i in 0..arms.len() {
+            let others: f64 = (0..arms.len()).filter(|j| *j != i).map(|j| cdfs[j][k].clamp(0.0, 1.0)).product();
+            p[i] += pdfs[i][k] * others * dx;
         }
     }
     let sum: f64 = p.iter().sum();
@@ -282,6 +316,10 @@ pub fn probability_best(arms: &[(u64, u64)]) -> Vec<f64> {
     }
     p
 }
+
+/// Views a variant needs before the probability to be best is shown: with fewer, it is mostly
+/// the prior speaking.
+pub const MIN_VIEWS_TO_SCORE: u64 = 100;
 
 /// Results of a placement or test per variant.
 ///
@@ -309,7 +347,7 @@ pub fn results(
     let mut missing_fx = BTreeSet::new();
     let mut other = 0u64;
     for p in purchases {
-        if p.store == store::MANUAL || p.status == status::REJECTED {
+        if p.store == store::MANUAL || p.status == status::REJECTED || !p.granted {
             continue;
         }
         if p.environment == environment::SANDBOX && !include_sandbox {
@@ -338,14 +376,27 @@ pub fn results(
         }
     }
 
-    let arms: Vec<(u64, u64)> = variants
+    // Scored: variants still shown (weight > 0) with enough views. A variant switched off, or one
+    // without data, would otherwise look like a likely winner (its prior is a coin flip).
+    let scored: Vec<usize> = variants
         .iter()
-        .map(|v| {
-            let c = counts[v.variant_id.as_str()];
-            (c.purchases, c.views)
-        })
+        .enumerate()
+        .filter(|(_, v)| v.weight > 0 && counts[v.variant_id.as_str()].views >= MIN_VIEWS_TO_SCORE)
+        .map(|(i, _)| i)
         .collect();
-    let best = probability_best(&arms);
+    let mut best: Vec<Value> = vec![Value::Null; variants.len()];
+    if scored.len() >= 2 && scored.len() == variants.iter().filter(|v| v.weight > 0).count() {
+        let arms: Vec<(u64, u64)> = scored
+            .iter()
+            .map(|&i| {
+                let c = counts[variants[i].variant_id.as_str()];
+                (c.purchases.min(c.views), c.views)
+            })
+            .collect();
+        for (&i, pb) in scored.iter().zip(probability_best(&arms)) {
+            best[i] = json!(pb);
+        }
+    }
     let ratio = |num: f64, den: u64| if den == 0 { Value::Null } else { json!(num / den as f64) };
     let mut total = Counts::default();
     let rows: Vec<Value> = variants
@@ -389,7 +440,7 @@ pub fn results(
             "net_usd_micros": total.gross_usd - total.refunded_usd,
         },
         "unknown_variant_purchases": other,
-        "method": "conversion per view; probability to be best from Beta(1+purchases, 1+views-purchases) posteriors (normal approximation)",
+        "method": "conversion per view; probability to be best from exact Beta(1+purchases, 1+views-purchases) posteriors, shown once every variant still shown has 100 views",
         "fx": { "missing": missing_fx },
     })
 }
@@ -511,6 +562,7 @@ mod tests {
             price_micros: price,
             currency: ccy.into(),
             created_at_micros: micros,
+            granted: st != status::VERIFIED,
         };
         let purchases = vec![
             p("a", "purchase", status::COMPLETED, environment::PRODUCTION, 1_000_000, "USD"),
@@ -535,12 +587,19 @@ mod tests {
         assert_eq!(r["fx"]["missing"], json!(["UAH"]));
         assert_eq!(r["unknown_variant_purchases"], 1);
         assert_eq!(r["totals"]["views"], 30);
-        let pb = a["probability_best"].as_f64().unwrap() + b["probability_best"].as_f64().unwrap();
-        assert!((pb - 1.0).abs() < 1e-9);
+        assert!(a["probability_best"].is_null() && b["probability_best"].is_null(), "too few views to score");
+
+        // Enough views: scored, summing to 1; a variant switched off (weight 0) is not scored.
+        let many: BTreeMap<String, u64> = [("a".to_string(), 1000), ("b".to_string(), 1000), ("c".to_string(), 0)].into_iter().collect();
+        let r = results(&[v("a", 1), v("b", 1), v("c", 0)], &many, &purchases, &fx, false);
+        let pb = |i: usize| r["variants"][i]["probability_best"].as_f64();
+        assert!((pb(0).unwrap() + pb(1).unwrap() - 1.0).abs() < 1e-6, "{r}");
+        assert!(pb(1).unwrap() > pb(0).unwrap(), "b converted more");
+        assert!(r["variants"][2]["probability_best"].is_null());
 
         // No views: conversion is unknown, not zero.
         let r = results(&[v("a", 1)], &BTreeMap::new(), &[], &fx, true);
         assert!(r["variants"][0]["conversion"].is_null());
-        assert_eq!(r["variants"][0]["probability_best"], 1.0);
+        assert!(r["variants"][0]["probability_best"].is_null());
     }
 }

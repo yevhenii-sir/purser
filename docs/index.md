@@ -22,7 +22,7 @@ flowchart LR
 ## Features
 
 - **Stores**: Google Play, App Store, Amazon Appstore, Steam and web payments (Stripe, Xsolla). Server-side verification, consume / acknowledge, restore, entitlements shared between all builds of a game.
-- **A ledger with retries**: rewards are delivered exactly once even when the game server is down; refunds, renewals and expirations come from store notifications. Optionally answers App Store refund requests with consumption data.
+- **A ledger with retries**: every reward reaches the game even when the game server is down (retried until it is applied; each event carries an `event_id` to apply it once); refunds, renewals and expirations come from store notifications. Optionally answers App Store refund requests with consumption data.
 - **Admin panel** served by the module: an *Add an app* wizard, a setup check with fix hints, products with Google Play and App Store import, players, purchases, integrations, keys, logs.
 - **Revenue** ([analytics](analytics.md)): net revenue, refunds, subscriptions and MRR in USD (ECB rates), by app, product, country and currency.
 - **[Paywalls and A/B tests](paywalls.md)** as remote config, and **[alerts](alerts.md)** to Telegram, Slack, Discord or a webhook when deliveries fail or keys are rejected.

@@ -360,18 +360,46 @@ pub const DEFAULT_COMMISSION_PERCENT: f64 = 15.0;
 /// Commission on subscription periods after the first 12 paid months (both stores).
 pub const AFTER_YEAR_COMMISSION_PERCENT: f64 = 15.0;
 
-/// Store commission used to estimate proceeds: a percent per app (or the server-wide default),
-/// lowered to `after_year_percent` for subscription periods after the first paid year.
+/// The usual fee of a store, used for a build without its own percent while the server-wide
+/// percent is not set: Google Play and the App Store small business rates, Amazon's Appstore
+/// rate under $1M, Steam's standard share, and the payment fees of Stripe and Xsolla (roughly).
+pub fn store_default_percent(store: &str) -> Option<f64> {
+    use crate::model::store;
+    match store {
+        store::GOOGLE | store::APPLE => Some(15.0),
+        store::AMAZON => Some(20.0),
+        store::STEAM => Some(30.0),
+        store::STRIPE => Some(3.0),
+        store::XSOLLA => Some(5.0),
+        _ => None,
+    }
+}
+
+/// Store commission used to estimate proceeds: a percent per app, else the server-wide percent
+/// when it is set, else the store's usual fee ([`store_default_percent`]); lowered to
+/// `after_year_percent` for subscription periods after the first paid year.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Commission {
     pub percent: f64,
     pub by_app: BTreeMap<String, f64>,
     pub after_year_percent: f64,
+    /// The server-wide percent was set by an admin (it then applies to every store).
+    #[serde(skip)]
+    pub percent_set: bool,
+    /// The store of each build (for the store's usual fee).
+    #[serde(skip)]
+    pub store_of: BTreeMap<String, String>,
 }
 
 impl Default for Commission {
     fn default() -> Self {
-        Commission { percent: DEFAULT_COMMISSION_PERCENT, by_app: BTreeMap::new(), after_year_percent: AFTER_YEAR_COMMISSION_PERCENT }
+        Commission {
+            percent: DEFAULT_COMMISSION_PERCENT,
+            by_app: BTreeMap::new(),
+            after_year_percent: AFTER_YEAR_COMMISSION_PERCENT,
+            percent_set: false,
+            store_of: BTreeMap::new(),
+        }
     }
 }
 
@@ -399,15 +427,26 @@ impl Commission {
     /// From the stored settings; a missing or invalid value falls back to the default.
     pub fn from_settings(percent: Option<&str>, by_app: Option<&str>, after_year_percent: Option<&str>) -> Self {
         let d = Commission::default();
+        let set = percent.and_then(|s| parse_percent(s).ok());
         Commission {
-            percent: percent.and_then(|s| parse_percent(s).ok()).unwrap_or(d.percent),
+            percent: set.unwrap_or(d.percent),
             by_app: by_app.and_then(|s| parse_percent_by_app(s).ok()).unwrap_or_default(),
             after_year_percent: after_year_percent.and_then(|s| parse_percent(s).ok()).unwrap_or(d.after_year_percent),
+            percent_set: set.is_some(),
+            store_of: BTreeMap::new(),
         }
     }
 
     pub fn percent_for(&self, app_id: &str) -> f64 {
-        self.by_app.get(app_id).copied().unwrap_or(self.percent)
+        if let Some(p) = self.by_app.get(app_id) {
+            return *p;
+        }
+        if !self.percent_set {
+            if let Some(p) = self.store_of.get(app_id).and_then(|s| store_default_percent(s)) {
+                return p;
+            }
+        }
+        self.percent
     }
 
     /// The rate of one payment: the app's, lowered to `after_year_percent` for a subscription period
@@ -495,17 +534,21 @@ pub struct ReportInput<'a> {
 struct Usd<'a> {
     fx: &'a FxTable,
     missing: BTreeSet<String>,
+    /// Currencies converted with a rate older than the lookback (see `FxTable::stale_rate`).
+    stale: BTreeSet<String>,
 }
 
 impl Usd<'_> {
     fn conv(&mut self, micros: i64, ccy: &str, day: i32) -> i64 {
-        match self.fx.to_usd_micros(micros, ccy, day) {
-            Some(v) => v,
-            None => {
-                self.missing.insert(if ccy.is_empty() { "(none)".to_string() } else { ccy.to_string() });
-                0
-            }
+        if let Some(v) = self.fx.to_usd_micros(micros, ccy, day) {
+            return v;
         }
+        if let Some(rate) = self.fx.stale_rate(ccy, day).filter(|r| *r > 0.0) {
+            self.stale.insert(ccy.to_uppercase());
+            return (micros as f64 / rate).round() as i64;
+        }
+        self.missing.insert(if ccy.is_empty() { "(none)".to_string() } else { ccy.to_string() });
+        0
     }
 
     /// (gross, refunded, estimated store fee) in USD of one aggregate row.
@@ -598,7 +641,7 @@ pub fn build_report(
 /// listed in `fx.missing`. Store fee and proceeds are estimates from [`Commission`].
 pub fn build_full_report(input: &ReportInput) -> Value {
     let ReportInput { rows, subs, active_now, countries, commission, fx, q, today } = *input;
-    let mut usd = Usd { fx, missing: BTreeSet::new() };
+    let mut usd = Usd { fx, missing: BTreeSet::new(), stale: BTreeSet::new() };
     let in_range = |day: i32, env: &str| day >= q.from && day <= q.to && q.wants(env);
 
     let mut total = Money::default();
@@ -728,6 +771,8 @@ pub fn build_full_report(input: &ReportInput) -> Value {
         "fx": {
             "as_of": fx.as_of().map(format_day),
             "missing": usd.missing.into_iter().collect::<Vec<_>>(),
+            // Converted with the last rate known, older than two weeks.
+            "stale": usd.stale.into_iter().collect::<Vec<_>>(),
         },
     })
 }
@@ -738,6 +783,8 @@ pub fn build_full_report(input: &ReportInput) -> Value {
 #[derive(Clone, Debug, Default)]
 pub struct LedgerRow {
     pub app_id: String,
+    /// The app (`game_key`) of the build: players of different apps may share an id.
+    pub game_key: String,
     pub user_id: String,
     pub environment: String,
     pub currency: String,
@@ -778,15 +825,17 @@ struct Campaign {
 ///   (not expired, no payment yet) are `pending` and left out of the rate.
 pub fn ledger_metrics(rows: &[LedgerRow], fx: &FxTable, q: &Query, now_micros: i64) -> Value {
     let today = day_of_micros(now_micros);
-    let mut usd = Usd { fx, missing: BTreeSet::new() };
+    let mut usd = Usd { fx, missing: BTreeSet::new(), stale: BTreeSet::new() };
     let rows: Vec<&LedgerRow> = rows.iter().filter(|r| r.granted && q.wants(&r.environment)).collect();
     let day = |r: &LedgerRow| day_of_micros(r.created_at_micros);
     let net_usd = |usd: &mut Usd, r: &LedgerRow| if r.refunded { 0 } else { usd.conv(r.price_micros, &r.currency, day(r)) };
 
+    // A payer is a player of one app: the same id in two apps is two payers.
+    let payer = |r: &LedgerRow| format!("{}/{}", if r.game_key.is_empty() { &r.app_id } else { &r.game_key }, r.user_id);
     // Cohorts.
-    let mut first: BTreeMap<&str, i32> = BTreeMap::new();
+    let mut first: BTreeMap<String, i32> = BTreeMap::new();
     for r in rows.iter().filter(|r| !r.trial) {
-        let e = first.entry(r.user_id.as_str()).or_insert(i32::MAX);
+        let e = first.entry(payer(r)).or_insert(i32::MAX);
         *e = (*e).min(day(r));
     }
     let (m_from, m_to, m_now) = (month_index(q.from), month_index(q.to), month_index(today));
@@ -798,21 +847,22 @@ pub fn ledger_metrics(rows: &[LedgerRow], fx: &FxTable, q: &Query, now_micros: i
         }
     }
     for r in rows.iter().filter(|r| !r.trial) {
-        let Some(c) = first.get(r.user_id.as_str()).map(|d| month_index(*d)) else { continue };
+        let Some(c) = first.get(&payer(r)).map(|d| month_index(*d)) else { continue };
         let value = net_usd(&mut usd, r);
         if let Some((_, by_month)) = cohorts.get_mut(&c) {
             let offset = (month_index(day(r)) - c).clamp(0, by_month.len() as i32 - 1) as usize;
             by_month[offset] += value;
         }
     }
-    // LTV per payer after 1, 3, 6 and 12 months: of the cohorts old enough, cumulative net revenue
-    // up to that month over their payers.
+    // LTV per payer after 1, 3, 6 and 12 months: of the cohorts whose first N months are over,
+    // cumulative net revenue up to that month over their payers.
     let ltv: Vec<Value> = [1usize, 3, 6, 12]
         .iter()
         .map(|months| {
             let (mut revenue, mut payers, mut count) = (0i64, 0u32, 0u32);
             for (payers_of, by_month) in cohorts.values() {
-                if by_month.len() >= *months {
+                // `by_month` runs up to the current month, which is not over yet.
+                if by_month.len() > *months {
                     revenue += by_month[..*months].iter().sum::<i64>();
                     payers += payers_of;
                     count += 1;
@@ -848,10 +898,10 @@ pub fn ledger_metrics(rows: &[LedgerRow], fx: &FxTable, q: &Query, now_micros: i
     let in_range: Vec<&LedgerRow> = rows.iter().copied().filter(|r| (q.from..=q.to).contains(&day(r))).collect();
 
     // ARPPU: net revenue of the range's paid purchases over the users who paid in it.
-    let mut paying: BTreeSet<&str> = BTreeSet::new();
+    let mut paying: BTreeSet<String> = BTreeSet::new();
     let mut paid_net = 0i64;
     for r in in_range.iter().filter(|r| !r.trial) {
-        paying.insert(r.user_id.as_str());
+        paying.insert(payer(r));
         paid_net += net_usd(&mut usd, r);
     }
     let arppu = json!({
@@ -1201,12 +1251,26 @@ mod tests {
 
         assert_eq!(m["trials"], json!({ "started": 3, "converted": 1, "pending": 1, "conversion_rate": 0.5 }));
 
-        // LTV: the first month of both cohorts (8 / 5 payers), three months of September only.
+        // LTV: the first month of both cohorts (8 / 5 payers); September's third month (November)
+        // is not over on November 10, so no cohort has three complete months yet.
         let ltv = m["ltv"].as_array().unwrap();
         assert_eq!((ltv[0]["months"].as_u64(), ltv[0]["cohorts"].as_u64(), ltv[0]["per_payer_usd_micros"].as_i64()), (Some(1), Some(2), Some(1_600_000)));
-        assert_eq!((ltv[1]["cohorts"].as_u64(), ltv[1]["per_payer_usd_micros"].as_i64()), (Some(1), Some(3_000_000)));
+        assert_eq!((ltv[1]["cohorts"].as_u64(), ltv[1]["per_payer_usd_micros"].is_null()), (Some(0), true));
         assert_eq!((ltv[2]["cohorts"].as_u64(), ltv[2]["per_payer_usd_micros"].is_null()), (Some(0), true));
         // ARPPU of the range: 19 USD net over u1, u2, old, t1, u5, u6.
         assert_eq!(m["arppu"], json!({ "payers": 6, "net_usd_micros": 19_000_000, "arppu_usd_micros": 3_166_666 }));
+    }
+
+    #[test]
+    fn each_store_has_its_usual_fee_until_a_server_percent_is_set() {
+        let mut c = Commission::from_settings(None, Some(r#"{"com.game.web": 4}"#), None);
+        c.store_of = [("com.game", "google"), ("com.game.steam", "steam"), ("com.game.web", "stripe")]
+            .iter()
+            .map(|(a, s)| (a.to_string(), s.to_string()))
+            .collect();
+        assert_eq!((c.percent_for("com.game"), c.percent_for("com.game.steam")), (15.0, 30.0));
+        assert_eq!(c.percent_for("com.game.web"), 4.0, "a build's own percent first");
+        let set = Commission { store_of: c.store_of.clone(), ..Commission::from_settings(Some("10"), None, None) };
+        assert_eq!(set.percent_for("com.game.steam"), 10.0, "a server-wide percent an admin set applies to every store");
     }
 }

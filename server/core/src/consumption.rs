@@ -55,6 +55,8 @@ pub struct Facts<'a> {
     pub revoked: bool,
     /// The player consented to share consumption data with Apple.
     pub consented: bool,
+    /// A free trial (Apple's `sampleContentProvided`: a free sample or trial was given).
+    pub trial: bool,
 }
 
 /// The `ConsumptionRequest` body, or `None` when nothing may or needs to be sent (no consent,
@@ -70,7 +72,7 @@ pub fn request(f: &Facts, refund_mode: &str) -> Option<Value> {
     if !mode::is_on(refund_mode) || !f.consented || f.revoked {
         return None;
     }
-    let mut body = json!({ "customerConsented": true, "sampleContentProvided": false });
+    let mut body = json!({ "customerConsented": true, "sampleContentProvided": f.trial });
     let pref = if !f.delivered {
         body["deliveryStatus"] = json!(if f.retrying {
             delivery_status::UNDELIVERED_SERVER_OUTAGE

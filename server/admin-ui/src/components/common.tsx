@@ -1,10 +1,11 @@
-import type { ReactNode } from "react"
+import { useId, type ReactNode } from "react"
 import { CheckIcon, CopyIcon } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { FieldIdContext } from "@/components/ui/field-id"
 import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -78,7 +79,14 @@ export function DataTable<T>({ rows, columns, onRowClick, empty = "Nothing here"
         {rows.map((r, i) => (
           <TableRow
             key={rowKey ? rowKey(r, i) : i}
-            className={cn(onRowClick && "cursor-pointer")}
+            className={cn(onRowClick && "cursor-pointer focus-visible:bg-muted/40 focus-visible:outline-none")}
+            // Opened from the keyboard too: Tab to the row, Enter or Space.
+            tabIndex={onRowClick ? 0 : undefined}
+            onKeyDown={(e) => {
+              if (!onRowClick || e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return
+              e.preventDefault()
+              onRowClick(r)
+            }}
             onClick={(e) => {
               if (!onRowClick || (e.target as HTMLElement).closest("button, a, input, select, [role=combobox], [role=checkbox]")) return
               onRowClick(r)
@@ -139,10 +147,12 @@ export function Mono({ children, className }: { children: ReactNode; className?:
 }
 
 export function Field({ label, children, hint, className }: { label: ReactNode; children: ReactNode; hint?: ReactNode; className?: string }) {
+  // The control inside (`Input`, `Textarea`) takes this id, so the label names it.
+  const id = useId()
   return (
     <div className={cn("grid min-w-0 gap-1.5", className)}>
-      <Label className="text-xs text-muted-foreground">{label}</Label>
-      {children}
+      <Label htmlFor={id} className="text-xs text-muted-foreground">{label}</Label>
+      <FieldIdContext.Provider value={id}>{children}</FieldIdContext.Provider>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
   )
@@ -192,7 +202,18 @@ export function ErrorBox({ error, hint }: { error: string; hint?: ReactNode }) {
 
 export function Stat({ label, value, hint, onClick }: { label: ReactNode; value: ReactNode; hint?: ReactNode; onClick?: () => void }) {
   return (
-    <Card className={cn("gap-1 py-4", onClick && "cursor-pointer transition-colors hover:bg-muted/40")} onClick={onClick}>
+    <Card
+      className={cn("gap-1 py-4", onClick && "cursor-pointer transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none")}
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onClick()
+        }
+      } : undefined}
+    >
       <CardContent className="space-y-1 px-4">
         <div className="text-xs text-muted-foreground">{label}</div>
         <div className="text-2xl font-semibold tabular-nums">{value}</div>

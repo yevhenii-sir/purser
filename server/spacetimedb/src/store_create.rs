@@ -138,7 +138,7 @@ pub fn admin_store_create(ctx: &ReducerContext, json: String) -> Result<(), Stri
     let t = now(ctx);
     for (app, p) in queued {
         let info = config::app_store(&app);
-        let state = JobState::default();
+        let state = JobState { job: t.to_string(), ..JobState::default() };
         let job = ctx.db.store_create_job().insert(StoreCreateJob {
             id: 0,
             app_id: app.app_id.clone(),

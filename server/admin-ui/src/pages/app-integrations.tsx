@@ -6,7 +6,10 @@ import { Badge } from "@/components/reui/badge"
 import { IconTile } from "@/components/reui/icon-tile"
 import { IntegrationDialog, TestEvent } from "@/components/integrations"
 import { KIND_LIST, KINDS, type Integration, type Kind } from "@/components/integration-kinds"
+import { call, select } from "@/lib/api"
 import { ago } from "@/lib/format"
+import { tryAct, useAsync } from "@/lib/hooks"
+import { useCan } from "@/lib/roles"
 import { buildLabel, platformById } from "@/lib/stores"
 import type { GameApp, IntegrationHealth } from "@/lib/types"
 import type { TabProps } from "@/pages/app"
@@ -56,6 +59,17 @@ const TONE = { ok: "text-muted-foreground", warn: "text-amber-600 dark:text-ambe
 export function AppIntegrationsTab({ data, reload }: TabProps) {
   const g = data.group
   const [editing, setEditing] = useState<{ kind: Kind; row: Integration | null; appId: string } | null>(null)
+  const canResend = useCan()("configure")
+  // Events an integration did not take (kept 30 days): sent again once the cause is fixed.
+  const appIds = g.apps.map((a) => a.app_id)
+  const dropped = useAsync(
+    () => select<{ id: number; app_id: string; kind: string }>({ table: "integration_dead", columns: ["id", "app_id", "kind"], where: { column: "app_id", equals: appIds } }),
+    [appIds.join(",")],
+  )
+  const droppedOf = (appId: string, kind: Kind) => (dropped.data || []).filter((d) => d.app_id === appId && d.kind === kind).length
+  const resend = async (appId: string, kind: Kind) => {
+    if ((await tryAct(() => call("admin_replay_integration_events", appId, kind), "Queued again: sent within a minute")) !== undefined) dropped.reload()
+  }
   const keySet = (kind: Kind, appId: string) => {
     const app = g.apps.find((a) => a.app_id === appId)
     return [appId, app?.account || "", "default"].some((s) => data.creds.has(`${s}/${KINDS[kind].secret}`))
@@ -106,6 +120,12 @@ export function AppIntegrationsTab({ data, reload }: TabProps) {
                       <div className="truncate text-sm" title={app.app_id}>{buildLabel(app)}</div>
                       {act && <div className={`truncate text-xs ${TONE[act.tone]}`} title={act.title}>{act.text}</div>}
                     </div>
+                    {droppedOf(app.app_id, kind) > 0 && (
+                      <Button size="xs" variant="outline" disabled={!canResend} title="Events this integration did not take: send them again once the cause is fixed"
+                        onClick={() => resend(app.app_id, kind)}>
+                        Resend {droppedOf(app.app_id, kind)} dropped
+                      </Button>
+                    )}
                     <StatusBadge state={state} />
                     <Button size="xs" variant={row ? "ghost" : "outline"} onClick={() => setEditing({ kind, row: row || null, appId: app.app_id })}>
                       {row ? "Edit" : "Connect"}

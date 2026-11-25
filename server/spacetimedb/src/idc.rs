@@ -146,6 +146,8 @@ fn to_game(ev: &BillingEvent) -> game::BillingEvent {
         price_micros: ev.price_micros,
         currency: ev.currency.clone(),
         timestamp_ms: ev.timestamp_ms,
+        event_id: ev.event_id.clone(),
+        occurred_at_ms: ev.occurred_at_ms,
         catalog_product_id: if ev.catalog_product_id.is_empty() { ev.product_id.clone() } else { ev.catalog_product_id.clone() },
     }
 }

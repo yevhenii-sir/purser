@@ -254,6 +254,11 @@ pub struct Purchase {
     /// Writers that change the row's state (a refund, a restore) do not touch it: they make the
     /// row due, and the next step waits for the holder to finish (or the lease to run out).
     pub lease_until_micros: i64,
+    /// Counts what the game was told about the row: a new status, owner or access end is a new
+    /// step. Events of one step share their `event_id` (`{id}#{step_seq}`), retries included.
+    pub step_seq: u32,
+    /// When the current step began (the events' `occurred_at_ms`).
+    pub step_at_micros: i64,
     pub last_error: String,
     #[index(btree)]
     pub created_at_micros: i64,
@@ -330,6 +335,8 @@ impl Purchase {
             attempts: 0,
             next_attempt_at_micros: now_micros,
             lease_until_micros: 0,
+            step_seq: 0,
+            step_at_micros: 0,
             last_error: String::new(),
             created_at_micros: now_micros,
             updated_at_micros: now_micros,
@@ -534,18 +541,20 @@ struct GameAppInput {
     revoke_reducer: String,
     #[serde(default)]
     webhook_url: String,
-    #[serde(default = "crate::default_true")]
-    allow_sandbox: bool,
-    #[serde(default = "crate::default_true")]
-    enabled: bool,
+    /// Missing keeps the stored value (new builds: true); so do the flags below (new builds: false,
+    /// `off`): a form that does not show them (the setup wizard) must not reset them.
     #[serde(default)]
-    client_consumes: bool,
+    allow_sandbox: Option<bool>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    client_consumes: Option<bool>,
     /// Empty = the platform's default store.
     #[serde(default)]
     store: String,
-    /// App Store builds: `off` (default), `inform` or `prefer` (`purser_core::consumption::mode`).
+    /// App Store builds: `off`, `inform` or `prefer` (`purser_core::consumption::mode`).
     #[serde(default)]
-    apple_refund_mode: String,
+    apple_refund_mode: Option<String>,
     /// Amazon builds: the pinned SNS topic; missing keeps the stored one, empty clears it.
     #[serde(default)]
     sns_topic_arn: Option<String>,
@@ -620,10 +629,15 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
     if !i.webhook_url.is_empty() {
         purser_core::encoding::check_public_https_url("webhook_url", &i.webhook_url).map_err(|e| format!("[ERR_BAD_APP] {e}"))?;
     }
-    if !purser_core::consumption::mode::is_valid(&i.apple_refund_mode) {
+    let stored = ctx.db.game_app().app_id().find(&i.app_id);
+    let apple_refund_mode = i.apple_refund_mode.clone().or_else(|| stored.as_ref().map(|a| a.apple_refund_mode.clone())).unwrap_or_default();
+    let allow_sandbox = i.allow_sandbox.or(stored.as_ref().map(|a| a.allow_sandbox)).unwrap_or(true);
+    let enabled = i.enabled.or(stored.as_ref().map(|a| a.enabled)).unwrap_or(true);
+    let client_consumes = i.client_consumes.or(stored.as_ref().map(|a| a.client_consumes)).unwrap_or(false);
+    if !purser_core::consumption::mode::is_valid(&apple_refund_mode) {
         return Err("[ERR_BAD_APP] apple_refund_mode must be off, inform or prefer".into());
     }
-    if purser_core::consumption::mode::is_on(&i.apple_refund_mode) && store.id != purser_core::model::store::APPLE {
+    if purser_core::consumption::mode::is_on(&apple_refund_mode) && store.id != purser_core::model::store::APPLE {
         return Err("[ERR_BAD_APP] apple_refund_mode is for App Store builds".into());
     }
     let existing = ctx.db.game_app().app_id().find(&i.app_id);
@@ -651,11 +665,11 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
         grant_reducer: i.grant_reducer,
         revoke_reducer: i.revoke_reducer,
         webhook_url: i.webhook_url,
-        allow_sandbox: i.allow_sandbox,
-        enabled: i.enabled,
-        client_consumes: i.client_consumes,
+        allow_sandbox,
+        enabled,
+        client_consumes,
         store: store.id.to_string(),
-        apple_refund_mode: i.apple_refund_mode,
+        apple_refund_mode,
         sns_topic_arn,
         client_auth,
     };
@@ -708,7 +722,37 @@ fn delete_build_rows(ctx: &ReducerContext, app_id: &str) {
     ctx.db.store_notify_health().app_id().delete(&id);
     ctx.db.steam_build().app_id().delete(&id);
     ctx.db.steam_report().app_id().delete(&id);
+    stop_build_work(ctx, app_id);
     crate::retention::delete_build(ctx, app_id, &game_key);
+}
+
+/// The queued work of a deleted build stops (it would fail forever and keep raising alerts): its
+/// ledger rows leave the queue saying why (requeue one after adding the build again), and its
+/// outbox rows, dropped integration events and inter-database calls go.
+fn stop_build_work(ctx: &ReducerContext, app_id: &str) {
+    use crate::consumption::apple_consumption_outbox;
+    use crate::integrations::{integration_dead, integration_outbox};
+    use crate::ledger_index::pending_purchase;
+    let pending: Vec<String> = ctx.db.pending_purchase().iter().filter(|p| p.app_id == app_id).map(|p| p.purchase_id).collect();
+    for id in pending {
+        if let Some(mut p) = ctx.db.purchase().id().find(&id) {
+            p.next_attempt_at_micros = 0;
+            p.lease_until_micros = 0;
+            p.last_error = "the build was deleted".into();
+            crate::ledger::save_purchase(ctx, p);
+            crate::ledger::log_event(ctx, &id, "stopped", "the build was deleted");
+        }
+        crate::idc::forget(ctx, &id);
+    }
+    for r in ctx.db.integration_outbox().iter().filter(|r| r.app_id == app_id).map(|r| r.id).collect::<Vec<_>>() {
+        ctx.db.integration_outbox().id().delete(r);
+    }
+    for r in ctx.db.integration_dead().app_id().filter(app_id).map(|r| r.id).collect::<Vec<_>>() {
+        ctx.db.integration_dead().id().delete(r);
+    }
+    for r in ctx.db.apple_consumption_outbox().iter().filter(|r| r.app_id == app_id).map(|r| r.id).collect::<Vec<_>>() {
+        ctx.db.apple_consumption_outbox().id().delete(r);
+    }
 }
 
 #[derive(Deserialize)]
@@ -1167,6 +1211,8 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             attempts: r.attempts,
             next_attempt_at_micros: r.next_attempt_at_micros,
             lease_until_micros: 0,
+            step_seq: 0,
+            step_at_micros: 0,
             last_error: r.last_error,
             created_at_micros: r.created_at_micros,
             updated_at_micros: r.updated_at_micros,
@@ -1303,6 +1349,7 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
         country: String::new(),
         commission_percent: crate::revenue::commission(ctx).percent_for_period(&app.app_id, false),
         previous_product_id: String::new(),
+        event_id: String::new(),
     };
     let only = if i.kind.is_empty() { None } else { Some(i.kind.as_str()) };
     let queued = integrations::enqueue_event(ctx, &app, &format!("test:{now}"), &event, only);

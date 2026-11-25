@@ -39,6 +39,9 @@ pub struct DrainLane {
     pub lane: u32,
     /// The lane is free again after this time, whatever happened to its drainer.
     pub until_micros: i64,
+    /// The `drain_schedule` id of the lane's current run: a run the host started late, after the
+    /// lane was given to another one, leaves the lane alone.
+    pub run: u64,
 }
 
 /// The next run of a lane's drainer (one-shot: the host deletes the row when it starts it).
@@ -86,14 +89,15 @@ pub fn start_free_lanes(tx: &ReducerContext, now: i64) -> u32 {
 
 /// Takes `lane` and schedules its drainer at `at`.
 fn schedule(tx: &ReducerContext, lane: u32, at: i64, now: i64) {
-    let row = DrainLane { lane, until_micros: at.max(now) + crate::ctx::WORKER_BUDGET_SECS * 1_000_000 + LANE_GRACE_MICROS };
+    let until_micros = at.max(now) + crate::ctx::WORKER_BUDGET_SECS * 1_000_000 + LANE_GRACE_MICROS;
+    let at = spacetimedb::Timestamp::from_micros_since_unix_epoch(at);
+    let run = tx.db.drain_schedule().insert(DrainSchedule { id: 0, lane, scheduled_at: ScheduleAt::Time(at) }).id;
+    let row = DrainLane { lane, until_micros, run };
     if tx.db.drain_lane().lane().find(lane).is_some() {
         tx.db.drain_lane().lane().update(row);
     } else {
         tx.db.drain_lane().insert(row);
     }
-    let at = spacetimedb::Timestamp::from_micros_since_unix_epoch(at);
-    tx.db.drain_schedule().insert(DrainSchedule { id: 0, lane, scheduled_at: ScheduleAt::Time(at) });
 }
 
 /// Leases up to `n` due rows, builds taking turns ([`crate::ledger_index::due`]), skipping `skip`.
@@ -155,9 +159,23 @@ pub fn drain_pending(ctx: &mut ProcedureContext, run: DrainSchedule) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    // The lane is this run's (a run started late may find it given to another one): held for
+    // this run's budget from now.
+    let mine = ctx.tx(|tx| {
+        let Some(mut lane) = tx.db.drain_lane().lane().find(run.lane).filter(|l| l.run == run.id) else { return false };
+        lane.until_micros = tx_now_micros(tx) + crate::ctx::WORKER_BUDGET_SECS * 1_000_000 + LANE_GRACE_MICROS;
+        tx.db.drain_lane().lane().update(lane);
+        true
+    });
+    if !mine {
+        return;
+    }
     let budget = Budget::new(ctx, crate::ctx::WORKER_BUDGET_SECS);
     let more = drain(ctx, budget);
     ctx.tx(|tx| {
+        if tx.db.drain_lane().lane().find(run.lane).is_none_or(|l| l.run != run.id) {
+            return; // the lane went to another run meanwhile
+        }
         let now = tx_now_micros(tx);
         if more && run.lane < lanes(tx) {
             schedule(tx, run.lane, now + AGAIN_MICROS, now);

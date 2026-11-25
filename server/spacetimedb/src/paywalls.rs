@@ -217,14 +217,24 @@ pub fn record_event(
 /// Sets where the client says a purchase was made, on a row the caller writes. The first
 /// attribution wins: a replayed `/verify` from another screen does not move a purchase between
 /// variants. Returns whether the row changed.
-pub fn attribute(p: &mut crate::Purchase, a: &Attribution) -> bool {
+pub fn attribute(ctx: &ReducerContext, p: &mut crate::Purchase, a: &Attribution) -> bool {
     if a.is_empty() || !p.paywall_placement.is_empty() {
         return false;
     }
     p.paywall_placement = a.placement.clone();
-    p.paywall_variant_id = a.variant_id.clone();
-    p.paywall_test_id = a.test_id.clone();
     p.paywall_id = a.paywall_id.clone();
+    // A test's variant counts only when it is the one the test assigns this player: the client
+    // names it, and a forged one must not move a test's result.
+    let assigned = a.test_id.is_empty()
+        || ctx.db.paywall_test().test_id().find(&a.test_id).is_some_and(|t| {
+            pw::assign(&a.test_id, &p.user_id, &pw::parse_variants(&t.variants_json)).is_some_and(|v| v.variant_id == a.variant_id)
+        });
+    if assigned {
+        p.paywall_variant_id = a.variant_id.clone();
+        p.paywall_test_id = a.test_id.clone();
+    } else {
+        log::info!("Purchase {}: variant {} is not what test {} assigns {}, not counted for the test", p.id, a.variant_id, a.test_id, p.user_id);
+    }
     true
 }
 
@@ -589,6 +599,7 @@ pub fn results(ctx: &mut impl Ctx, query_json: &str) -> Result<Value, String> {
                     && in_range(day_of_micros(p.created_at_micros))
             })
             .map(|p| AttributedPurchase {
+                granted: p.was_granted && !p.family_shared && !purser_core::xsolla::is_moved(&p.store, &p.purchase_token),
                 variant_id: p.paywall_variant_id,
                 store: p.store,
                 reason: p.reason,

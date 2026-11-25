@@ -523,6 +523,7 @@ pub fn telegram(msg: &Message, bot_token: &str, chat_id: &str) -> Result<HttpCal
         "disable_web_page_preview": true,
     });
     Ok(HttpCall {
+        sign_with: String::new(),
         method: "POST",
         url: format!("https://api.telegram.org/bot{}/sendMessage", bot_token.trim()),
         headers: vec![("Content-Type", "application/json".into())],
@@ -556,6 +557,7 @@ pub fn slack(msg: &Message, webhook_url: &str) -> Result<HttpCall, String> {
         parts.push(format!("<{}|Open the admin page>", msg.link.replace('|', "%7C").replace('>', "%3E")));
     }
     Ok(HttpCall {
+        sign_with: String::new(),
         method: "POST",
         url: webhook_url.trim().to_string(),
         headers: vec![("Content-Type", "application/json".into())],
@@ -586,6 +588,7 @@ pub fn discord(msg: &Message, webhook_url: &str) -> Result<HttpCall, String> {
     }
     let content = clip(&parts.join("\n"), 1990);
     Ok(HttpCall {
+        sign_with: String::new(),
         method: "POST",
         url: webhook_url.trim().to_string(),
         headers: vec![("Content-Type", "application/json".into())],
@@ -594,7 +597,7 @@ pub fn discord(msg: &Message, webhook_url: &str) -> Result<HttpCall, String> {
 }
 
 /// Generic JSON webhook. Body: `type` = `alert`, the message fields, `title`, `hint`, `text`.
-/// With a signing key: `X-Billing-Signature: hex(HMAC-SHA256(key, body))`, as the other webhooks.
+/// With a signing key: `X-Billing-Signature: t=<unix>,v1=<hex>` when sent, as the other webhooks.
 pub fn webhook(msg: &Message, url: &str, secret: &str) -> Result<HttpCall, String> {
     check_https("webhook url", url)?;
     let body = serde_json::json!({
@@ -612,11 +615,8 @@ pub fn webhook(msg: &Message, url: &str, secret: &str) -> Result<HttpCall, Strin
         "text": msg.text(),
     })
     .to_string();
-    let mut headers = vec![("Content-Type", "application/json".to_string()), ("X-Billing-Event", "alert".to_string())];
-    if !secret.is_empty() {
-        headers.push(("X-Billing-Signature", crate::event::webhook_signature(secret, body.as_bytes())));
-    }
-    Ok(HttpCall { method: "POST", url: url.to_string(), headers, body })
+    let headers = vec![("Content-Type", "application/json".to_string()), ("X-Billing-Event", "alert".to_string())];
+    Ok(HttpCall { method: "POST", url: url.to_string(), headers, body, sign_with: secret.to_string() })
 }
 
 /// Builds the call of one channel. `secret`: bot token (Telegram), webhook URL (Slack, Discord) or
@@ -802,10 +802,10 @@ mod tests {
         let call = webhook(&msg(), "https://ops.example.com/alerts", "key").unwrap();
         let b = body(&call);
         assert_eq!((b["type"].as_str(), b["rule"].as_str(), b["repeats"].as_u64()), (Some("alert"), Some("delivery_failing"), Some(2)));
-        let sig = call.headers.iter().find(|(k, _)| *k == "X-Billing-Signature").map(|(_, v)| v.clone()).unwrap();
-        assert_eq!(sig, crate::event::webhook_signature("key", call.body.as_bytes()));
+        let sig = call.headers_at(1_800_000_000).iter().find(|(k, _)| *k == "X-Billing-Signature").map(|(_, v)| v.clone()).unwrap();
+        assert!(crate::event::verify_signature(&sig, call.body.as_bytes(), &["key"], 1_800_000_000).is_ok(), "{sig}");
         let unsigned = webhook(&msg(), "https://ops.example.com/alerts", "").unwrap();
-        assert!(!unsigned.headers.iter().any(|(k, _)| *k == "X-Billing-Signature"));
+        assert!(!unsigned.headers_at(1_800_000_000).iter().any(|(k, _)| *k == "X-Billing-Signature"));
         assert!(webhook(&msg(), "http://ops.example.com", "").is_err());
     }
 

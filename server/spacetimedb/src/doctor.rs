@@ -13,7 +13,7 @@ use crate::settings::{self, key};
 use crate::stores::{self, StoreError};
 use crate::{game_app, health, integration, product, purchase, GameApp, Integration};
 use purser_core::doctor::{self as d, Level, Report, Verdict};
-use purser_core::event::{delivery, webhook_signature};
+use purser_core::event::{delivery, signature_header, SIGNATURE_HEADER};
 use purser_core::integrations::{adjust, event_kind, gcs, ga4, integration_kind, meta, mixpanel, webhook, Built, OutEvent};
 use purser_core::jwt::{self, AppleApiKey, GoogleServiceAccount};
 use purser_core::model::{environment, kind, store};
@@ -814,6 +814,7 @@ fn probe_ga4(ctx: &mut impl Ctx, app: &GameApp, firebase_app_id: &str, api_secre
         country: String::new(),
         commission_percent: purser_core::revenue::DEFAULT_COMMISSION_PERCENT,
         previous_product_id: String::new(),
+        event_id: String::new(),
     };
     match ga4::build(&event, firebase_app_id, api_secret, true) {
         Ok(Built::Send(call)) => {
@@ -871,12 +872,12 @@ pub fn ping_webhook(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, String> {
         return Err("the app does not deliver to an https webhook".into());
     }
     let body = d::webhook_ping_body(&app.app_id, ctx.now_ms());
-    let signature = webhook_signature(&secret, body.as_bytes());
+    let signature = signature_header(&secret, body.as_bytes(), ctx.now_ms() / 1000);
     let res = net::send(
         ctx.http(),
         "POST",
         &app.webhook_url,
-        &[("Content-Type", "application/json"), ("X-Billing-Signature", &signature), ("X-Billing-Event", "ping")],
+        &[("Content-Type", "application/json"), (SIGNATURE_HEADER, &signature), ("X-Billing-Event", "ping")],
         body,
     )?;
     Ok(json!({ "ok": res.ok(), "status": res.status, "body": res.body.chars().take(300).collect::<String>() }))

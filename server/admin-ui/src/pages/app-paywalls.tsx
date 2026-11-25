@@ -65,7 +65,8 @@ interface VariantResult extends Variant {
   gross_usd_micros: number
   net_usd_micros: number
   arpu_per_view_usd_micros: number | null
-  probability_best: number
+  /** Null until every variant still shown has enough views (the server's `MIN_VIEWS_TO_SCORE`). */
+  probability_best: number | null
 }
 
 interface Results {
@@ -508,7 +509,7 @@ function ResultsSection({ gameKey, placements, placement, tests, onPlacement }: 
     [shown, gameKey, placement.placement_id, testId, sandbox],
   )
   const r = results.data
-  const bestP = r ? Math.max(...r.variants.map((v) => v.probability_best)) : 0
+  const bestP = r ? Math.max(0, ...r.variants.map((v) => v.probability_best ?? 0)) : 0
   return (
     <Section
       title="Results"
@@ -561,10 +562,12 @@ function ResultsSection({ gameKey, placements, placement, tests, onPlacement }: 
               { title: "ARPU / view", num: true, sort: (v) => v.arpu_per_view_usd_micros, cell: (v) => (v.arpu_per_view_usd_micros === null ? "—" : usd(v.arpu_per_view_usd_micros)) },
               {
                 title: "Probability to be best",
-                sort: (v) => v.probability_best,
+                sort: (v) => v.probability_best ?? -1,
                 size: 200,
                 className: "w-48",
-                cell: (v) => (
+                cell: (v) => v.probability_best === null ? (
+                  <span className="text-xs text-muted-foreground" title="Shown once every variant still shown has 100 views">not enough data</span>
+                ) : (
                   <div className="flex items-center gap-2">
                     <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
                       <div className={v.probability_best === bestP && r.variants.length > 1 ? "h-full bg-emerald-500" : "h-full bg-muted-foreground/40"} style={{ width: `${(v.probability_best * 100).toFixed(1)}%` }} />

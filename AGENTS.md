@@ -72,8 +72,14 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - **Delivery** (`game_app.delivery`): `spacetimedb` (call `grant_reducer` / `revoke_reducer` on the
   game DB with `spacetime_token`; one argument, the `BillingEvent`), `spacetimedb_idc` (a game DB on the
   same server: outbox rows to its `purser_grant` / `purser_revoke`, `spacetime_db` = its identity; the
-  ledger row waits in `idc_call` for the answer, `idc.rs`), `webhook` (HMAC `webhook_secret`),
-  `none` (client grants; `PurchaseResult.GrantOnClient`). Contract: [docs/game-integration.md](docs/game-integration.md).
+  ledger row waits in `idc_call` for the answer, `idc.rs`), `webhook` (`X-Billing-Signature: t=..,v1=..`,
+  signed when sent, `purser_core::event::signature_header`), `none` (client grants;
+  `PurchaseResult.GrantOnClient`). Every event has `event_id` = `{ledger id}#{step_seq}`: `save_purchase`
+  starts a new step when the status, owner or access end changes, so retries share the id and every
+  other event gets a new one. Contract: [docs/game-integration.md](docs/game-integration.md).
+- **Revenue counted live is logged**: the hooks in `revenue.rs` write `counted_refund` /
+  `counted_expiration` / `counted_reinstate` purchase log events, and the rebuild replays them (never
+  infer money from a row's final status).
 - **Account binding**: Google `obfuscatedAccountId` / Apple `appAccountToken` derived from `user_id`
   (`purser_core::google_account_id` / `apple_account_token`, mirrored by Unity `AccountIds` with the
   same test vectors). Enforced for consumables only.

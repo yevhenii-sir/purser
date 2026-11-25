@@ -1203,6 +1203,29 @@ fn rebuilding_from_the_ledger_gives_the_live_numbers() {
 }
 
 #[test]
+fn a_rebuild_replays_refunds_and_reinstatements_as_they_were_counted() {
+    let w = refund_world(None, "off");
+    let id = "apple:2000000123";
+    let refund = |w: &World| {
+        w.ctx().tx(|tx| {
+            let p = tx.db.purchase().id().find(id.to_string()).unwrap();
+            ledger::mark_inactive(tx, p, status::REVOKE_PENDING, 0, "apple REFUND");
+        });
+        w.advance_clock(86_400);
+        w.run_worker();
+    };
+    // Refunded, the refund reversed, refunded again, each on its own day.
+    refund(&w);
+    apple_notification(&w, "REFUND_REVERSED", purser_core::apple::testing::sign);
+    w.advance_clock(86_400);
+    refund(&w);
+    let live = revenue_rows(&w);
+    w.as_admin(false);
+    rebuild_revenue(&w);
+    assert_eq!(revenue_rows(&w), live);
+}
+
+#[test]
 fn the_worker_rebuilds_existing_history_once_and_fetches_exchange_rates() {
     let w = World::new();
     price_products(&w, "EUR");
@@ -1624,7 +1647,7 @@ fn purchases_are_sent_to_amplitude_with_the_key_in_the_body() {
     let e = &body["events"][0];
     assert_eq!((e["event_type"].as_str(), e["user_id"].as_str(), e["device_id"].as_str()), (Some("purser_purchase"), Some("player-1"), Some("device-42")));
     assert_eq!((e["revenue"].as_f64(), e["currency"].as_str(), e["productId"].as_str()), (Some(0.99), Some("USD"), Some("gems")));
-    assert_eq!(e["insert_id"], format!("{ORDER}:purchase"));
+    assert_eq!(e["insert_id"], format!("{LEDGER_ID}#0:purchase"), "the event id: the same on retries, another for every other event");
     assert_eq!(e["time"].as_i64(), Some(NOW_MICROS / 1000));
 }
 
@@ -2823,8 +2846,13 @@ fn verify_stores_the_paywall_variant_and_results_count_views_and_revenue() {
     assert_eq!((bad.http, bad.body["code"].as_str()), (400, Some("ERR_UNKNOWN_VARIANT")));
     assert_eq!(paywall_view(&w, "a", "other-test").body["code"], "ERR_UNKNOWN_TEST");
 
+    // A player the test assigns to `a` (the server checks the variant a purchase names).
+    let buyer = (1..200)
+        .map(|i| format!("player-{i}"))
+        .find(|u| get_paywall_for(&w, "main_paywall", u).body["variant_id"] == "a")
+        .expect("someone is in variant a");
     let r: VerifyRequest = serde_json::from_value(json!({
-        "app_id": APP, "user_id": "player-1", "product_id": "gems", "purchase_token": TOKEN,
+        "app_id": APP, "user_id": buyer, "product_id": "gems", "purchase_token": TOKEN,
         "placement": "main_paywall", "variant_id": "a", "test_id": "main-ab-1", "paywall_id": "pw_a",
     }))
     .unwrap();
@@ -2846,7 +2874,7 @@ fn verify_stores_the_paywall_variant_and_results_count_views_and_revenue() {
     assert_eq!((a["variant_id"].as_str(), a["views"].as_u64(), a["purchases"].as_u64()), (Some("a"), Some(2), Some(1)));
     assert_eq!((a["gross_usd_micros"].as_i64(), a["conversion"].as_f64()), (Some(990_000), Some(0.5)));
     assert_eq!((b["views"].as_u64(), b["purchases"].as_u64()), (Some(1), Some(0)));
-    assert!(a["probability_best"].as_f64().unwrap() > b["probability_best"].as_f64().unwrap());
+    assert!(a["probability_best"].is_null(), "a handful of views is not enough to score");
     assert_eq!(report["test"]["running"], true);
 
     let outside = paywall_results(&w, json!({ "game_key": "game", "placement_id": "main_paywall" })).unwrap();
@@ -2915,6 +2943,8 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
         attempts: 0,
         next_attempt_at_micros: 0,
         lease_until_micros: 0,
+        step_seq: 0,
+        step_at_micros: 0,
         last_error: String::new(),
         created_at_micros: NOW_MICROS,
         updated_at_micros: NOW_MICROS,
@@ -3013,6 +3043,21 @@ fn amazon_verify(w: &World, user: &str, product_id: &str, store_user_id: &str) -
 
 fn find(w: &World, id: &str) -> Option<Purchase> {
     w.test.with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.purchase().id().find(id.to_string()))).unwrap()
+}
+
+#[test]
+fn saving_a_build_without_its_flags_keeps_them() {
+    let w = World::new();
+    w.as_admin(false);
+    let upsert = |v: Value| w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_game_app(ctx, v.to_string())).unwrap();
+    upsert(json!({ "app_id": "com.example.flags", "platform": "android", "delivery": "none", "allow_sandbox": false, "enabled": false }));
+    // The setup wizard saves the build again without the flags it does not show.
+    upsert(json!({ "app_id": "com.example.flags", "platform": "android", "delivery": "none" }));
+    let a = w.read(|tx| tx.db.game_app().app_id().find("com.example.flags".to_string()).unwrap());
+    assert_eq!((a.allow_sandbox, a.enabled), (false, false));
+    upsert(json!({ "app_id": "com.example.fresh", "platform": "android", "delivery": "none" }));
+    let b = w.read(|tx| tx.db.game_app().app_id().find("com.example.fresh".to_string()).unwrap());
+    assert_eq!((b.allow_sandbox, b.enabled, b.client_consumes), (true, true, false), "new builds get the defaults");
 }
 
 #[test]
@@ -4591,6 +4636,8 @@ impl World {
             attempts: 0,
             next_attempt_at_micros: 0,
             lease_until_micros: 0,
+            step_seq: 0,
+            step_at_micros: 0,
             last_error: String::new(),
             created_at_micros: updated,
             updated_at_micros: updated,
@@ -4940,7 +4987,8 @@ fn the_paywall_of_a_verify_is_stored_with_the_row() {
     let (_, txs) = w.count_txs(|w| w.verify_with_fields("player-1", fields));
     assert_eq!(txs, 4);
     let p = w.purchase();
-    assert_eq!((p.paywall_placement.as_str(), p.paywall_variant_id.as_str()), ("main_paywall", "b"));
+    // No such test: the screen is kept, the test's variant is not counted.
+    assert_eq!((p.paywall_placement.as_str(), p.paywall_id.as_str(), p.paywall_variant_id.as_str()), ("main_paywall", "pw_b", ""));
 }
 
 /// An iOS build that accepts sandbox purchases, with a transaction only the sandbox API knows.
@@ -5197,6 +5245,8 @@ fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -
         attempts: 0,
         next_attempt_at_micros: 0,
         lease_until_micros: 0,
+        step_seq: 0,
+        step_at_micros: 0,
         last_error: String::new(),
         created_at_micros,
         updated_at_micros: created_at_micros,
@@ -6059,7 +6109,7 @@ mod store_create_tests {
         let p = local(&w, WEB_APP, "price_9").expect("a Stripe build's product id is the Price id");
         assert_eq!(p.catalog_id(), "gems_new", "and its catalog id is the product the admin picked");
         let call = w.fake.borrow().calls.iter().find(|c| c.contains("/v1/products")).cloned().unwrap();
-        assert!(call.contains("[idempotency=purser-create-com.studio.game.web-gems_new]"), "{call}");
+        assert!(call.contains("[idempotency=purser-create-com.studio.game.web-gems_new-"), "per job: {call}");
         assert!(call.contains("unit_amount%5D=499"), "{call}");
     }
 
@@ -7842,6 +7892,45 @@ fn a_reversed_app_store_refund_grants_the_purchase_again() {
 }
 
 #[test]
+fn every_event_of_a_purchase_has_its_own_id_and_retries_keep_it() {
+    let w = refund_world(None, "off");
+    let id = "apple:2000000123";
+    let event_ids = |w: &World| -> Vec<(String, String)> {
+        w.fake
+            .borrow()
+            .calls
+            .iter()
+            .filter_map(|c| {
+                let (_, rest) = c.split_once("/call/")?;
+                let (reducer, args) = rest.split_once(' ')?;
+                let ev = serde_json::from_str::<Value>(args).ok()?[0].clone();
+                Some((reducer.to_string(), ev["event_id"].as_str()?.to_string()))
+            })
+            .collect()
+    };
+    let refund = |w: &World| {
+        w.ctx().tx(|tx| {
+            let p = tx.db.purchase().id().find(id.to_string()).unwrap();
+            ledger::mark_inactive(tx, p, status::REVOKE_PENDING, 0, "apple REFUND");
+        });
+        w.advance_clock(60);
+        w.run_worker();
+    };
+    // Refund, the refund reversed, refunded again: two revokes the game must both apply.
+    w.fake.borrow_mut().failing_reducer = "billing_revoke".into();
+    refund(&w);
+    w.fake.borrow_mut().failing_reducer.clear();
+    w.advance_clock(120);
+    w.run_worker();
+    apple_notification(&w, "REFUND_REVERSED", purser_core::apple::testing::sign);
+    refund(&w);
+    let revokes: Vec<String> = event_ids(&w).into_iter().filter(|(r, _)| r == "billing_revoke").map(|(_, e)| e).collect();
+    assert_eq!(revokes.len(), 3, "a failed attempt, its retry, the second refund: {revokes:?}");
+    assert_eq!(revokes[0], revokes[1], "a retry keeps the event id");
+    assert_ne!(revokes[1], revokes[2], "the second refund is another event");
+}
+
+#[test]
 fn a_late_reversal_of_a_transaction_revoked_again_changes_nothing() {
     let w = refund_world(None, "off");
     let id = "apple:2000000123";
@@ -8076,7 +8165,7 @@ fn jam_lanes(w: &World) {
         }
         for lane in 0..crate::drain::DEFAULT_LANES {
             tx.db.drain_lane().lane().delete(lane);
-            tx.db.drain_lane().insert(crate::drain::DrainLane { lane, until_micros: i64::MAX });
+            tx.db.drain_lane().insert(crate::drain::DrainLane { lane, until_micros: i64::MAX, run: 0 });
         }
     });
 }

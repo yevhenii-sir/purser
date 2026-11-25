@@ -292,8 +292,10 @@ pub(crate) fn period_facts(p: &Purchase) -> PeriodFacts {
 
 /// Rows that are never sales: manual grants and items moved from the Xsolla inventory of the old
 /// client-side integration.
+/// Not counted as a sale: manual grants, items moved from the old Xsolla inventory, and a family
+/// member's purchase shared with this player (Apple Family Sharing: nobody paid for this row).
 fn not_a_sale(p: &Purchase) -> bool {
-    p.store == store::MANUAL || purser_core::xsolla::is_moved(&p.store, &p.purchase_token)
+    p.store == store::MANUAL || p.family_shared || purser_core::xsolla::is_moved(&p.store, &p.purchase_token)
 }
 
 fn refund_delta(p: &Purchase) -> Option<Delta> {
@@ -315,12 +317,33 @@ pub fn on_partial_refund(tx: &ReducerContext, p: &Purchase, amount_micros: i64) 
 
 /// A refunded purchase is valid again (Stripe dispute won).
 pub fn on_reinstate(tx: &ReducerContext, p: &Purchase) {
+    let amount = p.price_micros - p.refunded_micros;
+    counted(tx, p, COUNTED_REINSTATE, amount);
     if !counts_live(tx, p) {
         return;
     }
-    if let Some(d) = rv::reinstate_delta(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &period_facts(p)) {
+    if let Some(d) = rv::reinstate_delta(&p.store, p.was_granted, amount, &period_facts(p)) {
         apply(tx, p, today(tx), &d);
     }
+}
+
+/// Purchase log events that record what a live hook counted (the rebuild replays them, so it gives
+/// the same numbers whatever happened to the row afterwards): the amount and whether the purchase
+/// had been granted, in the details.
+const COUNTED_REFUND: &str = "counted_refund";
+const COUNTED_EXPIRATION: &str = "counted_expiration";
+const COUNTED_REINSTATE: &str = "counted_reinstate";
+
+fn counted(tx: &ReducerContext, p: &Purchase, event: &str, amount_micros: i64) {
+    if !not_a_sale(p) {
+        crate::ledger::log_event(tx, &p.id, event, &format!("{amount_micros} {}", u8::from(p.was_granted)));
+    }
+}
+
+/// `(amount, was_granted)` of a counted event's details.
+fn counted_details(details: &str) -> Option<(i64, bool)> {
+    let (amount, granted) = details.split_once(' ')?;
+    Some((amount.parse().ok()?, granted == "1"))
 }
 
 /// What the purchase log says about money taken back and given back, in order: partial refunds
@@ -328,27 +351,16 @@ pub fn on_reinstate(tx: &ReducerContext, p: &Purchase) {
 /// followed by `reinstated`). The rebuild counts them on their days, like the live hooks.
 fn logged_money(p: &Purchase, logs: &[(String, String, i64)], f: &PeriodFacts) -> Vec<(i64, Delta)> {
     let mut out = Vec::new();
-    let mut revoked_at = None;
-    let remaining = p.price_micros - p.refunded_micros;
     for (event, details, at) in logs {
-        match event.as_str() {
-            "partial_refund" => {
-                if let Some(d) = details.parse().ok().and_then(|a| rv::partial_refund_delta(&p.store, p.was_granted, a, f)) {
-                    out.push((*at, d));
-                }
-            }
-            e if e == status::REVOKE_PENDING => revoked_at = revoked_at.or(Some(*at)),
-            "reinstated" => {
-                if let Some(r) = revoked_at.take() {
-                    if let Some(d) = rv::refund_delta_with(&p.store, p.was_granted, remaining, f) {
-                        out.push((r, d));
-                    }
-                }
-                if let Some(d) = rv::reinstate_delta(&p.store, p.was_granted, remaining, f) {
-                    out.push((*at, d));
-                }
-            }
-            _ => {}
+        let d = match event.as_str() {
+            "partial_refund" => details.parse().ok().and_then(|a| rv::partial_refund_delta(&p.store, p.was_granted, a, f)),
+            COUNTED_REFUND => counted_details(details).and_then(|(a, g)| rv::refund_delta_with(&p.store, g, a, f)),
+            COUNTED_EXPIRATION => rv::expire_delta(&p.store, &p.kind),
+            COUNTED_REINSTATE => counted_details(details).and_then(|(a, g)| rv::reinstate_delta(&p.store, g, a, f)),
+            _ => None,
+        };
+        if let Some(d) = d {
+            out.push((*at, d));
         }
     }
     out
@@ -389,6 +401,11 @@ pub fn on_first_grant(tx: &ReducerContext, p: &Purchase) {
 
 /// The store reported a refund (`REVOKE_PENDING`) or an expiration (`EXPIRE_PENDING`).
 pub fn on_inactive(tx: &ReducerContext, p: &Purchase, new_status: &str) {
+    match new_status {
+        status::REVOKE_PENDING => counted(tx, p, COUNTED_REFUND, p.price_micros - p.refunded_micros),
+        status::EXPIRE_PENDING => counted(tx, p, COUNTED_EXPIRATION, 0),
+        _ => {}
+    }
     if !counts_live(tx, p) {
         return;
     }
@@ -461,9 +478,6 @@ fn count_purchases(tx: &ReducerContext, rows: &[Purchase]) {
             tx.db.purchase_log().purchase_id().filter(p.id.as_str()).map(|l| (l.event, l.details, l.at_micros)).collect();
         full_logs.sort_by_key(|(_, _, at)| *at);
         let logs: Vec<(String, i64)> = full_logs.iter().map(|(e, _, at)| (e.clone(), *at)).collect();
-        // When the ledger recorded `event` for the purchase (after its last reinstatement).
-        let reinstated_at = logs.iter().filter(|(e, _)| e == "reinstated").map(|(_, at)| *at).max().unwrap_or(i64::MIN);
-        let first_logged = |event: &str| logs.iter().filter(|(e, at)| e == event && *at > reinstated_at).map(|(_, at)| *at).min();
         for (at, d) in logged_money(p, &full_logs, &f) {
             b.add(p, day_of_micros(at), &d);
         }
@@ -473,18 +487,8 @@ fn count_purchases(tx: &ReducerContext, rows: &[Purchase]) {
                 b.add(p, day_of_micros(p.created_at_micros), &d);
             }
         }
-        let inactive = match p.status.as_str() {
-            // Revoked by an admin: not a refund (see `support`).
-            status::REVOKE_PENDING | status::REVOKED if !crate::support::revoked_by_admin(tx, &p.id) => {
-                Some((status::REVOKE_PENDING, rv::refund_delta_with(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &f)))
-            }
-            status::EXPIRE_PENDING | status::EXPIRED => Some((status::EXPIRE_PENDING, rv::expire_delta(&p.store, &p.kind))),
-            _ => None,
-        };
-        if let Some((event, Some(d))) = inactive {
-            let at = first_logged(event).unwrap_or(p.updated_at_micros);
-            b.add(p, day_of_micros(at), &d);
-        }
+        // Refunds, expirations and reinstatements: replayed from the events the live hooks logged
+        // (`logged_money`), not guessed from the row's status now.
         if let Some(d) = rv::transfer_delta(&p.store) {
             for (_, at) in logs.iter().filter(|(e, _)| e == "transferred") {
                 b.add(p, day_of_micros(*at), &d);
@@ -642,19 +646,10 @@ pub fn rebuild_at_once(tx: &ReducerContext) {
                 apply(tx, p, day_of_micros(p.created_at_micros), &d);
             }
         }
-        for (at, d) in logged_money(p, &all_logs(&p.id), &period_facts(p)) {
-            apply(tx, p, day_of_micros(at), &d);
-        }
-        let inactive = match p.status.as_str() {
-            status::REVOKE_PENDING | status::REVOKED if !crate::support::revoked_by_admin(tx, &p.id) => {
-                Some((status::REVOKE_PENDING, refund_delta(p)))
+        if !not_a_sale(p) {
+            for (at, d) in logged_money(p, &all_logs(&p.id), &period_facts(p)) {
+                apply(tx, p, day_of_micros(at), &d);
             }
-            status::EXPIRE_PENDING | status::EXPIRED => Some((status::EXPIRE_PENDING, rv::expire_delta(&p.store, &p.kind))),
-            _ => None,
-        };
-        if let Some((event, Some(d))) = inactive {
-            let at = logged_at(&p.id, event).into_iter().min().unwrap_or(p.updated_at_micros);
-            apply(tx, p, day_of_micros(at), &d);
         }
         if let Some(d) = rv::transfer_delta(&p.store) {
             for at in logged_at(&p.id, "transferred") {
@@ -745,8 +740,14 @@ fn active_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> BTreeMa
         }
     }
     let mut out: BTreeMap<(String, String, String, String), (u32, i64)> = BTreeMap::new();
+    // The catalog's billing period; guessed from the row's span only when the product has none (a
+    // row recorded late, by a restore or an import, spans less than its period).
+    let mut periods: BTreeMap<(String, String), u32> = BTreeMap::new();
     for p in latest.into_values() {
-        let period = rv::guess_period_days(p.expires_at_ms - p.created_at_micros / 1000);
+        let catalog = *periods.entry((p.app_id.clone(), p.product_id.clone())).or_insert_with(|| {
+            tx.db.product().key().find(crate::product_key(&p.app_id, &p.product_id)).map(|pr| purser_core::catalog::period_days(&pr.period)).unwrap_or(0)
+        });
+        let period = if catalog > 0 { catalog } else { rv::guess_period_days(p.expires_at_ms - p.created_at_micros / 1000) };
         let e = out.entry((p.app_id, p.product_id, p.environment, p.currency)).or_default();
         e.0 += 1;
         e.1 += rv::monthly_micros(p.price_micros, period);
@@ -997,11 +998,13 @@ fn load_fx(tx: &ReducerContext, from: i32, to: i32) -> FxTable {
 
 /// Store commission settings (`settings::key::STORE_COMMISSION_*`).
 pub fn commission(tx: &ReducerContext) -> Commission {
-    Commission::from_settings(
+    let mut c = Commission::from_settings(
         settings::get(tx, key::STORE_COMMISSION_PERCENT).as_deref(),
         settings::get(tx, key::STORE_COMMISSION_BY_APP).as_deref(),
         settings::get(tx, key::STORE_COMMISSION_AFTER_YEAR_PERCENT).as_deref(),
-    )
+    );
+    c.store_of = tx.db.game_app().iter().map(|a| (a.app_id.clone(), crate::config::app_store(&a).id.to_string())).collect();
+    c
 }
 
 /// First day of a month (`purser_core::revenue::month_index`).
@@ -1026,6 +1029,7 @@ fn ledger_rows(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32)
     let wanted = |p: &Purchase| !not_a_sale(p) && (apps.is_empty() || apps.contains(&p.app_id));
 
     let mut campaigns: BTreeMap<(String, String), String> = BTreeMap::new();
+    let games: BTreeMap<String, String> = tx.db.game_app().iter().map(|a| (a.app_id, a.game_key)).collect();
     let mut row_of = |p: Purchase| {
         let day = day_of_micros(p.created_at_micros);
         let asa_campaign = if day >= from && day <= to {
@@ -1043,6 +1047,7 @@ fn ledger_rows(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32)
         LedgerRow {
             refunded: matches!(p.status.as_str(), status::REVOKE_PENDING | status::REVOKED),
             granted: p.was_granted,
+            game_key: games.get(&p.app_id).cloned().unwrap_or_default(),
             app_id: p.app_id,
             user_id: p.user_id,
             environment: p.environment,
@@ -1343,6 +1348,9 @@ pub struct RevenueReport {
     pub report_json: String,
 }
 
+/// `server_state` key: bumped whenever kept reports are forgotten.
+const REPORT_GENERATION: &str = "revenue_report_generation";
+
 /// How long a kept report is answered without counting it again.
 pub const KEPT_TTL_MICROS: i64 = 60 * 60 * 1_000_000;
 /// A refresh asked for sooner than this after the last count gets the kept report.
@@ -1397,25 +1405,32 @@ fn with_meta(mut report: serde_json::Value, computed_at: i64, kept: bool, counti
     report
 }
 
+/// What [`kept_report`] decided: the report key, when it started, what it is counted for (day,
+/// rebuild state, generation) and the kept answer if it is answered from it.
+type Decided = (String, i64, (i32, bool, i64), Option<serde_json::Value>);
+
 /// [`report`] answered from [`RevenueReport`] when it was slow before (see [`kept_plan`]).
 fn kept_report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<serde_json::Value, String> {
-    let decided = ctx.tx(|tx| -> Result<(String, i64, Option<serde_json::Value>), String> {
+    // The day, rebuild state and generation the report is counted for: saved with it only if
+    // nothing forgot the kept reports meanwhile (new rates, an override, a rebuild).
+    let decided = ctx.tx(|tx| -> Result<Decided, String> {
         let key = report_key(tx, q, overview)?;
         let now = crate::ctx::tx_now_micros(tx);
+        let counted_for = (today(tx), rebuilding(tx), settings::get_i64(tx, REPORT_GENERATION));
         let kept = tx.db.revenue_report().key().find(&key);
         if kept_plan(kept.as_ref(), now, today(tx), rebuilding(tx), q.refresh) == KeptPlan::Answer {
             let k = kept.expect("answered from a kept report");
             let counting = k.computing_since_micros > now - COUNTING_MICROS;
             let report = serde_json::from_str(&k.report_json).unwrap_or_default();
-            return Ok((key, now, Some(with_meta(report, k.computed_at_micros, true, counting))));
+            return Ok((key, now, counted_for, Some(with_meta(report, k.computed_at_micros, true, counting))));
         }
         // A kept report counted again: others get the old one until this count is done.
         if let Some(k) = kept {
             tx.db.revenue_report().key().update(RevenueReport { computing_since_micros: now, ..k });
         }
-        Ok((key, now, None))
+        Ok((key, now, counted_for, None))
     });
-    let (key, started, answer) = decided?;
+    let (key, started, (counted_day, counted_rebuilding, generation), answer) = decided?;
     if let Some(v) = answer {
         return Ok(v);
     }
@@ -1423,14 +1438,15 @@ fn kept_report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<ser
     let report_json = counted.as_ref().map(|r| r.to_string()).unwrap_or_default();
     let (computed_at, keep) = ctx.tx(|tx| {
         let now = crate::ctx::tx_now_micros(tx);
-        let keep = counted.is_ok() && now - started >= KEEP_AFTER_MICROS;
+        let current = settings::get_i64(tx, REPORT_GENERATION) == generation;
+        let keep = counted.is_ok() && current && now - started >= KEEP_AFTER_MICROS;
         let old = tx.db.revenue_report().key().find(&key);
         match (old, keep) {
             (Some(row), true) => {
                 tx.db.revenue_report().key().update(RevenueReport {
                     computed_at_micros: now,
-                    counted_day: today(tx),
-                    rebuilding: rebuilding(tx),
+                    counted_day,
+                    rebuilding: counted_rebuilding,
                     computing_since_micros: 0,
                     report_json: report_json.clone(),
                     ..row
@@ -1440,8 +1456,8 @@ fn kept_report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<ser
                 tx.db.revenue_report().insert(RevenueReport {
                     key: key.clone(),
                     computed_at_micros: now,
-                    counted_day: today(tx),
-                    rebuilding: rebuilding(tx),
+                    counted_day,
+                    rebuilding: counted_rebuilding,
                     computing_since_micros: 0,
                     report_json: report_json.clone(),
                 });
@@ -1478,6 +1494,9 @@ fn prune_kept(tx: &ReducerContext, now: i64) {
 
 /// Forgets the kept reports (rates or aggregates changed): the next request counts again.
 pub fn forget_reports(tx: &ReducerContext) {
+    // A count running now read the old numbers: it must not keep its report (see `kept_report`).
+    let generation = settings::get_i64(tx, REPORT_GENERATION) + 1;
+    settings::set(tx, REPORT_GENERATION, &generation.to_string());
     let keys: Vec<String> = tx.db.revenue_report().iter().map(|r| r.key).collect();
     for k in keys {
         tx.db.revenue_report().key().delete(&k);

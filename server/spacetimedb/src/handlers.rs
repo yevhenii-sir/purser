@@ -106,6 +106,13 @@ pub(crate) fn valid_user_id(u: &str) -> bool {
     purser_core::is_valid_user_id(u)
 }
 
+/// An id from an unauthenticated request as it goes into the logs: quoted and escaped (no forged
+/// log lines), at most 64 characters (no flooding).
+fn log_id(id: &str) -> String {
+    let short: String = id.chars().take(64).collect();
+    format!("{short:?}")
+}
+
 fn store_error_outcome(e: StoreError) -> Outcome {
     match e {
         StoreError::Invalid(m) => Outcome::status(400, "invalid", m),
@@ -883,11 +890,11 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         Some((app, true, product, auth))
     });
     let Some((app, accepted, product, mut auth)) = checked else {
-        log::warn!("RTDN for unknown package {package}");
+        log::warn!("RTDN for unknown package {}", log_id(&package));
         return Outcome::status(200, "ignored", "unknown package");
     };
     if !accepted {
-        log::warn!("RTDN for {package} rejected: bad or unconfigured secret");
+        log::warn!("RTDN for {} rejected: bad or unconfigured secret", log_id(&package));
         return Outcome::status(401, "error", "unauthorized");
     }
 
@@ -1012,7 +1019,7 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         Some((app, accepted, auth))
     });
     let Some((app, accepted, mut auth)) = checked else {
-        log::warn!("App Store notification for unknown bundle {}", n.bundle_id);
+        log::warn!("App Store notification for unknown bundle {}", log_id(&n.bundle_id));
         return Outcome::status(200, "ignored", "unknown bundle");
     };
     if !accepted {
@@ -1103,7 +1110,7 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         Some((app, stores::cached_sns_certificate(tx, &m.signing_cert_url, now)))
     });
     let Some((app, cached_cert)) = loaded else {
-        log::warn!("Amazon notification for unknown app '{app_id}'");
+        log::warn!("Amazon notification for unknown app {}", log_id(&app_id));
         return Outcome::status(200, "ignored", "unknown app: add ?app=<app_id> to the endpoint URL");
     };
 
@@ -1256,8 +1263,12 @@ fn admin_page_response(headers: &http::HeaderMap) -> Response {
 
 /// The page unpacked: the deflate stream between the 10-byte gzip header `build.rs` writes and
 /// the 8-byte trailer.
+/// The page for clients that do not take gzip: inflated once per module instance, not per request
+/// (an unauthenticated route on a database that computes one call at a time).
 fn admin_page_html() -> Vec<u8> {
-    miniz_oxide::inflate::decompress_to_vec(&ADMIN_PAGE_GZ[10..ADMIN_PAGE_GZ.len() - 8]).unwrap_or_default()
+    static PAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    PAGE.get_or_init(|| miniz_oxide::inflate::decompress_to_vec(&ADMIN_PAGE_GZ[10..ADMIN_PAGE_GZ.len() - 8]).unwrap_or_default())
+        .clone()
 }
 
 #[handler]
@@ -1289,7 +1300,7 @@ fn health_report(ctx: &mut impl Ctx) -> Outcome {
             now,
             crate::settings::worker_age_secs(tx),
             tx.db.pending_purchase().count(),
-            tx.db.pending_purchase().attempts().filter(crate::doctor::STUCK_ATTEMPTS..).count(),
+            tx.db.pending_purchase().attempts().filter(crate::doctor::STUCK_ATTEMPTS..).take(crate::ledger_index::QUEUE_COUNT_CAP).count(),
             tx.db.integration_outbox().count(),
             crate::ledger_index::queue(tx, now),
             crate::drain::busy_lanes(tx, now),

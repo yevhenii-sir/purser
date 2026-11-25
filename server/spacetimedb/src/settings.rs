@@ -109,6 +109,10 @@ pub fn admin_set_setting(ctx: &ReducerContext, key: String, value: String) -> Re
         return Err(format!("[ERR_BAD_SETTING] unknown setting '{key}'"));
     }
     let value = value.trim().trim_end_matches('/').to_string();
+    // Kept revenue reports estimated proceeds with the old commission.
+    if matches!(key.as_str(), key::STORE_COMMISSION_PERCENT | key::STORE_COMMISSION_BY_APP | key::STORE_COMMISSION_AFTER_YEAR_PERCENT) {
+        crate::revenue::forget_reports(ctx);
+    }
     if value.is_empty() {
         ctx.db.server_state().key().delete(&key);
         return Ok(());

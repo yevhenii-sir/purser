@@ -159,7 +159,7 @@ def idc(a, base, tok, db, req, check, call, sql):
         if rows and status and status[0][0] == "completed":
             break
         time.sleep(1)
-    check(len(rows) == 1 and "grant|" in json.dumps(rows[0]), f"the game database got the grant once: {rows}")
+    check(len(rows) == 1 and "grant" in rows[0] and "manual:e2e.idc-1#" in json.dumps(rows[0]), f"the game database got the grant once, by event_id: {rows}")
     check(status and status[0][0] == "completed", f"billing applied the game's answer: {status}")
 
 

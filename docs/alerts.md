@@ -89,7 +89,7 @@ channel for the whole team without filters, plus a Slack channel per game studio
 only `delivery_failing` and `store_auth`.
 
 Webhook body (`X-Billing-Event: alert`; with a signing key also
-`X-Billing-Signature: hex(HMAC-SHA256(key, body))`, like the other webhooks):
+`X-Billing-Signature: t=<unix seconds>,v1=<hex(HMAC-SHA256(key, "<t>." + body))>`, like the other webhooks; see docs/game-integration.md for checking it):
 
 ```json
 {

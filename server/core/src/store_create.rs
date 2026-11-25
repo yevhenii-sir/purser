@@ -140,6 +140,10 @@ pub struct Target {
 /// Progress of one job, stored as JSON in the job row.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct JobState {
+    /// Identifies this creation (set when the job is queued): Stripe idempotency keys are per job,
+    /// so creating the product again after it was deleted in Stripe is not answered with the old one.
+    #[serde(default)]
+    pub job: String,
     /// Current step; empty: the store's first step.
     #[serde(default)]
     pub step: String,
@@ -354,7 +358,7 @@ pub fn request(store_id: &str, t: &Target, input: &CreateInput, st: &JobState) -
     match store_id {
         store::GOOGLE => google_request(t, input, st),
         store::APPLE => apple_request(t, input, st),
-        store::STRIPE => Ok(stripe_request(t, input)),
+        store::STRIPE => Ok(stripe_request(t, input, st)),
         store::XSOLLA => xsolla_request(t, input, st),
         _ => Err(format!("products cannot be created in {store_id}")),
     }
@@ -886,7 +890,7 @@ fn apple_absorb(t: &Target, i: &CreateInput, st: &mut JobState, status: u16, bod
 
 // --- Stripe ----------------------------------------------------------------------------------
 
-fn stripe_request(t: &Target, i: &CreateInput) -> Request {
+fn stripe_request(t: &Target, i: &CreateInput, state: &JobState) -> Request {
     let currency = i.currency.to_ascii_lowercase();
     let exponent = stripe::currency_exponent(&currency);
     let unit = 10i64.pow(6 - exponent.min(6));
@@ -912,7 +916,11 @@ fn stripe_request(t: &Target, i: &CreateInput) -> Request {
         url: format!("{}/v1/products", stripe::API),
         body,
         form: true,
-        idempotency_key: Some(format!("purser-create-{}-{}", t.app_id, i.product_id)),
+        idempotency_key: Some(if state.job.is_empty() {
+            format!("purser-create-{}-{}", t.app_id, i.product_id)
+        } else {
+            format!("purser-create-{}-{}-{}", t.app_id, i.product_id, state.job)
+        }),
     }
 }
 

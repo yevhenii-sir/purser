@@ -1,9 +1,12 @@
 import * as React from "react"
 import { cn } from "cn"
+import { FieldIdContext } from "./field-id"
 
 function Input({ className, type, ...props }: React.ComponentProps<"input">) {
+  const fieldId = React.useContext(FieldIdContext)
   return (
     <input
+      id={fieldId}
       type={type}
       data-slot="input"
       className={cn(

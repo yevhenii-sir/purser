@@ -23,6 +23,8 @@ type Parser = fn(&str) -> Result<(Vec<RemoteProduct>, Option<String>), String>;
 struct Lister<'a> {
     store: &'a str,
     token: &'a str,
+    /// A list had more than `MAX_PAGES` pages: the rest was not read.
+    truncated: std::cell::Cell<bool>,
 }
 
 impl Lister<'_> {
@@ -60,6 +62,7 @@ impl Lister<'_> {
                 None => return Ok(out),
             }
         }
+        self.truncated.set(true);
         Ok(out)
     }
 
@@ -106,15 +109,15 @@ pub fn list_store_products(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, St
         let token = stores::apple_connect_token(ctx, &app).map_err(|e: StoreError| {
             format!("{} (catalog import needs an App Store Connect API Team key: apple_connect_key_id, apple_connect_private_key_p8)", e.message())
         })?;
-        let l = Lister { store: store_id, token: &token };
+        let l = Lister { store: store_id, token: &token, truncated: Default::default() };
         let apple_id = catalog::apple::parse_app_id(&l.get(ctx, &catalog::apple::apps_url(&pkg)?)?, &pkg)?;
         let same = |u: &str| Ok(u.to_string());
         let mut remote = l.list_all(ctx, catalog::apple::in_app_purchases_url(&apple_id)?, same, catalog::apple::parse_in_app_purchases)?;
         remote.extend(l.list_all(ctx, catalog::apple::subscription_groups_url(&apple_id)?, same, catalog::apple::parse_subscription_groups)?);
-        remote
+        (remote, l.truncated.get())
     } else {
         let token = stores::google_access_token(ctx, &app).map_err(|e: StoreError| e.message().to_string())?;
-        let l = Lister { store: store_id, token: &token };
+        let l = Lister { store: store_id, token: &token, truncated: Default::default() };
         let mut remote = l.list_all(
             ctx,
             catalog::one_time_products_url(&pkg, "")?,
@@ -127,9 +130,15 @@ pub fn list_store_products(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, St
             |p| catalog::subscriptions_url(&pkg, p),
             catalog::parse_subscriptions,
         )?);
-        remote
+        (remote, l.truncated.get())
     };
+    let (remote, truncated) = remote;
     let (rows, missing) = catalog::diff(&remote, &local, store_id == store::APPLE);
+    if truncated {
+        // Products past the pages read would show up as missing in the store: not listed then.
+        let warning = format!("the store lists more than {MAX_PAGES} pages of products: only the first pages were read");
+        return Ok(json!({ "app_id": app.app_id, "store": store_id, "products": rows, "missing_in_store": [], "warning": warning }));
+    }
     Ok(json!({ "app_id": app.app_id, "store": store_id, "products": rows, "missing_in_store": missing }))
 }
 

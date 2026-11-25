@@ -6,7 +6,7 @@
 
 use crate::ledger::purchase_count;
 use crate::settings::{self, key};
-use crate::{purchase, Purchase};
+use crate::{game_app, purchase, Purchase};
 use purser_core::model::{kind, status};
 use spacetimedb::{ReducerContext, Table};
 use std::collections::{BTreeSet, VecDeque};
@@ -140,9 +140,10 @@ pub fn owned_in(tx: &ReducerContext, apps: &BTreeSet<String>) -> Vec<Purchase> {
 /// other build has work. `skip`: builds left out (their host did not answer in this run).
 /// Returns `(purchase id, app id)`.
 pub fn due(tx: &ReducerContext, now: i64, batch: usize, skip: &BTreeSet<String>) -> Vec<(String, String)> {
-    // Every build that ever had a purchase (deleted builds too): a short list, kept in memory.
-    let mut apps: Vec<String> =
-        tx.db.purchase_count().iter().map(|c| c.app_id).filter(|a| !skip.contains(a)).collect::<BTreeSet<_>>().into_iter().collect();
+    // Every build that ever had a purchase (deleted builds too) and every configured one: short
+    // lists, kept in memory. The configured builds cover rows restored or written with SQL before
+    // their counters exist.
+    let mut apps: Vec<String> = queue_builds(tx).into_iter().filter(|a| !skip.contains(a)).collect();
     let cursor = settings::get(tx, key::WORKER_CURSOR).unwrap_or_default();
     let start = apps.partition_point(|a| a.as_str() <= cursor.as_str());
     apps.rotate_left(start);
@@ -199,11 +200,14 @@ pub struct Queue {
     pub oldest_due_micros: i64,
 }
 
-/// Rows due now and the longest wait (reads the due rows through the index: the backlog itself).
+/// Rows due now are counted up to this many: a public route must not get slower as the backlog grows.
+pub const QUEUE_COUNT_CAP: usize = 10_000;
+
+/// Rows due now (at most [`QUEUE_COUNT_CAP`]) and the longest wait.
 pub fn queue(tx: &ReducerContext, now: i64) -> Queue {
     let mut rows = tx.db.pending_purchase().next_attempt_at_micros().filter(1i64..=now);
     let Some(first) = rows.next() else { return Queue::default() };
-    Queue { due: 1 + rows.count() as u64, oldest_due_micros: first.next_attempt_at_micros }
+    Queue { due: 1 + rows.take(QUEUE_COUNT_CAP - 1).count() as u64, oldest_due_micros: first.next_attempt_at_micros }
 }
 
 /// Some row is due now.
@@ -213,8 +217,13 @@ pub fn any_due(tx: &ReducerContext, now: i64) -> bool {
 
 /// Builds with a row that has been due since `before` or earlier (the queue is not keeping up),
 /// with the number of their rows due at `now`.
+/// Builds whose queue may have rows (see [`due`]).
+fn queue_builds(tx: &ReducerContext) -> BTreeSet<String> {
+    tx.db.purchase_count().iter().map(|c| c.app_id).chain(tx.db.game_app().iter().map(|a| a.app_id)).collect()
+}
+
 pub fn lagging_builds(tx: &ReducerContext, before: i64, now: i64) -> Vec<(String, u64)> {
-    let apps: BTreeSet<String> = tx.db.purchase_count().iter().map(|c| c.app_id).collect();
+    let apps = queue_builds(tx);
     apps.into_iter()
         .filter(|app| tx.db.pending_purchase().app_due().filter((app.as_str(), 1i64..=before)).next().is_some())
         .map(|app| {

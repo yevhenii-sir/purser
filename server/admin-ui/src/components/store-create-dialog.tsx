@@ -148,6 +148,9 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
     }
   }
 
+  // Builds whose jobs started in an earlier try: a retry after a failure goes on with the rest
+  // (starting them again would be refused as "already being created").
+  const startedBuilds = useRef(new Set<string>())
   const start = async () => {
     if (!preview) return
     setBusy(true)
@@ -155,10 +158,12 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
     let started = 0
     try {
       for (const a of pickedBuilds) {
+        if (startedBuilds.current.has(a.app_id)) continue
         const ids = new Set(preview.rows.filter((r) => r.app_id === a.app_id && r.status === "create").map((r) => r.product_id))
         const items = all.filter((p) => ids.has(p.product_id)).map((p) => forBuild(a.app_id, p))
         if (!items.length) continue
         await call("admin_store_create", JSON.stringify({ app_ids: [a.app_id], products: items }))
+        startedBuilds.current.add(a.app_id)
         started += items.length
       }
       toast.success(`Creating ${started} product(s); progress is shown on the Products tab`)
@@ -166,6 +171,8 @@ function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreate
       onClose()
     } catch (e) {
       toast.error(errorText(e))
+      // Jobs of the builds before the failure are running: show them.
+      if (started > 0) onStarted()
     } finally {
       setBusy(false)
     }

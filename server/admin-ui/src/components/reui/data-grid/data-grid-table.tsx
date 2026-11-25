@@ -2108,6 +2108,14 @@ function DataGridTableBodyRow<TData extends object>({
         // Through the getter, as in DataGridTableAddRow.
         context.props.onRowClick?.(row.original)
       }}
+      // Clickable rows open from the keyboard too (Tab to the row, Enter or Space).
+      tabIndex={context.props.onRowClick ? 0 : undefined}
+      onKeyDown={(event) => {
+        if (!context.props.onRowClick || event.target !== event.currentTarget) return
+        if (event.key !== "Enter" && event.key !== " ") return
+        event.preventDefault()
+        context.props.onRowClick(row.original)
+      }}
       className={cn(
         "hover:bg-muted/40 data-[state=selected]:bg-muted/50",
         /* With the pin affordance on, pinned cells hide scrolled content

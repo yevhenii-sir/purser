@@ -4,10 +4,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { DataTable, Loading, Mono, StatusBadge } from "@/components/common"
+import { DataTable, ErrorBox, Loading, Mono, StatusBadge } from "@/components/common"
 import { call, select } from "@/lib/api"
 import { fmtMs, fmtTime, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
+import { useCan } from "@/lib/roles"
 import type { Purchase } from "@/lib/types"
 import { playerRoute } from "@/routes"
 
@@ -25,7 +26,8 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
     onClose(changed.current)
     changed.current = false
   }
-  const { data, loading } = useAsync(async () => {
+  const canRetry = useCan()("support")
+  const { data, loading, error, reload } = useAsync(async () => {
     if (!id) return null
     const [p] = await select<Purchase>({ table: "purchase", where: { column: "id", equals: id } })
     const log = (await select<LogRow>({ table: "purchase_log", where: { column: "purchase_id", equals: id } })).sort((a, b) => Number(a.id) - Number(b.id))
@@ -41,7 +43,9 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
         </SheetHeader>
         <ScrollArea className="min-h-0 flex-1">
           <div className="min-w-0 space-y-6 px-4 pb-6 [&_table]:w-full">
-            {loading || !data ? (
+            {error ? (
+              <ErrorBox error={error} />
+            ) : loading || !data ? (
               <Loading />
             ) : !p ? (
               <p className="text-sm text-muted-foreground">Purchase not found.</p>
@@ -52,9 +56,17 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
                   <Badge variant="secondary">{p.store}</Badge>
                   <Badge variant="secondary">{p.environment}</Badge>
                   <span className="flex-1" />
-                  <Button size="sm" variant="outline" onClick={() => tryAct(() => call("admin_requeue_purchase", p.id), "Queued: the worker picks it up within a minute").then((ok) => { if (ok !== undefined) changed.current = true })}>
-                    <RotateCwIcon /> Retry now
-                  </Button>
+                  {/* Only for rows with work left, and roles that may act on purchases. */}
+                  {canRetry && Number(p.next_attempt_at_micros) > 0 && (
+                    <Button size="sm" variant="outline" onClick={() => tryAct(() => call("admin_requeue_purchase", p.id), "Queued: the worker picks it up within a minute").then((ok) => {
+                      if (ok !== undefined) {
+                        changed.current = true
+                        reload()
+                      }
+                    })}>
+                      <RotateCwIcon /> Retry now
+                    </Button>
+                  )}
                 </div>
                 <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
                   {[

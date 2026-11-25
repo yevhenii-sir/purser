@@ -22,6 +22,7 @@ export function ServerPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <HostsSection />
         <PublicAddressSection />
+        <WorkerSection />
       </div>
       <RawSecrets />
     </>
@@ -31,13 +32,14 @@ export function ServerPage() {
 /** Delivery host allowlist: an app's spacetime_token is only ever sent to these hosts (https). */
 function HostsSection() {
   const [host, setHost] = useState("")
-  const { data, reload } = useAsync(() => select<{ host: string }>({ table: "spacetime_host" }))
+  const { data, error, reload } = useAsync(() => select<{ host: string }>({ table: "spacetime_host" }))
   const rows = [{ host: BUILTIN_SPACETIME_HOST, builtin: true }, ...(data || []).map((h) => ({ host: h.host, builtin: false })).sort((a, b) => a.host.localeCompare(b.host))]
   return (
     <Section
       title="SpacetimeDB hosts"
       description={<>Deliveries, and an app's <code>spacetime_token</code>, go only to https on these hosts. Only the database owner can change the list.</>}
     >
+      {error && <ErrorBox error={error} />}
       <DataTable
         rows={rows}
         columns={[
@@ -67,7 +69,7 @@ function HostsSection() {
 }
 
 function PublicAddressSection() {
-  const { data } = useAsync(() => getSetting("public_base_url"))
+  const { data, error, loading } = useAsync(() => getSetting("public_base_url"))
   const [value, setValue] = useState<string | null>(null)
   const current = value ?? data ?? ""
   return (
@@ -75,9 +77,45 @@ function PublicAddressSection() {
       title="Public address"
       description="Base of the URLs shown for store notifications and clients. Set it when you open the admin through an SSH tunnel; leave it empty when this page is opened at the public address."
     >
+      {error && <ErrorBox error={error} />}
       <div className="flex gap-2">
-        <Input className="font-mono text-xs" placeholder={location.origin + ROUTE} value={current} onChange={(e) => setValue(e.target.value)} />
-        <Button onClick={() => tryAct(() => call("admin_set_setting", "public_base_url", current.trim()), "Saved")}>Save</Button>
+        <Input aria-label="Public address" className="font-mono text-xs" placeholder={location.origin + ROUTE} value={current} disabled={loading || !!error} onChange={(e) => setValue(e.target.value)} />
+        {/* Not before the stored value loaded: saving the empty field would clear it. */}
+        <Button disabled={loading || !!error} onClick={() => tryAct(() => call("admin_set_setting", "public_base_url", current.trim()), "Saved")}>Save</Button>
+      </div>
+    </Section>
+  )
+}
+
+/** Queue drainers and how long player data is kept (`worker_lanes`, `retention_days`). */
+function WorkerSection() {
+  const { data, error, loading, reload } = useAsync(async () => ({ lanes: await getSetting("worker_lanes"), retention: await getSetting("retention_days") }))
+  const [lanes, setLanes] = useState<string | null>(null)
+  const [retention, setRetention] = useState<string | null>(null)
+  const save = async (key: string, value: string) => {
+    if ((await tryAct(() => call("admin_set_setting", key, value.trim()), "Saved")) !== undefined) reload()
+  }
+  const lanesValue = lanes ?? data?.lanes ?? ""
+  const retentionValue = retention ?? data?.retention ?? ""
+  return (
+    <Section
+      title="Worker"
+      description="Queue drainers work through purchases left for later, this many at once (each holds one of the host's module instances while it waits for a store). Player data of players gone this long is deleted. Empty: the default."
+    >
+      {error && <ErrorBox error={error} />}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Queue drainers (1-8, default 2)">
+          <div className="flex gap-2">
+            <Input inputMode="numeric" placeholder="2" value={lanesValue} disabled={loading || !!error} onChange={(e) => setLanes(e.target.value)} />
+            <Button variant="outline" disabled={loading || !!error} onClick={() => save("worker_lanes", lanesValue)}>Save</Button>
+          </div>
+        </Field>
+        <Field label="Keep player data (days)">
+          <div className="flex gap-2">
+            <Input inputMode="numeric" placeholder="730" value={retentionValue} disabled={loading || !!error} onChange={(e) => setRetention(e.target.value)} />
+            <Button variant="outline" disabled={loading || !!error} onClick={() => save("retention_days", retentionValue)}>Save</Button>
+          </div>
+        </Field>
       </div>
     </Section>
   )

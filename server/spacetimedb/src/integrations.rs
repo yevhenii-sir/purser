@@ -16,7 +16,7 @@ use spacetimedb::{ProcedureContext, ReducerContext, ScheduleAt, Table, TxContext
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// Attempts per event (first try + retries with `retry_delay_secs` backoff, ~1.5 h in total).
+/// Attempts per event (first try + retries with `retry_delay_secs` backoff, ~4.4 h in total).
 const MAX_ATTEMPTS: u32 = 6;
 
 /// Integration enabled for one app. `key` = `{app_id}/{kind}`.
@@ -205,7 +205,8 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         product_kind: p.kind.clone(),
         transaction_id: p.transaction_id.clone(),
         user_id: p.user_id.clone(),
-        price_micros: p.price_micros,
+        // A refund takes back what is left after partial refunds (each reported on its own).
+        price_micros: if kind == event_kind::REFUND { (p.price_micros - p.refunded_micros).max(0) } else { p.price_micros },
         currency: p.currency.clone(),
         at_ms: tx.timestamp.to_micros_since_unix_epoch() / 1000,
         app_instance_id: p.app_instance_id.clone(),
@@ -213,6 +214,7 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         country: p.country.clone(),
         commission_percent: crate::revenue::commission(tx).percent_for_period(&p.app_id, crate::revenue::period_facts(p).after_first_year),
         previous_product_id: String::new(),
+        event_id: format!("{}#{}", p.id, p.step_seq),
     }
 }
 
@@ -271,6 +273,19 @@ pub fn enqueue(tx: &ReducerContext, p: &Purchase, kind: &str) {
         return;
     }
     let event = out_event(tx, &app, p, kind);
+    enqueue_event(tx, &app, &p.id, &event, None);
+}
+
+/// A `refund` of `amount_micros` of `p` (a partial refund: Stripe, Xsolla, Steam).
+pub fn enqueue_partial_refund(tx: &ReducerContext, p: &Purchase, amount_micros: i64) {
+    let Some(app) = tx.db.game_app().app_id().find(&p.app_id) else { return };
+    if active_kinds(tx, &app).is_empty() {
+        return;
+    }
+    let mut event = out_event(tx, &app, p, event_kind::REFUND);
+    event.price_micros = amount_micros;
+    // Each partial refund is an event of its own.
+    event.event_id = format!("{}#{}+{}", p.id, p.step_seq, p.refunded_micros);
     enqueue_event(tx, &app, &p.id, &event, None);
 }
 
@@ -402,7 +417,10 @@ fn send_event(ctx: &mut ProcedureContext, row: &IntegrationOutbox) {
         Err(e) => {
             log::error!("Integration {label}: bad event json: {e}");
             let error = format!("bad event json: {e}");
-            ctx.tx(|tx| record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &error, last: true }));
+            ctx.tx(|tx| {
+                record(tx, &row.app_id, &row.kind, Outcome::Failed { error: &error, last: true });
+                bury(tx, &row, &error);
+            });
             return;
         }
     };
@@ -421,8 +439,10 @@ fn send_event(ctx: &mut ProcedureContext, row: &IntegrationOutbox) {
             Err(e) => {
                 log::error!("Integration {label} not sent: {}", e.message());
                 let text = format!("{label}: not sent: {}", e.message());
+                // Kept: replayed once the key is fixed (`admin_replay_integration_events`).
                 ctx.tx(|tx| {
                     record(tx, &row.app_id, &row.kind, Outcome::Failed { error: e.message(), last: true });
+                    bury(tx, &row, e.message());
                     crate::alerts::integration_failed(tx, &row.app_id, &text)
                 });
                 return;
@@ -577,7 +597,8 @@ fn retry(ctx: &mut ProcedureContext, row: &IntegrationOutbox, label: &str, statu
 }
 
 fn send(ctx: &ProcedureContext, call: &HttpCall) -> Result<net::HttpResult, String> {
-    let headers: Vec<(&str, &str)> = call.headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let signed = call.headers_at(ctx.timestamp.to_micros_since_unix_epoch() / 1_000_000);
+    let headers: Vec<(&str, &str)> = signed.iter().map(|(k, v)| (*k, v.as_str())).collect();
     net::send(&ctx.http, call.method, &call.url, &headers, call.body.clone())
 }
 

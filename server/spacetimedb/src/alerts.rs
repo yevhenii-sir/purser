@@ -223,6 +223,10 @@ fn occurrence(tx: &ReducerContext, rule: &str, subject: &str, app_id: &str, deta
         s.first_at_micros = now;
     }
     apply(&mut s, t);
+    if !condition && !rule::resolves(rule) {
+        // A one-off event (an integration gave up): nothing will end it, so no open problem stays.
+        s.active = false;
+    }
     s.last_at_micros = now;
     s.total += 1;
     s.detail = clip(detail);
@@ -254,11 +258,18 @@ fn resolve_subject(tx: &ReducerContext, rule: &str, subject: &str) {
     let Some(mut s) = tx.db.alert_state().key().find(state_key(rule, subject)) else { return };
     let mut t = throttle(&s);
     let Some(repeats) = t.resolve() else { return };
+    // "Resolved" only follows an alert sent for this problem: a problem that came and went inside
+    // the throttle window (a flapping one) was never announced, so its end is not either; its
+    // occurrences wait for the next message.
+    let alerted = s.last_sent_at_micros >= s.first_at_micros;
     apply(&mut s, t);
+    if !alerted {
+        s.suppressed = repeats;
+    }
     let app_id = s.app_id.clone();
     save_state(tx, s);
     let rules = rules(tx);
-    if rules.send_resolved && rules.enabled(rule) {
+    if alerted && rules.send_resolved && rules.enabled(rule) {
         queue(tx, rule, state::RESOLVED, &app_id, "", repeats);
     }
 }
@@ -590,7 +601,8 @@ fn build_call(tx: &ReducerContext, channel_id: u64, msg: &Message, require_enabl
 }
 
 fn send(ctx: &ProcedureContext, call: &HttpCall) -> Result<net::HttpResult, String> {
-    let headers: Vec<(&str, &str)> = call.headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let signed = call.headers_at(ctx.timestamp.to_micros_since_unix_epoch() / 1_000_000);
+    let headers: Vec<(&str, &str)> = signed.iter().map(|(k, v)| (*k, v.as_str())).collect();
     net::send(&ctx.http, call.method, &call.url, &headers, call.body.clone())
 }
 

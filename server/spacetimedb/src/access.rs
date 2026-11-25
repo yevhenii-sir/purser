@@ -5,7 +5,8 @@
 
 use crate::alerts::{alert_channel, alert_log, alert_state};
 use crate::health::app_check;
-use crate::integrations::{integration, integration_health};
+use crate::integrations::{integration, integration_dead, integration_health};
+use crate::steam::steam_build;
 use crate::paywalls::{paywall, paywall_test, placement};
 use crate::settings::server_state;
 use crate::store_create::store_create_job;
@@ -340,6 +341,11 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
         "integration" => rows(db.integration().iter()),
         "integration_health" if column == "app_id" => rows(db.integration_health().app_id().filter(value)),
         "integration_health" => rows(db.integration_health().iter()),
+        // Events an integration did not take, kept for a replay (read per build).
+        "integration_dead" if column == "app_id" => rows(db.integration_dead().app_id().filter(value)),
+        "steam_build" if column == "app_id" => rows(db.steam_build().app_id().find(value.to_string()).into_iter()),
+        "steam_build" => rows(db.steam_build().iter()),
+        "integration_dead" => return Err("[ERR_BAD_QUERY] dropped integration events are read by app_id".into()),
         "app_check" if column == "app_id" => rows(db.app_check().app_id().find(value.to_string()).into_iter()),
         "app_check" => rows(db.app_check().iter()),
         "paywall" if column == "game_key" => rows(db.paywall().game_key().filter(value)),
@@ -397,7 +403,7 @@ fn has_index(table: &str, column: &str) -> bool {
     matches!(
         (table, column),
         ("game_app", "app_id" | "game_key")
-            | ("product" | "integration" | "integration_health" | "app_check" | "store_create_job", "app_id")
+            | ("product" | "integration" | "integration_health" | "integration_dead" | "app_check" | "store_create_job" | "steam_build", "app_id")
             | ("paywall" | "placement", "game_key")
             | ("paywall_test", "placement_key")
             | ("admin_audit", "since")

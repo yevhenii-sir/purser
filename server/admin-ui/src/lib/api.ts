@@ -146,6 +146,8 @@ export async function select<T = Row>(q: Query): Promise<T[]> {
     return proc<T[]>("admin_select", JSON.stringify({ table: q.table, columns: q.columns ?? [], where }))
   }
   const pairs = lookups(q)
+  // A filter on no values matches nothing (an app without placements asks for their tests).
+  if (pairs.length === 0) return []
   const column = pairs[0][0]
   const values = pairs.map(([, v]) => v)
   const chunks: string[][] = []

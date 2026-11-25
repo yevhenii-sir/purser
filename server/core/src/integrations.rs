@@ -193,6 +193,10 @@ pub struct OutEvent {
     pub commission_percent: f64,
     /// `product_change`: the product the subscription was before; empty otherwise.
     pub previous_product_id: String,
+    /// The same on every retry of the event, another for every other event of the purchase
+    /// (empty: `transaction_id:kind`). Platforms that deduplicate get it.
+    #[serde(default)]
+    pub event_id: String,
 }
 
 /// What an integration reports as revenue (`revenue` in its settings).
@@ -276,6 +280,11 @@ pub struct Amounts {
 }
 
 impl OutEvent {
+    /// What platforms deduplicate a retried event by.
+    pub fn dedup_id(&self) -> String {
+        if self.event_id.is_empty() { format!("{}:{}", self.transaction_id, self.kind) } else { format!("{}:{}", self.event_id, self.kind) }
+    }
+
     /// Gross, proceeds after the store commission, and proceeds after the commission and taxes.
     /// Estimates: the commission from the server's settings, the tax from the billing country
     /// ([`crate::tax`]).
@@ -354,6 +363,20 @@ pub struct HttpCall {
     pub url: String,
     pub headers: Vec<(&'static str, String)>,
     pub body: String,
+    /// Signing key of a webhook: the sender adds `X-Billing-Signature` (`event::signature_header`)
+    /// when it sends, with the time of sending (a retry hours later is signed anew). Empty: unsigned.
+    pub sign_with: String,
+}
+
+impl HttpCall {
+    /// The headers to send at `unix_secs`, with the signature when the call is signed.
+    pub fn headers_at(&self, unix_secs: i64) -> Vec<(&'static str, String)> {
+        let mut h = self.headers.clone();
+        if !self.sign_with.is_empty() {
+            h.push((crate::event::SIGNATURE_HEADER, crate::event::signature_header(&self.sign_with, self.body.as_bytes(), unix_secs)));
+        }
+        h
+    }
 }
 
 /// Start of the skip reason of an event that needs a device id the client did not send: the
@@ -451,11 +474,14 @@ pub mod ga4 {
         } else {
             synthetic_app_instance_id(&ev.user_id)
         };
+        // No `timestamp_micros`: GA4 drops events dated more than 72 hours back, and an event
+        // replayed days later (`admin_replay_integration_events`) would be lost; it is dated when sent.
         let body = json!({
             "app_instance_id": app_instance_id,
             "events": [{ "name": name, "params": params }],
         });
         Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
             method: "POST",
             url: format!(
                 "https://www.google-analytics.com/mp/collect?firebase_app_id={firebase_app_id}&api_secret={api_secret}"
@@ -569,9 +595,14 @@ pub mod appsflyer {
             }
         }
         if ev.os() == Some("ios") {
+            // ATT status as AppsFlyer numbers it: 3 authorized, 2 denied.
             if let Some(att) = ev.attribution.get(attribution_key::ATT) {
-                body["att"] = json!(att == "true");
+                body["att"] = json!(if att == "true" { 3 } else { 2 });
             }
+        }
+        // The OS version: AppsFlyer asks for it for correct processing.
+        if let Some(v) = ev.attribution.get(attribution_key::OS_VERSION) {
+            body["os"] = json!(v);
         }
 
         let body = body.to_string();
@@ -579,6 +610,7 @@ pub mod appsflyer {
             return Err(format!("AppsFlyer payload is {} bytes (max {MAX_PAYLOAD})", body.len()));
         }
         Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
             method: "POST",
             url: format!("{API}/{}", settings.app_id),
             headers: vec![
@@ -699,6 +731,7 @@ pub mod tenjin {
             PURCHASE_API
         };
         Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
             method: "POST",
             url: url.to_string(),
             headers: vec![
@@ -735,8 +768,8 @@ pub mod webhook {
     }
 
     /// Body: the event as JSON (`kind`, `app_id`, `product_id`, `price_micros`, `currency`, `user_id`,
-    /// device ids, `country`, `gross_micros` / `proceeds_micros` / `net_micros`, ...). Headers: `X-Billing-Event: <kind>`, `X-Billing-Signature:
-    /// hex(HMAC-SHA256(secret, body))`.
+    /// device ids, `country`, `gross_micros` / `proceeds_micros` / `net_micros`, ...). Headers: `X-Billing-Event: <kind>`,
+    /// `X-Billing-Event-Id` (the same on every retry of the event) and `X-Billing-Signature: t=<unix>,v1=<hex>`.
     pub fn build(ev: &OutEvent, settings: &Settings, secret: &str) -> Result<Built, String> {
         if secret.is_empty() {
             return Err("webhook signing key is not configured".into());
@@ -746,12 +779,13 @@ pub mod webhook {
         }
         let body = ev.payload()?;
         Ok(Built::Send(HttpCall {
+            sign_with: secret.to_string(),
             method: "POST",
             url: settings.url.clone(),
             headers: vec![
                 ("Content-Type", "application/json".into()),
                 ("X-Billing-Event", ev.kind.clone()),
-                ("X-Billing-Signature", crate::event::webhook_signature(secret, body.as_bytes())),
+                ("X-Billing-Event-Id", ev.dedup_id()),
             ],
             body,
         }))
@@ -858,6 +892,7 @@ pub mod adjust {
         }
         params.push(("callback_params", callback.to_string()));
         Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
             method: "POST",
             url: API.to_string(),
             headers: vec![
@@ -967,11 +1002,13 @@ pub mod appmetrica {
             params.push(("currency", ev.currency_or_usd().to_string()));
             params.push(("product_id", ev.product_id.clone()));
             params.push(("quantity", "1".into()));
+            // Its own parameter: AppMetrica deduplicates a retried event by it.
+            params.push(("transaction_id", format!("{}:{}", ev.transaction_id, ev.kind)));
             let payload = json!({ "transaction_id": ev.transaction_id, "store": ev.store, "environment": ev.environment });
             params.push(("payload", payload.to_string()));
             REVENUE_API
         };
-        Ok(Built::Send(HttpCall { method: "POST", url: format!("{url}?{}", query(&params)), headers: vec![], body: String::new() }))
+        Ok(Built::Send(HttpCall { method: "POST", url: format!("{url}?{}", query(&params)), headers: vec![], body: String::new(), sign_with: String::new() }))
     }
 }
 
@@ -1050,6 +1087,7 @@ pub mod gcs {
         }
         let body = ev.payload()? + "\n";
         Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
             method: "POST",
             url: format!(
                 "{UPLOAD_API}/{}/o?uploadType=media&name={}",
@@ -1081,7 +1119,7 @@ fn sha256_hex(s: &str) -> String {
 
 /// Deduplication id of one event: the same event retried is the same id.
 fn dedup_id(ev: &OutEvent) -> String {
-    format!("{}:{}", ev.transaction_id, ev.kind)
+    ev.dedup_id()
 }
 
 /// Data residency region of a settings field: empty = the default.
@@ -1180,6 +1218,7 @@ pub mod amplitude {
         // `min_id_length`: user ids shorter than Amplitude's default 5 characters are kept.
         let body = json!({ "api_key": api_key, "events": [event], "options": { "min_id_length": 1 } });
         Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
             method: "POST",
             url: settings.api().to_string(),
             headers: vec![("Content-Type", "application/json".into()), ("Accept", "*/*".into())],
@@ -1276,6 +1315,7 @@ pub mod mixpanel {
         }
         let body = json!([{ "event": format!("purser_{}", ev.kind), "properties": properties }]);
         Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
             method: "POST",
             url: settings.api(),
             headers: vec![("Authorization", auth), ("Content-Type", "application/json".into())],
@@ -1434,6 +1474,7 @@ pub mod meta {
             body["test_event_code"] = json!(settings.test_event_code);
         }
         Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
             method: "POST",
             url: settings.url(),
             headers: vec![("Authorization", format!("Bearer {access_token}")), ("Content-Type", "application/json".into())],
@@ -1470,6 +1511,7 @@ mod tests {
             country: String::new(),
             commission_percent: crate::revenue::DEFAULT_COMMISSION_PERCENT,
             previous_product_id: String::new(),
+            event_id: String::new(),
         }
     }
 
@@ -1525,7 +1567,7 @@ mod tests {
         let body: Value = serde_json::from_str(&call.body).unwrap();
         assert_eq!(body["eventName"], "af_subscribe");
         assert_eq!(body["idfv"], "A1B2C3D4-0000-1111-2222-333344445555");
-        assert_eq!(body["att"], true);
+        assert_eq!(body["att"], 3);
         assert!(body.get("advertising_id").is_none());
 
         let refund = send(appsflyer::build(&event("refund", "ios"), &s, "K").unwrap());
@@ -1712,8 +1754,8 @@ mod tests {
         let s = webhook::Settings::parse(r#"{"url":"https://hooks.example.com/billing","events":["purchase","refund"]}"#).unwrap();
         let call = send(webhook::build(&event("purchase", "android"), &s, "secret").unwrap());
         assert_eq!(call.url, "https://hooks.example.com/billing");
-        let sig = call.headers.iter().find(|(k, _)| *k == "X-Billing-Signature").unwrap().1.clone();
-        assert_eq!(sig, crate::event::webhook_signature("secret", call.body.as_bytes()));
+        let sig = call.headers_at(1_800_000_000).iter().find(|(k, _)| *k == "X-Billing-Signature").unwrap().1.clone();
+        assert!(crate::event::verify_signature(&sig, call.body.as_bytes(), &["secret"], 1_800_000_000).is_ok(), "{sig}");
         let body: Value = serde_json::from_str(&call.body).unwrap();
         assert_eq!((body["kind"].as_str(), body["price_micros"].as_i64()), (Some("purchase"), Some(4_990_000)));
         assert!(matches!(webhook::build(&event("test", "android"), &s, "secret").unwrap(), Built::Send(_)));

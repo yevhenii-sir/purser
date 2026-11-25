@@ -186,7 +186,8 @@ export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: s
             rows={rows}
             onRowClick={(r) => setOpen(r.id)}
             rowKey={(r) => r.id}
-            empty="Nothing found."
+            // The server stops at its scan limit: an empty page with more to read is not "nothing".
+            empty={last?.next ? "No matches in the purchases read so far: load more to search further back." : "Nothing found."}
             noun="purchases"
             summary={last?.more ? `The newest ${rows.length} purchases of the period and filters` : undefined}
             initialSort={{ id: "Updated", desc: true }}
@@ -247,7 +248,7 @@ export function GrantDialog({ open, apps, onClose, onDone, userId }: { open: boo
   const product = products.data?.find((p) => p.product_id === v.product_id)
   const subscription = product?.kind === "subscription"
   const grant = async () => {
-    const payload = { ...v, app_id: app, expires_at_ms: v.expires ? new Date(v.expires).getTime() : 0 }
+    const payload = { ...v, user_id: v.user_id.trim(), app_id: app, expires_at_ms: v.expires ? new Date(v.expires).getTime() : 0 }
     const ok = await tryAct(() => call("admin_grant_manual", JSON.stringify(payload)), "Granted: delivered within a minute")
     if (ok !== undefined) { onDone(); onClose() }
   }

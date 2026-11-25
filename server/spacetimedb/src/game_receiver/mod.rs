@@ -171,7 +171,7 @@ pub struct purser_grant;
 impl spacetimedb::rt::RemoteReducer for purser_grant {
     const NAME: &'static str = "purser_grant";
     const SIGNATURE_HASH: &'static str =
-        "5593b75fef26075750df64b6faa22cf52291fc1860e0293dd93a84a68d87774e";
+        "b0a36c50f624f7a2ab895d9b3d3ad29bee2a16f315283b5c39fbe09d8d9de29d";
     type Args = PurserGrantArgs;
 }
 
@@ -240,7 +240,7 @@ pub struct purser_revoke;
 impl spacetimedb::rt::RemoteReducer for purser_revoke {
     const NAME: &'static str = "purser_revoke";
     const SIGNATURE_HASH: &'static str =
-        "5593b75fef26075750df64b6faa22cf52291fc1860e0293dd93a84a68d87774e";
+        "b0a36c50f624f7a2ab895d9b3d3ad29bee2a16f315283b5c39fbe09d8d9de29d";
     type Args = PurserRevokeArgs;
 }
 

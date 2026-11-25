@@ -25,6 +25,11 @@ pub fn respond((http, body): Answer) -> Response {
 
 /// The request body, refused when it is larger than [`MAX_BODY_BYTES`].
 pub fn body(req: Request) -> Result<Vec<u8>, Answer> {
+    // A declared size over the limit is refused before the body is read.
+    let declared = req.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<usize>().ok());
+    if declared.is_some_and(|n| n > MAX_BODY_BYTES) {
+        return Err(answer(413, "error", format!("request body over {MAX_BODY_BYTES} bytes")));
+    }
     let bytes = req.into_body().into_bytes();
     if bytes.len() > MAX_BODY_BYTES {
         return Err(answer(413, "error", format!("request body over {MAX_BODY_BYTES} bytes")));

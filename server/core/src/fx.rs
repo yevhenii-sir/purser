@@ -99,6 +99,13 @@ impl FxTable {
         })
     }
 
+    /// The last rate of `currency` before `day` however old, for a day [`rate`](Self::rate) has
+    /// none (the rates service was down for weeks): better than counting the money as 0 USD.
+    pub fn stale_rate(&self, currency: &str, day: i32) -> Option<f64> {
+        let ccy = currency.to_uppercase();
+        self.days.range(..=day).rev().find_map(|(_, rates)| rates.get(&ccy).copied())
+    }
+
     /// `amount_micros` of `currency` in USD micros, or None when there is no rate.
     pub fn to_usd_micros(&self, amount_micros: i64, currency: &str, day: i32) -> Option<i64> {
         if amount_micros == 0 {

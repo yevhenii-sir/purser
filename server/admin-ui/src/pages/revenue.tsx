@@ -179,7 +179,12 @@ export function RevenuePage({ fixedGame, embedded }: PageProps & { fixedGame?: s
           <Button
             variant="outline"
             size="sm"
-            onClick={() => confirm("Recompute all revenue totals from the purchase ledger?") && tryAct(() => call("admin_rebuild_revenue", ""), "Rebuild started").then(reload)}
+            onClick={() => {
+              // On an app's page only its builds (a rebuild reads their whole ledger history).
+              const ids = fixedGame ? [...builds.values()].filter((b) => b.game_key === fixedGame).map((b) => b.app_id) : []
+              if (!confirm(fixedGame ? "Recompute this app's revenue totals from the purchase ledger?" : "Recompute all revenue totals from the purchase ledger?")) return
+              tryAct(() => call("admin_rebuild_revenue", ids.length ? JSON.stringify(ids) : ""), "Rebuild started").then(reload)
+            }}
           >
             <RotateCcwIcon /> Rebuild
           </Button>
@@ -598,8 +603,9 @@ function FeeDialog({ stats, onClose, onSaved }: { stats: Stats; onClose: () => v
     const num = (s: string) => Number(s.replace(",", "."))
     const overrides = Object.fromEntries(Object.entries(byApp).filter(([, v]) => v.trim() !== "").map(([a, v]) => [a, num(v)]))
     const ok = await tryAct(async () => {
-      await call("admin_set_setting", "store_commission_percent", String(num(percent)))
-      await call("admin_set_setting", "store_commission_after_year_percent", String(num(afterYear)))
+      // Empty: not set (the store's usual fee, the default after a year), not 0 %.
+      await call("admin_set_setting", "store_commission_percent", percent.trim() === "" ? "" : String(num(percent)))
+      await call("admin_set_setting", "store_commission_after_year_percent", afterYear.trim() === "" ? "" : String(num(afterYear)))
       await call("admin_set_setting", "store_commission_by_app", Object.keys(overrides).length ? JSON.stringify(overrides) : "")
       return true
     }, "Store fee saved")
@@ -676,7 +682,12 @@ function FxDialog({ currency, onClose, onSaved }: { currency: string | null; onC
   const save = async () => {
     const value = Number(rate.replace(",", "."))
     const code = (currency || ccy).trim().toUpperCase()
-    if (!code || !(value > 0)) return
+    if (!/^[A-Z]{3}$/.test(code) || !(value > 0)) {
+      await tryAct(async () => {
+        throw new Error(!/^[A-Z]{3}$/.test(code) ? "the currency is a three-letter code (EUR)" : "the rate is a number above 0 (units of the currency per USD)")
+      })
+      return
+    }
     const ok = await tryAct(() => call("admin_set_fx_override", code, value), "Rate saved")
     if (ok !== undefined) {
       setRate("")

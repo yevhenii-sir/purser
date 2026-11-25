@@ -9,8 +9,7 @@
 //!
 //! Each call runs once (SpacetimeDB retries delivery and drops duplicates), in the order Purser
 //! sent them. Returning `Err` rolls the game's transaction back and Purser calls again later
-//! (backoff 1 min → 12 h), so the reducer must be idempotent: apply each
-//! `transaction_id` + `event` once. `ctx.sender()` is Purser's database identity, set by the host:
+//! (backoff 1 min → 12 h), so the reducer must be idempotent: apply each `event_id` once. `ctx.sender()` is Purser's database identity, set by the host:
 //! accept calls from it only.
 //!
 //! Purser's repository publishes this module in its end-to-end check and generates its receiver
@@ -32,7 +31,7 @@ pub struct BillingEvent {
     pub product_id: String,
     /// `consumable` | `non_consumable` | `subscription`
     pub kind: String,
-    /// With `event`, the idempotency key.
+    /// The store's transaction.
     pub transaction_id: String,
     pub original_transaction_id: String,
     pub user_id: String,
@@ -40,7 +39,13 @@ pub struct BillingEvent {
     pub expires_at_ms: i64,
     pub price_micros: i64,
     pub currency: String,
+    /// When this attempt was sent.
     pub timestamp_ms: i64,
+    /// The same on every retry of this event, another for every other event of the purchase: the
+    /// key to apply an event once.
+    pub event_id: String,
+    /// When what the event reports happened.
+    pub occurred_at_ms: i64,
     /// The app's own product id, the same in every store.
     pub catalog_product_id: String,
 }
@@ -59,12 +64,13 @@ pub struct Owner {
     pub identity: Identity,
 }
 
-/// Events applied, by `event` + `transaction_id` (the example's idempotency record; a game
-/// grants or revokes its own items here instead).
+/// Events applied, by `event_id` (the example's idempotency record; a game grants or revokes its
+/// own items here instead).
 #[table(accessor = billing_event_log)]
 pub struct BillingEventLog {
     #[primary_key]
     pub key: String,
+    pub event: String,
     pub user_id: String,
     pub product_id: String,
     pub reason: String,
@@ -102,13 +108,14 @@ fn apply(ctx: &ReducerContext, event: BillingEvent) -> Result<(), String> {
     if ctx.db.purser_source().identity().find(ctx.sender()).is_none() {
         return Err("not called by an allowed billing database".into());
     }
-    let key = format!("{}|{}", event.event, event.transaction_id);
+    let key = event.event_id.clone();
     if ctx.db.billing_event_log().key().find(&key).is_some() {
         return Ok(()); // applied before
     }
     log::info!("{} {} for {} ({})", event.event, event.product_id, event.user_id, event.reason);
     ctx.db.billing_event_log().insert(BillingEventLog {
         key,
+        event: event.event,
         user_id: event.user_id,
         product_id: event.product_id,
         reason: event.reason,

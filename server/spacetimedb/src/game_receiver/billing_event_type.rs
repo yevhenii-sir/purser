@@ -20,5 +20,7 @@ pub struct BillingEvent {
     pub price_micros: ::core::primitive::i64,
     pub currency: ::std::string::String,
     pub timestamp_ms: ::core::primitive::i64,
+    pub event_id: ::std::string::String,
+    pub occurred_at_ms: ::core::primitive::i64,
     pub catalog_product_id: ::std::string::String,
 }

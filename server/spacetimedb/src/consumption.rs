@@ -68,6 +68,8 @@ fn prepare(tx: &TxContext, row: &AppleConsumptionOutbox) -> Result<(GameApp, Str
         retrying: !p.was_granted && !p.last_error.is_empty(),
         revoked: matches!(p.status.as_str(), status::REVOKE_PENDING | status::REVOKED),
         consented: consent.get(attribution_key::REFUND_DATA_CONSENT).is_some_and(|v| v == "true"),
+        // A free trial, or the first paid period after one.
+        trial: p.trial || p.trial_conversion,
     };
     if !facts.consented {
         return Err("not answered: the player did not consent to share consumption data".into());
@@ -99,8 +101,14 @@ pub fn send_apple_consumption(ctx: &mut ProcedureContext, row: AppleConsumptionO
 
 fn answer(ctx: &mut ProcedureContext, row: &AppleConsumptionOutbox) {
     let row = row.clone();
+    // A refund request left unanswered is raised to the owner (Apple decides without the facts).
     let note = |ctx: &mut ProcedureContext, event: &'static str, details: String| {
-        ctx.tx(|tx| log_event(tx, &row.purchase_id, event, &details));
+        ctx.tx(|tx| {
+            log_event(tx, &row.purchase_id, event, &details);
+            if event == "consumption_failed" {
+                crate::alerts::integration_failed(tx, &row.app_id, &format!("App Store refund request for {} not answered: {details}", row.purchase_id));
+            }
+        });
     };
     if ctx.now_micros() > row.deadline_at_micros {
         log::warn!("Refund request for {}: not answered within 12 hours", row.purchase_id);
@@ -143,7 +151,10 @@ fn retry(ctx: &mut ProcedureContext, row: &AppleConsumptionOutbox, status: u16, 
     let next = ctx.now_micros() + retry_delay_secs(row.attempts) * 1_000_000;
     if !is_retryable_status(status) || next > row.deadline_at_micros {
         log::error!("Refund request for {}: answer failed: {detail}", row.purchase_id);
-        ctx.tx(|tx| log_event(tx, &row.purchase_id, "consumption_failed", &detail));
+        ctx.tx(|tx| {
+            log_event(tx, &row.purchase_id, "consumption_failed", &detail);
+            crate::alerts::integration_failed(tx, &row.app_id, &format!("App Store refund request for {} not answered: {detail}", row.purchase_id));
+        });
         return;
     }
     log::warn!("Refund request for {}: answer failed ({detail}), retrying", row.purchase_id);

@@ -4,7 +4,7 @@ use crate::config::{self, secret_name};
 use crate::ctx::Ctx;
 use crate::net::{self, bearer};
 use crate::GameApp;
-use purser_core::event::{delivery, event_type, webhook_signature, BillingEvent};
+use purser_core::event::{delivery, event_type, signature_header, BillingEvent, SIGNATURE_HEADER};
 use spacetimedb::TxContext;
 
 /// What a delivery reads from the database: the allowed SpacetimeDB hosts and the delivery
@@ -69,19 +69,20 @@ fn deliver_spacetimedb(ctx: &mut impl Ctx, app: &GameApp, creds: &Creds, ev: &Bi
     }
 }
 
-/// `POST webhook_url` with `X-Billing-Signature: hex(HMAC-SHA256(webhook_secret, body))`.
+/// `POST webhook_url` with `X-Billing-Signature: t=<unix>,v1=<hex(HMAC-SHA256(webhook_secret, "<unix>." + body))>`.
 fn deliver_webhook(ctx: &mut impl Ctx, app: &GameApp, creds: &Creds, ev: &BillingEvent) -> Result<(), String> {
     let secret = creds.secret.clone()?;
     let body = ev.to_json();
-    let signature = webhook_signature(&secret, body.as_bytes());
+    let signature = signature_header(&secret, body.as_bytes(), ctx.now_micros() / 1_000_000);
     let res = net::send(
         ctx.http(),
         "POST",
         &app.webhook_url,
         &[
             ("Content-Type", "application/json"),
-            ("X-Billing-Signature", &signature),
+            (SIGNATURE_HEADER, &signature),
             ("X-Billing-Event", &ev.event),
+            ("X-Billing-Event-Id", &ev.event_id),
         ],
         body,
     )?;

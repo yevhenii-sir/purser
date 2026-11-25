@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Switch } from "@/components/ui/switch"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { AccountSelect } from "@/components/account-select"
@@ -443,6 +444,7 @@ function DeliveryTab({ data, reload, go }: TabProps) {
         </p>
       </Section>
       <ClientSecuritySection apps={g.apps} reload={reload} />
+      {g.apps.filter((a) => storeOf(a).id === "steam").map((a) => <SteamBuildSection key={a.app_id} app={a} />)}
       <TransferPolicySection gameKey={g.key} />
       <ServerKeysSection gameKey={g.key} />
     </>
@@ -464,19 +466,39 @@ function ClientSecuritySection({ apps, reload }: { apps: GameApp[]; reload: () =
   const canSet = useCan()("secrets")
   const [shown, setShown] = useState<{ title: string; value: string; note: string } | null>(null)
   const publicKey = useAsync(() => proc<{ public_key: string | null }>("admin_response_public_key", apps[0].app_id), [apps[0].app_id])
+  /** Writes the secret to every build; returns the builds it could not be written to. */
   const setAll = async (name: string, value: string) => {
-    for (const a of apps) await call("admin_set_credential", a.app_id, name, value)
+    const failed: string[] = []
+    for (const a of apps) {
+      try {
+        await call("admin_set_credential", a.app_id, name, value)
+      } catch {
+        failed.push(a.app_id)
+      }
+    }
+    return failed
   }
   const newTokenSecret = async () => {
     if (!confirm("Create a new player token secret for every build of this app? Tokens signed with the old one stop working.")) return
     const secret = hex(randomBytes())
-    const ok = await tryAct(async () => { await setAll("client_auth_secret", secret); return true }, "Secret saved")
-    if (ok) setShown({ title: "Player token secret", value: secret, note: "Give it to your game backend: it signs HS256 player tokens {sub: user_id, aud: app, exp} with it. It is not shown again." })
+    const failed = await setAll("client_auth_secret", secret)
+    // Shown whenever some build has it: the game backend needs it for those builds.
+    if (failed.length < apps.length) {
+      const partial = failed.length ? ` Not saved for ${failed.join(", ")}: create a new secret again to set it everywhere.` : ""
+      setShown({ title: "Player token secret", value: secret, note: "Give it to your game backend: it signs HS256 player tokens {sub: user_id, aud: app, exp} with it. It is not shown again." + partial })
+    } else {
+      await tryAct(async () => { throw new Error("the secret could not be saved for any build") })
+    }
   }
   const newSigningKey = async () => {
     if (!confirm("Create a new response signing key for every build of this app? Games with the old public key stop trusting answers until they are updated.")) return
-    const ok = await tryAct(async () => { await setAll("response_signing_key", base64(randomBytes())); return true }, "Key saved")
-    if (ok) { publicKey.reload(); reload() }
+    const ok = await tryAct(async () => {
+      const failed = await setAll("response_signing_key", base64(randomBytes()))
+      if (failed.length) throw new Error(`not saved for ${failed.join(", ")}: create a new key again`)
+      return true
+    }, "Key saved")
+    publicKey.reload()
+    if (ok) reload()
   }
   return (
     <Section title="Client security" description="Optional protection of the client requests (/verify, /restore, /entitlements, ...). Every client sends plain HTTP: an Authorization header and, for signed answers, a header to check.">
@@ -633,7 +655,8 @@ function ServerKeysSection({ gameKey }: { gameKey: string }) {
   }
   const revoke = async (k: ServerKeyRow) => {
     if (!confirm(`Revoke key ${k.key_id} (${k.name})? Requests with it are refused at once.`)) return
-    if (await tryAct(() => call("admin_revoke_server_key", k.key_id), "Key revoked")) keys.reload()
+    // A reducer's call answers with an empty body: success is "not undefined".
+    if ((await tryAct(() => call("admin_revoke_server_key", k.key_id), "Key revoked")) !== undefined) keys.reload()
   }
   return (
     <Section
@@ -696,11 +719,51 @@ function ServerKeysSection({ gameKey }: { gameKey: string }) {
 interface TransferPolicy { mode: "always" | "cooldown" | "never"; cooldown_days: number; max_transfers: number }
 
 /** How purchases move between player ids when a restore names another player (`admin_set_transfer_policy`). */
+interface SteamBuildRow {
+  app_id: string
+  steam_app_id: string
+  sandbox: boolean
+  require_ticket: boolean
+}
+
+/** Steam settings of a build (`admin_set_steam_build`): its Steam App ID, the sandbox API, and
+ * whether checkouts need the player's Web API auth ticket. */
+function SteamBuildSection({ app }: { app: GameApp }) {
+  const canSet = useCan()("configure")
+  const loaded = useAsync(async () => (await select<SteamBuildRow>({ table: "steam_build", where: { column: "app_id", equals: app.app_id } }))[0] || null, [app.app_id])
+  const [edit, setEdit] = useState<SteamBuildRow | null>(null)
+  const b = edit || loaded.data || { app_id: app.app_id, steam_app_id: "", sandbox: false, require_ticket: false }
+  const set = (patch: Partial<SteamBuildRow>) => setEdit({ ...b, ...patch })
+  const save = async () => {
+    const ok = await tryAct(() => call("admin_set_steam_build", JSON.stringify(b)), "Saved")
+    if (ok !== undefined) { setEdit(null); loaded.reload() }
+  }
+  return (
+    <Section title={`Steam: ${buildLabel(app)}`} description="Without an auth ticket, anyone can start a checkout for any SteamID: turn it on once the game sends the ticket."
+      actions={canSet && edit ? <Button onClick={save}>Save</Button> : undefined}>
+      {loaded.error ? <ErrorBox error={loaded.error} /> : (
+        <div className="grid items-start gap-4 sm:grid-cols-3">
+          <Field label="Steam App ID" hint="Empty: the build's app_id.">
+            <Input inputMode="numeric" value={b.steam_app_id} disabled={!canSet} onChange={(e) => set({ steam_app_id: e.target.value })} />
+          </Field>
+          <label className="flex items-center gap-2 text-sm">
+            <Switch checked={b.require_ticket} disabled={!canSet} onCheckedChange={(v) => set({ require_ticket: v })} /> Require an auth ticket
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <Switch checked={b.sandbox} disabled={!canSet} onCheckedChange={(v) => set({ sandbox: v })} /> Sandbox (no money moves)
+          </label>
+        </div>
+      )}
+    </Section>
+  )
+}
+
 function TransferPolicySection({ gameKey }: { gameKey: string }) {
   const canSet = useCan()("configure")
   const loaded = useAsync(() => proc<TransferPolicy>("admin_transfer_policy", gameKey), [gameKey])
   const [edit, setEdit] = useState<TransferPolicy | null>(null)
   const p = edit || loaded.data
+  if (loaded.error) return <Section title="Restores on another player"><ErrorBox error={loaded.error} /></Section>
   if (!p) return null
   const set = (patch: Partial<TransferPolicy>) => setEdit({ ...p, ...patch })
   const save = async () => {

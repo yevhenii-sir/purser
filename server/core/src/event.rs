@@ -67,7 +67,7 @@ pub struct BillingEvent {
     pub product_id: String,
     /// `consumable` | `non_consumable` | `subscription`
     pub kind: String,
-    /// Idempotency key: the game must apply each `transaction_id` + `event` once.
+    /// The store's transaction (`event_id` is the key to apply an event once).
     pub transaction_id: String,
     pub original_transaction_id: String,
     pub user_id: String,
@@ -75,7 +75,13 @@ pub struct BillingEvent {
     pub expires_at_ms: i64,
     pub price_micros: i64,
     pub currency: String,
+    /// When the event was sent (this attempt).
     pub timestamp_ms: i64,
+    /// The same on every retry of this event and different for every other event of the purchase
+    /// (a second refund after a reinstatement, too): what the game deduplicates by.
+    pub event_id: String,
+    /// When what the event reports happened (the same on every retry).
+    pub occurred_at_ms: i64,
     /// The app's own id of the product, the same in every store (`product_id` is this store's id).
     /// Only in webhook bodies ([`BillingEvent::to_json`]): the reducer argument keeps its fields.
     #[serde(skip)]
@@ -97,11 +103,50 @@ impl BillingEvent {
     }
 }
 
-/// `X-Billing-Signature` header value: hex(HMAC-SHA256(secret, body)).
-pub fn webhook_signature(secret: &str, body: &[u8]) -> String {
+/// Header of the webhook signature.
+pub const SIGNATURE_HEADER: &str = "X-Billing-Signature";
+/// How far the time in a signature may be from the receiver's clock (seconds) in
+/// [`verify_signature`]: older requests are replays.
+pub const SIGNATURE_TOLERANCE_SECS: i64 = 300;
+
+fn hmac_hex(secret: &str, signed: &[u8]) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(body);
+    mac.update(signed);
     hex::encode(mac.finalize().into_bytes())
+}
+
+/// `X-Billing-Signature` of a webhook sent at `unix_secs`:
+/// `t=<unix_secs>,v1=<hex(HMAC-SHA256(secret, "<unix_secs>." + body))>`. The time is signed, so a
+/// captured request cannot be replayed later (receivers check it, see [`verify_signature`]).
+pub fn signature_header(secret: &str, body: &[u8], unix_secs: i64) -> String {
+    let mut signed = format!("{unix_secs}.").into_bytes();
+    signed.extend_from_slice(body);
+    format!("t={unix_secs},v1={}", hmac_hex(secret, &signed))
+}
+
+/// How a receiver checks a signature: one of `secrets` (two while a secret is rotated) signed
+/// `body` at a time within [`SIGNATURE_TOLERANCE_SECS`] of `now_secs`.
+pub fn verify_signature(header: &str, body: &[u8], secrets: &[&str], now_secs: i64) -> Result<(), String> {
+    let mut t = None;
+    let mut v1 = Vec::new();
+    for part in header.split(',') {
+        match part.trim().split_once('=') {
+            Some(("t", v)) => t = v.parse::<i64>().ok(),
+            Some(("v1", v)) => v1.push(v),
+            _ => {}
+        }
+    }
+    let t = t.ok_or("no t= in the signature")?;
+    if (now_secs - t).abs() > SIGNATURE_TOLERANCE_SECS {
+        return Err("the signature is too old (or from the future)".into());
+    }
+    let mut signed = format!("{t}.").into_bytes();
+    signed.extend_from_slice(body);
+    let ok = secrets.iter().any(|s| {
+        let expected = hmac_hex(s, &signed);
+        v1.iter().any(|v| crate::encoding::constant_time_eq(v.as_bytes(), expected.as_bytes()))
+    });
+    if ok { Ok(()) } else { Err("the signature does not match".into()) }
 }
 
 #[cfg(test)]
@@ -124,6 +169,8 @@ mod tests {
             price_micros: 0,
             currency: String::new(),
             timestamp_ms: 1,
+            event_id: "google:GPA.1#0".into(),
+            occurred_at_ms: 1,
             catalog_product_id: String::new(),
         }
     }
@@ -153,8 +200,20 @@ mod tests {
     fn hmac_known_vector() {
         // RFC 4231 test case 2
         assert_eq!(
-            webhook_signature("Jefe", b"what do ya want for nothing?"),
+            hmac_hex("Jefe", b"what do ya want for nothing?"),
             "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
         );
+    }
+
+    #[test]
+    fn signatures_carry_the_time_and_refuse_replays() {
+        let body = br#"{"event":"grant"}"#;
+        let h = signature_header("s3cret", body, 1_800_000_000);
+        assert!(h.starts_with("t=1800000000,v1="), "{h}");
+        assert_eq!(verify_signature(&h, body, &["s3cret"], 1_800_000_100), Ok(()));
+        assert!(verify_signature(&h, body, &["old", "s3cret"], 1_800_000_100).is_ok(), "two secrets while rotating");
+        assert!(verify_signature(&h, body, &["s3cret"], 1_800_000_000 + SIGNATURE_TOLERANCE_SECS + 1).unwrap_err().contains("old"));
+        assert!(verify_signature(&h, br#"{"event":"revoke"}"#, &["s3cret"], 1_800_000_000).is_err());
+        assert!(verify_signature(&h, body, &["other"], 1_800_000_000).is_err());
     }
 }

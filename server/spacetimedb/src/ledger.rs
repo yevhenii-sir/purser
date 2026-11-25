@@ -58,6 +58,9 @@ fn bump(tx: &ReducerContext, app_id: &str, status: &str, up: bool) {
 /// Every new ledger row goes through here (and [`save_purchase`] for changes).
 pub fn insert_purchase(tx: &ReducerContext, mut p: Purchase) -> Purchase {
     set_period_facts(tx, &mut p);
+    if p.step_at_micros == 0 {
+        p.step_at_micros = tx_now_micros(tx);
+    }
     bump(tx, &p.app_id, &p.status, true);
     crate::ledger_index::sync(tx, &p);
     tx.db.purchase().insert(p)
@@ -95,11 +98,16 @@ fn set_period_facts(tx: &ReducerContext, p: &mut Purchase) {
 
 /// Every change of a ledger row goes through here: it keeps [`PurchaseCount`] and the derived
 /// tables of `ledger_index` in step.
-pub fn save_purchase(tx: &ReducerContext, p: Purchase) -> Purchase {
+pub fn save_purchase(tx: &ReducerContext, mut p: Purchase) -> Purchase {
     if let Some(old) = tx.db.purchase().id().find(&p.id) {
         if old.status != p.status || old.app_id != p.app_id {
             bump(tx, &old.app_id, &old.status, false);
             bump(tx, &p.app_id, &p.status, true);
+        }
+        // A new step for the game: another status, owner or access end (not a retry, a lease).
+        if old.status != p.status || old.user_id != p.user_id || old.access_until_ms() != p.access_until_ms() {
+            p.step_seq = old.step_seq.wrapping_add(1);
+            p.step_at_micros = tx_now_micros(tx);
         }
     }
     crate::ledger_index::sync(tx, &p);
@@ -330,7 +338,7 @@ fn record_row(
             p.offer_id = claim.offer_id.clone();
             filled = true;
         }
-        filled |= crate::paywalls::attribute(&mut p, &claim.paywall);
+        filled |= crate::paywalls::attribute(tx, &mut p, &claim.paywall);
         // Renewal details (billing issue, auto-renew, pending downgrade) change no access.
         let renewal = (st.billing_issue, st.auto_renew_off, st.renew_product_id.as_str());
         let mut lifecycle = lifecycle_events(&p, st.billing_issue, st.auto_renew_off);
@@ -393,6 +401,8 @@ fn record_row(
         app_instance_id: claim.app_instance_id.clone(),
         next_attempt_at_micros: next_attempt,
         lease_until_micros: if leased { next_attempt } else { 0 },
+        step_seq: 0,
+        step_at_micros: 0,
         country: st.country.clone(),
         trial: st.trial,
         grace_until_ms: st.grace_until_ms,
@@ -407,7 +417,7 @@ fn record_row(
     };
     // A renewal keeps the paywall of the subscription's first purchase; else the client's.
     crate::paywalls::inherit(tx, &mut row);
-    crate::paywalls::attribute(&mut row, &claim.paywall);
+    crate::paywalls::attribute(tx, &mut row, &claim.paywall);
     let row = crate::ledger::insert_purchase(tx, row);
     log_event(
         tx,
@@ -501,6 +511,7 @@ pub fn partial_refund(tx: &TxContext, mut p: Purchase, total_micros: i64, detail
     p.refunded_micros = total;
     p.updated_at_micros = tx_now_micros(tx);
     let id = p.id.clone();
+    integrations::enqueue_partial_refund(tx, &p, more);
     crate::ledger::save_purchase(tx, p);
     // The amount alone: the revenue rebuild reads it.
     log_event(tx, &id, "partial_refund", &more.to_string());
@@ -850,6 +861,8 @@ fn billing_event(p: &Purchase, event: &str, why: &str, now_ms: i64) -> BillingEv
         price_micros: p.price_micros,
         currency: p.currency.clone(),
         timestamp_ms: now_ms,
+        event_id: format!("{}#{}", p.id, p.step_seq),
+        occurred_at_ms: p.step_at_micros / 1000,
         catalog_product_id: String::new(),
     }
 }
