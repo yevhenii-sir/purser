@@ -72,6 +72,9 @@ pub mod secret_name {
     /// Ed25519 seed (32 bytes, base64) the server signs `/entitlements` and `/restore` answers
     /// with; the game checks them with its public key.
     pub const RESPONSE_SIGNING_KEY: &str = "response_signing_key";
+    /// Bearer token a Prometheus scraper sends to `GET /metrics` (`default` scope); unset: the
+    /// route answers 404.
+    pub const METRICS_TOKEN: &str = "metrics_token";
     /// Amazon Developer Console → Shared Key (Receipt Verification Service).
     pub const AMAZON_SHARED_SECRET: &str = purser_core::amazon::SHARED_SECRET;
     /// Steamworks publisher Web API key (ISteamMicroTxn).
@@ -106,6 +109,7 @@ pub mod secret_name {
                 | ALERT_SLACK_WEBHOOK_URL
                 | ALERT_DISCORD_WEBHOOK_URL
                 | ALERT_WEBHOOK_SECRET
+                | METRICS_TOKEN
         )
     }
 }

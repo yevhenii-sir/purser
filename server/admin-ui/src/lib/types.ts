@@ -326,6 +326,7 @@ export const SECRET_NAMES: [string, string][] = [
   ["alert_slack_webhook_url", "Alerts: Slack incoming webhook URL (scope alert-<channel id>; set it on the Alerts page)"],
   ["alert_discord_webhook_url", "Alerts: Discord webhook URL (scope alert-<channel id>; set it on the Alerts page)"],
   ["alert_webhook_secret", "Alerts: signing key of the alert webhook (scope alert-<channel id>; set it on the Alerts page)"],
+  ["metrics_token", "Bearer token of GET /metrics (scope default; create it on the Server page)"],
 ]
 
 /** A product being created in a build's store (`store_create_job`). */

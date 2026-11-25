@@ -23,6 +23,7 @@ export function ServerPage() {
         <HostsSection />
         <PublicAddressSection />
         <WorkerSection />
+        <MetricsSection />
       </div>
       <RawSecrets />
     </>
@@ -117,6 +118,51 @@ function WorkerSection() {
           </div>
         </Field>
       </div>
+    </Section>
+  )
+}
+
+/** `GET /metrics` for Prometheus: on while the `metrics_token` secret is set. */
+function MetricsSection() {
+  const { data, error, loading, reload } = useAsync(async () => {
+    const rows = await select<{ key: string }>({ table: "credential", columns: ["key"] })
+    return rows.some((r) => r.key === "default/metrics_token")
+  })
+  const [shown, setShown] = useState("")
+  const url = `${location.origin}${ROUTE}/metrics`
+  const create = async () => {
+    if (data && !confirm("Create a new token? Scrapers with the old one get 401 until they are updated.")) return
+    const bytes = new Uint8Array(24)
+    crypto.getRandomValues(bytes)
+    const token = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")
+    if ((await tryAct(() => call("admin_set_credential", "default", "metrics_token", token), "Token saved")) !== undefined) {
+      setShown(token)
+      reload()
+    }
+  }
+  const turnOff = async () => {
+    if (!confirm("Turn /metrics off? The route answers 404 until a new token is created.")) return
+    if ((await tryAct(() => call("admin_delete_credential", "default", "metrics_token"), "Metrics turned off")) !== undefined) {
+      setShown("")
+      reload()
+    }
+  }
+  return (
+    <Section
+      title="Metrics"
+      description={<>Prometheus text at <Mono className="break-all">{url}</Mono>: the queue, ledger rows by status, store notifications, integration events, open alerts and today&apos;s revenue per build. Scrapers send <code>Authorization: Bearer &lt;token&gt;</code>.</>}
+    >
+      {error && <ErrorBox error={error} />}
+      <div className="flex flex-wrap items-center gap-2">
+        <Tone tone={data ? "ok" : "muted"}>{loading ? "…" : data ? "on" : "off"}</Tone>
+        <Button variant="outline" disabled={loading || !!error} onClick={create}>{data ? "New token" : "Create token"}</Button>
+        {data && <Button variant="ghost" className="text-destructive" onClick={turnOff}>Turn off</Button>}
+      </div>
+      {shown && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          The token (shown once): <Mono className="break-all text-foreground">{shown}</Mono>
+        </p>
+      )}
     </Section>
   )
 }

@@ -34,6 +34,7 @@ mod game_receiver;
 mod integrations;
 mod ledger;
 mod ledger_index;
+mod metrics;
 mod net;
 mod offers;
 mod paywalls;

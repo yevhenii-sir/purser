@@ -393,6 +393,10 @@ Prices come from the event (minor units, zero- and three-decimal currencies hand
 
 For uptime monitors. `200` with `status`: `healthy`; `starting` right after a publish (the worker has not run yet); `backlog` when a purchase has been due for 15 minutes (the queue is not keeping up: a slow store or game, or more due than the drainers take). `503 worker_stopped` when the minute worker has not run for 5 minutes. The numbers: `pending_purchases` (rows the worker still has to finish, including those waiting for a later retry), `due_purchases` and `oldest_due_secs` (due now, and how long the oldest has waited), `queue_drainers` (running or scheduled), `stuck_purchases` (retried 3 times or more, or blocked), `blocked_purchases` (waiting for a fix of the setup: a missing secret, a host that is not allowed, a deleted build), `queued_integration_events`, `worker_age_secs`, `version`.
 
+### `GET /metrics`
+
+Prometheus text format (gauges) for a scraper with the `metrics_token` secret (`default` scope; the admin page's Server page creates it): `Authorization: Bearer <token>`, 401 with a wrong one, 404 while the secret is not set. `purser_build_info{version}`, `purser_worker_age_seconds`, the queue as in `/healthz` (`purser_pending_purchases`, `purser_due_purchases`, `purser_oldest_due_seconds`, `purser_stuck_purchases`, `purser_blocked_purchases`, `purser_queue_drainers`), `purser_integration_outbox`, `purser_integration_dead`, `purser_alerts_active`, ledger rows by build and status (`purser_purchases{app_id,status}`), `purser_store_notification_age_seconds{app_id}`, and today's production numbers per build (UTC): `purser_revenue_today_gross_usd`, `purser_revenue_today_refunded_usd`, `purser_paid_purchases_today`, `purser_refunds_today`. Every number is read from a counter table or today's revenue rows: a scrape costs the same however long the ledger is.
+
 ## Delivery to the game
 
 The event format, the reducer / webhook contract, idempotency rules, transfers and games without a backend are in [docs/game-integration.md](../docs/game-integration.md).

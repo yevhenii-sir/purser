@@ -16,6 +16,7 @@ pub mod google;
 pub mod google_setup;
 pub mod integrations;
 pub mod jwt;
+pub mod metrics;
 pub mod model;
 pub mod money;
 pub mod offers;

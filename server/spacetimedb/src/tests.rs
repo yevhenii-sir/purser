@@ -2303,6 +2303,106 @@ fn recording_ctx(w: &World, status: u16) -> (ProcedureContext, Seen) {
     (ctx, seen)
 }
 
+/// Production USD sales of the Android build on `day`.
+fn sales_day(w: &World, day: i32, gross_usd_micros: i64, paid: u32, refunds: u32) {
+    use crate::revenue::{revenue_daily, RevenueDaily};
+    w.write(|tx| {
+        tx.db.revenue_daily().insert(RevenueDaily {
+            key: format!("{day}|{APP}|gems|production|USD"),
+            day,
+            app_id: APP.into(),
+            product_id: "gems".into(),
+            environment: "production".into(),
+            currency: "USD".into(),
+            purchases: paid,
+            new_subscriptions: 0,
+            renewals: 0,
+            refunds,
+            transfers: 0,
+            expirations: 0,
+            gross_micros: gross_usd_micros,
+            refunded_micros: refunds as i64 * 1_000_000,
+            trials: 0,
+            trial_conversions: 0,
+            trial_expirations: 0,
+            gross_after_year_micros: 0,
+            refunded_after_year_micros: 0,
+        });
+    });
+}
+
+fn set_alert_rules(w: &World, rules: Value) {
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::alerts::admin_set_alert_rules(ctx, rules.to_string())).unwrap();
+}
+
+#[test]
+fn business_alerts_watch_revenue_refunds_and_purchases_that_stopped() {
+    let w = World::new();
+    setup_alerts(&w, false);
+    let today = (NOW_MICROS / 86_400_000_000) as i32;
+    for day in (today - 8)..(today - 1) {
+        sales_day(&w, day, 100_000_000, 10, 0);
+    }
+    // Yesterday: 30% of a usual day, 6 refunds of 8 purchases.
+    sales_day(&w, today - 1, 30_000_000, 8, 6);
+    w.run_worker();
+    let rules: Vec<(String, String)> = alert_messages(&w).iter().map(|m| (m.rule.clone(), m.state.clone())).collect();
+    for rule in ["revenue_drop", "refund_spike", "no_purchases"] {
+        assert!(rules.contains(&(rule.to_string(), "alert".to_string())), "{rule}: {rules:?}");
+    }
+    let drop = alert_messages(&w).into_iter().find(|m| m.rule == "revenue_drop").unwrap();
+    assert!(drop.detail.contains("$30.00") && drop.detail.contains("30%") && drop.detail.contains("$100.00"), "{}", drop.detail);
+
+    // A purchase comes in: the next hourly check resolves "no purchases" (the others judge yesterday).
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    let before = alert_messages(&w).len();
+    w.advance_clock(3601);
+    w.run_worker();
+    let new: Vec<(String, String)> = alert_messages(&w)[before..].iter().map(|m| (m.rule.clone(), m.state.clone())).collect();
+    assert_eq!(new, [("no_purchases".to_string(), "resolved".to_string())]);
+
+    // Rules switched off: nothing more.
+    set_alert_rules(&w, json!({ "revenue_drop": false, "refund_spike": false, "no_purchases": false }));
+    w.advance_clock(3601);
+    w.run_worker();
+    assert!(alert_messages(&w)[before + 1..].iter().all(|m| m.state != "alert"));
+}
+
+#[test]
+fn the_daily_summary_goes_out_once_a_day_after_its_hour() {
+    let w = World::new();
+    setup_alerts(&w, false);
+    let today = (NOW_MICROS / 86_400_000_000) as i32;
+    sales_day(&w, today - 2, 50_000_000, 5, 0);
+    sales_day(&w, today - 1, 75_500_000, 7, 1);
+    set_alert_rules(&w, json!({ "digest": true, "digest_hour": 0, "no_purchases": false }));
+    w.run_worker();
+    let digests: Vec<_> = alert_messages(&w).into_iter().filter(|m| m.rule == "digest").collect();
+    assert_eq!(digests.len(), 1);
+    assert_eq!((digests[0].state.as_str(), digests[0].app_id.as_str()), ("digest", APP));
+    assert!(digests[0].detail.contains("$75.50 gross (+51% against the day before)"), "{}", digests[0].detail);
+    w.advance_clock(3601);
+    w.run_worker();
+    assert_eq!(alert_messages(&w).iter().filter(|m| m.rule == "digest").count(), 1, "once a day");
+}
+
+#[test]
+fn metrics_need_their_token_and_read_the_counters() {
+    let w = World::new();
+    price_products(&w, "USD");
+    w.verify("player-1", "gems");
+    assert_eq!(crate::metrics::render(&mut w.ctx(), "Bearer x").0, 404, "off without the secret");
+    w.set_secret(config::secret_name::METRICS_TOKEN, "scrape-me-0123456789");
+    assert_eq!(crate::metrics::render(&mut w.ctx(), "Bearer wrong").0, 401);
+    assert_eq!(crate::metrics::render(&mut w.ctx(), "").0, 401);
+    let (status, text) = crate::metrics::render(&mut w.ctx(), "Bearer scrape-me-0123456789");
+    assert_eq!(status, 200);
+    assert!(text.contains(&format!("purser_purchases{{app_id=\"{APP}\",status=\"completed\"}} 1")), "{text}");
+    assert!(text.contains(&format!("purser_revenue_today_gross_usd{{app_id=\"{APP}\"}} 0.99")), "{text}");
+    assert!(text.contains("# TYPE purser_pending_purchases gauge\npurser_pending_purchases 0"), "{text}");
+}
+
 #[test]
 fn delivery_that_keeps_failing_is_alerted_and_resolved() {
     let w = World::new();

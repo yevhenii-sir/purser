@@ -100,6 +100,17 @@ interface Rules {
   fx_failing_hours: number
   queue_behind: boolean
   queue_behind_minutes: number
+  revenue_drop: boolean
+  revenue_drop_percent: number
+  revenue_min_usd: number
+  refund_spike: boolean
+  refund_spike_percent: number
+  refund_spike_min: number
+  no_purchases: boolean
+  no_purchases_hours: number
+  no_purchases_min_daily: number
+  digest: boolean
+  digest_hour: number
   window_hours: number
   send_resolved: boolean
 }
@@ -116,6 +127,17 @@ const DEFAULT_RULES: Rules = {
   fx_failing_hours: 24,
   queue_behind: true,
   queue_behind_minutes: 15,
+  revenue_drop: true,
+  revenue_drop_percent: 50,
+  revenue_min_usd: 50,
+  refund_spike: true,
+  refund_spike_percent: 20,
+  refund_spike_min: 5,
+  no_purchases: true,
+  no_purchases_hours: 24,
+  no_purchases_min_daily: 5,
+  digest: false,
+  digest_hour: 8,
   window_hours: 6,
   send_resolved: true,
 }
@@ -177,12 +199,12 @@ interface Threshold {
 const WINDOW: Threshold = { key: "window_hours", label: "Hours", min: 1, max: 168 }
 
 /** The rules; `key` is also the rule id (`purser_core::alerts::rule`) a channel filters by. */
-const RULES: { key: keyof Rules; title: string; description: string; threshold?: Threshold }[] = [
+const RULES: { key: keyof Rules; title: string; description: string; thresholds?: Threshold[] }[] = [
   {
     key: "delivery_failing",
     title: "Purchase delivery keeps failing",
     description: "Grant / revoke delivery to the game, or Google consume / acknowledge, failed several times in a row. Resolved when nothing is stuck any more.",
-    threshold: { key: "delivery_attempts", label: "Failed attempts", min: 1, max: 50 },
+    thresholds: [{ key: "delivery_attempts", label: "Failed attempts", min: 1, max: 50 }],
   },
   { key: "store_auth", title: "Store rejected the credentials", description: "Google Play 401/403 or a rejected service account key, App Store 401/403. One alert per developer account, however many of its builds see it. Resolved by the next successful verification." },
   { key: "integration_failed", title: "Integration event dropped", description: "An event to GA4, AppsFlyer, Adjust, a webhook, … failed for good (non-retryable error or out of retries)." },
@@ -190,20 +212,53 @@ const RULES: { key: keyof Rules; title: string; description: string; threshold?:
     key: "notifications_silent",
     title: "No store notifications",
     description: "An app sold something but no RTDN / App Store notification arrived for this many days (production purchases only).",
-    threshold: { key: "silent_days", label: "Days", min: 1, max: 60 },
+    thresholds: [{ key: "silent_days", label: "Days", min: 1, max: 60 }],
   },
   { key: "notification_rejected", title: "Store notification rejected", description: "A notification came with a wrong or missing secret in its URL." },
   {
     key: "fx_failing",
     title: "Exchange rates are not updating",
     description: "The ECB rates could not be fetched for this many hours (revenue in USD).",
-    threshold: { key: "fx_failing_hours", label: "Hours", min: 1, max: 720 },
+    thresholds: [{ key: "fx_failing_hours", label: "Hours", min: 1, max: 720 }],
   },
   {
     key: "queue_behind",
     title: "Purchase queue is behind",
     description: "A purchase of an app has waited in the worker's queue this many minutes after it became due: players wait for rewards. Resolved when the app's queue caught up.",
-    threshold: { key: "queue_behind_minutes", label: "Minutes", min: 5, max: 1440 },
+    thresholds: [{ key: "queue_behind_minutes", label: "Minutes", min: 5, max: 1440 }],
+  },
+  {
+    key: "revenue_drop",
+    title: "Revenue dropped",
+    description: "Yesterday's gross revenue of a build (production, USD) fell below this percent of its average day over the week before. Only builds that make at least this many USD a day.",
+    thresholds: [
+      { key: "revenue_drop_percent", label: "% of usual", min: 10, max: 95 },
+      { key: "revenue_min_usd", label: "Min USD/day", min: 1, max: 1_000_000 },
+    ],
+  },
+  {
+    key: "refund_spike",
+    title: "Refunds spiked",
+    description: "Yesterday a build refunded more than this percent of its paid purchases, and at least this many.",
+    thresholds: [
+      { key: "refund_spike_percent", label: "% refunded", min: 1, max: 100 },
+      { key: "refund_spike_min", label: "Min refunds", min: 1, max: 100_000 },
+    ],
+  },
+  {
+    key: "no_purchases",
+    title: "No purchases",
+    description: "A build that sold at least this many a day over the last week has not recorded a paid purchase for this many hours. Resolved by the next purchase.",
+    thresholds: [
+      { key: "no_purchases_hours", label: "Hours", min: 1, max: 720 },
+      { key: "no_purchases_min_daily", label: "Min a day", min: 1, max: 1_000_000 },
+    ],
+  },
+  {
+    key: "digest",
+    title: "Daily summary",
+    description: "Every day at this hour (UTC), one message per app: yesterday's revenue against the day before, purchases, subscriptions and refunds. Not an alert: no throttle.",
+    thresholds: [{ key: "digest_hour", label: "Hour (UTC)", min: 0, max: 23 }],
   },
 ]
 
@@ -512,7 +567,7 @@ function RulesSection({ initial, reload }: { initial: Rules; reload: () => void 
   // Clamped when saved, not while typing: clearing the field to type a new number must stay possible.
   const clamped = () => {
     const out = { ...rules }
-    for (const t of [WINDOW, ...RULES.flatMap((r) => (r.threshold ? [r.threshold] : []))]) {
+    for (const t of [WINDOW, ...RULES.flatMap((r) => r.thresholds ?? [])]) {
       out[t.key] = Math.min(t.max, Math.max(t.min, Number(out[t.key]))) as never
     }
     return out
@@ -539,17 +594,22 @@ function RulesSection({ initial, reload }: { initial: Rules; reload: () => void 
                 <p className="text-xs text-muted-foreground">{r.description}</p>
               </div>
             </div>
-            {r.threshold && (
-              <div className="flex shrink-0 items-center gap-2">
-                <Label className="text-xs text-muted-foreground">{r.threshold.label}</Label>
-                <Input
-                  type="number"
-                  className="w-20"
-                  min={r.threshold.min}
-                  max={r.threshold.max}
-                  value={String(rules[r.threshold.key])}
-                  onChange={(e) => num(r.threshold!, e.target.value)}
-                />
+            {r.thresholds && (
+              <div className="flex shrink-0 flex-wrap items-center gap-3">
+                {r.thresholds.map((t) => (
+                  <div key={t.key} className="flex items-center gap-2">
+                    <Label htmlFor={`threshold-${t.key}`} className="text-xs text-muted-foreground">{t.label}</Label>
+                    <Input
+                      id={`threshold-${t.key}`}
+                      type="number"
+                      className="w-24"
+                      min={t.min}
+                      max={t.max}
+                      value={String(rules[t.key])}
+                      onChange={(e) => num(t, e.target.value)}
+                    />
+                  </div>
+                ))}
               </div>
             )}
           </div>

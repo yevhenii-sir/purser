@@ -1,6 +1,8 @@
 //! Alerts to the server owner (Telegram, Slack, Discord, signed webhook) about problems that would
 //! otherwise only show up in the logs: deliveries that keep failing, rejected store credentials,
-//! dropped integration events, silent or rejected store notifications, stale exchange rates.
+//! dropped integration events, silent or rejected store notifications, stale exchange rates, and
+//! about the business: revenue that dropped, refunds that spiked, purchases that stopped, plus an
+//! optional daily summary of each app.
 //!
 //! Problems are detected where they are observed (same transaction) or by the worker
 //! ([`check_tx`], time-based rules). [`raise`] / [`begin`] / [`resolve`] apply the throttle
@@ -16,8 +18,8 @@ use crate::ctx::Ctx;
 use crate::revenue::revenue_daily;
 use crate::settings::{self, key, server_state};
 use crate::store_health;
-use crate::{credential, game_app, net, Purchase};
-use purser_core::alerts::{self as al, channel_kind, rule, state, ChannelSettings, Message, Rules, Throttle};
+use crate::{credential, game_app, net, purchase, GameApp, Purchase};
+use purser_core::alerts::{self as al, channel_kind, rule, state, ChannelSettings, DaySales, Message, Rules, Throttle};
 use purser_core::integrations::{is_retryable_status, HttpCall};
 use purser_core::model::{environment, store};
 use purser_core::retry_delay_secs;
@@ -36,6 +38,10 @@ const FX_LAST_ERROR: &str = "alert_fx_last_error";
 /// Last check of the "notifications silent" rule (micros): it counts days, hourly is enough.
 const SILENT_CHECKED_AT: &str = "alert_silent_checked_at";
 const SILENT_CHECK_MICROS: i64 = 3600 * 1_000_000;
+/// Last hourly check of the business rules (micros).
+const BUSINESS_CHECKED_AT: &str = "alert_business_checked_at";
+/// The day (days since 1970) the daily summary was last sent.
+const DIGEST_SENT_DAY: &str = "alert_digest_sent_day";
 /// Attempts per message (first try + retries with `retry_delay_secs` backoff, ~1.4 h in total).
 pub(crate) const MAX_ATTEMPTS: u32 = 5;
 /// Rows kept in `alert_log`.
@@ -507,6 +513,8 @@ pub fn check_tx(tx: &ReducerContext) {
         }
     }
 
+    check_business(tx, &rules, now);
+
     // The worker's queue.
     for (app_id, due) in &lagging {
         let detail = format!(
@@ -548,6 +556,108 @@ pub fn check_tx(tx: &ReducerContext) {
             let (rule, app_id, detail) = (s.rule.clone(), s.app_id.clone(), s.detail.clone());
             save_state(tx, s);
             queue(tx, &rule, state::ALERT, &app_id, &detail, repeats);
+        }
+    }
+}
+
+/// Production sales per (build, day) of the days `from..=to`, in USD (from the daily revenue rows:
+/// an index read of a few days, whatever the history).
+fn daily_sales(tx: &ReducerContext, from: i32, to: i32) -> BTreeMap<(String, i32), DaySales> {
+    let fx = crate::revenue::fx_table(tx, from - 14, to);
+    let mut out: BTreeMap<(String, i32), DaySales> = BTreeMap::new();
+    for r in tx.db.revenue_daily().day().filter(from..=to) {
+        if r.environment != environment::PRODUCTION {
+            continue;
+        }
+        let usd = |micros: i64| if micros == 0 { 0 } else { fx.to_usd_micros(micros, &r.currency, r.day).unwrap_or(0) };
+        out.entry((r.app_id.clone(), r.day)).or_default().add(&DaySales {
+            gross_usd_micros: usd(r.gross_micros),
+            refunded_usd_micros: usd(r.refunded_micros),
+            paid: r.purchases + r.new_subscriptions + r.renewals,
+            new_subscriptions: r.new_subscriptions,
+            renewals: r.renewals,
+            refunds: r.refunds,
+        });
+    }
+    out
+}
+
+/// When a build last recorded a paid store purchase at or after `since` (0: none).
+fn last_paid_since(tx: &ReducerContext, app_id: &str, since: i64) -> i64 {
+    tx.db
+        .purchase()
+        .app_created()
+        .filter((app_id, since..))
+        .filter(|p| p.store != store::MANUAL && p.price_micros > 0)
+        .map(|p| p.created_at_micros)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Revenue drop, refund spike, no purchases (hourly; the first two judge yesterday against the week
+/// before) and the daily summary.
+fn check_business(tx: &ReducerContext, rules: &Rules, now: i64) {
+    let any = rules.revenue_drop || rules.refund_spike || rules.no_purchases || rules.digest;
+    if !any || now - settings::get_i64(tx, BUSINESS_CHECKED_AT) < SILENT_CHECK_MICROS {
+        return;
+    }
+    settings::set(tx, BUSINESS_CHECKED_AT, &now.to_string());
+    let today = day_of_micros(now);
+    let yesterday = today - 1;
+    let sales = daily_sales(tx, yesterday - al::BASELINE_DAYS, yesterday);
+    let day = |app: &str, d: i32| sales.get(&(app.to_string(), d)).copied().unwrap_or_default();
+    let sum = |app: &str, days: std::ops::Range<i32>| {
+        let mut s = DaySales::default();
+        for d in days {
+            s.add(&day(app, d));
+        }
+        s
+    };
+    let apps: Vec<GameApp> = tx.db.game_app().iter().filter(|a| a.enabled).collect();
+    for app in &apps {
+        let id = app.app_id.as_str();
+        let y = day(id, yesterday);
+        if rules.revenue_drop {
+            let average = sum(id, (yesterday - al::BASELINE_DAYS)..yesterday).gross_usd_micros / al::BASELINE_DAYS as i64;
+            if al::revenue_dropped(&y, average, rules.revenue_drop_percent, rules.revenue_min_usd) {
+                begin(tx, rule::REVENUE_DROP, id, &al::revenue_drop_detail(&y, average));
+            } else {
+                resolve(tx, rule::REVENUE_DROP, id);
+            }
+        }
+        if rules.refund_spike {
+            if al::refund_spike(&y, rules.refund_spike_percent, rules.refund_spike_min) {
+                begin(tx, rule::REFUND_SPIKE, id, &al::refund_spike_detail(&y));
+            } else {
+                resolve(tx, rule::REFUND_SPIKE, id);
+            }
+        }
+        if rules.no_purchases {
+            let average = sum(id, (today - al::BASELINE_DAYS)..today).paid as f64 / al::BASELINE_DAYS as f64;
+            let hours = rules.no_purchases_hours;
+            // Only builds that sell enough read their latest purchases.
+            let last = if average >= rules.no_purchases_min_daily as f64 { last_paid_since(tx, id, now - hours as i64 * 3_600_000_000) } else { now };
+            if al::purchases_stopped(now, last, hours, average, rules.no_purchases_min_daily) {
+                let detail = format!("No paid purchase for {hours} hours; the build averaged {average:.1} a day over the last {} days.", al::BASELINE_DAYS);
+                begin(tx, rule::NO_PURCHASES, id, &detail);
+            } else {
+                resolve(tx, rule::NO_PURCHASES, id);
+            }
+        }
+    }
+    if rules.digest && al::digest_due(now, settings::get_i64(tx, DIGEST_SENT_DAY) as i32, rules.digest_hour) {
+        settings::set(tx, DIGEST_SENT_DAY, &today.to_string());
+        let mut games: BTreeMap<&str, Vec<&GameApp>> = BTreeMap::new();
+        for app in &apps {
+            games.entry(app.game_key.as_str()).or_default().push(app);
+        }
+        for builds in games.values() {
+            let lines: Vec<(String, DaySales)> =
+                builds.iter().map(|a| (a.app_id.clone(), day(&a.app_id, yesterday))).filter(|(_, s)| *s != DaySales::default()).collect();
+            let Some((first, _)) = lines.first() else { continue };
+            let before: i64 = builds.iter().map(|a| day(&a.app_id, yesterday - 1).gross_usd_micros).sum();
+            let text = al::digest_text(&purser_core::time::format_day(yesterday), &lines, before);
+            queue(tx, rule::DIGEST, state::DIGEST, first, &text, 0);
         }
     }
 }

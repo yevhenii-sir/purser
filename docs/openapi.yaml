@@ -85,6 +85,27 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Health" }
 
+  /metrics:
+    get:
+      tags: [Monitoring]
+      operationId: metrics
+      security: [{ metricsToken: [] }]
+      summary: Prometheus metrics
+      description: |
+        Gauges in the Prometheus text format: the queue, ledger rows by build and status, store
+        notifications, integration events, open alerts and today's production revenue per build.
+        Off (404) until the `metrics_token` secret is set.
+      responses:
+        "200":
+          description: The metrics.
+          content:
+            text/plain:
+              schema: { type: string }
+        "401":
+          description: A missing or wrong token.
+        "404":
+          description: The `metrics_token` secret is not set.
+
   /verify/google:
     post:
       tags: [Purchases]
@@ -1354,6 +1375,10 @@ components:
           type: string
 
   securitySchemes:
+    metricsToken:
+      type: http
+      scheme: bearer
+      description: The `metrics_token` secret (`default` scope), created on the admin page's Server page.
     serverKey:
       type: http
       scheme: bearer

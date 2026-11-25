@@ -3,6 +3,7 @@
 //! | Method | Path               | Caller                     |
 //! |--------|--------------------|----------------------------|
 //! | GET    | `/healthz`         | monitoring                 |
+//! | GET    | `/metrics`         | Prometheus (`metrics_token`) |
 //! | GET    | `/admin`           | admin UI (an admin's token) |
 //! | POST   | `/verify/<store>`  | game client after purchase: `google`, `apple`, `amazon` (client-receipt stores of `purser_core::registry`) |
 //! | POST   | `/checkout/steam`  | game client: start a Steam purchase (`InitTxn`), then `/verify/steam` |
@@ -1404,10 +1405,23 @@ fn health_report(ctx: &mut impl Ctx) -> Outcome {
     )
 }
 
+#[handler]
+fn metrics(ctx: &mut HandlerContext, req: Request) -> Response {
+    let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let (status, body) = crate::metrics::render(ctx, &authorization);
+    http::Response::builder()
+        .status(status)
+        .header("Content-Type", purser_core::metrics::CONTENT_TYPE)
+        .header("Cache-Control", "no-store")
+        .body(Body::from(body))
+        .expect("valid response")
+}
+
 #[router]
 fn routes() -> Router {
     let mut router = Router::new()
         .get("/healthz", healthz)
+        .get("/metrics", metrics)
         .get("/admin", admin_page)
         .post("/restore", restore)
         .post("/entitlements", entitlements)

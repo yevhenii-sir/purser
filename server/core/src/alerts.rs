@@ -23,17 +23,39 @@ pub mod rule {
     /// A purchase of the app has been due for `queue_behind_minutes`: the worker's queue is not
     /// keeping up (a store or the game answers slowly, or more is due than the drainers take).
     pub const QUEUE_BEHIND: &str = "queue_behind";
+    /// Yesterday's revenue of a build fell well below its average day of the week before.
+    pub const REVENUE_DROP: &str = "revenue_drop";
+    /// Yesterday a build refunded an unusual share of its purchases.
+    pub const REFUND_SPIKE: &str = "refund_spike";
+    /// A build that sells every day has sold nothing for `no_purchases_hours`.
+    pub const NO_PURCHASES: &str = "no_purchases";
+    /// The daily summary of each app (not a problem: no throttle, nothing to resolve).
+    pub const DIGEST: &str = "digest";
     /// A test message from the admin page.
     pub const TEST: &str = "test";
     /// Alerts a channel's flood cap held back, summed up when its window ends.
     pub const HELD: &str = "alerts_held";
 
-    pub const ALL: &[&str] =
-        &[DELIVERY_FAILING, STORE_AUTH, INTEGRATION_FAILED, NOTIFICATIONS_SILENT, NOTIFICATION_REJECTED, FX_FAILING, QUEUE_BEHIND];
+    pub const ALL: &[&str] = &[
+        DELIVERY_FAILING,
+        STORE_AUTH,
+        INTEGRATION_FAILED,
+        NOTIFICATIONS_SILENT,
+        NOTIFICATION_REJECTED,
+        FX_FAILING,
+        QUEUE_BEHIND,
+        REVENUE_DROP,
+        REFUND_SPIKE,
+        NO_PURCHASES,
+        DIGEST,
+    ];
 
     /// Rules that have a "resolved" state (the others are one-off events).
     pub fn resolves(rule: &str) -> bool {
-        matches!(rule, DELIVERY_FAILING | STORE_AUTH | NOTIFICATIONS_SILENT | NOTIFICATION_REJECTED | FX_FAILING | QUEUE_BEHIND)
+        matches!(
+            rule,
+            DELIVERY_FAILING | STORE_AUTH | NOTIFICATIONS_SILENT | NOTIFICATION_REJECTED | FX_FAILING | QUEUE_BEHIND | REVENUE_DROP | REFUND_SPIKE | NO_PURCHASES
+        )
     }
 }
 
@@ -56,6 +78,8 @@ pub mod state {
     pub const ALERT: &str = "alert";
     pub const RESOLVED: &str = "resolved";
     pub const TEST: &str = "test";
+    /// The daily summary.
+    pub const DIGEST: &str = "digest";
 }
 
 // ---------------------------------------------------------------------
@@ -81,6 +105,26 @@ pub struct Rules {
     pub queue_behind: bool,
     /// Minutes a purchase may wait in the worker's queue after it became due.
     pub queue_behind_minutes: u32,
+    pub revenue_drop: bool,
+    /// Yesterday's gross revenue of a build (USD, production) below this percent of its average day
+    /// over the 7 days before.
+    pub revenue_drop_percent: u32,
+    /// Only builds whose average day is at least this many USD (small numbers swing by chance).
+    pub revenue_min_usd: u32,
+    pub refund_spike: bool,
+    /// Yesterday's refunds of a build above this percent of its paid purchases...
+    pub refund_spike_percent: u32,
+    /// ... and at least this many refunds.
+    pub refund_spike_min: u32,
+    pub no_purchases: bool,
+    /// Hours without a single store purchase...
+    pub no_purchases_hours: u32,
+    /// ... at a build that averaged at least this many paid purchases a day over the last 7 days.
+    pub no_purchases_min_daily: u32,
+    /// A daily summary of each app: yesterday's revenue, purchases, subscriptions and refunds.
+    pub digest: bool,
+    /// Hour of the day (UTC) the summary is sent at.
+    pub digest_hour: u32,
     /// At most one message per rule and app in this many hours; repeats are counted and reported
     /// in the next message.
     pub window_hours: u32,
@@ -102,6 +146,17 @@ impl Default for Rules {
             fx_failing_hours: 24,
             queue_behind: true,
             queue_behind_minutes: 15,
+            revenue_drop: true,
+            revenue_drop_percent: 50,
+            revenue_min_usd: 50,
+            refund_spike: true,
+            refund_spike_percent: 20,
+            refund_spike_min: 5,
+            no_purchases: true,
+            no_purchases_hours: 24,
+            no_purchases_min_daily: 5,
+            digest: false,
+            digest_hour: 8,
             window_hours: 6,
             send_resolved: true,
         }
@@ -130,6 +185,27 @@ impl Rules {
         if !(1..=168).contains(&r.window_hours) {
             return Err("window_hours must be 1..168".into());
         }
+        if !(10..=95).contains(&r.revenue_drop_percent) {
+            return Err("revenue_drop_percent must be 10..95".into());
+        }
+        if !(1..=1_000_000).contains(&r.revenue_min_usd) {
+            return Err("revenue_min_usd must be 1..1000000".into());
+        }
+        if !(1..=100).contains(&r.refund_spike_percent) {
+            return Err("refund_spike_percent must be 1..100".into());
+        }
+        if !(1..=100_000).contains(&r.refund_spike_min) {
+            return Err("refund_spike_min must be 1..100000".into());
+        }
+        if !(1..=720).contains(&r.no_purchases_hours) {
+            return Err("no_purchases_hours must be 1..720".into());
+        }
+        if !(1..=1_000_000).contains(&r.no_purchases_min_daily) {
+            return Err("no_purchases_min_daily must be 1..1000000".into());
+        }
+        if r.digest_hour > 23 {
+            return Err("digest_hour must be 0..23".into());
+        }
         Ok(r)
     }
 
@@ -147,6 +223,10 @@ impl Rules {
             rule::NOTIFICATION_REJECTED => self.notification_rejected,
             rule::FX_FAILING => self.fx_failing,
             rule::QUEUE_BEHIND => self.queue_behind,
+            rule::REVENUE_DROP => self.revenue_drop,
+            rule::REFUND_SPIKE => self.refund_spike,
+            rule::NO_PURCHASES => self.no_purchases,
+            rule::DIGEST => self.digest,
             rule::TEST => true,
             _ => false,
         }
@@ -253,6 +333,10 @@ pub fn rule_title(rule: &str) -> &'static str {
         rule::NOTIFICATION_REJECTED => "Store notification rejected",
         rule::FX_FAILING => "Exchange rates are not updating",
         rule::QUEUE_BEHIND => "Purchase queue is behind",
+        rule::REVENUE_DROP => "Revenue dropped",
+        rule::REFUND_SPIKE => "Refunds spiked",
+        rule::NO_PURCHASES => "No purchases",
+        rule::DIGEST => "Daily summary",
         rule::TEST => "Test alert",
         rule::HELD => "More alerts were held back",
         _ => "Billing alert",
@@ -267,6 +351,9 @@ fn resolved_title(rule: &str) -> &'static str {
         rule::NOTIFICATION_REJECTED => "Store notifications are accepted again",
         rule::FX_FAILING => "Exchange rates are updating again",
         rule::QUEUE_BEHIND => "Purchase queue caught up",
+        rule::REVENUE_DROP => "Revenue is back to normal",
+        rule::REFUND_SPIKE => "Refunds are back to normal",
+        rule::NO_PURCHASES => "Purchases come in again",
         _ => "Resolved",
     }
 }
@@ -290,6 +377,15 @@ pub fn rule_hint(rule: &str) -> &'static str {
         rule::QUEUE_BEHIND => {
             "Players wait for their rewards. Check the errors of the waiting purchases on the Overview page: a slow store or game server, or more due than the queue drainers take (raise the worker_lanes setting)."
         }
+        rule::REVENUE_DROP => {
+            "Check the store consoles (a product removed, a price changed, a payment method down), the game's last release and the errors of new purchases on the Purchases page."
+        }
+        rule::REFUND_SPIKE => {
+            "Look at the refunded purchases on the Purchases page: one product or country, a delivery that failed (players ask for their money back) or fraud."
+        }
+        rule::NO_PURCHASES => {
+            "Check that purchases reach /verify (the app's Setup tab), the store's status and the game's last release: the store may refuse payments or the shop is broken."
+        }
         rule::TEST => "Alerts reach this channel.",
         _ => "",
     }
@@ -300,6 +396,7 @@ impl Message {
         let (tag, what) = match self.state.as_str() {
             state::RESOLVED => ("RESOLVED", resolved_title(&self.rule)),
             state::TEST => ("TEST", rule_title(rule::TEST)),
+            state::DIGEST => ("DAILY", rule_title(rule::DIGEST)),
             _ => ("ALERT", rule_title(&self.rule)),
         };
         let mut t = format!("[{tag}] {what}");
@@ -310,7 +407,7 @@ impl Message {
     }
 
     pub fn hint(&self) -> &'static str {
-        if self.state == state::RESOLVED {
+        if self.state == state::RESOLVED || self.state == state::DIGEST {
             ""
         } else {
             rule_hint(&self.rule)
@@ -398,6 +495,8 @@ pub fn admin_hash(rule: &str, game_key: &str) -> String {
         rule::INTEGRATION_FAILED => app("integrations"),
         rule::FX_FAILING => "revenue".into(),
         rule::QUEUE_BEHIND => "overview".into(),
+        rule::REVENUE_DROP | rule::DIGEST => "revenue".into(),
+        rule::REFUND_SPIKE | rule::NO_PURCHASES => "purchases".into(),
         _ => "alerts".into(),
     }
 }
@@ -662,6 +761,119 @@ pub fn fx_failing(now_micros: i64, failing_since_micros: i64, last_success_micro
         && now_micros - failing_since_micros >= hours as i64 * HOUR_MICROS
 }
 
+/// One day of a build's production sales, in USD ([`revenue_dropped`], [`refund_spike`], the
+/// digest).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DaySales {
+    pub gross_usd_micros: i64,
+    pub refunded_usd_micros: i64,
+    /// Paid purchases: one-time purchases, new subscriptions, renewals.
+    pub paid: u32,
+    pub new_subscriptions: u32,
+    pub renewals: u32,
+    pub refunds: u32,
+}
+
+impl DaySales {
+    pub fn add(&mut self, o: &DaySales) {
+        self.gross_usd_micros = self.gross_usd_micros.saturating_add(o.gross_usd_micros);
+        self.refunded_usd_micros = self.refunded_usd_micros.saturating_add(o.refunded_usd_micros);
+        self.paid += o.paid;
+        self.new_subscriptions += o.new_subscriptions;
+        self.renewals += o.renewals;
+        self.refunds += o.refunds;
+    }
+}
+
+/// Days of the week before yesterday that a build's day is compared with.
+pub const BASELINE_DAYS: i32 = 7;
+
+/// "Revenue dropped": yesterday's gross is below `percent` of the average day of the week before,
+/// for a build whose average day is at least `min_usd`.
+pub fn revenue_dropped(yesterday: &DaySales, average_gross_usd_micros: i64, percent: u32, min_usd: u32) -> bool {
+    average_gross_usd_micros >= min_usd as i64 * 1_000_000
+        && (yesterday.gross_usd_micros as i128) * 100 < average_gross_usd_micros as i128 * percent as i128
+}
+
+/// "Refunds spiked": yesterday's refunds are at least `min_refunds` and above `percent` of its paid
+/// purchases.
+pub fn refund_spike(yesterday: &DaySales, percent: u32, min_refunds: u32) -> bool {
+    yesterday.refunds >= min_refunds && yesterday.refunds as u64 * 100 > yesterday.paid.max(1) as u64 * percent as u64
+}
+
+/// "No purchases": nothing paid for `hours` (since `last_paid_micros`, 0: not in that time) at a
+/// build that averaged at least `min_daily` paid purchases a day.
+pub fn purchases_stopped(now_micros: i64, last_paid_micros: i64, hours: u32, average_daily: f64, min_daily: u32) -> bool {
+    average_daily >= min_daily as f64 && now_micros - last_paid_micros >= hours as i64 * HOUR_MICROS
+}
+
+/// The daily summary is due: `hour` (UTC) has come on a day it was not sent on yet (`last_day`:
+/// the day it was last sent, days since 1970).
+pub fn digest_due(now_micros: i64, last_day: i32, hour: u32) -> bool {
+    let day = now_micros.div_euclid(24 * HOUR_MICROS) as i32;
+    day > last_day && now_micros.rem_euclid(24 * HOUR_MICROS) / HOUR_MICROS >= hour as i64
+}
+
+/// `$1,234.56`
+pub fn usd(micros: i64) -> String {
+    let cents = (micros.unsigned_abs() + 5_000) / 10_000;
+    let whole = (cents / 100).to_string();
+    let mut grouped = String::new();
+    for (i, c) in whole.chars().enumerate() {
+        if i > 0 && (whole.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    format!("{}${grouped}.{:02}", if micros < 0 { "-" } else { "" }, cents % 100)
+}
+
+/// Text of a "revenue dropped" alert.
+pub fn revenue_drop_detail(yesterday: &DaySales, average_gross_usd_micros: i64) -> String {
+    let share = if average_gross_usd_micros > 0 { yesterday.gross_usd_micros as f64 * 100.0 / average_gross_usd_micros as f64 } else { 0.0 };
+    format!(
+        "Yesterday {} gross ({} paid purchases), {share:.0}% of the average day of the week before ({}).",
+        usd(yesterday.gross_usd_micros),
+        yesterday.paid,
+        usd(average_gross_usd_micros)
+    )
+}
+
+/// Text of a "refunds spiked" alert.
+pub fn refund_spike_detail(yesterday: &DaySales) -> String {
+    format!(
+        "Yesterday {} refunds ({}) against {} paid purchases.",
+        yesterday.refunds,
+        usd(yesterday.refunded_usd_micros),
+        yesterday.paid
+    )
+}
+
+/// The summary of one app's day: totals, the change against the day before, one line per build.
+pub fn digest_text(day: &str, builds: &[(String, DaySales)], day_before_gross_usd_micros: i64) -> String {
+    let mut total = DaySales::default();
+    for (_, s) in builds {
+        total.add(s);
+    }
+    let change = if day_before_gross_usd_micros > 0 {
+        let pct = (total.gross_usd_micros - day_before_gross_usd_micros) as f64 * 100.0 / day_before_gross_usd_micros as f64;
+        format!(" ({pct:+.0}% against the day before)")
+    } else {
+        String::new()
+    };
+    let mut lines = vec![
+        format!("{day}: {} gross{change}, {} refunded.", usd(total.gross_usd_micros), usd(total.refunded_usd_micros)),
+        format!(
+            "{} paid purchases: {} new subscriptions, {} renewals; {} refunds.",
+            total.paid, total.new_subscriptions, total.renewals, total.refunds
+        ),
+    ];
+    if builds.len() > 1 {
+        lines.push(builds.iter().map(|(app, s)| format!("{app} {}", usd(s.gross_usd_micros))).collect::<Vec<_>>().join(" · "));
+    }
+    lines.join("\n")
+}
+
 /// Text of a "delivery keeps failing" alert.
 pub fn delivery_detail(purchase_id: &str, product_id: &str, user_id: &str, status: &str, attempts: u32, last_error: &str) -> String {
     format!(
@@ -716,6 +928,46 @@ mod tests {
 
     fn body(call: &HttpCall) -> Value {
         serde_json::from_str(&call.body).unwrap()
+    }
+
+    fn sales(gross_usd: i64, paid: u32, refunds: u32) -> DaySales {
+        DaySales { gross_usd_micros: gross_usd * 1_000_000, refunded_usd_micros: refunds as i64 * 1_000_000, paid, refunds, ..Default::default() }
+    }
+
+    #[test]
+    fn business_rules_compare_yesterday_with_the_week_before() {
+        let r = Rules::default();
+        let avg = 100_000_000;
+        assert!(revenue_dropped(&sales(40, 4, 0), avg, r.revenue_drop_percent, r.revenue_min_usd), "40% of the average");
+        assert!(!revenue_dropped(&sales(60, 6, 0), avg, r.revenue_drop_percent, r.revenue_min_usd));
+        assert!(!revenue_dropped(&sales(0, 0, 0), 10_000_000, r.revenue_drop_percent, r.revenue_min_usd), "too small to judge");
+        assert!(refund_spike(&sales(10, 20, 5), r.refund_spike_percent, r.refund_spike_min), "25% of 20");
+        assert!(!refund_spike(&sales(10, 30, 5), r.refund_spike_percent, r.refund_spike_min), "about 17%");
+        assert!(!refund_spike(&sales(10, 4, 4), r.refund_spike_percent, r.refund_spike_min), "fewer than the minimum");
+        assert!(purchases_stopped(30 * H, 5 * H, 24, 6.0, 5));
+        assert!(!purchases_stopped(30 * H, 7 * H, 24, 6.0, 5), "23 hours");
+        assert!(!purchases_stopped(30 * H, 0, 24, 2.0, 5), "a build that sells little");
+        assert!(Rules::parse(r#"{"revenue_drop_percent": 5}"#).is_err() && Rules::parse(r#"{"digest_hour": 24}"#).is_err());
+        assert!(!r.digest && r.enabled(rule::REVENUE_DROP) && rule::resolves(rule::NO_PURCHASES) && !rule::resolves(rule::DIGEST));
+    }
+
+    #[test]
+    fn the_digest_is_sent_once_a_day_after_its_hour() {
+        let day = 20_000i32;
+        let at = |hour: i64| day as i64 * 24 * H + hour * H;
+        assert!(!digest_due(at(7), day - 1, 8));
+        assert!(digest_due(at(8), day - 1, 8));
+        assert!(!digest_due(at(9), day, 8), "sent today");
+        let text = digest_text(
+            "2026-11-24",
+            &[("com.example.mygame".into(), sales(1234, 50, 1)), ("com.example.mygame.ios".into(), sales(766, 20, 0))],
+            1_000_000_000,
+        );
+        assert!(text.starts_with("2026-11-24: $2,000.00 gross (+100% against the day before), $1.00 refunded."), "{text}");
+        assert!(text.contains("70 paid purchases") && text.contains("com.example.mygame.ios $766.00"), "{text}");
+        assert_eq!((usd(1_234_567_890), usd(990_000), usd(-5_000_000)), ("$1,234.57".to_string(), "$0.99".to_string(), "-$5.00".to_string()));
+        let m = Message { rule: rule::DIGEST.into(), state: state::DIGEST.into(), app_id: "com.example.mygame".into(), ..msg() };
+        assert_eq!((m.title().as_str(), m.hint()), ("[DAILY] Daily summary: com.example.mygame", ""));
     }
 
     #[test]
