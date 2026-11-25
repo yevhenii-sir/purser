@@ -209,6 +209,21 @@ pub fn admin_setup_stripe_webhook(ctx: &mut ProcedureContext, app_id: String, ba
     }
 }
 
+/// Points the Telegram bot's webhook at the build (`setWebhook` with its `telegram_webhook_secret`).
+pub fn setup_telegram_webhook(ctx: &mut impl Ctx, app_id: &str, from_page: &str) -> Result<Value, String> {
+    let (app, base) = load(ctx, app_id, from_page, Cap::Secrets, "admin_setup_telegram_webhook", store::TELEGRAM)?;
+    let url = crate::telegram::set_webhook(ctx, &app, &base)?;
+    Ok(json!({ "ok": true, "url": url }))
+}
+
+#[spacetimedb::procedure]
+pub fn admin_setup_telegram_webhook(ctx: &mut ProcedureContext, app_id: String, base: String) -> String {
+    match setup_telegram_webhook(ctx, &app_id, &base) {
+        Ok(v) => v.to_string(),
+        Err(e) => error_json(e),
+    }
+}
+
 /// Setup check: the account's endpoint for the build. `base` as in [`check_apple_notifications`].
 pub fn check_stripe_webhook(ctx: &mut impl Ctx, app: &GameApp, key: &str, base: &str) -> Verdict {
     match webhook_endpoints(ctx, key) {

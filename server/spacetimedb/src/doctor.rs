@@ -268,6 +268,8 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
         store::GOOGLE => check_google(ctx, &s, opts, &mut r),
         store::APPLE => check_apple(ctx, &s, opts, &mut r),
         store::AMAZON => check_amazon(ctx, &s, opts, &mut r),
+        store::HUAWEI => check_huawei(ctx, &s, opts, &mut r),
+        store::TELEGRAM => check_telegram(ctx, &s, opts, &mut r),
         store::XSOLLA => crate::xsolla::check(
             ctx,
             &s.app,
@@ -589,6 +591,61 @@ fn check_amazon(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report
         },
     };
     r.add("amazon_api", "Amazon RVS", verdict);
+}
+
+/// Telegram: the token and secret formats, and (online) the bot and where its webhook points.
+fn check_telegram(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report) {
+    use purser_core::telegram as tg;
+    if s.value(tg::WEBHOOK_SECRET).is_some_and(|v| !tg::valid_webhook_secret(v)) {
+        r.add("telegram_secret", "Webhook secret", v(Level::Fail, "not 1-256 characters of A-Z, a-z, 0-9, _ and -", "Generate a new one on the Keys tab"));
+    }
+    let Some(token) = s.value(tg::BOT_TOKEN) else { return };
+    if !tg::valid_bot_token(token) {
+        r.add("telegram_bot", "Telegram bot", v(Level::Fail, "the token is not in the 123456:ABC… form", "Copy the token from @BotFather"));
+        return;
+    }
+    if !opts.online {
+        r.add("telegram_bot", "Telegram bot", v(Level::Skip, "offline check", ""));
+        return;
+    }
+    let expected = format!("{}/notify/telegram?app={}", s.public_base_url.trim_end_matches('/'), purser_core::encoding::percent_encode(&s.app.app_id));
+    match crate::telegram::bot_info(ctx, token) {
+        Ok((username, hook, last_error)) => {
+            r.add("telegram_bot", "Telegram bot", v(Level::Ok, format!("@{username}"), ""));
+            let verdict = if hook.is_empty() {
+                v(Level::Fail, "the bot has no webhook: payments never reach the server", "Set the webhook from the Setup tab (or setWebhook with the URL below)")
+            } else if !purser_core::registry::is_notify_url(&hook, &expected) {
+                v(Level::Warn, format!("the webhook points elsewhere: {hook}"), "If your bot backend forwards payment updates, ignore this; otherwise set the webhook from the Setup tab")
+            } else if !last_error.is_empty() {
+                v(Level::Warn, format!("Telegram's last delivery failed: {last_error}"), "Check the webhook secret on the Keys tab and set the webhook again")
+            } else {
+                v(Level::Ok, hook, "")
+            };
+            r.add("telegram_webhook", "Bot webhook", verdict);
+        }
+        Err(e) => r.add("telegram_bot", "Telegram bot", v(Level::Fail, e, "Copy the token from @BotFather")),
+    }
+}
+
+/// Huawei: the site name, and an app-level token for the App ID and secret.
+fn check_huawei(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report) {
+    use purser_core::huawei;
+    if let Err(e) = huawei::sites(s.value(huawei::SITE).unwrap_or("")) {
+        r.add("huawei_site", "Huawei IAP site", v(Level::Fail, e, "Set huawei_site to europe, asia, russia, china or carrier (or remove it)"));
+    }
+    if s.value(huawei::CLIENT_ID).is_none() || s.value(huawei::CLIENT_SECRET).is_none() {
+        return;
+    }
+    if !opts.online {
+        r.add("huawei_api", "Huawei IAP", v(Level::Skip, "offline check", ""));
+        return;
+    }
+    let verdict = match crate::stores::huawei_token(ctx, &s.app) {
+        Ok(_) => v(Level::Ok, "an app-level access token was issued for the App ID", ""),
+        Err(StoreError::Transient(m)) => v(Level::Warn, m, "Try again later"),
+        Err(e) => v(Level::Fail, e.message(), "Copy the App ID and App secret from AppGallery Connect → the app → App information"),
+    };
+    r.add("huawei_api", "Huawei IAP", verdict);
 }
 
 /// Inter-database delivery: the game database's identity, and this database's identity the game

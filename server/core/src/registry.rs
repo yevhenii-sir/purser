@@ -22,7 +22,10 @@ pub mod platform {
     /// Android / Fire OS build distributed through the Amazon Appstore.
     pub const AMAZON: &str = "amazon";
     pub const STEAM: &str = "steam";
-    /// Browser build (WebGL, a web shop): the store is picked per build (Stripe or Xsolla).
+    /// Android build for Huawei devices (HMS) distributed through AppGallery.
+    pub const HUAWEI: &str = "huawei";
+    /// Browser build (WebGL, a web shop, a Telegram Mini App): the store is picked per build (Stripe,
+    /// Xsolla or Telegram Stars).
     pub const WEB: &str = "web";
 }
 
@@ -333,6 +336,10 @@ pub static STORES: &[&StoreInfo] = &[
 
     &crate::xsolla::STORE,
 
+    &crate::huawei::STORE,
+
+    &crate::telegram::STORE,
+
     &MANUAL,
 ];
 
@@ -361,7 +368,8 @@ pub static PLATFORMS: &[PlatformInfo] = &[
         default_store: Some(store::AMAZON),
     },
     PlatformInfo { id: platform::STEAM, name: "Steam", os: None, stores: &[store::STEAM], default_store: Some(store::STEAM) },
-    PlatformInfo { id: platform::WEB, name: "Web", os: None, stores: &[store::STRIPE, store::XSOLLA], default_store: None },
+    PlatformInfo { id: platform::HUAWEI, name: "Huawei", os: Some("android"), stores: &[store::HUAWEI], default_store: Some(store::HUAWEI) },
+    PlatformInfo { id: platform::WEB, name: "Web", os: None, stores: &[store::STRIPE, store::XSOLLA, store::TELEGRAM], default_store: None },
 ];
 
 pub fn platform(id: &str) -> Option<&'static PlatformInfo> {

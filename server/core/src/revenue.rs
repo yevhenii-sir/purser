@@ -382,7 +382,8 @@ pub const AFTER_YEAR_COMMISSION_PERCENT: f64 = 15.0;
 
 /// The usual fee of a store, used for a build without its own percent while the server-wide
 /// percent is not set: Google Play and the App Store small business rates, Amazon's Appstore
-/// rate under $1M, Steam's standard share, and the payment fees of Stripe and Xsolla (roughly).
+/// rate under $1M, Steam's standard share, Huawei's standard rate, the payment fees of Stripe and
+/// Xsolla (roughly), and none for Telegram Stars (valued at what Telegram pays out).
 pub fn store_default_percent(store: &str) -> Option<f64> {
     use crate::model::store;
     match store {
@@ -391,6 +392,9 @@ pub fn store_default_percent(store: &str) -> Option<f64> {
         store::STEAM => Some(30.0),
         store::STRIPE => Some(3.0),
         store::XSOLLA => Some(5.0),
+        store::HUAWEI => Some(30.0),
+        // Stars are valued at what Telegram pays out (`telegram::USD_PER_STAR`): nothing more to deduct.
+        store::TELEGRAM => Some(0.0),
         _ => None,
     }
 }

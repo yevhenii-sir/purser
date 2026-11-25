@@ -57,6 +57,8 @@ impl Auth {
                     .and_then(|p8| cached(apple_cache_key(&p8.scope, &app.app_id)))
             }
             store::AMAZON => config::secret(tx, app, secret_name::AMAZON_SHARED_SECRET).map(|s| s.value),
+            store::HUAWEI => config::secret(tx, app, purser_core::huawei::CLIENT_ID)
+                .and_then(|id| cached(format!("huawei/{}/{}", id.scope, id.value))),
             _ => None,
         })
     }
@@ -466,6 +468,98 @@ pub fn amazon_fetch(
     Err(StoreError::Invalid(format!("receipt not found ({last})")))
 }
 
+// ---------------------------------------------------------------------
+// Huawei AppGallery
+// ---------------------------------------------------------------------
+
+/// App-level access token of the build's Huawei app (client credentials), cached per credential
+/// scope.
+pub(crate) fn huawei_token(ctx: &mut impl Ctx, app: &GameApp) -> Result<String, StoreError> {
+    use purser_core::huawei;
+    let now = ctx.now_micros();
+    let app_c = app.clone();
+    let (cache_key, cached, id, secret) = ctx
+        .tx(|tx| -> Result<_, String> {
+            let id = config::require_secret(tx, &app_c, huawei::CLIENT_ID)?;
+            let secret = config::require_secret(tx, &app_c, huawei::CLIENT_SECRET)?;
+            let key = format!("huawei/{}/{}", id.scope, id.value);
+            let cached = config::cached_token(tx, &key, now, MIN_TOKEN_VALIDITY_MICROS);
+            Ok((key, cached, id.value, secret.value))
+        })
+        .map_err(StoreError::Config)?;
+    if let Some(token) = cached {
+        return Ok(token);
+    }
+    let res = net::send(
+        ctx.http(),
+        "POST",
+        huawei::TOKEN_URL,
+        &[("Content-Type", "application/x-www-form-urlencoded")],
+        huawei::token_body(&id, &secret),
+    )
+    .map_err(StoreError::Transient)?;
+    if !res.ok() {
+        let msg = format!("Huawei token request failed: HTTP {}", res.status);
+        if res.status >= 500 || res.status == 429 {
+            return Err(StoreError::Transient(msg));
+        }
+        report_rejected(ctx, app, &msg);
+        return Err(StoreError::Config(format!("{msg}: check huawei_client_id and huawei_client_secret")));
+    }
+    let (token, expires_in) = huawei::parse_token(&res.body).map_err(StoreError::Transient)?;
+    ctx.tx(|tx| config::store_token(tx, &cache_key, &token, now + expires_in * 1_000_000));
+    Ok(token)
+}
+
+/// Looks a Huawei purchase up: a one-time product by its purchase token (Order service), a
+/// subscription by its `subscriptionId` and token (Subscription service), at the build's site.
+pub fn huawei_fetch(
+    ctx: &mut impl Ctx,
+    app: &GameApp,
+    product: &Product,
+    purchase_token: &str,
+    subscription_id: &str,
+    auth: &mut Auth,
+) -> Result<StoreTx, StoreError> {
+    use purser_core::huawei::{self, AnswerError};
+    let subscription = product.kind == kind::SUBSCRIPTION;
+    if subscription && subscription_id.is_empty() {
+        return Err(StoreError::Invalid("order_id (the Huawei subscriptionId) is required for subscriptions".into()));
+    }
+    let app_c = app.clone();
+    let site = ctx.tx(|tx| config::secret(tx, &app_c, huawei::SITE).map(|s| s.value)).unwrap_or_default();
+    let (orders, subscriptions) = huawei::sites(&site).map_err(StoreError::Config)?;
+    let (url, body) = if subscription {
+        huawei::subscription_request(subscriptions, subscription_id, purchase_token)
+    } else {
+        huawei::verify_request(orders, purchase_token, &product.product_id)
+    }
+    .map_err(StoreError::Invalid)?;
+    let token = auth.get(|| huawei_token(ctx, app))?;
+    let headers = [("Authorization", huawei::authorization(&token)), ("Content-Type", "application/json; charset=UTF-8".to_string())];
+    let headers: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let res = net::send(ctx.http(), "POST", &url, &headers, body).map_err(StoreError::Transient)?;
+    if !res.ok() {
+        let msg = format!("Huawei purchase look-up: HTTP {}", res.status);
+        return Err(match res.status {
+            401 | 403 => {
+                report_rejected(ctx, app, &msg);
+                StoreError::Config(msg)
+            }
+            _ => StoreError::Transient(msg),
+        });
+    }
+    let parsed = if subscription {
+        huawei::parse_subscription_answer(&app.app_id, &product.product_id, &res.body, ctx.now_ms())
+    } else {
+        huawei::parse_order_answer(&app.app_id, &product.product_id, &product.kind, &res.body, ctx.now_ms())
+    };
+    parsed.map_err(|e| match e {
+        AnswerError::Retry(m) => StoreError::Transient(m),
+        AnswerError::Mismatch(m) => StoreError::Invalid(m),
+    })
+}
+
 fn sns_cache_key(url: &str) -> String {
     format!("sns-cert/{url}")
 }
@@ -520,13 +614,17 @@ pub struct ReceiptRef<'a> {
 
 /// Error message when the client left out a field the store needs. Answered as a retryable
 /// `error`, not `invalid`: the client must not finish the purchase because of its own bug.
-pub fn missing_field(store_id: &str, r: &ReceiptRef) -> Option<&'static str> {
+pub fn missing_field(store_id: &str, product_kind: &str, r: &ReceiptRef) -> Option<&'static str> {
     use purser_core::model::store;
     match store_id {
         store::GOOGLE if r.purchase_token.is_empty() => Some("purchase_token is required"),
         store::APPLE if r.order_id.is_empty() => Some("order_id (Apple transactionId) is required"),
         store::AMAZON if r.order_id.is_empty() => Some("order_id (Amazon receiptId) is required"),
         store::AMAZON if r.store_user_id.is_empty() => Some("store_user_id (Amazon userId) is required"),
+        store::HUAWEI if r.purchase_token.is_empty() => Some("purchase_token (Huawei purchaseToken) is required"),
+        store::HUAWEI if product_kind == kind::SUBSCRIPTION && r.order_id.is_empty() => {
+            Some("order_id (the Huawei subscriptionId) is required for subscriptions")
+        }
         store::STEAM if r.order_id.is_empty() && r.purchase_token.is_empty() => Some("order_id (from /checkout/steam) is required"),
         _ => None,
     }
@@ -543,6 +641,7 @@ pub fn fetch(ctx: &mut impl Ctx, app: &GameApp, product: &Product, r: &ReceiptRe
         store::APPLE => apple_fetch(ctx, app, r.order_id, r.environment, auth),
         store::AMAZON => amazon_fetch(ctx, app, product, r.store_user_id, r.order_id, auth),
         store::STEAM => crate::steam::fetch(ctx, app, product, r),
+        store::HUAWEI => huawei_fetch(ctx, app, product, r.purchase_token, r.order_id, auth),
         // A new client-receipt store adds one arm here.
         other => Err(StoreError::Invalid(format!("{other} purchases are not verified from client receipts"))),
     }
@@ -571,10 +670,16 @@ pub fn refetch_auth(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth
     if p.store != store_id {
         return Err(StoreError::Invalid(format!("{} is not a {store_id} purchase", p.id)));
     }
-    // Amazon keeps its user id in `purchase_token` (see `purser_core::amazon`), Steam its order id.
+    if store_id == purser_core::model::store::TELEGRAM {
+        // No look-up API: the row itself says whether its time is up.
+        return Ok(crate::telegram::recheck(p, ctx.now_ms()));
+    }
+    // Amazon keeps its user id in `purchase_token` (see `purser_core::amazon`), Steam its order id,
+    // a Huawei subscription its `subscriptionId` in `original_transaction_id`.
+    let huawei_subscription = p.store == purser_core::model::store::HUAWEI && p.kind == kind::SUBSCRIPTION;
     let r = ReceiptRef {
         purchase_token: &p.purchase_token,
-        order_id: &p.transaction_id,
+        order_id: if huawei_subscription { &p.original_transaction_id } else { &p.transaction_id },
         store_user_id: &p.purchase_token,
         user_id: "",
         environment: &p.environment,

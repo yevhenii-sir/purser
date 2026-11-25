@@ -83,7 +83,7 @@ class CheckAppsTest(unittest.TestCase):
             {"app_id": "z", "platform": "android", "apple_refund_mode": "inform", "webhook_url": "http://x"},
         )
         self.assertEqual(errors[0], "apps.csv:3: app_id com.example.a is already on apps.csv:2")
-        self.assertIn("apps.csv:4: a web build needs a store: stripe or xsolla", errors)
+        self.assertIn("apps.csv:4: a web build needs a store: stripe or xsolla or telegram", errors)
         self.assertTrue(any(e.startswith("apps.csv:5: store apple is not available on android (use google") for e in errors))
         self.assertTrue(any(e.startswith("apps.csv:6: platform must be one of android") for e in errors))
         line7 = [e for e in errors if e.startswith("apps.csv:7:")]

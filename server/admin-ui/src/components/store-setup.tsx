@@ -17,7 +17,8 @@ import type { GameApp } from "@/lib/types"
 type Done = { ok: boolean; detail?: string; action?: string; endpoint?: string }
 
 /** One-click store setup of a build: the Google Cloud side of Google Play (with a one-time token),
- * App Store notification URLs or the Stripe webhook endpoint. Nothing for other stores. */
+ * App Store notification URLs, the Stripe webhook endpoint or the Telegram bot's webhook. Nothing for
+ * other stores. */
 export function StoreSetupButton({ app, base, onDone }: { app: GameApp; base: string; onDone: () => void }) {
   const [busy, setBusy] = useState(false)
   const [google, setGoogle] = useState(false)
@@ -33,13 +34,17 @@ export function StoreSetupButton({ app, base, onDone }: { app: GameApp; base: st
       </>
     )
   }
-  if (store !== "apple" && store !== "stripe") return null
+  if (store !== "apple" && store !== "stripe" && store !== "telegram") return null
   const run = async () => {
     setBusy(true)
     const done = await tryAct(async () => {
       if (store === "apple") {
         const r = await proc<Done>("admin_setup_apple_notifications", app.app_id, base)
         return r.ok ? "App Store Connect sends notifications here" : `Saved, but: ${r.detail}`
+      }
+      if (store === "telegram") {
+        await proc<Done>("admin_setup_telegram_webhook", app.app_id, base)
+        return "The bot's webhook points here"
       }
       try {
         const r = await proc<Done>("admin_setup_stripe_webhook", app.app_id, base, false)
@@ -59,7 +64,9 @@ export function StoreSetupButton({ app, base, onDone }: { app: GameApp; base: st
   }
   const [label, title] = store === "apple"
     ? ["Set in App Store Connect", "Points the App Store Server Notifications URLs (production and sandbox, version 2) to this server. Needs the App Store Connect Team key."]
-    : ["Create webhook in Stripe", "Creates the webhook endpoint of this build in Stripe with the events Purser handles and stores its signing secret."]
+    : store === "telegram"
+      ? ["Set the bot webhook", "Points the bot's webhook (setWebhook) to this build with its telegram_webhook_secret: payments and messages only. A bot has one webhook: this replaces the one it had."]
+      : ["Create webhook in Stripe", "Creates the webhook endpoint of this build in Stripe with the events Purser handles and stores its signing secret."]
   return (
     <Button size="xs" variant="outline" disabled={busy || !base} title={title} onClick={run}>
       <WandSparklesIcon className={busy ? "animate-pulse" : ""} /> {busy ? "Working…" : label}

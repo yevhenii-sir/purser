@@ -12,7 +12,7 @@ apps.csv (or a .json list of objects with the same keys), one build per line:
     game_key,platform,store,app_id,account,delivery
     my-game,android,,com.example.mygame,my-studio,none
   Required: app_id, platform; a new build also needs delivery (none, spacetimedb, webhook). An
-  empty store is the platform's default (web builds name stripe or xsolla). Optional columns:
+  empty store is the platform's default (web builds name stripe, xsolla or telegram). Optional columns:
   spacetime_url, spacetime_db, grant_reducer, revoke_reducer, webhook_url, allow_sandbox, enabled,
   client_consumes, apple_refund_mode, client_auth, sns_topic_arn.
 products.csv (or .json), one product of one build per line:

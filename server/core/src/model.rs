@@ -13,6 +13,10 @@ pub mod store {
     pub const STRIPE: &str = "stripe";
     /// Web payments (game-focused merchant of record).
     pub const XSOLLA: &str = "xsolla";
+    /// Huawei AppGallery (HMS devices).
+    pub const HUAWEI: &str = "huawei";
+    /// Telegram Stars (Telegram Mini Apps and bots).
+    pub const TELEGRAM: &str = "telegram";
     /// Granted by an admin (support compensation, promo). Never touches a store.
     pub const MANUAL: &str = "manual";
 }

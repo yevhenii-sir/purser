@@ -84,6 +84,10 @@ impl FxTable {
         if let Some(r) = self.overrides.get(&ccy) {
             return Some(*r);
         }
+        // Telegram Stars have no exchange rate: valued at what Telegram pays developers for one.
+        if ccy == crate::telegram::CURRENCY {
+            return Some(1.0 / crate::telegram::USD_PER_STAR);
+        }
         let before = self
             .days
             .range(day - MAX_LOOKBACK_DAYS..=day)
@@ -136,6 +140,14 @@ mod tests {
         assert_eq!(series.len(), 3);
         assert!(timeseries_url(parse_day("2026-10-01").unwrap(), parse_day("2026-10-31").unwrap())
             .ends_with("/v1/2026-10-01..2026-10-31?base=USD"));
+    }
+
+    #[test]
+    fn telegram_stars_have_a_built_in_rate_an_override_replaces() {
+        let mut fx = FxTable::default();
+        assert_eq!(fx.to_usd_micros(100_000_000, "XTR", 1), Some(1_300_000), "100 Stars");
+        fx.set_override("XTR", 50.0);
+        assert_eq!(fx.to_usd_micros(100_000_000, "XTR", 1), Some(2_000_000));
     }
 
     #[test]

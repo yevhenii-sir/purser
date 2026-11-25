@@ -39,13 +39,23 @@
       ]
     },
     {
+      "default_store": "huawei",
+      "id": "huawei",
+      "name": "Huawei",
+      "os": "android",
+      "stores": [
+        "huawei"
+      ]
+    },
+    {
       "default_store": null,
       "id": "web",
       "name": "Web",
       "os": null,
       "stores": [
         "stripe",
-        "xsolla"
+        "xsolla",
+        "telegram"
       ]
     }
   ],
@@ -342,6 +352,104 @@
           "label": "Xsolla Login project ID, for moving inventory of the old device-id login (optional, not secret)",
           "name": "xsolla_login_project_id",
           "need": "optional"
+        }
+      ],
+      "verification": "webhook",
+      "verify_route": null
+    },
+    {
+      "app_id_is_store_id": false,
+      "app_id_label": "App id (package name, or e.g. package.huawei when the Google Play build uses it)",
+      "app_id_placeholder": "com.example.mygame.huawei",
+      "binding": "none",
+      "docs": "huawei-appgallery",
+      "finish": "client",
+      "id": "huawei",
+      "implemented": true,
+      "name": "Huawei AppGallery",
+      "notifications": true,
+      "notify_label": "Server notification URL (AppGallery Connect → the app → In-App Purchases → Settings, version v2)",
+      "notify_query": "app={app_id}",
+      "notify_route": "/notify/huawei",
+      "notify_secret": "huawei_notify_secret",
+      "platforms": [
+        "huawei"
+      ],
+      "polls_subscriptions": true,
+      "product_create": [],
+      "product_import": false,
+      "refunds": "Server notifications (looked up again) and subscription re-checks by the worker",
+      "reports_price": true,
+      "secrets": [
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "App ID (AppGallery Connect → the app → App information; the OAuth client id)",
+          "name": "huawei_client_id",
+          "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "App secret (the OAuth client secret)",
+          "name": "huawei_client_secret",
+          "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Secret in the server notification URL (/notify/huawei?…&secret=…)",
+          "name": "huawei_notify_secret",
+          "need": "recommended"
+        },
+        {
+          "account_wide": true,
+          "file": false,
+          "label": "Site of the IAP services: europe (default), asia, russia, china or carrier",
+          "name": "huawei_site",
+          "need": "optional"
+        }
+      ],
+      "verification": "client_receipt",
+      "verify_route": "/verify/huawei"
+    },
+    {
+      "app_id_is_store_id": false,
+      "app_id_label": "App id (any unique id, e.g. package.telegram)",
+      "app_id_placeholder": "com.example.mygame.telegram",
+      "binding": "none",
+      "docs": "telegram-stars",
+      "finish": "none",
+      "id": "telegram",
+      "implemented": true,
+      "name": "Telegram Stars",
+      "notifications": true,
+      "notify_label": "Bot webhook URL (setWebhook with secret_token = telegram_webhook_secret; the Setup tab sets it)",
+      "notify_query": "app={app_id}",
+      "notify_route": "/notify/telegram",
+      "notify_secret": null,
+      "platforms": [
+        "web"
+      ],
+      "polls_subscriptions": true,
+      "product_create": [],
+      "product_import": false,
+      "refunds": "refunded_payment updates of the bot",
+      "reports_price": true,
+      "secrets": [
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Bot token from @BotFather (123456:ABC…)",
+          "name": "telegram_bot_token",
+          "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Webhook secret_token (1-256 characters of A-Z a-z 0-9 _ -)",
+          "name": "telegram_webhook_secret",
+          "need": "required"
         }
       ],
       "verification": "webhook",

@@ -29,6 +29,8 @@ Google RTDN / App Store Notifications V2 / Amazon RTN ──▶ /notify/<store> 
 | App Store Server API | We sign the JWT ourselves (ES256, `.p8` key), valid for 50 min, cached per account + bundle id. |
 | Amazon Receipt Verification Service | The shared key of the developer account is part of the request URL; nothing to refresh. |
 | Steam `ISteamMicroTxn` | The publisher Web API key goes in the `x-webapi-key` header of every call (never in a URL); nothing to refresh. |
+| Huawei IAP | The App ID and App secret are exchanged for an app-level token (client credentials, about 1 h), cached like Google's and sent as `Basic base64("APPAT:" + token)`. |
+| Telegram Bot API | The bot token is part of the method URL (`/bot<token>/…`); errors never show it. Nothing to refresh. |
 
 ## SpacetimeDB limitations to keep in mind
 
@@ -106,6 +108,8 @@ Every per-store fact lives in one registry, [`core/src/registry.rs`](core/src/re
 | `xsolla` | `web` | none: checkout `/checkout/xsolla`, granted by webhooks | `/notify/xsolla?app=<app_id>` (signed webhooks) | `xsolla_project_id`, `xsolla_api_key`, `xsolla_webhook_secret` |
 | `stripe` | `web` | webhooks; `/checkout/stripe` creates the Checkout Session, `/verify/stripe` confirms one after the redirect, `/manage/stripe` opens the customer portal | `/notify/stripe?app=<app_id>` (signed webhooks) | `stripe_secret_key`, `stripe_webhook_secret` |
 | `steam` | `steam` | `/checkout/steam` (server `InitTxn`), then `/verify/steam` (order id) | none: the worker polls `GetReport` | `steam_publisher_key` |
+| `huawei` | `huawei` | `/verify/huawei` (purchase token; subscriptions also the `subscriptionId` as `order_id`) | `/notify/huawei?app=<app_id>&secret=` (server notifications v2, looked up again) | `huawei_client_id`, `huawei_client_secret`, `huawei_notify_secret`, `huawei_site` |
+| `telegram` | `web` | none: `/checkout/telegram` creates an invoice link of the bot, `/checkout/telegram/status` answers from the ledger | `/notify/telegram?app=<app_id>` (the bot's webhook, `X-Telegram-Bot-Api-Secret-Token`) | `telegram_bot_token`, `telegram_webhook_secret` |
 
 ### Products (`product`)
 

@@ -17,6 +17,7 @@
 //! | POST   | `/checkout/xsolla`, `/checkout/xsolla/status` | game client / website: Xsolla payment token, order status (`xsolla.rs`) |
 //! | POST   | `/checkout/stripe` | web client: creates a Stripe Checkout Session (`stripe.rs`) |
 //! | POST   | `/verify/stripe`   | web client after the Checkout redirect: confirms the session |
+//! | POST   | `/checkout/telegram`, `/checkout/telegram/status` | Telegram Mini App: an invoice link of the bot, order status (`telegram.rs`) |
 //! | POST   | `/manage/stripe`   | web client: a Customer Portal session of the player's subscription (builds with player tokens) |
 //!
 //! SpacetimeDB routes have no path parameters: `routes()` registers one route per store of the
@@ -109,7 +110,7 @@ pub(crate) fn valid_user_id(u: &str) -> bool {
 
 /// An id from an unauthenticated request as it goes into the logs: quoted and escaped (no forged
 /// log lines), at most 64 characters (no flooding).
-fn log_id(id: &str) -> String {
+pub(crate) fn log_id(id: &str) -> String {
     let short: String = id.chars().take(64).collect();
     format!("{short:?}")
 }
@@ -223,7 +224,7 @@ fn verify(ctx: &mut impl Ctx, store_name: &str, r: &VerifyRequest) -> Outcome {
         let environment = if usable { likely_environment(tx, store_name, &r.order_id) } else { String::new() };
         // Only a request that will ask the store counts against the build's store calls, and only
         // then is the player remembered.
-        let asks_store = usable && product.is_some() && stores::missing_field(store_name, &receipt_of(r, &environment)).is_none();
+        let asks_store = usable && product.as_ref().is_some_and(|p| stores::missing_field(store_name, &p.kind, &receipt_of(r, &environment)).is_none());
         let limited = if asks_store { take_store_call(tx, &app.app_id, now).err() } else { None };
         if asks_store && limited.is_none() {
             players::touch(tx, &app.app_id, &r.user_id, &r.client);
@@ -299,7 +300,7 @@ fn verify_with(
     };
 
     let receipt = receipt_of(r, environment);
-    if let Some(missing) = stores::missing_field(store_name, &receipt) {
+    if let Some(missing) = stores::missing_field(store_name, &product.kind, &receipt) {
         return Outcome::status(400, "error", missing);
     }
     let fetched = stores::fetch(ctx, app, &product, &receipt, auth);
@@ -1166,6 +1167,68 @@ pub(crate) fn apple_root() -> &'static [u8] {
     apple::testing::root()
 }
 
+/// Huawei AppGallery server notification (`/notify/huawei?app=<app_id>&secret=<huawei_notify_secret>`):
+/// it only says which purchase changed, so it is looked up again in the IAP APIs. Accepted ones are
+/// answered `{"errorCode": "0"}`.
+fn handle_huawei_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
+    use purser_core::huawei::{self, Notification};
+    let app_id = web::query_param(&req, "app");
+    let secret = web::query_param(&req, "secret");
+    let body = match web::text(req) {
+        Ok(b) => b,
+        Err(a) => return a.into(),
+    };
+    let n = match huawei::parse_notification(&body) {
+        Ok(n) => n,
+        Err(e) => return Outcome::status(400, "error", e),
+    };
+    let (product_id, token, subscription_id) = match &n {
+        Notification::Order { purchase_token, product_id } => (product_id.clone(), purchase_token.clone(), String::new()),
+        Notification::Subscription { subscription_id, purchase_token, product_id } => (product_id.clone(), purchase_token.clone(), subscription_id.clone()),
+        Notification::Other => (String::new(), String::new(), String::new()),
+    };
+    let now = ctx.now_micros();
+    let checked = ctx.tx(|tx| {
+        let app = config::find_app(tx, &app_id).filter(|a| config::app_store(a).id == store::HUAWEI)?;
+        let expected = config::secret(tx, &app, huawei::NOTIFY_SECRET).map(|s| s.value);
+        let accepted = matches!(&expected, Some(exp) if web::secret_matches(exp, &secret));
+        record_notification(tx, &app.app_id, "Huawei server notifications", (!accepted).then_some(WRONG_SECRET), n == Notification::Other);
+        if !accepted {
+            return Some((app, false, None, Auth::default()));
+        }
+        // A subscription notification may name no product: its subscription's rows do.
+        let product_id = if product_id.is_empty() && !subscription_id.is_empty() {
+            tx.db.purchase().original_transaction_id().filter(subscription_id.as_str()).find(|p| p.app_id == app.app_id).map(|p| p.product_id)
+        } else {
+            Some(product_id.clone())
+        };
+        let product = product_id.filter(|p| !p.is_empty()).and_then(|p| config::find_product(tx, &app.app_id, &p));
+        let auth = Auth::cached(tx, &app, now);
+        Some((app, true, product, auth))
+    });
+    let Some((app, accepted, product, mut auth)) = checked else {
+        log::warn!("Huawei notification for unknown app {}", log_id(&app_id));
+        return Outcome::status(200, "ignored", "unknown app: the URL needs ?app=<app_id>");
+    };
+    if !accepted {
+        log::warn!("Huawei notification for {} rejected: bad or unconfigured secret", app.app_id);
+        return Outcome::status(401, "error", "unauthorized");
+    }
+    if n == Notification::Other {
+        return Outcome::new(200, json!({ "errorCode": "0", "errorMsg": "success" }));
+    }
+    let Some(product) = product else {
+        return Outcome::status(200, "ignored", "unknown product");
+    };
+    match stores::huawei_fetch(ctx, &app, &product, &token, &subscription_id, &mut auth) {
+        Ok(st) => {
+            let o = sync_store_tx(ctx, &app, st, "huawei notification");
+            if o.http == 200 { Outcome::new(200, json!({ "errorCode": "0", "errorMsg": "success" })) } else { o }
+        }
+        Err(e) => notification_fetch_error(e),
+    }
+}
+
 fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     let app_param = web::query_param(&req, "app");
     let body = match web::text(req) {
@@ -1283,12 +1346,17 @@ fn dispatch_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         store::GOOGLE => handle_google_notification(ctx, req),
         store::APPLE => handle_apple_notification(ctx, req),
         store::AMAZON => handle_amazon_notification(ctx, req),
+        store::HUAWEI => handle_huawei_notification(ctx, req),
         store::XSOLLA => {
             let (http, body) = crate::xsolla::notification(ctx, req);
             Outcome::new(http, body)
         }
         store::STRIPE => {
             let (http, body) = crate::stripe::notification(ctx, req);
+            Outcome::new(http, body)
+        }
+        store::TELEGRAM => {
+            let (http, body) = crate::telegram::notification(ctx, req);
             Outcome::new(http, body)
         }
         // A new store with notifications adds one arm here.
@@ -1449,7 +1517,9 @@ fn routes() -> Router {
     router = router
         .post("/checkout/stripe", crate::stripe::checkout_stripe)
         .post("/verify/stripe", crate::stripe::verify_stripe)
-        .post("/manage/stripe", crate::stripe::manage_stripe);
+        .post("/manage/stripe", crate::stripe::manage_stripe)
+        .post("/checkout/telegram", crate::telegram::telegram_checkout)
+        .post("/checkout/telegram/status", crate::telegram::telegram_checkout_status);
     router
 }
 

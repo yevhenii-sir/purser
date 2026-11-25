@@ -197,6 +197,22 @@ paths:
         "500": { $ref: "#/components/responses/ServerError" }
         "502": { $ref: "#/components/responses/StoreUnavailable" }
 
+  /verify/huawei:
+    post:
+      tags: [Purchases]
+      operationId: verifyHuawei
+      summary: Verify a Huawei AppGallery purchase
+      description: >-
+        Looks the purchase up in the Huawei IAP Order service (one-time products) or Subscription service
+        (subscriptions). `purchase_token` (the `purchaseToken`) is required; subscriptions also need `order_id`
+        = the `subscriptionId`. The client consumes the purchase (`consumeOwnedPurchase`) after a success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyRequest" }
+      responses: *verifyResponses
+
   /verify/steam:
     post:
       tags: [Purchases]
@@ -284,6 +300,45 @@ paths:
       tags: [Checkout]
       operationId: checkoutXsollaStatus
       summary: Whether an Xsolla order has been paid (from the ledger)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, user_id, order_id]
+              properties:
+                app_id: { type: string }
+                user_id: { $ref: "#/components/schemas/UserId" }
+                order_id: { type: string }
+      responses: *verifyResponses
+
+  /checkout/telegram:
+    post:
+      tags: [Checkout]
+      operationId: checkoutTelegram
+      summary: Create a Telegram Stars invoice link of the build's bot
+      description: >-
+        One product priced in `XTR` (Stars); subscriptions renew every 30 days. The Mini App opens `url` with
+        `Telegram.WebApp.openInvoice`; `order_id` is the invoice payload.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [app_id, product_id, user_id]
+              properties:
+                app_id: { type: string }
+                product_id: { type: string }
+                user_id: { $ref: "#/components/schemas/UserId" }
+      responses: *checkoutResponses
+
+  /checkout/telegram/status:
+    post:
+      tags: [Checkout]
+      operationId: checkoutTelegramStatus
+      summary: Whether a Telegram Stars order has been paid (from the ledger; a subscription's latest period)
       requestBody:
         required: true
         content:
@@ -642,6 +697,43 @@ paths:
               schema: { $ref: "#/components/schemas/NotificationResult" }
         "401": { description: Not signed by the store or a wrong secret. }
         "503": { description: The store lookup failed; the store retries the delivery. }
+
+  /notify/huawei:
+    post:
+      tags: [Store notifications]
+      operationId: notifyHuawei
+      summary: Huawei AppGallery server notifications (version 2 or 1)
+      description: "`?app=<app_id>&secret=<huawei_notify_secret>`. The purchase is looked up again in the IAP APIs; accepted notifications are answered `{\"errorCode\": \"0\"}`."
+      security: []
+      parameters:
+        - { name: app, in: query, required: true, schema: { type: string } }
+        - { name: secret, in: query, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses: *notifyResponses
+
+  /notify/telegram:
+    post:
+      tags: [Store notifications]
+      operationId: notifyTelegram
+      summary: Webhook of the build's Telegram bot
+      description: >-
+        `?app=<app_id>` names the build; `X-Telegram-Bot-Api-Secret-Token` must be its `telegram_webhook_secret`.
+        A `pre_checkout_query` is answered in the response (`{"method": "answerPreCheckoutQuery", ...}`); a
+        `successful_payment` is granted, a `refunded_payment` revoked.
+      security: []
+      parameters:
+        - { name: app, in: query, required: true, schema: { type: string } }
+        - { name: X-Telegram-Bot-Api-Secret-Token, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses: *notifyResponses
 
   /notify/xsolla:
     post:

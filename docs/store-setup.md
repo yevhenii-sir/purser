@@ -128,6 +128,57 @@ Messages are verified with their Amazon SNS signature; a wrong signature shows u
 
 Unity IAP 5 has no Amazon store: the Unity package uses `AmazonStoreAdapter` over Amazon's Appstore SDK Unity plugin (sample "Amazon Appstore"). Other clients post the receipt id as `order_id` and the Amazon user id as `store_user_id` to `/verify/amazon`, then call `notifyFulfillment` once the server answered.
 
+## Huawei AppGallery
+
+Huawei devices without Google services buy through HMS In-App Purchases. The server looks purchases up in Huawei's IAP Order service (one-time products) and Subscription service (subscriptions) with an app-level token, and learns about refunds and renewals from Huawei's server notifications (each only says which purchase to look up again).
+
+### The build
+
+Add a build with platform **Huawei** (wizard → Add a build). Its app id only has to be unique on the server: when the Google Play build already uses the package name, use e.g. `com.example.mygame.huawei`, and the same value for the `huawei` build in the Unity `BillingConfig`. Products use the AppGallery product ids. Huawei reports the price paid (×100 in the buyer's currency) and the buyer's country.
+
+### Keys
+
+AppGallery Connect → the app → **App information**: copy the **App ID** into `huawei_client_id` and the **App secret** into `huawei_client_secret` (the OAuth client of the app). The setup check asks Huawei for a token with them.
+
+`huawei_site` (optional, on the account): the site of the IAP services, `europe` (the default), `asia`, `russia` or `china`, by where the app is sold; `carrier` for an app sold through a telecom carrier (purchases with `accountFlag` 1).
+
+### Server notifications
+
+AppGallery Connect → the app → **In-App Purchases → Settings → Server notification URL** (version **v2**): the URL from the app's Setup tab, `https://<host>/v1/database/<db>/route/notify/huawei?app=<app id>&secret=<huawei_notify_secret>` (generate the secret on the Keys tab first). Notifications are not trusted for their content: the purchase is looked up again, so a forged one changes nothing. Without notifications, subscriptions are re-checked by the worker when their period ends, and refunds of one-time products are not noticed.
+
+### Client
+
+Unity IAP has no Huawei store. Other clients post the `purchaseToken` as `purchase_token` to `/verify/huawei`, and for subscriptions the `subscriptionId` as `order_id`; after a success they consume the purchase (`consumeOwnedPurchase`). Sandbox purchases (`purchaseType` 0, test accounts) need **Sandbox purchases** on the build.
+
+## Telegram Stars
+
+Games in Telegram (Mini Apps, bots) sell digital goods for Telegram Stars (currency `XTR`). The server creates invoice links of the game's bot and is the bot's webhook: it answers the pre-checkout query, grants on `successful_payment` and revokes on `refunded_payment`.
+
+### The build and its products
+
+Add a build with platform **Web** and store **Telegram Stars**. Prices are in Stars: `price_micros` = Stars × 1,000,000 with currency `XTR` (50 Stars = `50000000`); a product without such a price cannot be sold. Subscriptions renew every 30 days (the only period Telegram offers) and cost at most 10,000 Stars. The invoice shows the product's title and description (the Products tab), else its catalog id.
+
+### Keys and webhook
+
+1. `telegram_bot_token`: the bot's token from @BotFather.
+2. `telegram_webhook_secret`: generate one on the Keys tab (Telegram sends it back in `X-Telegram-Bot-Api-Secret-Token`).
+3. Setup tab → **Set the bot webhook** (`admin_setup_telegram_webhook`): the bot's webhook becomes `…/notify/telegram?app=<app id>` with the secret, for `message` and `pre_checkout_query` updates. A bot has one webhook: if your bot already has a backend, forward its `pre_checkout_query` updates and messages with `successful_payment` / `refunded_payment` to that URL with the header instead (the setup check then says the webhook points elsewhere).
+
+The setup check reads the bot (`getMe`) and its webhook (`getWebhookInfo`: where it points, Telegram's last delivery error).
+
+### Purchase flow
+
+1. The client calls `POST /checkout/telegram` `{app_id, product_id, user_id}` → `{url, order_id}` and opens `url` with `Telegram.WebApp.openInvoice`.
+2. Telegram sends the pre-checkout query; the server accepts it when the order is known and the price unchanged (answered in the webhook's response, within Telegram's 10 seconds).
+3. `successful_payment` records the purchase for the order's player (`telegram:<telegram_payment_charge_id>`, the Telegram user id kept for refunds) and delivers it. A subscription's renewals are new payments of the same order.
+4. The client asks `POST /checkout/telegram/status` `{app_id, user_id, order_id}` (the shape of `/verify`) until it says `success`.
+
+Unpaid orders are forgotten after 7 days (their links stop working). A subscription that was not paid again ends when its period is over (the worker re-checks it then).
+
+### Refunds and revenue
+
+Refund Stars with the Bot API `refundStarPayment` (your bot's support flow); the `refunded_payment` update revokes the purchase. Revenue values a Star at $0.013, what Telegram pays developers, with no store fee on top; an exchange rate override for `XTR` (Revenue → Exchange rates) changes that.
+
 ## Xsolla
 
 [Xsolla](https://developers.xsolla.com/) sells on the web and on desktop (Pay Station / Web Shop), and in mobile games next to the app store (for example to players Google Play cannot charge). There is no client receipt: the server creates a payment token for one item, the player pays in Pay Station, and Xsolla tells the server with [webhooks](https://developers.xsolla.com/webhooks/overview/). Players never see the API key or the secret key.

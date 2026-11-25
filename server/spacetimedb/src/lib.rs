@@ -51,6 +51,7 @@ mod store_actions;
 mod store_create;
 mod store_health;
 mod store_setup;
+mod telegram;
 mod retention;
 mod stores;
 mod stripe;
