@@ -231,21 +231,21 @@ fn profile_size(n: usize) -> Run {
     let started = Instant::now();
     let first = crate::revenue::kept_stats(&mut w.ctx(), "{}").err().unwrap_or_default();
     // Per phase: steps, sum, slowest.
-    let mut phases = [(0usize, 0.0f64, 0.0f64); 3];
+    let mut phases = [(0usize, 0.0f64, 0.0f64); 4];
     while let Some((id, phase)) = w.read(|tx| tx.db.revenue_report_job().iter().next().map(|j| (j.id, j.phase as usize))) {
         let t = Instant::now();
         w.write(|tx| {
             crate::report_job::step(tx, id);
         });
         let us = t.elapsed().as_secs_f64() * 1e6;
-        let p = &mut phases[phase.min(2)];
+        let p = &mut phases[phase.min(3)];
         (p.0, p.1, p.2) = (p.0 + 1, p.1 + us, p.2.max(us));
     }
     let total = started.elapsed().as_secs_f64() * 1e6;
     let kept = crate::revenue::kept_stats(&mut w.ctx(), "{}").map(|_| "kept").unwrap_or("not kept");
     let slowest = phases.iter().map(|p| p.2).fold(0.0, f64::max);
     run.add("revenue: full report in the background (sum / slowest step)", total, slowest, format!("{kept}, {}", first.chars().take(22).collect::<String>()));
-    for (name, p) in ["window", "histories", "report"].iter().zip(phases) {
+    for (name, p) in ["window", "histories", "subscriptions", "report"].iter().zip(phases) {
         run.add(&format!("  background phase: {name} (sum / slowest)"), p.1, p.2, format!("{} steps", p.0));
     }
     run.time(&w, "revenue: full report (kept)", 5, |w, _| crate::revenue::kept_stats(&mut w.ctx(), "{}").map(|_| ()), |r| format!("{r:?}").chars().take(60).collect());
@@ -255,6 +255,26 @@ fn profile_size(n: usize) -> Run {
     w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::settings::admin_set_setting(ctx, "analytics".into(), "light".into())).unwrap();
     run.time(&w, "revenue: light report (first count)", 1, |w, _| crate::revenue::kept_stats(&mut w.ctx(), "{}").map(|_| ()), |r| format!("{r:?}").chars().take(60).collect());
     w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::settings::admin_set_setting(ctx, "analytics".into(), "full".into())).unwrap();
+
+    // The daily snapshot of running subscriptions, a step per scheduled call.
+    let day = w.read(|tx| purser_core::time::day_of_micros(crate::ctx::tx_now_micros(tx)));
+    w.write(|tx| crate::subs_count::ensure_snapshot(tx, day + 1));
+    let started = Instant::now();
+    let (mut steps, mut slowest) = (0, 0.0f64);
+    loop {
+        let t = Instant::now();
+        let done = w.read(crate::subs_count::snapshot_step);
+        slowest = slowest.max(t.elapsed().as_secs_f64() * 1e6);
+        steps += 1;
+        if done || steps > 100_000 {
+            break;
+        }
+    }
+    let active: u32 = w.read(|tx| {
+        use crate::revenue::subscription_daily;
+        tx.db.subscription_daily().day().filter(day + 1).map(|r| r.active + r.trials).sum()
+    });
+    run.add("revenue: subscription snapshot (sum / slowest step)", started.elapsed().as_secs_f64() * 1e6, slowest, format!("{steps} steps, {active} running"));
 
     // Rebuilds, a step per scheduled call.
     w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::revenue::admin_rebuild_revenue(ctx, String::new())).unwrap();

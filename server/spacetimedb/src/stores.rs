@@ -677,6 +677,18 @@ pub fn refetch_auth(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth
     // Amazon keeps its user id in `purchase_token` (see `purser_core::amazon`), Steam its order id,
     // a Huawei subscription its `subscriptionId` in `original_transaction_id`.
     let huawei_subscription = p.store == purser_core::model::store::HUAWEI && p.kind == kind::SUBSCRIPTION;
+    // An add-on of a Google subscription is looked up as its purchase, and answered as the add-on.
+    let token = purser_core::model::store_token(&p.purchase_token);
+    if token.len() < p.purchase_token.len() {
+        let r = ReceiptRef { purchase_token: token, order_id: &p.transaction_id, store_user_id: token, user_id: "", environment: &p.environment };
+        let st = fetch(ctx, app, &product_of(p), &r, auth)?;
+        let now_ms = ctx.now_ms();
+        return Ok(st.add_on_of(&p.product_id, now_ms).unwrap_or_else(|| {
+            // No longer a line item of the purchase: it ended.
+            let gone = purser_core::model::AddOn { product_id: p.product_id.clone(), expires_at_ms: p.expires_at_ms.min(now_ms), ..Default::default() };
+            StoreTx { state: purser_core::model::TxState::Expired, ..st.add_on(&gone, now_ms) }
+        }));
+    }
     let r = ReceiptRef {
         purchase_token: &p.purchase_token,
         order_id: if huawei_subscription { &p.original_transaction_id } else { &p.transaction_id },
@@ -695,7 +707,7 @@ pub fn finish(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth: &mut
         return Ok(());
     }
     match p.store.as_str() {
-        store::GOOGLE => google_finish(ctx, app, &product_of(p), &p.purchase_token, &p.store_action, auth),
+        store::GOOGLE => google_finish(ctx, app, &product_of(p), purser_core::model::store_token(&p.purchase_token), &p.store_action, auth),
         _ => Ok(()),
     }
 }

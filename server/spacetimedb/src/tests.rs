@@ -3037,6 +3037,58 @@ fn a_google_subscription_period_costs_what_its_order_says() {
 }
 
 #[test]
+fn a_google_subscription_add_on_is_a_subscription_of_its_own_that_ends_with_the_purchase() {
+    let w = World::new();
+    keep_google_token_valid(&w, 60);
+    add_subscription_product(&w);
+    w.write(|tx| {
+        tx.db.product().insert(Product { price_micros: 1_990_000, currency: "USD".into(), ..Product::new(APP, "vip_extra", kind::SUBSCRIPTION) });
+    });
+    let order = "GPA.7777-0000-0000-00003";
+    let purchase = |state: &str, extra_expires: &str| {
+        w.fake.borrow_mut().overrides.retain(|(needle, ..)| needle != "subscriptionsv2");
+        let body = json!({
+            "subscriptionState": state, "latestOrderId": order, "acknowledgementState": "ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED",
+            "lineItems": [
+                { "productId": "vip", "expiryTime": "2026-10-21T00:00:00Z", "autoRenewingPlan": {
+                    "autoRenewEnabled": true, "recurringPrice": { "currencyCode": "USD", "units": "4", "nanos": 990_000_000 },
+                    "priceChangeDetails": { "newPrice": { "currencyCode": "USD", "units": "5", "nanos": 990_000_000 },
+                        "priceChangeMode": "PRICE_INCREASE", "priceChangeState": "OUTSTANDING" } } },
+                { "productId": "vip_extra", "expiryTime": extra_expires, "autoRenewingPlan": {
+                    "autoRenewEnabled": true, "recurringPrice": { "currencyCode": "USD", "units": "1", "nanos": 990_000_000 } } },
+            ],
+        });
+        w.script("subscriptionsv2", 200, &body.to_string());
+    };
+    purchase("SUBSCRIPTION_STATE_ACTIVE", "2026-10-21T00:00:00Z");
+    assert_eq!(w.verify("player-1", "vip").body["status"], "success");
+    w.run_worker();
+    let row = |id: &str| w.read(|tx| tx.db.purchase().id().find(id.to_string()).unwrap());
+    let main = row(&format!("google:{order}"));
+    assert_eq!((main.price_change.as_str(), main.price_change_micros), ("consent_needed", 5_990_000));
+    let extra_id = format!("google:{order}+vip_extra");
+    let extra = row(&extra_id);
+    assert_eq!((extra.product_id.as_str(), extra.price_micros, extra.status.as_str(), extra.user_id.as_str()), ("vip_extra", 1_990_000, status::COMPLETED, "player-1"));
+    assert_eq!(extra.purchase_token, format!("{TOKEN}#vip_extra"));
+    assert!(w.entitlements("player-1").to_string().contains("vip_extra"), "the add-on is owned");
+    // Verified again by its own product: the purchase it belongs to answers.
+    assert_eq!(w.verify("player-1", "vip_extra").body["status"], "success");
+
+    // A re-check of the add-on looks the purchase up by its token: the player removed the add-on.
+    purchase("SUBSCRIPTION_STATE_ACTIVE", "2026-09-20T00:00:00Z");
+    let app = w.read(|tx| tx.db.game_app().app_id().find(APP.to_string()).unwrap());
+    let st = crate::stores::refetch(&mut w.ctx(), &app, &extra).unwrap();
+    assert_eq!((st.transaction_id.as_str(), st.state), (format!("{order}+vip_extra").as_str(), TxState::Expired));
+    assert!(w.calls(&format!("subscriptionsv2/tokens/{TOKEN}")) > 0);
+
+    // The purchase ends: so does the add-on.
+    purchase("SUBSCRIPTION_STATE_EXPIRED", "2026-10-21T00:00:00Z");
+    assert_eq!(subscription_notification(&w, 13).http, 200);
+    w.run_worker();
+    assert_eq!((row(&format!("google:{order}")).status, row(&extra_id).status), (status::EXPIRED.to_string(), status::EXPIRED.to_string()));
+}
+
+#[test]
 fn a_trial_that_ends_unpaid_is_not_churn_and_running_trials_are_not_paid_subscriptions() {
     let w = World::new();
     keep_google_token_valid(&w, 60);
@@ -3525,7 +3577,7 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
     setup_paywalls(&w);
     let first = Purchase {
         reinstated: false, access_was_until_ms: 0, error_log_id: 0,
-        tax_micros: 0, refund_share_milli: 0,
+        tax_micros: 0, refund_share_milli: 0, price_change: String::new(), price_change_micros: 0,
         id: "apple:1000".into(),
         store: "apple".into(),
         app_id: APP.into(),
@@ -5484,7 +5536,7 @@ impl World {
         let updated = NOW_MICROS - hours_ago * HOUR_MICROS;
         let row = Purchase {
             reinstated: false, access_was_until_ms: 0, error_log_id: 0,
-            tax_micros: 0, refund_share_milli: 0,
+            tax_micros: 0, refund_share_milli: 0, price_change: String::new(), price_change_micros: 0,
             id: id.into(),
             store: "google".into(),
             app_id: app.into(),
@@ -6097,7 +6149,7 @@ fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -
     let tx_id = id.split_once(':').map_or(id, |(_, t)| t).to_string();
     let mut p = Purchase {
         reinstated: false, access_was_until_ms: 0, error_log_id: 0,
-        tax_micros: 0, refund_share_milli: 0,
+        tax_micros: 0, refund_share_milli: 0, price_change: String::new(), price_change_micros: 0,
         id: id.into(),
         store: "google".into(),
         app_id: APP.into(),
@@ -6495,6 +6547,12 @@ fn imported_refunds_and_expirations_are_counted_by_the_rebuild() {
         tx.db.revenue_daily().iter().fold((0, 0, 0), |(r, e, m), d| (r + d.refunds, e + d.expirations, m + d.refunded_micros))
     });
     assert_eq!((refunds, expirations, refunded), (1, 1, 4_990_000), "the history's refund and churn are counted");
+    // The builds' sales of the last weeks too: business alerts read them, in every analytics mode.
+    let sales = w.read(|tx| {
+        use crate::revenue::build_sales_daily;
+        tx.db.build_sales_daily().iter().fold((0, 0, 0), |(p, r, g), s| (p + s.paid, r + s.refunds, g + s.gross_micros))
+    });
+    assert_eq!(sales, (3, 1, 3 * 4_990_000), "three sales, one refunded");
 }
 
 #[test]
@@ -6523,6 +6581,65 @@ fn active_subscriptions_are_read_from_the_expiry_index() {
     );
     let r = stats(&w, json!({}));
     assert_eq!(r["subscriptions"]["active_now"], 1, "S-1 and its renewal S-2 are one subscription");
+}
+
+#[test]
+fn running_subscriptions_are_counted_a_batch_at_a_time() {
+    use crate::revenue::subscription_daily;
+    use crate::subs_count::subscription_snapshot_job;
+    use std::collections::{BTreeMap, BTreeSet};
+    let w = World::new();
+    w.as_admin(false);
+    let (now_ms, hour, day) = (NOW_MICROS / 1000, 3_600_000, 86_400_000);
+    let sub = |id: &str, expires_ms: i64, f: Box<dyn FnOnce(&mut Purchase)>| {
+        ledger_row(id, NOW_MICROS - 10 * DAY_MICROS, move |p| {
+            p.kind = kind::SUBSCRIPTION.into();
+            p.product_id = "vip".into();
+            p.expires_at_ms = expires_ms;
+            p.price_micros = 4_990_000;
+            f(p);
+        })
+    };
+    // Access ending from within the hour to past the walk's horizon; A renewed as F (A not replaced yet).
+    w.insert_ledger(
+        vec![
+            sub("google:A", now_ms + hour / 2, Box::new(|_| {})),
+            sub("google:B", now_ms + 2 * day, Box::new(|p| p.auto_renew_off = true)),
+            sub("google:C", now_ms + 40 * day, Box::new(|p| p.trial = true)),
+            sub("google:D", now_ms + 300 * day, Box::new(|p| p.billing_issue = true)),
+            sub("google:E", now_ms + 1000 * day, Box::new(|_| {})),
+            sub("google:F", now_ms + 3 * day, Box::new(|p| p.original_transaction_id = "A".into())),
+            sub("google:G", now_ms - hour, Box::new(move |p| p.grace_until_ms = now_ms + day)),
+            sub("google:H", now_ms + 5 * day, Box::new(|p| p.environment = "sandbox".into())),
+        ],
+        Vec::new(),
+    );
+    let steps = w.read(|tx| {
+        let (mut acc, mut from, mut steps) = (crate::subs_count::SubsAcc::default(), crate::subs_count::start(tx), 1);
+        while let Some(next) = crate::subs_count::count_step(tx, &mut acc, from, &BTreeSet::new(), false, 2) {
+            from = next;
+            steps += 1;
+        }
+        steps
+    });
+    assert!(steps >= 2, "{steps} steps");
+
+    // The daily snapshot: walked by the worker, saved once the walk is over.
+    w.run_worker();
+    let snapshot: BTreeMap<String, (u32, u32)> = w.read(|tx| {
+        assert!(tx.db.subscription_snapshot_job().iter().next().is_none(), "the walk is over");
+        tx.db.subscription_daily().iter().map(|r| (r.environment, (r.active, r.trials))).collect()
+    });
+    assert_eq!(snapshot, BTreeMap::from([("production".to_string(), (4, 1)), ("sandbox".to_string(), (1, 0))]), "B, D, E and F paid, C on a trial");
+
+    // The full report counts them in steps of its own.
+    let ask = || crate::revenue::kept_stats(&mut w.ctx(), "{}");
+    assert!(ask().unwrap_err().contains("ERR_REPORT_COUNTING"));
+    crate::report_job::run_all(&mut w.ctx());
+    let r = ask().unwrap();
+    let s = &r["subscriptions"];
+    assert_eq!((s["active_now"].clone(), s["trials_now"].clone()), (json!(4), json!(1)));
+    assert_eq!((s["auto_renew_off_now"].clone(), s["in_grace_now"].clone(), s["billing_issue_now"].clone()), (json!(1), json!(1), json!(1)));
 }
 
 #[test]

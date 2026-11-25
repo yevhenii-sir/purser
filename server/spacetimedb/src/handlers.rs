@@ -318,7 +318,8 @@ fn verify_with(
     }
     let product = if !st.product_id.is_empty() && st.product_id != product.product_id {
         // An upgraded or crossgraded subscription: the store answers with the subscription's
-        // latest transaction, in its new product. Other products of a transaction are refused.
+        // latest transaction, in its new product; or the client verified an add-on of the
+        // subscription (recorded with it). Other products of a transaction are refused.
         let upgraded = (product.kind == kind::SUBSCRIPTION)
             .then(|| ctx.tx(|tx| config::find_product(tx, app_id, &st.product_id)))
             .flatten()

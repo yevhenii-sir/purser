@@ -49,6 +49,9 @@ SKIP = {
     "revenue_report_job",
     "revenue_report_tick",
     "revenue_report_visit",
+    # The daily snapshot of running subscriptions being counted: the worker starts it again.
+    "subscription_snapshot_job",
+    "subscription_snapshot_tick",
     "store_create_tick",
     # Queue drainers running now and their next runs (the worker starts them again).
     "drain_lane",

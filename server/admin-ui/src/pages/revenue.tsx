@@ -255,7 +255,7 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
                 hint={`paid, at the last daily snapshot · ${subs.series?.at(-1)?.trials ?? 0} in a free trial · MRR ${usd(subs.series?.at(-1)?.mrr_usd_micros ?? 0)}`} />
             ) : (
               <Stat label="Active subscriptions" value={subs.active_now}
-                hint={`paid · ${subs.trials_now ?? 0} in a free trial · MRR ${usd(subs.mrr_usd_micros)} · ${subs.auto_renew_off_now ?? 0} won't renew · ${subs.billing_issue_now ?? 0} payment issues (${subs.in_grace_now ?? 0} in grace)`} />
+                hint={`paid · ${subs.trials_now ?? 0} in a free trial · MRR ${usd(subs.mrr_usd_micros)} · ${subs.auto_renew_off_now ?? 0} won't renew · ${subs.billing_issue_now ?? 0} payment issues (${subs.in_grace_now ?? 0} in grace)${subs.price_consent_needed_now ? ` · ${subs.price_consent_needed_now} haven't accepted a price increase` : ""}`} />
             )}
             <Stat label="Payments" value={payments(r.totals)}
               hint={`${r.totals.purchases} purchases · ${r.totals.new_subscriptions} new subs · ${r.totals.renewals} renewals`} />

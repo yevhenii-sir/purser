@@ -26,6 +26,8 @@ Event (`v1` argument or webhook body; the webhook body also has `catalog_product
 
 `expires_at_ms` of a subscription is when access ends: the paid period, or the store's grace period after a failed renewal payment.
 
+A Google Play subscription bought with add-ons (other subscription products billed with it) gives one `grant` per product: the add-ons come with `transaction_id` `{order}+{product}` and end with the subscription, or earlier when the player removes them.
+
 An event may arrive again on retries, so the game **must be idempotent**: apply each **`event_id`** once. It is the same on every retry of an event and different for every other event of the purchase (a `reinstated` grant after a `revoke`, a second refund, a transfer to another `user_id`, a renewal with a new `expires_at_ms`). `occurred_at_ms` is when it happened (the same on every retry); `timestamp_ms` is when this attempt was sent.
 - **consumable** — grant or take back the amount once per `event_id`, `quantity` times: a Google Play product with multi-quantity or a StoreKit purchase may carry several units (`price_micros` is what all of them cost; `quantity` is 1 otherwise);
 - **non-consumables and subscriptions** — apply as state: “`user_id` has / doesn't have `product_id` until `expires_at_ms`”, and keep the latest `expires_at_ms` per player and product: a `grant` never shortens access (periods of a subscription are separate purchases, retried independently, so an older period's grant may arrive after a newer one's).

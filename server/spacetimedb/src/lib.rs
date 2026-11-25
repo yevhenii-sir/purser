@@ -46,6 +46,7 @@ mod refund_sweep;
 mod report_job;
 mod revenue;
 mod scan;
+mod subs_count;
 mod server_api;
 mod settings;
 mod steam;
@@ -297,6 +298,11 @@ pub struct Purchase {
     pub auto_renew_off: bool,
     /// Subscriptions: the product the next renewal switches to (a pending downgrade); empty = same.
     pub renew_product_id: String,
+    /// Subscriptions: a price change of the next renewals the store announced
+    /// (`purser_core::model::price_change`: `consent_needed`, `accepted`, `scheduled`); empty: none.
+    pub price_change: String,
+    /// Its new price (in `currency`); 0 when unknown.
+    pub price_change_micros: i64,
     /// Ledger id of the subscription that replaced this one (upgrade / crossgrade); empty otherwise.
     pub replaced_by: String,
     /// Part of `price_micros` refunded while the purchase stays granted (Stripe, Xsolla partial
@@ -377,6 +383,8 @@ impl Purchase {
             billing_issue: false,
             auto_renew_off: false,
             renew_product_id: String::new(),
+            price_change: String::new(),
+            price_change_micros: 0,
             replaced_by: String::new(),
             refunded_micros: 0,
             tax_micros: 0,
@@ -1264,6 +1272,8 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             billing_issue: r.billing_issue,
             auto_renew_off: r.auto_renew_off,
             renew_product_id: r.renew_product_id,
+            price_change: String::new(),
+            price_change_micros: 0,
             replaced_by: r.replaced_by,
             refunded_micros: r.refunded_micros,
             tax_micros: 0,

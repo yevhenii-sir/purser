@@ -63,6 +63,44 @@ pub mod store_action {
     pub const ACKNOWLEDGE: &str = "acknowledge";
 }
 
+/// A change of a subscription's price the store announced for its next renewals
+/// (`StoreTx::price_change`).
+pub mod price_change {
+    /// None (or it was applied or withdrawn).
+    pub const NONE: &str = "";
+    /// A price increase the player has to accept, or the subscription ends with its period (Google
+    /// opt-in increase, Apple `priceIncreaseStatus` 0).
+    pub const CONSENT_NEEDED: &str = "consent_needed";
+    /// The player accepted the increase.
+    pub const ACCEPTED: &str = "accepted";
+    /// A change that applies without the player's consent (Google opt-out increase, a decrease).
+    pub const SCHEDULED: &str = "scheduled";
+}
+
+/// Separates a Google purchase token from the add-on product of a ledger row that stands for an
+/// add-on of the purchase (`{token}#{product}`): never part of a store's token.
+pub const ADD_ON_SEP: char = '#';
+
+/// The store's token of a ledger row's `purchase_token` (without an add-on's product).
+pub fn store_token(token: &str) -> &str {
+    token.split_once(ADD_ON_SEP).map_or(token, |(t, _)| t)
+}
+
+/// A product bought with a Google subscription and billed with it (an add-on: another line item of
+/// the same purchase).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AddOn {
+    pub product_id: String,
+    pub expires_at_ms: i64,
+    pub price_micros: i64,
+    pub currency: String,
+    pub auto_renew_off: bool,
+    pub trial: bool,
+    pub offer_id: String,
+    pub price_change: &'static str,
+    pub price_change_micros: i64,
+}
+
 pub mod environment {
     pub const PRODUCTION: &str = "production";
     pub const SANDBOX: &str = "sandbox";
@@ -151,9 +189,56 @@ pub struct StoreTx {
     /// `Revoked`: the part of the price the refund returned, in thousandths of a percent (Apple
     /// `revocationPercentage` of a prorated refund, 1..99_999); 0: all of it.
     pub refund_share_milli: u32,
+    /// Subscriptions: a price change of the next renewals (`price_change::*`).
+    pub price_change: &'static str,
+    /// Its new price (in `currency`); 0 when unknown.
+    pub price_change_micros: i64,
+    /// Google subscriptions: the add-ons bought with this subscription (the purchase's other line
+    /// items); the ledger records each as a row of its own ([`StoreTx::add_on`]).
+    pub add_ons: Vec<AddOn>,
 }
 
 impl StoreTx {
+    /// The transaction of add-on `a` of this purchase: its own ledger row (`{id}+{product}`, token
+    /// `{token}#{product}`) with the purchase's owner, state and dates, and the add-on's product,
+    /// period end and price. Ended when its period is over while the purchase goes on (the add-on
+    /// was removed).
+    pub fn add_on(&self, a: &AddOn, now_ms: i64) -> StoreTx {
+        let suffix = |id: &str| if id.is_empty() { String::new() } else { format!("{id}+{}", a.product_id) };
+        let token = |t: &str| if t.is_empty() { String::new() } else { format!("{t}{ADD_ON_SEP}{}", a.product_id) };
+        let state = match self.state {
+            TxState::Active if a.expires_at_ms > 0 && a.expires_at_ms <= now_ms && self.grace_until_ms <= now_ms => TxState::Expired,
+            s => s,
+        };
+        StoreTx {
+            product_id: a.product_id.clone(),
+            transaction_id: suffix(&self.transaction_id),
+            original_transaction_id: suffix(&self.original_transaction_id),
+            purchase_token: token(&self.purchase_token),
+            linked_purchase_token: token(&self.linked_purchase_token),
+            state,
+            expires_at_ms: a.expires_at_ms,
+            price_micros: a.price_micros,
+            currency: a.currency.clone(),
+            auto_renew_off: a.auto_renew_off,
+            trial: a.trial,
+            offer_id: a.offer_id.clone(),
+            price_change: a.price_change,
+            price_change_micros: a.price_change_micros,
+            renew_product_id: String::new(),
+            // The purchase is acknowledged once, by its own row.
+            acknowledged: true,
+            tax_micros: 0,
+            add_ons: Vec::new(),
+            ..self.clone()
+        }
+    }
+
+    /// An add-on's transaction when `product_id` is one of this purchase's add-ons.
+    pub fn add_on_of(&self, product_id: &str, now_ms: i64) -> Option<StoreTx> {
+        self.add_ons.iter().find(|a| a.product_id == product_id).map(|a| self.add_on(a, now_ms))
+    }
+
     /// Store-side action required after granting the reward.
     pub fn required_store_action(&self, product_kind: &str) -> &'static str {
         self.store_action_after_grant(product_kind, false)

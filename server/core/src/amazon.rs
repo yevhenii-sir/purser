@@ -160,6 +160,9 @@ fn tx(app_id: &str, user_id: &str, receipt_id: &str, product_id: &str, state: Tx
         tax_micros: 0,
         refunded_quantity: 0,
         refund_share_milli: 0,
+        price_change: crate::model::price_change::NONE,
+        price_change_micros: 0,
+        add_ons: Vec::new(),
     }
 }
 

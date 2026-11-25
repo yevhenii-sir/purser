@@ -101,6 +101,7 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
                     ["Price", <PriceText key="p" purchase={p} />],
                     ["Reason", p.reason],
                     ["Expires", fmtMs(p.expires_at_ms)],
+                    ...(p.price_change ? [["Price change", priceChangeText(p)]] : []),
                     ["Created", fmtTime(p.created_at_micros)],
                     ["Attempts", String(p.attempts)],
                     ["Next attempt", fmtTime(p.next_attempt_at_micros)],
@@ -138,6 +139,19 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
 
 /** Refunds a Google Play order in the store (`admin_refund_purchase`): the money goes back and access ends. */
 /** The price with its units, the tax the store reported and what was refunded. */
+/** A price change of the next renewals the store announced. */
+function priceChangeText(p: Purchase): string {
+  const to = p.price_change_micros > 0 ? ` to ${money(p.price_change_micros, p.currency)}` : ""
+  switch (p.price_change) {
+    case "consent_needed":
+      return `increase${to}: the player has not accepted it (the subscription ends unless they do)`
+    case "accepted":
+      return `increase${to}, accepted`
+    default:
+      return `next renewals${to}`
+  }
+}
+
 function PriceText({ purchase: p }: { purchase: Purchase }) {
   const notes: string[] = []
   if (p.quantity > 1) notes.push(`${p.quantity} units`)

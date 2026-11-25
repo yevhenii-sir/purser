@@ -82,6 +82,10 @@ export interface Purchase {
   tax_micros: number
   /** A prorated store refund: the part it returned, in thousandths of a percent; 0: all of it. */
   refund_share_milli: number
+  /** Subscriptions: a price change of the next renewals (`consent_needed`, `accepted`, `scheduled`); empty: none. */
+  price_change: string
+  /** Its new price (in `currency`); 0 when unknown. */
+  price_change_micros: number
   attempts: number
   next_attempt_at_micros: number
   last_error: string
@@ -240,6 +244,8 @@ export interface Stats extends Partial<Kept> {
     auto_renew_off_now: number
     in_grace_now: number
     billing_issue_now: number
+    /** A price increase the player has not accepted: these end unless they do. */
+    price_consent_needed_now?: number
   }
   fx: { as_of: string | null; missing: string[]; overrides: Record<string, number> }
   /** The worker is recomputing the revenue aggregates: totals may be incomplete for a while. */

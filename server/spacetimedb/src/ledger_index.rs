@@ -33,8 +33,10 @@ pub struct PendingPurchase {
 
 /// A purchase a player owns now (not consumable, in an owned status) or a subscription they
 /// paused. `/entitlements` reads the few ledger rows these point to instead of everything the
-/// player ever bought.
+/// player ever bought; the counts of running subscriptions walk the subscriptions by
+/// `sub_until_ms` (`subs_count`).
 #[spacetimedb::table(accessor = owned_purchase, cache_policy = required_in_memory)]
+#[derive(PartialEq)]
 pub struct OwnedPurchase {
     #[primary_key]
     pub purchase_id: String,
@@ -42,9 +44,37 @@ pub struct OwnedPurchase {
     pub user_id: String,
     #[index(btree)]
     pub app_id: String,
+    /// A subscription: when its access ends (`Purchase::access_until_ms`, `i64::MAX` when it has
+    /// no end); 0 for anything else.
+    #[index(btree)]
+    pub sub_until_ms: i64,
+    /// A subscription: its `original_transaction_id` (the renewals of one subscription); empty for
+    /// anything else (never looked up).
+    #[index(btree)]
+    pub chain: String,
 }
 
-fn is_owned_row(p: &Purchase) -> bool {
+impl OwnedPurchase {
+    fn of(p: &Purchase) -> Self {
+        let sub = p.kind == kind::SUBSCRIPTION;
+        let until = p.access_until_ms();
+        OwnedPurchase {
+            purchase_id: p.id.clone(),
+            user_id: p.user_id.clone(),
+            app_id: p.app_id.clone(),
+            sub_until_ms: if !sub {
+                0
+            } else if until == 0 {
+                i64::MAX
+            } else {
+                until
+            },
+            chain: if sub { p.original_transaction_id.clone() } else { String::new() },
+        }
+    }
+}
+
+pub(crate) fn is_owned_row(p: &Purchase) -> bool {
     p.kind != kind::CONSUMABLE && status::is_owned(&p.status)
 }
 
@@ -91,9 +121,9 @@ pub fn sync(tx: &ReducerContext, p: &Purchase) {
 
     let owned = tx.db.owned_purchase().purchase_id().find(&p.id);
     if is_listed(p) {
-        let row = OwnedPurchase { purchase_id: p.id.clone(), user_id: p.user_id.clone(), app_id: p.app_id.clone() };
+        let row = OwnedPurchase::of(p);
         match owned {
-            Some(old) if old.user_id == row.user_id && old.app_id == row.app_id => {}
+            Some(old) if old == row => {}
             Some(_) => {
                 tx.db.owned_purchase().purchase_id().update(row);
             }
@@ -126,17 +156,18 @@ pub fn owned_or_paused_by(tx: &ReducerContext, user_id: &str) -> Vec<Purchase> {
         .collect()
 }
 
-/// The purchases owned now in these builds (empty: every build); not consumables.
-pub fn owned_in(tx: &ReducerContext, apps: &BTreeSet<String>) -> Vec<Purchase> {
-    if reindexing(tx) {
-        return tx.db.purchase().iter().filter(|p| is_owned_row(p) && (apps.is_empty() || apps.contains(&p.app_id))).collect();
+/// The subscriptions owned now in these builds (empty: every build) whose access ends in
+/// `lo..=hi` (ms): one window of a walk over them (`subs_count`).
+pub fn subscriptions_until(tx: &ReducerContext, lo: i64, hi: i64, apps: &BTreeSet<String>) -> Vec<OwnedPurchase> {
+    tx.db.owned_purchase().sub_until_ms().filter(lo..=hi).filter(|o| apps.is_empty() || apps.contains(&o.app_id)).collect()
+}
+
+/// The other owned rows of the subscription of `o` (renewals not replaced yet: normally none).
+pub fn same_subscription(tx: &ReducerContext, o: &OwnedPurchase) -> Vec<OwnedPurchase> {
+    if o.chain.is_empty() {
+        return Vec::new();
     }
-    let ids: Vec<String> = if apps.is_empty() {
-        tx.db.owned_purchase().iter().map(|o| o.purchase_id).collect()
-    } else {
-        apps.iter().flat_map(|a| tx.db.owned_purchase().app_id().filter(a.as_str()).map(|o| o.purchase_id).collect::<Vec<_>>()).collect()
-    };
-    ids.into_iter().filter_map(|id| tx.db.purchase().id().find(&id)).filter(is_owned_row).collect()
+    tx.db.owned_purchase().chain().filter(o.chain.as_str()).filter(|r| r.app_id == o.app_id && r.purchase_id != o.purchase_id).collect()
 }
 
 /// Rows a queue drainer takes next: due rows, oldest first within a build, `batch` at most. Builds

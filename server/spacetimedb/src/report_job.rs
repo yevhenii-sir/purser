@@ -8,11 +8,13 @@
 //!
 //! Steps (see `revenue::LedgerPass`): the purchases of the window (from the first day of the month
 //! of the range on, in `created_at` order, [`batch`] per step) name the payers and the subscriptions
-//! with a trial in the range; then the whole history of [`visits`] of them per step; then the report.
+//! with a trial in the range; then the whole history of [`visits`] of them per step; then the
+//! subscriptions running now (`subs_count`, a batch per step); then the report.
 //! A request that finds the report being counted gets the old one (or is asked to wait); every step
 //! marks it as still being counted.
 
 use crate::revenue::{self, Heavy, LedgerPass, Resolved, StatsQuery};
+use crate::subs_count::{self, SubsAcc};
 use crate::Purchase;
 use purser_core::revenue::LedgerAcc;
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
@@ -29,7 +31,8 @@ fn visits() -> usize {
 
 const PHASE_WINDOW: u8 = 0;
 const PHASE_HISTORIES: u8 = 1;
-const PHASE_REPORT: u8 = 2;
+const PHASE_SUBSCRIPTIONS: u8 = 2;
+const PHASE_REPORT: u8 = 3;
 
 /// A report being counted.
 #[spacetimedb::table(accessor = revenue_report_job, cache_policy = required_in_memory)]
@@ -58,6 +61,10 @@ pub struct RevenueReportJob {
     pub visits: u64,
     /// What is counted so far (`purser_core::revenue::LedgerAcc`, JSON).
     pub acc_json: String,
+    /// The walk over the subscriptions running now: where its next step starts, and what it
+    /// counted (`subs_count::SubsAcc`, JSON).
+    pub subs_next_ms: i64,
+    pub subs_json: String,
     /// Purchases read so far (progress).
     pub rows: u64,
 }
@@ -115,6 +122,8 @@ pub fn start(tx: &ReducerContext, key: &str, q: &StatsQuery, (from, to, _, apps)
         next_visit: 0,
         visits: 0,
         acc_json: String::new(),
+        subs_next_ms: 0,
+        subs_json: String::new(),
         rows: 0,
     });
     schedule(tx, job.id);
@@ -199,11 +208,21 @@ pub fn step(tx: &ReducerContext, job_id: u64) -> bool {
             }
             job.next_visit = hi.min(job.visits);
             if job.next_visit >= job.visits {
-                job.phase = PHASE_REPORT;
+                job.phase = PHASE_SUBSCRIPTIONS;
+                job.subs_next_ms = subs_count::start(tx);
             }
         }
+        PHASE_SUBSCRIPTIONS => {
+            let mut subs: SubsAcc = serde_json::from_str(&job.subs_json).unwrap_or_default();
+            match subs_count::count_step(tx, &mut subs, job.subs_next_ms, &apps, q.include_sandbox, subs_count::batch()) {
+                Some(next) => job.subs_next_ms = next,
+                None => job.phase = PHASE_REPORT,
+            }
+            job.subs_json = serde_json::to_string(&subs).unwrap_or_default();
+        }
         _ => {
-            let report = revenue::report_in(tx, &q, (from, to, today, apps), false, Heavy::Acc(acc));
+            let subs: SubsAcc = serde_json::from_str(&job.subs_json).unwrap_or_default();
+            let report = revenue::report_in(tx, &q, (from, to, today, apps), false, Heavy::Acc(acc, subs));
             let counted_for = (job.counted_day, job.rebuilding, job.generation);
             match report {
                 Ok(r) => {

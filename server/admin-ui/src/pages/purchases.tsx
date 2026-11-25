@@ -32,6 +32,7 @@ const SUBSCRIPTION_VIEWS: [string, string][] = [
   ["grace", "In a grace period"],
   ["billing_issue", "Payment failed"],
   ["auto_renew_off", "Auto-renew off"],
+  ["price_consent", "Price increase not accepted"],
 ]
 
 type Page = { rows: Purchase[]; more: boolean; next: { until_micros: number; before_id: string } | null }
@@ -39,7 +40,7 @@ type Page = { rows: Purchase[]; more: boolean; next: { until_micros: number; bef
 const CSV_COLUMNS: (keyof Purchase | string)[] = [
   "id", "app_id", "store", "product_id", "kind", "user_id", "status", "reason", "environment", "price_micros", "currency", "country",
   "transaction_id", "original_transaction_id", "created_at_micros", "updated_at_micros", "expires_at_ms", "trial", "auto_renew_off",
-  "billing_issue", "grace_until_ms", "refunded_micros", "offer_id",
+  "billing_issue", "grace_until_ms", "refunded_micros", "offer_id", "price_change", "price_change_micros",
 ]
 
 function toCsv(rows: Purchase[]): string {

@@ -233,6 +233,9 @@ fn to_tx(app_id: &str, product_id: &str, product_kind: &str, data: &Value, now_m
         tax_micros: 0,
         refunded_quantity: 0,
         refund_share_milli: 0,
+        price_change: crate::model::price_change::NONE,
+        price_change_micros: 0,
+        add_ons: Vec::new(),
     })
 }
 

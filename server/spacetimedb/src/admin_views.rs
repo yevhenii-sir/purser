@@ -44,7 +44,7 @@ pub fn purchase_row(p: &Purchase) -> Value {
         "renew_product_id": p.renew_product_id, "replaced_by": p.replaced_by, "refunded_micros": p.refunded_micros, "offer_id": p.offer_id, "offer_type": p.offer_type, "paused_until_ms": p.paused_until_ms, "family_shared": p.family_shared,
     });
     // Another object: one `json!` of all columns is past the macro's recursion limit.
-    let more = json!({ "tax_micros": p.tax_micros, "refund_share_milli": p.refund_share_milli, "quantity": p.quantity });
+    let more = json!({ "tax_micros": p.tax_micros, "refund_share_milli": p.refund_share_milli, "quantity": p.quantity, "price_change": p.price_change, "price_change_micros": p.price_change_micros });
     if let (Some(row), Value::Object(more)) = (row.as_object_mut(), more) {
         row.extend(more);
     }
@@ -211,6 +211,7 @@ fn subscription_matches(p: &Purchase, filter: &str, now_ms: i64) -> bool {
             "grace" => p.grace_until_ms > now_ms && p.expires_at_ms <= now_ms,
             "billing_issue" => p.billing_issue,
             "auto_renew_off" => p.auto_renew_off,
+            "price_consent" => p.price_change == purser_core::model::price_change::CONSENT_NEEDED,
             _ => true,
         }
 }

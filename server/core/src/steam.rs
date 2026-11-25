@@ -843,6 +843,9 @@ pub fn store_tx(p: &Purchase) -> StoreTx {
         tax_micros: 0,
         refunded_quantity: 0,
         refund_share_milli: 0,
+        price_change: crate::model::price_change::NONE,
+        price_change_micros: 0,
+        add_ons: Vec::new(),
     }
 }
 

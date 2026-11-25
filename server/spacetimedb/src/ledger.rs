@@ -227,7 +227,27 @@ fn record(
     if st.refunded_quantity > 0 {
         refund_units(tx, &recorded.0, st);
     }
+    record_add_ons(tx, app, st, claim);
     Ok(recorded)
+}
+
+/// The add-ons of a Google subscription (the purchase's other line items): a ledger row each, with
+/// the purchase's owner, granted, renewed and ended like any subscription. One that ended while the
+/// purchase goes on (removed by the player) ends its row.
+fn record_add_ons(tx: &TxContext, app: Option<&GameApp>, st: &StoreTx, claim: &Claim) {
+    let now_ms = tx_now_micros(tx) / 1000;
+    for a in &st.add_ons {
+        let add_on = st.add_on(a, now_ms);
+        if add_on.state != purser_core::model::TxState::Active {
+            record_inactive(tx, &add_on, "add-on ended");
+            continue;
+        }
+        let product = config::find_product(tx, &st.app_id, &a.product_id).unwrap_or_else(|| Product::new(&st.app_id, &a.product_id, kind::SUBSCRIPTION));
+        let claim = Claim { client_finished: false, price_micros: 0, currency: String::new(), offer_id: String::new(), ..claim.clone() };
+        if let Err(e) = record(tx, app, &product, &add_on, &claim, false) {
+            log::warn!("Add-on {} of {}: {e}", a.product_id, st.ledger_id());
+        }
+    }
 }
 
 /// The store refunded some units of a multi-quantity purchase and the rest stays paid (Google
@@ -371,6 +391,12 @@ fn record_row(
         if resumed {
             lifecycle.push(event_kind::RESUME);
         }
+        if (p.price_change.as_str(), p.price_change_micros) != (st.price_change, st.price_change_micros) {
+            log_event(tx, &id, "price_change", &format!("{} {}", st.price_change, st.price_change_micros));
+            p.price_change = st.price_change.to_string();
+            p.price_change_micros = st.price_change_micros;
+            filled = true;
+        }
         if (p.billing_issue, p.auto_renew_off, p.renew_product_id.as_str()) != renewal {
             log_event(
                 tx,
@@ -442,6 +468,8 @@ fn record_row(
         billing_issue: st.billing_issue,
         auto_renew_off: st.auto_renew_off,
         renew_product_id: st.renew_product_id.clone(),
+        price_change: st.price_change.to_string(),
+        price_change_micros: st.price_change_micros,
         // What the store says the offer was wins over the client's word.
         offer_id: if st.offer_id.is_empty() { claim.offer_id.clone() } else { st.offer_id.clone() },
         offer_type: st.offer_type.clone(),
@@ -683,7 +711,14 @@ pub fn record_inactive(tx: &TxContext, st: &StoreTx, details: &str) -> Option<St
     p.auto_renew_off = st.auto_renew_off;
     p.grace_until_ms = 0;
     p.paused_until_ms = st.paused_until_ms;
+    p.price_change = st.price_change.to_string();
+    p.price_change_micros = st.price_change_micros;
     crate::poll::schedule(tx, &p.id, st, &p.kind);
+    // The purchase ended: so did its add-ons.
+    let now_ms = tx_now_micros(tx) / 1000;
+    for a in &st.add_ons {
+        record_inactive(tx, &st.add_on(a, now_ms), details);
+    }
     let now_ms = tx_now_micros(tx) / 1000;
     // Kept even when the status does not change (a pause noticed on a row that expired already).
     let facts = (before != (p.billing_issue, p.auto_renew_off, p.grace_until_ms, p.paused_until_ms)).then(|| p.clone());

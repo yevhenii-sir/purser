@@ -222,6 +222,9 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
         billing_issue: false,
         auto_renew_off: false,
         renew_product_id: String::new(),
+        price_change: crate::model::price_change::NONE,
+        price_change_micros: 0,
+        add_ons: Vec::new(),
     })
 }
 
@@ -264,6 +267,14 @@ fn apply_renewal(tx: &mut StoreTx, status: i64, renewal: &Value, now_ms: i64) {
     tx.auto_renew_off = renewal["autoRenewStatus"].as_i64() == Some(0);
     let next = renewal["autoRenewProductId"].as_str().unwrap_or("");
     tx.renew_product_id = if next == tx.product_id { String::new() } else { next.to_string() };
+    // A price increase of the next renewals: 0 the player has not answered yet (the subscription
+    // ends unless they accept), 1 accepted (or one that needs no consent).
+    tx.price_change = match renewal["priceIncreaseStatus"].as_i64() {
+        Some(0) => crate::model::price_change::CONSENT_NEEDED,
+        Some(1) => crate::model::price_change::ACCEPTED,
+        _ => crate::model::price_change::NONE,
+    };
+    tx.price_change_micros = if tx.price_change.is_empty() { 0 } else { ms(&renewal["renewalPrice"]).saturating_mul(1000) };
     if tx.state == TxState::Revoked {
         return;
     }
@@ -659,6 +670,12 @@ mod tests {
         let active = parse(&body(1, r#"{"autoRenewStatus":1,"autoRenewProductId":"premium"}"#), 1_000);
         assert_eq!((active.transaction_id.as_str(), active.product_id.as_str()), ("105", "premium"));
         assert_eq!((active.state, active.auto_renew_off, active.renew_product_id.as_str()), (TxState::Active, false, ""));
+        assert_eq!(active.price_change, "");
+        // A price increase the player has not answered yet, then accepted.
+        let increase = parse(&body(1, r#"{"autoRenewStatus":1,"priceIncreaseStatus":0,"renewalPrice":5990,"currency":"USD"}"#), 1_000);
+        assert_eq!((increase.price_change, increase.price_change_micros), ("consent_needed", 5_990_000));
+        let accepted = parse(&body(1, r#"{"autoRenewStatus":1,"priceIncreaseStatus":1,"renewalPrice":5990}"#), 1_000);
+        assert_eq!(accepted.price_change, "accepted");
 
         let downgrade = parse(&body(1, r#"{"autoRenewStatus":1,"autoRenewProductId":"basic"}"#), 1_000);
         assert_eq!(downgrade.renew_product_id, "basic");

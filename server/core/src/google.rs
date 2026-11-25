@@ -2,7 +2,7 @@
 //! Real-time developer notifications (RTDN) parsing.
 
 use crate::jwt::b64_decode_any;
-use crate::model::{environment, store, StoreTx, TxState};
+use crate::model::{environment, price_change, store, AddOn, StoreTx, TxState};
 use crate::time::parse_rfc3339_ms;
 use serde_json::Value;
 
@@ -300,6 +300,9 @@ pub fn parse_product_purchase(
         tax_micros: 0,
         refunded_quantity,
         refund_share_milli: 0,
+        price_change: crate::model::price_change::NONE,
+        price_change_micros: 0,
+        add_ons: Vec::new(),
     })
 }
 
@@ -312,6 +315,36 @@ pub mod subscription_notification {
     pub const REVOKED: i64 = 12;
 }
 
+/// One line item of a SubscriptionPurchaseV2: a product with its period and price.
+fn line_item(item: &Value) -> AddOn {
+    let plan = &item["autoRenewingPlan"];
+    // Auto-renewing plans report the price of the next renewal (the buyer's currency).
+    let (price_micros, currency) = crate::catalog::money_micros(&plan["recurringPrice"]).unwrap_or_default();
+    let offer = &item["offerDetails"];
+    let change = &plan["priceChangeDetails"];
+    // `priceChangeMode`: PRICE_DECREASE | PRICE_INCREASE (opt-in: the player must accept) |
+    // OPT_OUT_PRICE_INCREASE; `priceChangeState`: OUTSTANDING | CONFIRMED | APPLIED | CANCELED.
+    let price_change = match (change["priceChangeMode"].as_str().unwrap_or(""), change["priceChangeState"].as_str().unwrap_or("")) {
+        (_, "APPLIED" | "CANCELED" | "") => price_change::NONE,
+        ("PRICE_INCREASE", "OUTSTANDING") => price_change::CONSENT_NEEDED,
+        (_, "CONFIRMED") => price_change::ACCEPTED,
+        _ => price_change::SCHEDULED,
+    };
+    AddOn {
+        product_id: item["productId"].as_str().unwrap_or("").to_string(),
+        expires_at_ms: item["expiryTime"].as_str().and_then(parse_rfc3339_ms).unwrap_or(0),
+        price_micros,
+        currency,
+        auto_renew_off: plan["autoRenewEnabled"].as_bool() == Some(false),
+        // The current offer phase: `freeTrial` | `introductoryPrice` | `basePrice` | `prorationPeriod`.
+        trial: item["offerPhase"].get("freeTrial").is_some_and(|t| !t.is_null()),
+        // The offer of this period, else its base plan.
+        offer_id: offer["offerId"].as_str().filter(|o| !o.is_empty()).or_else(|| offer["basePlanId"].as_str()).unwrap_or("").to_string(),
+        price_change,
+        price_change_micros: if price_change.is_empty() { 0 } else { crate::catalog::money_micros(&change["newPrice"]).map_or(0, |m| m.0) },
+    }
+}
+
 /// Parses `purchases.subscriptionsv2.get` (SubscriptionPurchaseV2).
 /// `now_ms` decides whether a canceled-but-not-yet-expired subscription is still active.
 pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64) -> Result<StoreTx, String> {
@@ -319,30 +352,17 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
         serde_json::from_str(body).map_err(|e| format!("bad SubscriptionPurchaseV2: {e}"))?;
 
     let line_items = v["lineItems"].as_array().cloned().unwrap_or_default();
-    let mut product_id = String::new();
-    let mut expires_at_ms = 0i64;
-    // Auto-renewing plans report the price of the next renewal (the buyer's currency).
-    let mut price = (0i64, String::new());
-    let mut trial = false;
-    let mut auto_renew_off = false;
-    let mut renew_product_id = String::new();
-    let mut offer_id = String::new();
-    for item in &line_items {
-        let exp = item["expiryTime"].as_str().and_then(parse_rfc3339_ms).unwrap_or(0);
-        if exp >= expires_at_ms {
-            expires_at_ms = exp;
-            product_id = item["productId"].as_str().unwrap_or("").to_string();
-            price = crate::catalog::money_micros(&item["autoRenewingPlan"]["recurringPrice"]).unwrap_or_default();
-            // The current offer phase: `freeTrial` | `introductoryPrice` | `basePrice` | `prorationPeriod`.
-            trial = item["offerPhase"].get("freeTrial").is_some_and(|t| !t.is_null());
-            auto_renew_off = item["autoRenewingPlan"]["autoRenewEnabled"].as_bool() == Some(false);
-            // A downgrade waiting for the end of the period.
-            renew_product_id = item["deferredItemReplacement"]["productId"].as_str().unwrap_or("").to_string();
-            // The offer of this period, else its base plan.
-            let offer = &item["offerDetails"];
-            offer_id = offer["offerId"].as_str().filter(|o| !o.is_empty()).or_else(|| offer["basePlanId"].as_str()).unwrap_or("").to_string();
-        }
-    }
+    // The subscription is the first line item; the others are add-ons bought with it (their own
+    // products, periods and prices, one purchase token).
+    let mut items = line_items.iter().map(line_item);
+    let main = items.next().unwrap_or_default();
+    let add_ons: Vec<AddOn> = items.filter(|a| !a.product_id.is_empty()).collect();
+    let product_id = main.product_id.clone();
+    let expires_at_ms = main.expires_at_ms;
+    let price = (main.price_micros, main.currency.clone());
+    let (trial, auto_renew_off, offer_id) = (main.trial, main.auto_renew_off, main.offer_id.clone());
+    // A downgrade waiting for the end of the period.
+    let renew_product_id = line_items.first().and_then(|i| i["deferredItemReplacement"]["productId"].as_str()).unwrap_or("").to_string();
 
     let sub_state = v["subscriptionState"].as_str().unwrap_or("");
     // Paused by the player: no access until it resumes by itself (or earlier, when the player
@@ -419,6 +439,9 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
         tax_micros: 0,
         refunded_quantity: 0,
         refund_share_milli: 0,
+        price_change: main.price_change,
+        price_change_micros: main.price_change_micros,
+        add_ons,
     })
 }
 
@@ -566,6 +589,37 @@ mod tests {
     fn product_purchase_billing_country() {
         let body = r#"{"purchaseState":0,"orderId":"GPA.1","regionCode":"de"}"#;
         assert_eq!(parse_product_purchase("com.game", "p", "tok", body).unwrap().country, "DE");
+    }
+
+    #[test]
+    fn subscription_v2_add_ons_and_price_changes() {
+        let body = r#"{"subscriptionState":"SUBSCRIPTION_STATE_ACTIVE","latestOrderId":"GPA.1",
+            "lineItems":[
+                {"productId":"vip","expiryTime":"2026-11-05T00:00:00Z","autoRenewingPlan":{"autoRenewEnabled":true,
+                    "recurringPrice":{"currencyCode":"EUR","units":"4"},
+                    "priceChangeDetails":{"newPrice":{"currencyCode":"EUR","units":"5"},"priceChangeMode":"PRICE_INCREASE","priceChangeState":"OUTSTANDING"}}},
+                {"productId":"extra","expiryTime":"2026-10-05T00:00:00Z","autoRenewingPlan":{"autoRenewEnabled":false,
+                    "recurringPrice":{"currencyCode":"EUR","units":"1"},
+                    "priceChangeDetails":{"newPrice":{"currencyCode":"EUR","units":"2"},"priceChangeMode":"OPT_OUT_PRICE_INCREASE","priceChangeState":"OUTSTANDING"}}}]}"#;
+        let now = crate::time::parse_rfc3339_ms("2026-10-01T00:00:00Z").unwrap();
+        let tx = parse_subscription_v2("com.game", "tok", body, now).unwrap();
+        // The subscription is the first line item, whatever the others' periods.
+        assert_eq!((tx.product_id.as_str(), tx.price_micros, tx.price_change, tx.price_change_micros), ("vip", 4_000_000, "consent_needed", 5_000_000));
+        assert_eq!(tx.add_ons.len(), 1);
+        let a = tx.add_on(&tx.add_ons[0], now);
+        assert_eq!((a.product_id.as_str(), a.transaction_id.as_str(), a.original_transaction_id.as_str(), a.purchase_token.as_str()), ("extra", "GPA.1+extra", "GPA.1+extra", "tok#extra"));
+        assert_eq!((a.state, a.price_micros, a.auto_renew_off, a.acknowledged, a.price_change), (TxState::Active, 1_000_000, true, true, "scheduled"));
+        assert!(a.add_ons.is_empty());
+        assert_eq!(crate::model::store_token(&a.purchase_token), "tok");
+        // Its period over while the purchase goes on: the add-on was removed.
+        let later = crate::time::parse_rfc3339_ms("2026-10-06T00:00:00Z").unwrap();
+        assert_eq!(tx.add_on_of("extra", later).unwrap().state, TxState::Expired);
+        assert!(tx.add_on_of("vip", later).is_none());
+        // An applied change is no change any more.
+        let applied = body.replace("\"OUTSTANDING\"}}},
+                {", "\"APPLIED\"}}},
+                {");
+        assert_eq!(parse_subscription_v2("com.game", "tok", &applied, now).unwrap().price_change, "");
     }
 
     #[test]

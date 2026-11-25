@@ -63,7 +63,7 @@ The trial funnel and paid retention are counted apart:
 - **Renewal rate** = renewals ÷ (renewals + expirations): of the paid periods that ended, the share that continued. Neither the first payment after a trial nor a trial that ended unpaid is in it.
 - **Churn** = expirations ÷ paid subscriptions active at the first daily snapshot of the period (or month), per 30 days. Running trials are not active subscriptions and an unpaid trial is not churn. The snapshots start on the day the analytics version was installed, so churn is empty before that.
 - **Subscriptions by month** shows these per calendar month.
-- **Active subscriptions** also says how many of them will not renew (auto-renew off), had a renewal payment fail, and are in the store's grace period after it (`auto_renew_off_now`, `billing_issue_now`, `in_grace_now`). A subscription replaced by another (upgrade, downgrade) is not an expiration.
+- **Active subscriptions** also says how many of them will not renew (auto-renew off), had a renewal payment fail, and are in the store's grace period after it (`auto_renew_off_now`, `billing_issue_now`, `in_grace_now`), and how many players have not accepted a price increase yet (`price_consent_needed_now`: those end with their period unless they do). The full report counts the running subscriptions in its background job, a batch per scheduled call; the daily snapshot walks them the same way. A subscription replaced by another (upgrade, downgrade) is not an expiration.
 
 ## Revenue tree
 

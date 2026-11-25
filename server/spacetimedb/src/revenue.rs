@@ -306,23 +306,8 @@ impl Batch {
         }
     }
 
-    fn save(self, tx: &ReducerContext) {
-        for s in self.sales.into_values() {
-            match tx.db.build_sales_daily().key().find(&s.key) {
-                Some(mut stored) => {
-                    stored.paid = stored.paid.saturating_add(s.paid);
-                    stored.new_subscriptions = stored.new_subscriptions.saturating_add(s.new_subscriptions);
-                    stored.renewals = stored.renewals.saturating_add(s.renewals);
-                    stored.refunds = stored.refunds.saturating_add(s.refunds);
-                    stored.gross_micros = stored.gross_micros.saturating_add(s.gross_micros);
-                    stored.refunded_micros = stored.refunded_micros.saturating_add(s.refunded_micros);
-                    tx.db.build_sales_daily().key().update(stored);
-                }
-                None => {
-                    tx.db.build_sales_daily().insert(s);
-                }
-            }
-        }
+    fn save(mut self, tx: &ReducerContext) {
+        self.save_sales(tx);
         // Analytics off: no aggregates (the ledger logs what a rebuild counts later).
         if analytics_mode(tx) == rv::analytics::OFF {
             return;
@@ -346,6 +331,26 @@ impl Batch {
                 }
                 None => {
                     tx.db.revenue_country_daily().insert(r);
+                }
+            }
+        }
+    }
+
+    /// Only the builds' sales (an import: the rebuild that follows counts the aggregates).
+    fn save_sales(&mut self, tx: &ReducerContext) {
+        for s in std::mem::take(&mut self.sales).into_values() {
+            match tx.db.build_sales_daily().key().find(&s.key) {
+                Some(mut stored) => {
+                    stored.paid = stored.paid.saturating_add(s.paid);
+                    stored.new_subscriptions = stored.new_subscriptions.saturating_add(s.new_subscriptions);
+                    stored.renewals = stored.renewals.saturating_add(s.renewals);
+                    stored.refunds = stored.refunds.saturating_add(s.refunds);
+                    stored.gross_micros = stored.gross_micros.saturating_add(s.gross_micros);
+                    stored.refunded_micros = stored.refunded_micros.saturating_add(s.refunded_micros);
+                    tx.db.build_sales_daily().key().update(stored);
+                }
+                None => {
+                    tx.db.build_sales_daily().insert(s);
                 }
             }
         }
@@ -385,7 +390,7 @@ pub(crate) fn period_facts(p: &Purchase) -> PeriodFacts {
 /// client-side integration.
 /// Not counted as a sale: manual grants, items moved from the old Xsolla inventory, and a family
 /// member's purchase shared with this player (Apple Family Sharing: nobody paid for this row).
-fn not_a_sale(p: &Purchase) -> bool {
+pub(crate) fn not_a_sale(p: &Purchase) -> bool {
     p.store == store::MANUAL || p.family_shared || purser_core::xsolla::is_moved(&p.store, &p.purchase_token)
 }
 
@@ -431,13 +436,30 @@ fn counted(tx: &ReducerContext, p: &Purchase, event: &str, amount_micros: i64) {
     }
 }
 
-/// An imported row that was refunded or expired before the import: logs what the live hooks would
-/// have counted, when it happened (the refund at the row's last change, the expiration at its end),
-/// so the rebuild that follows an import counts it (the rebuild only replays these events).
+/// An imported row: its sale and refund of the last [`SALES_DAYS`] go to the build's sales (what
+/// business alerts read: they would see no purchases after moving from another backend
+/// otherwise). A row refunded or expired before the import also logs what the live hooks would have
+/// counted, when it happened (the refund at the row's last change, the expiration at its end), so
+/// the rebuild that follows an import counts it (the rebuild only replays these events).
 pub fn on_import(tx: &ReducerContext, p: &Purchase) {
     if not_a_sale(p) {
         return;
     }
+    let first = today(tx) - SALES_DAYS;
+    let mut sales = Batch { live: true, ..Batch::default() };
+    let sold = day_of_micros(p.created_at_micros);
+    if p.was_granted && sold >= first {
+        if let Some(d) = rv::grant_delta_with(&p.store, grant_kind(p), p.price_micros, &period_facts(p)) {
+            sales.add(p, sold, &d);
+        }
+    }
+    let refunded = day_of_micros(p.updated_at_micros);
+    if matches!(p.status.as_str(), status::REVOKE_PENDING | status::REVOKED) && refunded >= first {
+        if let Some(d) = refund_delta(p) {
+            sales.add(p, refunded, &d);
+        }
+    }
+    sales.save_sales(tx);
     let ended = p.expires_at_ms.saturating_mul(1000);
     let (event, amount, at) = match p.status.as_str() {
         status::REVOKE_PENDING | status::REVOKED => (COUNTED_REFUND, crate::ledger::refund_amount(p), p.updated_at_micros),
@@ -864,95 +886,19 @@ pub fn admin_delete_fx_override(ctx: &ReducerContext, currency: String) -> Resul
 
 // --- Subscriptions ---------------------------------------------------------------------------
 
-/// Subscriptions running now per (app, product, environment, currency): paid ones, free trials
-/// and the monthly price of the paid ones. Renewals of one subscription are counted once (latest row).
-/// The subscriptions players own now (of `apps`; empty: all), read once for every count of a
-/// report: an in-memory list, not every row whose period has not ended.
-fn owned_subscriptions(tx: &ReducerContext, apps: &BTreeSet<String>) -> Vec<Purchase> {
-    crate::ledger_index::owned_in(tx, apps).into_iter().filter(|p| p.kind == kind::SUBSCRIPTION && !not_a_sale(p)).collect()
-}
-
-fn active_subscriptions(tx: &ReducerContext, owned: &[Purchase]) -> BTreeMap<(String, String, String, String), Running> {
-    let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
-    let mut latest: BTreeMap<(String, String), &Purchase> = BTreeMap::new();
-    for p in owned {
-        if p.expires_at_ms <= now_ms {
-            continue;
-        }
-        let k = (p.app_id.clone(), p.original_transaction_id.clone());
-        if latest.get(&k).is_none_or(|q| p.expires_at_ms > q.expires_at_ms) {
-            latest.insert(k, p);
-        }
-    }
-    let mut out: BTreeMap<(String, String, String, String), Running> = BTreeMap::new();
-    // The catalog's billing period; guessed from the row's span only when the product has none (a
-    // row recorded late, by a restore or an import, spans less than its period).
-    let mut periods: BTreeMap<(String, String), u32> = BTreeMap::new();
-    for p in latest.into_values() {
-        let catalog = *periods.entry((p.app_id.clone(), p.product_id.clone())).or_insert_with(|| {
-            tx.db.product().key().find(crate::product_key(&p.app_id, &p.product_id)).map(|pr| purser_core::catalog::period_days(&pr.period)).unwrap_or(0)
-        });
-        let period = if catalog > 0 { catalog } else { rv::guess_period_days(p.expires_at_ms - p.created_at_micros / 1000) };
-        let e = out.entry((p.app_id.clone(), p.product_id.clone(), p.environment.clone(), p.currency.clone())).or_default();
-        if p.trial {
-            e.trials += 1;
-        } else {
-            e.active += 1;
-            e.monthly_micros += rv::monthly_micros(p.price_micros, period);
-        }
-    }
-    out
-}
-
-/// Subscriptions of one (app, product, environment, currency) running now ([`active_subscriptions`]).
-#[derive(Default)]
-struct Running {
-    active: u32,
-    trials: u32,
-    monthly_micros: i64,
-}
-
-/// Subscriptions that give access now, by renewal state: (auto-renew off, in a grace period,
-/// billing issue). One per subscription (its latest row).
-fn subscription_states(tx: &ReducerContext, owned: &[Purchase], include_sandbox: bool) -> (u32, u32, u32) {
-    let now_ms = crate::ctx::tx_now_micros(tx) / 1000;
-    let mut latest: BTreeMap<(String, String), &Purchase> = BTreeMap::new();
-    for p in owned {
-        let skip = (p.access_until_ms() != 0 && p.access_until_ms() <= now_ms)
-            || (!include_sandbox && p.environment == purser_core::model::environment::SANDBOX);
-        if skip {
-            continue;
-        }
-        let k = (p.app_id.clone(), p.original_transaction_id.clone());
-        if latest.get(&k).is_none_or(|q| p.access_until_ms() > q.access_until_ms()) {
-            latest.insert(k, p);
-        }
-    }
-    let mut out = (0, 0, 0);
-    for p in latest.values() {
-        out.0 += p.auto_renew_off as u32;
-        out.1 += (p.grace_until_ms > now_ms && p.expires_at_ms <= now_ms) as u32;
-        out.2 += p.billing_issue as u32;
-    }
-    out
-}
-
-fn snapshot_subscriptions(tx: &ReducerContext, day: i32) {
-    if analytics_mode(tx) == rv::analytics::OFF {
-        settings::set(tx, key::SUB_SNAPSHOT_DAY, &day.to_string());
-        return;
-    }
-    for ((app_id, product_id, environment, currency), Running { active, trials, monthly_micros }) in active_subscriptions(tx, &owned_subscriptions(tx, &BTreeSet::new())) {
+/// Saves the snapshot of running subscriptions of `day` (`subs_count` walks them).
+pub(crate) fn save_snapshot(tx: &ReducerContext, day: i32, acc: &crate::subs_count::SubsAcc) {
+    for ((app_id, product_id, environment, currency), r) in acc.running() {
         let row = SubscriptionDaily {
-            key: row_key(day, &app_id, &product_id, &environment, &currency),
+            key: row_key(day, app_id, product_id, environment, currency),
             day,
-            app_id,
-            product_id,
-            environment,
-            currency,
-            active,
-            trials,
-            monthly_micros,
+            app_id: app_id.to_string(),
+            product_id: product_id.to_string(),
+            environment: environment.to_string(),
+            currency: currency.to_string(),
+            active: r.active,
+            trials: r.trials,
+            monthly_micros: r.monthly_micros,
         };
         if tx.db.subscription_daily().key().find(&row.key).is_some() {
             tx.db.subscription_daily().key().update(row);
@@ -960,7 +906,6 @@ fn snapshot_subscriptions(tx: &ReducerContext, day: i32) {
             tx.db.subscription_daily().insert(row);
         }
     }
-    settings::set(tx, key::SUB_SNAPSHOT_DAY, &day.to_string());
 }
 
 // --- FX --------------------------------------------------------------------------------------
@@ -1108,11 +1053,14 @@ pub fn refresh_rates(ctx: &mut impl Ctx, u: &Upkeep) {
     }
 }
 
-/// Worker, last step (the large transactions, so a failure cannot hold up the other steps): the
-/// daily snapshot of active subscriptions and a few batches of a running rebuild.
+/// Worker, last step (the large transactions, so a failure cannot hold up the other steps): starts
+/// the daily snapshot of active subscriptions and a few batches of a running rebuild.
 pub fn catch_up(ctx: &mut impl Ctx, u: &Upkeep) {
     if let Some(day) = u.snapshot_day {
-        ctx.tx(|tx| snapshot_subscriptions(tx, day));
+        // A walk a batch per scheduled call (`subs_count`); tests run it inline.
+        ctx.tx(|tx| crate::subs_count::ensure_snapshot(tx, day));
+        #[cfg(test)]
+        crate::subs_count::run_snapshot(ctx);
     }
     if u.rebuild {
         // Scheduled ticks never fire under `test_utils`: tests run the batches inline.
@@ -1462,8 +1410,9 @@ fn report(ctx: &mut impl Ctx, q: &StatsQuery, overview: bool) -> Result<serde_js
 pub(crate) enum Heavy {
     /// Read now, in this transaction.
     Live,
-    /// Counted before, a batch at a time (`report_job`).
-    Acc(LedgerAcc),
+    /// Counted before, a batch at a time (`report_job`): the ledger part and the subscriptions
+    /// running now.
+    Acc(LedgerAcc, crate::subs_count::SubsAcc),
     /// Not counted (`analytics` = `light`): those parts are empty.
     Skip,
 }
@@ -1566,13 +1515,16 @@ pub(crate) fn report_in(
             currency: r.currency,
         })
         .collect();
-    let skip = matches!(heavy, Heavy::Skip);
-    let owned = if skip { Vec::new() } else { owned_subscriptions(tx, &apps) };
-    let active_now: Vec<rv::ActiveNow> = active_subscriptions(tx, &owned)
-        .into_iter()
+    let (ledger, running) = match heavy {
+        Heavy::Live => (ledger_acc(tx, &apps, from, to, q.include_sandbox), crate::subs_count::count_all(tx, &apps, q.include_sandbox)),
+        Heavy::Acc(acc, running) => (acc, running),
+        Heavy::Skip => (LedgerAcc::default(), crate::subs_count::SubsAcc::default()),
+    };
+    let active_now: Vec<rv::ActiveNow> = running
+        .running()
         .map(|((_, _, environment, currency), r)| rv::ActiveNow {
-            environment,
-            currency,
+            environment: environment.to_string(),
+            currency: currency.to_string(),
             active: r.active,
             trials: r.trials,
             monthly_micros: r.monthly_micros,
@@ -1590,17 +1542,12 @@ pub(crate) fn report_in(
         today,
     });
     report["fx"]["overrides"] = json!(tx.db.fx_override().iter().map(|o| (o.currency, o.units_per_usd)).collect::<BTreeMap<_, _>>());
-    let (auto_renew_off, in_grace, billing_issue) = subscription_states(tx, &owned, q.include_sandbox);
-    report["subscriptions"]["auto_renew_off_now"] = json!(auto_renew_off);
-    report["subscriptions"]["in_grace_now"] = json!(in_grace);
-    report["subscriptions"]["billing_issue_now"] = json!(billing_issue);
+    report["subscriptions"]["auto_renew_off_now"] = json!(running.auto_renew_off);
+    report["subscriptions"]["in_grace_now"] = json!(running.in_grace);
+    report["subscriptions"]["billing_issue_now"] = json!(running.billing_issue);
+    report["subscriptions"]["price_consent_needed_now"] = json!(running.price_consent_needed);
 
-    let ledger = match heavy {
-        Heavy::Live => ledger_acc(tx, &apps, from, to, q.include_sandbox),
-        Heavy::Acc(acc) => acc,
-        Heavy::Skip => LedgerAcc::default(),
-    }
-    .finish();
+    let ledger = ledger.finish();
     if let (Some(r), Some(l)) = (report.as_object_mut(), ledger.as_object()) {
         r.extend(l.clone());
     }
