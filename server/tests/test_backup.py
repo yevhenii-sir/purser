@@ -81,6 +81,29 @@ class Restore(unittest.TestCase):
         self.assertIn("integration_dead", backup.FRESH_IDS)
 
 
+class Convert(unittest.TestCase):
+    def test_new_columns_get_zero_or_the_value_older_rows_had(self):
+        data = {"schema": SCHEMA, "rows": [["google:1", 1000]]}
+        cols = ["id", "created_at_micros", "quantity", "tax_micros", "reinstated"]
+        types = [{"String": []}, {"I64": []}, {"U32": []}, {"I64": []}, {"Bool": []}]
+        out, added, dropped = backup.converted(data, cols, types, table="purchase")
+        self.assertEqual(out["rows"], [["google:1", 1000, 1, 0, False]], "an older purchase is one unit")
+        self.assertEqual((added, dropped), (["quantity", "tax_micros", "reinstated"], []))
+        other, _, _ = backup.converted(data, cols, types, table="something_else")
+        self.assertEqual(other["rows"][0][2], 0)
+
+
+class Inserts(unittest.TestCase):
+    def test_wide_rows_go_in_inserts_short_enough_for_the_server(self):
+        schema = {"elements": [{"name": {"some": "id"}, "algebraic_type": {"String": []}},
+                               {"name": {"some": "details"}, "algebraic_type": {"String": []}}]}
+        rows = [[f"p{i}", "x" * 900] for i in range(200)]
+        queries = list(backup.insert_statements("purchase_log_like", {"schema": schema, "rows": rows}))
+        self.assertGreater(len(queries), 1)
+        self.assertTrue(all(len(q.encode()) <= 50_000 for q in queries), [len(q) for q in queries])
+        self.assertEqual(sum(q.count("('p") for q in queries), 200, "every row once")
+
+
 class Migrate(unittest.TestCase):
     def test_migrate_restores_without_resume(self):
         import migrate

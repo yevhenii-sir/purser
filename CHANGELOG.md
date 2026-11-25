@@ -2,9 +2,11 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-11-26
+
 ### Breaking
 
-- Publish with `--delete-data` (keep the data with `backup.py`): `purchase` gains `quantity`, `tax_micros`, `refund_share_milli`, `reinstated`, `access_was_until_ms` and `error_log_id`. The delivery event (`BillingEvent`, the webhook body, the `spacetimedb_idc` struct) gains `quantity` after `kind`: game modules add it to their struct (`server/game-receiver`, docs/game-integration.md).
+- Publish with `--delete-data` (keep the data with `backup.py`): `purchase` gains `quantity`, `tax_micros`, `refund_share_milli`, `reinstated`, `access_was_until_ms` and `error_log_id` (`backup.py restore` gives the restored purchases `quantity` 1, the rest 0). `revenue_report_row` is gone. The business alerts read the new `build_sales_daily`, which starts empty: `revenue_drop`, `refund_spike` and `no_purchases` compare against a week of sales recorded after the upgrade. The delivery event (`BillingEvent`, the webhook body, the `spacetimedb_idc` struct) gains `quantity` after `kind`: game modules add it to their struct (`server/game-receiver`, docs/game-integration.md).
 
 ### Added
 
@@ -25,6 +27,7 @@
 
 ### Fixed
 
+- `backup.py restore` splits its inserts by size: SpacetimeDB refuses a SQL query over 50,000 bytes, and 200 rows of a wide table (purchases) were more than that. Checked with an upgrade of a 0.10.0 database of 2,000 purchases: backup, `--delete-data` publish of 0.11.0, restore.
 - Imported purchases that were refunded or expired before the import (`admin_import_purchases`, `import_revenuecat.py`) count as refunds and churn again: the import logs what the live hooks would have counted, which the revenue rebuild replays; it counted none of them.
 - The Alerts page and other tables with an action column without a title no longer fail to render once they have rows.
 - The `/metrics` URL on the Server page uses the public address when one is set.

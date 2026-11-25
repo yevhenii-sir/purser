@@ -125,7 +125,7 @@ spacetime publish --delete-data -b purser.wasm <your-billing-db>
 python backup.py restore --server maincloud --database <your-billing-db> --dir backups/before-upgrade
 ```
 
-`backup.py` reads every table through the owner's `/sql` (no caches, queued integration events, inter-database calls in flight or worker schedules) and writes it back into the new database. A newer module's added columns get their zero value and removed ones are dropped; when a release needs more than that, its notes say how to carry the data over. Large tables are read in pages the module reads through an index (`admin_backup_page`: `/sql` would scan a whole table for every window, holding the database meanwhile), the files are readable by their owner only (they hold every secret), and a restore that stopped goes on with `--resume`.
+`backup.py` reads every table through the owner's `/sql` (no caches, queued integration events, inter-database calls in flight or worker schedules) and writes it back into the new database. A newer module's added columns get their zero value (or the value older rows had, `NEW_COLUMN_VALUES` in `backup.py`) and removed ones are dropped; when a release needs more than that, its notes say how to carry the data over. Large tables are read in pages the module reads through an index (`admin_backup_page`: `/sql` would scan a whole table for every window, holding the database meanwhile), the files are readable by their owner only (they hold every secret), and a restore that stopped goes on with `--resume`.
 
 ## Memory
 

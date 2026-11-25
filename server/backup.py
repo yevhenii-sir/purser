@@ -72,6 +72,8 @@ MOVING = {"user_attribution": "key", "player_profile": "key", "paywall_viewer": 
 HIDDEN = {"credential", "alert_channel"}
 # Rows per INSERT statement.
 BATCH = 200
+# The longest SQL query SpacetimeDB accepts is 50,000 bytes (`MAX_SQL_LENGTH`): inserts stay below.
+MAX_QUERY_BYTES = 45_000
 # Large tables read in windows of an indexed integer column (rows per `/sql` answer at most PAGE).
 # (column, lowest, past the highest value): integer columns, so the windows fit their type.
 MICROS, IDS, DAYS = (0, 2 ** 62), (0, 2 ** 62), (0, 2 ** 31 - 1)
@@ -214,12 +216,19 @@ def zero(algebraic_type):
     raise ValueError(f"no default for a new column of type {json.dumps(algebraic_type)}")
 
 
-def converted(data, cols, types):
-    """The backup's rows in the target table's columns: new columns get zero values, removed ones
-    are dropped."""
+# A new column whose value for the rows of an older backup is not zero: (table, column) → value.
+NEW_COLUMN_VALUES = {
+    ("purchase", "quantity"): 1,  # 0.11: purchases of several units; every older purchase is one unit
+}
+
+
+def converted(data, cols, types, table=""):
+    """The backup's rows in the target table's columns: new columns get zero values (or what
+    `NEW_COLUMN_VALUES` says), removed ones are dropped."""
     have = column_names(data["schema"])
     index = {c: i for i, c in enumerate(have)}
-    rows = [[row[index[c]] if c in index else zero(t) for c, t in zip(cols, types)] for row in data["rows"]]
+    new = {c: NEW_COLUMN_VALUES.get((table, c), zero(t)) for c, t in zip(cols, types) if c not in index}
+    rows = [[row[index[c]] if c in index else new[c] for c in cols] for row in data["rows"]]
     elements = [{"name": {"some": c}, "algebraic_type": t} for c, t in zip(cols, types)]
     added = [c for c in cols if c not in index]
     dropped = [c for c in have if c not in cols]
@@ -272,8 +281,17 @@ def insert_statements(name, data, rename_scope=None):
         if rename_scope:
             row = rename_scope(cols, row)
         values.append("(" + ", ".join(literal(v, t) for v, t in zip(row, types)) + ")")
-    for i in range(0, len(values), BATCH):
-        yield f"INSERT INTO {name} ({', '.join(cols)}) VALUES " + ", ".join(values[i:i + BATCH])
+    head = f"INSERT INTO {name} ({', '.join(cols)}) VALUES "
+    batch, size = [], len(head)
+    for v in values:
+        # SpacetimeDB refuses a query longer than 50,000 bytes: wide rows (a purchase) go fewer at a time.
+        if batch and (len(batch) >= BATCH or size + len(v.encode()) + 2 > MAX_QUERY_BYTES):
+            yield head + ", ".join(batch)
+            batch, size = [], len(head)
+        batch.append(v)
+        size += len(v.encode()) + 2
+    if batch:
+        yield head + ", ".join(batch)
 
 
 def reindex(base, db, tok):
@@ -349,7 +367,7 @@ def restore(a, base, tok):
             continue
         with open(os.path.join(a.dir, f"{name}.json"), encoding="utf-8") as f:
             data = json.load(f)
-        data, added, dropped = converted(data, *target_columns(base, a.database, tok, name))
+        data, added, dropped = converted(data, *target_columns(base, a.database, tok, name), table=name)
         if added or dropped:
             print(f"convert  {name}: new columns {added or '-'}, removed {dropped or '-'}")
         if name == "admin":

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-26
+
+Checked in Unity 2022.3 and 6.6: the package compiles without warnings and the EditMode tests pass (320 of 320); the core
+also compiles and passes its tests without Unity IAP (316 of 316). Needs the server 0.11.0 for Huawei AppGallery, Telegram
+Stars, promo codes and purchases of several units.
+
 ### Added
 
 - `RedeemCodeAsync(code)`: redeems a promo code of the app (server `POST /redeem`). `PurchaseSucceeded` fires as for a
