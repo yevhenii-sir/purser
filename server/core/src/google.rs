@@ -121,6 +121,43 @@ pub fn parse_voided_purchases(body: &str) -> Result<(Vec<Voided>, Option<String>
     Ok((list, next))
 }
 
+/// `orders.refund` with `revoke=true`: refunds the order (a one-time purchase or a subscription
+/// period) and takes the access away (a subscription ends at once). Needs *Manage orders and
+/// subscriptions*.
+pub fn order_refund_url(package: &str, order_id: &str) -> Result<String, String> {
+    if order_id.is_empty() || order_id.starts_with("token-") {
+        return Err("the purchase has no Google order id (a test purchase): refund it in Play Console".into());
+    }
+    Ok(format!("{API}/{}/orders/{}:refund?revoke=true", sanitize_segment(package)?, sanitize_segment(order_id)?))
+}
+
+/// `purchases.subscriptions.defer`: moves the next renewal of a subscription later (the player keeps
+/// access without paying until then).
+pub fn subscription_defer_url(package: &str, subscription_id: &str, token: &str) -> Result<String, String> {
+    Ok(format!(
+        "{API}/{}/purchases/subscriptions/{}/tokens/{}:defer",
+        sanitize_segment(package)?,
+        sanitize_segment(subscription_id)?,
+        sanitize_segment(token)?
+    ))
+}
+
+/// Body of [`subscription_defer_url`]: Google refuses it unless `expected_ms` is the current expiry.
+pub fn subscription_defer_body(expected_ms: i64, desired_ms: i64) -> String {
+    serde_json::json!({ "deferralInfo": {
+        "expectedExpiryTimeMillis": expected_ms.to_string(),
+        "desiredExpiryTimeMillis": desired_ms.to_string(),
+    }})
+    .to_string()
+}
+
+/// The new expiry in a `defer` answer.
+pub fn parse_defer(body: &str) -> Option<i64> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let ms = &v["newExpiryTimeMillis"];
+    ms.as_i64().or_else(|| ms.as_str()?.parse().ok())
+}
+
 /// The most units one purchase can carry (Google allows up to 99 per purchase).
 pub const MAX_QUANTITY: u32 = 1000;
 
@@ -378,6 +415,24 @@ pub fn is_already_done_error(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refunds_and_deferrals() {
+        assert_eq!(
+            order_refund_url("com.example.mygame", "GPA.1234-5678-9012-34567..2").unwrap(),
+            format!("{API}/com.example.mygame/orders/GPA.1234-5678-9012-34567..2:refund?revoke=true")
+        );
+        assert!(order_refund_url("com.example.mygame", "token-abc").unwrap_err().contains("Play Console"));
+        assert!(order_refund_url("com.example.mygame", "a/b").is_err());
+        assert_eq!(
+            subscription_defer_url("com.example.mygame", "vip", "tok").unwrap(),
+            format!("{API}/com.example.mygame/purchases/subscriptions/vip/tokens/tok:defer")
+        );
+        let body: Value = serde_json::from_str(&subscription_defer_body(1000, 2000)).unwrap();
+        assert_eq!(body["deferralInfo"]["desiredExpiryTimeMillis"], "2000");
+        assert_eq!(parse_defer(r#"{"newExpiryTimeMillis":"2000"}"#), Some(2000));
+        assert_eq!(parse_defer("{}"), None);
+    }
 
     #[test]
     fn voided_purchases_are_paged_and_parsed() {

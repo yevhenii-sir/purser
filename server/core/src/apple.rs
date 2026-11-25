@@ -87,6 +87,31 @@ pub fn parse_notification_history(body: &str) -> Result<(Vec<String>, Option<Str
     Ok((bodies, next))
 }
 
+/// Extend a Subscription Renewal Date: `PUT /inApps/v1/subscriptions/extend/{originalTransactionId}`.
+pub fn extend_renewal_url(base: &str, original_transaction_id: &str) -> Result<String, String> {
+    Ok(format!("{base}/inApps/v1/subscriptions/extend/{}", crate::google::sanitize_segment(original_transaction_id)?))
+}
+
+/// Reasons Apple takes for an extension (`extendReasonCode`).
+pub mod extend_reason {
+    pub const UNDECLARED: i64 = 0;
+    pub const CUSTOMER_SATISFACTION: i64 = 1;
+    pub const OTHER: i64 = 2;
+    pub const SERVICE_ISSUE: i64 = 3;
+}
+
+/// Body of [`extend_renewal_url`]: 1-90 days, a reason (`extend_reason`) and an id Apple
+/// deduplicates the request by.
+pub fn extend_renewal_body(days: i64, reason: i64, request_id: &str) -> Result<String, String> {
+    if !(1..=90).contains(&days) {
+        return Err("the App Store extends a subscription by 1 to 90 days".into());
+    }
+    if !(extend_reason::UNDECLARED..=extend_reason::SERVICE_ISSUE).contains(&reason) {
+        return Err("reason: 0 undeclared, 1 customer satisfaction, 2 other, 3 service issue".into());
+    }
+    Ok(serde_json::json!({ "extendByDays": days, "extendReasonCode": reason, "requestIdentifier": request_id }).to_string())
+}
+
 pub fn test_notification_url(base: &str) -> String {
     format!("{base}/inApps/v1/notifications/test")
 }
@@ -482,6 +507,17 @@ mod tests {
     use super::*;
     use crate::jwt::b64url;
     use crate::model::{kind, store_action};
+
+    #[test]
+    fn renewal_extensions() {
+        assert_eq!(extend_renewal_url(PRODUCTION_API, "100").unwrap(), "https://api.storekit.itunes.apple.com/inApps/v1/subscriptions/extend/100");
+        assert!(extend_renewal_url(PRODUCTION_API, "../x").is_err());
+        let body: Value = serde_json::from_str(&extend_renewal_body(7, extend_reason::SERVICE_ISSUE, "r-1").unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({ "extendByDays": 7, "extendReasonCode": 3, "requestIdentifier": "r-1" }));
+        assert!(extend_renewal_body(91, 0, "r").is_err());
+        assert!(extend_renewal_body(0, 0, "r").is_err());
+        assert!(extend_renewal_body(7, 4, "r").is_err());
+    }
 
     #[test]
     fn notification_history_pages() {

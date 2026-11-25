@@ -763,7 +763,7 @@ enum Synced {
 
 /// Applies a trusted store transaction learned from a notification: product, owner, ledger row and
 /// its lease in one transaction, then the ledger steps.
-fn sync_store_tx(ctx: &mut impl Ctx, app: &GameApp, st: StoreTx, source: &str) -> Outcome {
+pub(crate) fn sync_store_tx(ctx: &mut impl Ctx, app: &GameApp, st: StoreTx, source: &str) -> Outcome {
     if st.environment == environment::SANDBOX && !app.allow_sandbox {
         return Outcome::status(200, "ignored", "sandbox disabled");
     }

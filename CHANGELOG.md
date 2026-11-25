@@ -9,7 +9,7 @@
 ### Added
 
 - Purchases of several units at once: a Google Play product with multi-quantity (refused until now) and a StoreKit purchase with a quantity are granted with `quantity` in the game event and the `/verify` answer (Unity: `PurchaseResult.Quantity`); the ledger row keeps it and its price is the unit price × the quantity (App Store transactions report the unit price, although Apple's reference says the total). Integrations get the quantity (GA4 items, AppsFlyer `af_quantity`) and, where they multiply the price by it (Tenjin, AppMetrica, Amplitude), the unit price. A refund of some units of such a purchase is not applied yet.
-
+- Refunds and extensions from the purchase page: **Refund** returns the money of a Google Play order in the store (`orders.refund`, access revoked; `admin_refund_purchase`) and revokes the purchase as a store refund; **Extend** moves the next renewal of a Google Play (`defer`, 1-365 days) or App Store subscription (Extend Renewal Date, 1-90 days with a reason) later and grants the new expiry (`admin_extend_subscription`). Both need the Support role and are in the audit log.
 - Refunds a store notification missed are found by the stores themselves: every 6 hours per build the worker reads Google Play's Voided Purchases API (the last 30 days, then from where it stopped) and the App Store notification history (`REFUND`), and revokes what the ledger still has as paid. The setup check shows the last reading and how many refunds the notifications had missed (a sign the notification setup is broken); `admin_sweep_refunds(app_id)` reads them now. New table `refund_sweep`: publish in place.
 
 ## 0.10.0 - 2026-11-25

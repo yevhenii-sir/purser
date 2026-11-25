@@ -9013,3 +9013,74 @@ fn a_google_purchase_of_several_units_is_granted_and_counted_for_all_of_them() {
     let rows: Vec<_> = revenue_rows(&w).into_values().collect();
     assert_eq!(rows.iter().map(|r| r.3).sum::<i64>(), 2_970_000, "gross of all three units");
 }
+
+
+// --- Refunds and extensions done in the store from the admin page (store_actions) ---
+
+fn proc_json(s: String) -> Value {
+    serde_json::from_str(&s).unwrap()
+}
+
+#[test]
+fn support_refunds_a_google_order_and_the_purchase_is_revoked_as_a_store_refund() {
+    let w = World::new();
+    price_products(&w, "USD");
+    w.verify("player-1", "no_ads");
+    w.as_admin(false);
+
+    w.script(":refund?revoke=true", 403, r#"{"error":{"code":403}}"#);
+    let r = proc_json(crate::store_actions::admin_refund_purchase(&mut w.ctx(), LEDGER_ID.into(), "charged twice".into()));
+    assert!(r["error"].as_str().unwrap().contains("Manage orders"), "{r}");
+    assert_eq!(w.purchase().status, status::COMPLETED, "nothing changes when Google refuses");
+
+    w.fake.borrow_mut().overrides.retain(|(needle, ..)| !needle.contains(":refund"));
+    w.script(":refund?revoke=true", 204, "");
+    let r = proc_json(crate::store_actions::admin_refund_purchase(&mut w.ctx(), LEDGER_ID.into(), "charged twice".into()));
+    assert_eq!((r["ok"].as_bool(), r["status"].as_str()), (Some(true), Some(status::REVOKED)), "{r}");
+    assert_eq!(w.calls(&format!("POST https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{APP}/orders/{ORDER}:refund?revoke=true")), 2);
+    assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_revoke player-1 refund"));
+    let events = purchase_events(&w, LEDGER_ID);
+    assert!(events.iter().any(|(_, d)| d.contains("refunded in Google Play by admin") && d.contains("charged twice")), "{events:?}");
+    let refunded: i64 = revenue_rows(&w).values().map(|r| r.4).sum();
+    assert_eq!(refunded, 990_000, "counted as a refund");
+
+    // Again: nothing to refund.
+    let r = proc_json(crate::store_actions::admin_refund_purchase(&mut w.ctx(), LEDGER_ID.into(), String::new()));
+    assert!(r["error"].as_str().unwrap().contains("ERR_NOT_REVOCABLE"), "{r}");
+}
+
+#[test]
+fn app_store_purchases_are_not_refunded_from_the_admin_page() {
+    let w = refund_world(None, "off");
+    w.as_admin(false);
+    let r = proc_json(crate::store_actions::admin_refund_purchase(&mut w.ctx(), "apple:2000000123".into(), String::new()));
+    assert!(r["error"].as_str().unwrap().contains("reportaproblem"), "{r}");
+    let r = proc_json(crate::store_actions::admin_extend_subscription(&mut w.ctx(), "apple:2000000123".into(), 7, 0));
+    assert!(r["error"].as_str().unwrap().contains("ERR_BAD_EXTENSION"), "a consumable: {r}");
+}
+
+#[test]
+fn support_moves_a_google_renewal_later_and_the_game_gets_the_new_expiry() {
+    let w = World::new();
+    keep_google_token_valid(&w, 60);
+    add_subscription_product(&w);
+    let order = "GPA.7777-0000-0000-00002";
+    subscription_period(&w, order, "basePrice", "2026-10-28T00:00:00Z");
+    assert_eq!(w.verify("player-1", "vip").body["status"], "success");
+    let id = format!("google:{order}");
+    let before = find(&w, &id).unwrap().expires_at_ms;
+    w.as_admin(false);
+
+    let r = proc_json(crate::store_actions::admin_extend_subscription(&mut w.ctx(), id.clone(), 400, 0));
+    assert!(r["error"].as_str().unwrap().contains("1 to 365"), "{r}");
+
+    // Google moves the renewal a week later and reports the new end from then on.
+    w.script(":defer", 200, &json!({ "newExpiryTimeMillis": (before + 7 * 86_400_000).to_string() }).to_string());
+    subscription_period(&w, order, "basePrice", "2026-11-04T00:00:00Z");
+    let r = proc_json(crate::store_actions::admin_extend_subscription(&mut w.ctx(), id.clone(), 7, 0));
+    assert_eq!(r["expires_at_ms"].as_i64(), Some(before + 7 * 86_400_000), "{r}");
+    let defer = w.fake.borrow().calls.iter().find(|c| c.contains(":defer")).cloned().unwrap();
+    assert!(defer.contains(&format!("/purchases/subscriptions/vip/tokens/{TOKEN}:defer")), "{defer}");
+    assert_eq!(find(&w, &id).unwrap().expires_at_ms, before + 7 * 86_400_000);
+    assert_eq!(w.calls("/call/billing_grant"), 2, "granted again with the new expiry");
+}

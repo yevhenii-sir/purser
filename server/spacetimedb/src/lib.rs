@@ -45,6 +45,7 @@ mod revenue;
 mod server_api;
 mod settings;
 mod steam;
+mod store_actions;
 mod store_create;
 mod store_health;
 mod store_setup;

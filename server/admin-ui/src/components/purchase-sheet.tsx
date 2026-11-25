@@ -1,11 +1,14 @@
-import { useRef } from "react"
-import { RotateCwIcon } from "lucide-react"
+import { useRef, useState } from "react"
+import { CalendarPlusIcon, RotateCwIcon, Undo2Icon } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
-import { DataTable, ErrorBox, Loading, Mono, StatusBadge } from "@/components/common"
-import { call, select } from "@/lib/api"
+import { DataTable, ErrorBox, Field, Loading, Mono, StatusBadge } from "@/components/common"
+import { call, proc, select } from "@/lib/api"
 import { fmtMs, fmtTime, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { useCan } from "@/lib/roles"
@@ -34,6 +37,15 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
     return { p, log }
   }, [id])
   const p = data?.p
+  const [action, setAction] = useState<"refund" | "extend" | null>(null)
+  const owned = !!p && ["verified", "granted", "completed"].includes(p.status)
+  const canRefund = canRetry && owned && p?.store === "google"
+  const canExtend = canRetry && owned && p?.kind === "subscription" && (p?.store === "google" || p?.store === "apple")
+  const done = () => {
+    setAction(null)
+    changed.current = true
+    reload()
+  }
   return (
     <Sheet open={!!id} onOpenChange={(open) => !open && close()}>
       <SheetContent className="w-full gap-0 sm:max-w-2xl">
@@ -67,7 +79,19 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
                       <RotateCwIcon /> Retry now
                     </Button>
                   )}
+                  {canExtend && (
+                    <Button size="sm" variant="outline" onClick={() => setAction("extend")}>
+                      <CalendarPlusIcon /> Extend
+                    </Button>
+                  )}
+                  {canRefund && (
+                    <Button size="sm" variant="outline" onClick={() => setAction("refund")}>
+                      <Undo2Icon /> Refund
+                    </Button>
+                  )}
                 </div>
+                {action === "refund" && <RefundDialog purchase={p} onClose={() => setAction(null)} onDone={done} />}
+                {action === "extend" && <ExtendDialog purchase={p} onClose={() => setAction(null)} onDone={done} />}
                 <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
                   {[
                     ["App", p.app_id],
@@ -109,5 +133,89 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
         </ScrollArea>
       </SheetContent>
     </Sheet>
+  )
+}
+
+/** Refunds a Google Play order in the store (`admin_refund_purchase`): the money goes back and access ends. */
+function RefundDialog({ purchase, onClose, onDone }: { purchase: Purchase; onClose: () => void; onDone: () => void }) {
+  const [note, setNote] = useState("")
+  const [busy, setBusy] = useState(false)
+  const refund = async () => {
+    setBusy(true)
+    const ok = await tryAct(() => proc("admin_refund_purchase", purchase.id, note), "Refunded in Google Play")
+    setBusy(false)
+    if (ok !== undefined) onDone()
+  }
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Refund in Google Play</DialogTitle>
+          <DialogDescription>
+            Google returns {money(purchase.price_micros, purchase.currency)} to the player and takes the access away (a subscription
+            ends now). The game gets a revoke and revenue counts a refund. This cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <Field label="Note (kept in the purchase's history)">
+          <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="charged twice" />
+        </Field>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button variant="destructive" onClick={refund} disabled={busy}>Refund</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+const APPLE_REASONS = [
+  { id: "1", label: "Customer satisfaction" },
+  { id: "3", label: "Service issue or outage" },
+  { id: "2", label: "Other" },
+  { id: "0", label: "Undeclared" },
+]
+
+/** Moves the subscription's renewal later in the store (`admin_extend_subscription`). */
+function ExtendDialog({ purchase, onClose, onDone }: { purchase: Purchase; onClose: () => void; onDone: () => void }) {
+  const apple = purchase.store === "apple"
+  const max = apple ? 90 : 365
+  const [days, setDays] = useState("7")
+  const [reason, setReason] = useState("1")
+  const [busy, setBusy] = useState(false)
+  const n = Number(days)
+  const valid = Number.isInteger(n) && n >= 1 && n <= max
+  const extend = async () => {
+    setBusy(true)
+    const ok = await tryAct(() => proc("admin_extend_subscription", purchase.id, n, Number(apple ? reason : 0)), `Extended by ${n} day(s)`)
+    setBusy(false)
+    if (ok !== undefined) onDone()
+  }
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Extend the subscription</DialogTitle>
+          <DialogDescription>
+            The next renewal moves later and the player keeps access without paying until then (now it ends {fmtMs(purchase.expires_at_ms)}).
+            {apple ? " The App Store allows two extensions a year per subscription." : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <Field label={`Days (1-${max})`}>
+          <Input type="number" min={1} max={max} value={days} onChange={(e) => setDays(e.target.value)} />
+        </Field>
+        {apple && (
+          <Field label="Reason (sent to Apple)">
+            <Select value={reason} onValueChange={setReason}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>{APPLE_REASONS.map((r) => <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={extend} disabled={busy || !valid}>Extend</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
