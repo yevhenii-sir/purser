@@ -131,13 +131,22 @@ pub struct StoreTx {
     /// The store offer of this period (Apple `offerIdentifier`, Google offer or base plan id);
     /// empty when none or unknown.
     pub offer_id: String,
-    /// Kind of that offer: `intro` | `promo` | `code` | `winback`; empty when none or unknown.
+    /// Kind of that offer: `intro` | `promo` | `code` | `winback` | `retention`; empty when none or unknown.
     pub offer_type: String,
     /// Access without a payment (a Google promo code or rewarded product): counted at price 0.
     pub promotional: bool,
     /// Units bought at once (Google multi-quantity, StoreKit quantity): 1 for everything else.
     /// `price_micros` is the price of one unit.
     pub quantity: u32,
+    /// Tax included in `price_micros` (one unit), when the store reports it (Google Orders API);
+    /// 0: unknown (integrations estimate it from the billing country).
+    pub tax_micros: i64,
+    /// Units the store refunded while the rest of the purchase stays paid (Google quantity-based
+    /// partial refunds: `quantity - refundableQuantity`); 0 for everything else.
+    pub refunded_quantity: u32,
+    /// `Revoked`: the part of the price the refund returned, in thousandths of a percent (Apple
+    /// `revocationPercentage` of a prorated refund, 1..99_999); 0: all of it.
+    pub refund_share_milli: u32,
 }
 
 impl StoreTx {

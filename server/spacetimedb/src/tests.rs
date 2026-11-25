@@ -609,10 +609,12 @@ fn voided_purchase_is_revoked_in_the_game() {
     assert_eq!((o.http, o.body["status"].as_str()), (200, Some("ignored")), "{}", o.body);
     assert_eq!(w.purchase().status, status::COMPLETED);
 
-    // A refund of some units of a multi-quantity purchase does not revoke the whole purchase.
+    // A refund of some units of a multi-quantity purchase does not revoke the whole purchase (and
+    // this one reports none refunded).
     let mut partial = voided.clone();
     partial["voidedPurchaseNotification"]["refundType"] = json!(2);
-    assert_eq!(w.google_notification(RTDN_SECRET, partial).body["status"], "ignored");
+    assert_eq!(w.google_notification(RTDN_SECRET, partial).http, 200);
+    assert_eq!((w.purchase().status.as_str(), w.purchase().refunded_micros), (status::COMPLETED, 0));
 
     w.script("/purchases/products/", 200, &json!({ "purchaseState": 1, "orderId": ORDER, "consumptionState": 1 }).to_string());
     let o = w.google_notification(RTDN_SECRET, voided);
@@ -1164,6 +1166,107 @@ fn a_purchase_is_counted_once_on_its_first_grant() {
     assert_eq!(r["totals"]["gross_usd_micros"], 990_000);
     assert_eq!(r["totals"]["purchases"], 1);
     assert_eq!(r["by_product"][0]["product_id"], "gems");
+}
+
+#[test]
+fn a_google_order_gives_the_price_tax_and_country() {
+    let order = json!({
+        "orderId": ORDER, "buyerAddress": { "buyerCountry": "DE" },
+        "total": { "currencyCode": "EUR", "units": "1", "nanos": 990_000_000 },
+        "tax": { "currencyCode": "EUR", "units": "0", "nanos": 320_000_000 },
+        "lineItems": [{ "productId": "gems", "oneTimePurchaseDetails": { "quantity": 1 } }],
+    });
+    let w = World::new();
+    price_products(&w, "USD");
+    w.script("/orders/", 200, &order.to_string());
+    w.verify("player-1", "gems");
+    let p = w.purchase();
+    assert_eq!((p.price_micros, p.currency.as_str(), p.tax_micros, p.country.as_str()), (1_990_000, "EUR", 320_000, "DE"));
+    assert_eq!(revenue_rows(&w).values().next().unwrap().3, 1_990_000, "revenue counts what the buyer paid");
+    // A replay of the consumed purchase does not read the order again.
+    w.verify("player-1", "gems");
+    assert_eq!(w.calls("/orders/"), 1);
+
+    // Without the permission to read orders: the catalog price, no tax.
+    let w = World::new();
+    price_products(&w, "USD");
+    w.script("/orders/", 403, r#"{"error":{"message":"The current user has insufficient permissions"}}"#);
+    assert_eq!(w.verify("player-1", "gems").body["status"], "success");
+    let p = w.purchase();
+    assert_eq!((p.price_micros, p.currency.as_str(), p.tax_micros), (990_000, "USD", 0));
+}
+
+#[test]
+fn a_refund_of_some_units_takes_back_their_part_of_the_price() {
+    let w = World::new();
+    price_products(&w, "USD");
+    w.script("/purchases/products/", 200, &json!({ "purchaseState": 0, "orderId": ORDER, "quantity": 3, "regionCode": "US" }).to_string());
+    w.verify("player-1", "gems");
+    assert_eq!((w.purchase().quantity, w.purchase().price_micros, w.purchase().status.as_str()), (3, 2_970_000, status::COMPLETED));
+
+    // Two of the three units refunded: Google says one is left to refund.
+    w.fake.borrow_mut().overrides.clear();
+    let two_refunded = json!({ "purchaseState": 0, "orderId": ORDER, "quantity": 3, "refundableQuantity": 1, "consumptionState": 1 });
+    w.script("/purchases/products/", 200, &two_refunded.to_string());
+    let voided = json!({
+        "packageName": APP,
+        "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 2, "refundType": 2 },
+    });
+    assert_eq!(w.google_notification(RTDN_SECRET, voided.clone()).http, 200);
+    let p = w.purchase();
+    assert_eq!((p.status.as_str(), p.refunded_micros), (status::COMPLETED, 1_980_000), "the purchase stays, two units are refunded");
+    assert_eq!(w.calls("/call/billing_revoke"), 0, "the game keeps what it granted");
+    assert_eq!(revenue_rows(&w).values().next().unwrap().4, 1_980_000);
+
+    // The same notification again changes nothing; the rebuild gives the same numbers.
+    w.google_notification(RTDN_SECRET, voided);
+    assert_eq!(w.purchase().refunded_micros, 1_980_000);
+    let live = revenue_rows(&w);
+    w.as_admin(false);
+    rebuild_revenue(&w);
+    assert_eq!(revenue_rows(&w), live);
+}
+
+#[test]
+fn a_prorated_app_store_refund_takes_back_its_share_of_the_price() {
+    let w = apple_sandbox_world();
+    w.write(|tx| {
+        let mut p = tx.db.product().key().find(crate::product_key(IOS_APP, "gems")).unwrap();
+        (p.price_micros, p.currency) = (4_990_000, "USD".into());
+        tx.db.product().key().update(p);
+    });
+    let r: VerifyRequest =
+        serde_json::from_value(json!({ "app_id": IOS_APP, "user_id": "player-1", "product_id": "gems", "order_id": "2000000123" })).unwrap();
+    assert_eq!(verify(&mut w.ctx(), store::APPLE, &r).body["status"], "success");
+    let id = "apple:2000000123";
+    let price = w.read(|tx| tx.db.purchase().id().find(id.to_string()).unwrap().price_micros);
+    assert_eq!(price, 4_990_000);
+    let refunded_total = |w: &World| revenue_rows(w).values().map(|r| r.4).sum::<i64>();
+    let st = purser_core::apple::parse_transaction_payload(
+        &json!({
+            "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_APP, "productId": "gems",
+            "environment": "Sandbox", "price": price / 1000, "currency": "USD",
+            "revocationDate": NOW_MICROS / 1000, "revocationType": "REFUND_PRORATED", "revocationPercentage": 40_000,
+        }),
+        NOW_MICROS / 1000,
+    )
+    .unwrap();
+    let app = w.read(|tx| tx.db.game_app().app_id().find(IOS_APP.to_string()).unwrap());
+    crate::handlers::sync_store_tx(&mut w.ctx(), &app, st, "test REFUND");
+    let p = w.read(|tx| tx.db.purchase().id().find(id.to_string()).unwrap());
+    assert_eq!((p.status.as_str(), p.refund_share_milli), (status::REVOKED, 40_000));
+    assert_eq!(crate::ledger::refund_amount(&p), purser_core::money::share_of(price, 40_000));
+    assert_eq!(refunded_total(&w), purser_core::money::share_of(price, 40_000), "40% of the price");
+
+    // The refund reversed: the same share comes back, a later refund says its own.
+    w.advance_clock(86_400);
+    apple_notification(&w, "REFUND_REVERSED", purser_core::apple::testing::sign);
+    let p = w.read(|tx| tx.db.purchase().id().find(id.to_string()).unwrap());
+    assert_eq!(p.refund_share_milli, 0);
+    let live = revenue_rows(&w);
+    w.as_admin(false);
+    rebuild_revenue(&w);
+    assert_eq!(revenue_rows(&w), live);
 }
 
 #[test]
@@ -2676,6 +2779,23 @@ fn subscription_period(w: &World, order_id: &str, phase: &str, expires: &str) {
 }
 
 #[test]
+fn a_google_subscription_period_costs_what_its_order_says() {
+    let w = World::new();
+    keep_google_token_valid(&w, 60);
+    add_subscription_product(&w);
+    subscription_period(&w, "GPA.7777-0000-0000-00002", "introductoryPrice", "2026-09-28T00:00:00Z");
+    // The first month at an introductory price; `recurringPrice` is what the renewals will cost.
+    let order = json!({ "total": { "currencyCode": "USD", "units": "0", "nanos": 990_000_000 }, "lineItems": [{ "subscriptionDetails": {} }] });
+    w.script("/orders/GPA.7777-0000-0000-00002", 200, &order.to_string());
+    assert_eq!(w.verify("player-1", "vip").body["status"], "success");
+    let p = w.read(|tx| tx.db.purchase().id().find("google:GPA.7777-0000-0000-00002".to_string()).unwrap());
+    assert_eq!((p.price_micros, p.currency.as_str()), (990_000, "USD"));
+    // The period is in the ledger: a later look-up does not read its order again.
+    w.verify("player-1", "vip");
+    assert_eq!(w.calls("/orders/"), 1);
+}
+
+#[test]
 fn a_trial_that_ends_unpaid_is_not_churn_and_running_trials_are_not_paid_subscriptions() {
     let w = World::new();
     keep_google_token_valid(&w, 60);
@@ -3163,6 +3283,7 @@ fn renewals_inherit_the_paywall_of_the_first_purchase() {
     let w = World::new();
     setup_paywalls(&w);
     let first = Purchase {
+        tax_micros: 0, refund_share_milli: 0,
         id: "apple:1000".into(),
         store: "apple".into(),
         app_id: APP.into(),
@@ -4858,6 +4979,7 @@ impl World {
     fn put_purchase(&self, id: &str, app: &str, st: &str, hours_ago: i64) {
         let updated = NOW_MICROS - hours_ago * HOUR_MICROS;
         let row = Purchase {
+            tax_micros: 0, refund_share_milli: 0,
             id: id.into(),
             store: "google".into(),
             app_id: app.into(),
@@ -5469,6 +5591,7 @@ fn a_rebuild_of_one_app_leaves_the_others_alone() {
 fn ledger_row(id: &str, created_at_micros: i64, f: impl FnOnce(&mut Purchase)) -> Purchase {
     let tx_id = id.split_once(':').map_or(id, |(_, t)| t).to_string();
     let mut p = Purchase {
+        tax_micros: 0, refund_share_milli: 0,
         id: id.into(),
         store: "google".into(),
         app_id: APP.into(),
@@ -8488,8 +8611,9 @@ fn calls_of_a_request_end_at_its_deadline_and_the_worker_keeps_the_long_limit() 
     w.fake.borrow_mut().call_secs = 2;
     w.verify("player-1", "gems");
     let limits = std::mem::take(&mut w.fake.borrow_mut().timeouts);
-    // Look-up with the whole 3 s, delivery with the 1 s left (the shortest limit).
-    assert_eq!(limits[..2], [3_000_000, 1_000_000], "{limits:?}");
+    // Look-up with the whole 3 s, the order's price 1 s at most, delivery with the 1 s left (the
+    // shortest limit).
+    assert_eq!(limits[..3], [3_000_000, 1_000_000, 1_000_000], "{limits:?}");
 
     w.fake.borrow_mut().call_secs = 0;
     w.advance_clock(10);

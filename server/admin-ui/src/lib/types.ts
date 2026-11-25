@@ -74,6 +74,14 @@ export interface Purchase {
   expires_at_ms: number
   price_micros: number
   currency: string
+  /** Units bought at once; `price_micros` is what all of them cost. */
+  quantity: number
+  /** Refunded while the purchase stays (partial refunds). */
+  refunded_micros: number
+  /** Tax in `price_micros` when the store reported it (Google Orders API); 0: unknown. */
+  tax_micros: number
+  /** A prorated store refund: the part it returned, in thousandths of a percent; 0: all of it. */
+  refund_share_milli: number
   attempts: number
   next_attempt_at_micros: number
   last_error: string

@@ -312,7 +312,7 @@ fn refund_delta(p: &Purchase) -> Option<Delta> {
     if not_a_sale(p) {
         return None;
     }
-    rv::refund_delta_with(&p.store, p.was_granted, p.price_micros - p.refunded_micros, &period_facts(p))
+    rv::refund_delta_with(&p.store, p.was_granted, crate::ledger::refund_amount(p), &period_facts(p))
 }
 
 /// Part of a purchase was refunded (`amount_micros` more than before).
@@ -327,7 +327,7 @@ pub fn on_partial_refund(tx: &ReducerContext, p: &Purchase, amount_micros: i64) 
 
 /// A refunded purchase is valid again (Stripe dispute won).
 pub fn on_reinstate(tx: &ReducerContext, p: &Purchase) {
-    let amount = p.price_micros - p.refunded_micros;
+    let amount = crate::ledger::refund_amount(p);
     counted(tx, p, COUNTED_REINSTATE, amount);
     if !counts_live(tx, p) {
         return;
@@ -412,7 +412,7 @@ pub fn on_first_grant(tx: &ReducerContext, p: &Purchase) {
 /// The store reported a refund (`REVOKE_PENDING`) or an expiration (`EXPIRE_PENDING`).
 pub fn on_inactive(tx: &ReducerContext, p: &Purchase, new_status: &str) {
     match new_status {
-        status::REVOKE_PENDING => counted(tx, p, COUNTED_REFUND, p.price_micros - p.refunded_micros),
+        status::REVOKE_PENDING => counted(tx, p, COUNTED_REFUND, crate::ledger::refund_amount(p)),
         status::EXPIRE_PENDING => counted(tx, p, COUNTED_EXPIRATION, 0),
         _ => {}
     }

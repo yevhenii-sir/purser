@@ -195,7 +195,11 @@ pub(crate) fn load_attribution(tx: &ReducerContext, app_id: &str, user_id: &str)
 }
 
 pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -> OutEvent {
+    // A refund takes back what is left after partial refunds (each reported on its own), or the
+    // part a prorated refund returned.
+    let price_micros = if kind == event_kind::REFUND { crate::ledger::refund_amount(p) } else { p.price_micros };
     OutEvent {
+        tax_micros: tax_share(p, price_micros),
         kind: kind.to_string(),
         app_id: p.app_id.clone(),
         platform: app.platform.clone(),
@@ -205,8 +209,7 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         product_kind: p.kind.clone(),
         transaction_id: p.transaction_id.clone(),
         user_id: p.user_id.clone(),
-        // A refund takes back what is left after partial refunds (each reported on its own).
-        price_micros: if kind == event_kind::REFUND { (p.price_micros - p.refunded_micros).max(0) } else { p.price_micros },
+        price_micros,
         currency: p.currency.clone(),
         at_ms: tx.timestamp.to_micros_since_unix_epoch() / 1000,
         app_instance_id: p.app_instance_id.clone(),
@@ -217,6 +220,14 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         quantity: p.quantity.max(1),
         event_id: format!("{}#{}", p.id, p.step_seq),
     }
+}
+
+/// The store-reported tax of `p` in `amount_micros` of its price (0: unknown).
+fn tax_share(p: &Purchase, amount_micros: i64) -> i64 {
+    if p.tax_micros <= 0 || p.price_micros <= 0 {
+        return 0;
+    }
+    (p.tax_micros as i128 * amount_micros.clamp(0, p.price_micros) as i128 / p.price_micros as i128) as i64
 }
 
 /// Integrations that will receive events of this app.
@@ -285,6 +296,7 @@ pub fn enqueue_partial_refund(tx: &ReducerContext, p: &Purchase, amount_micros: 
     }
     let mut event = out_event(tx, &app, p, event_kind::REFUND);
     event.price_micros = amount_micros;
+    event.tax_micros = tax_share(p, amount_micros);
     event.quantity = 1;
     // Each partial refund is an event of its own.
     event.event_id = format!("{}#{}+{}", p.id, p.step_seq, p.refunded_micros);

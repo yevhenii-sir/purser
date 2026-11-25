@@ -7,9 +7,9 @@
 use crate::config::{self, secret_name};
 use crate::ctx::Ctx;
 use crate::net::{self, bearer};
-use crate::{GameApp, Product};
+use crate::{purchase, GameApp, Product};
 use purser_core::jwt::{self, AppleApiKey, GoogleServiceAccount};
-use purser_core::model::{kind, store_action, StoreTx};
+use purser_core::model::{kind, store_action, StoreTx, TxState};
 use purser_core::{apple, google};
 use spacetimedb::TxContext;
 
@@ -213,7 +213,45 @@ pub fn google_fetch(
     } else {
         google::parse_product_purchase(&app.app_id, &product.product_id, purchase_token, &res.body)
     };
-    tx.map_err(StoreError::Transient)
+    let mut tx = tx.map_err(StoreError::Transient)?;
+    google_order_price(ctx, app, &mut tx, &token);
+    Ok(tx)
+}
+
+/// How long the Google order of a new purchase may take ([`google_order_price`]).
+const ORDER_PRICE_SECS: i64 = 1;
+
+/// What the buyer paid for the order of a transaction the ledger does not have yet (Google Orders
+/// API: price with tax, the tax, currency, buyer country), put on it. Best effort: without the
+/// *View financial data* permission or an answer the price comes from the client or the catalog.
+fn google_order_price(ctx: &mut impl Ctx, app: &GameApp, st: &mut StoreTx, token: &str) {
+    let paid = matches!(st.state, TxState::Active | TxState::Pending) && !st.promotional && !st.trial;
+    // Subscriptions too: Google's `recurringPrice` is the next renewal's, not what this period cost
+    // (an introductory price).
+    if !paid {
+        return;
+    }
+    let Ok(url) = google::order_url(&app.app_id, &st.transaction_id) else { return };
+    let id = st.ledger_id();
+    // A one-time purchase the server has not finished in the store is new (or its grant is still
+    // under way); a subscription period may be acknowledged already (renewals): the ledger says.
+    let new = if st.expires_at_ms == 0 {
+        !st.consumed && !st.acknowledged
+    } else {
+        ctx.tx(|tx| tx.db.purchase().id().find(&id).is_none())
+    };
+    if !new {
+        return;
+    }
+    // Optional: it may not hold the purchase up long.
+    match net::send_within(ctx.http(), "GET", &url, &[("Authorization", &bearer(token))], (), ORDER_PRICE_SECS) {
+        Ok(res) if res.ok() => match google::parse_order(&res.body) {
+            Ok(order) => google::apply_order(st, &order),
+            Err(e) => log::warn!("{id}: the Google order: {e}"),
+        },
+        Ok(res) => log::warn!("{id}: the Google order is not readable ({}): price from the client or the catalog", res.describe()),
+        Err(e) => log::warn!("{id}: the Google order did not come: {e}"),
+    }
 }
 
 /// Consumes or acknowledges a Google purchase after the reward was granted.

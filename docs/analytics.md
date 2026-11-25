@@ -15,7 +15,8 @@ The admin panel's **Revenue** page shows what the stores paid, in USD: net reven
 | Active subscriptions, MRR | paid subscriptions running, renewals counted once; free trials running are counted apart (`trials_now`) | snapshot taken daily |
 
 - Manual grants are not revenue. Sandbox purchases are excluded unless *Include sandbox* is on.
-- Amounts are store prices before the store's commission and taxes: the App Store reports the price; Google reports the price of subscriptions; for Google one-time products the price comes from the client (`price_micros` in `/verify`) or the build's product price. Set prices on Android products (the setup check warns about missing ones); each build has its own.
+- Amounts are what the buyer paid, before the store's commission and with the tax the price includes: the App Store reports the price; for Google Play the server reads the order of each new purchase and subscription period (Orders API: the total with tax, the tax, the buyer's country; the service account needs *View financial data*). Without that, Google one-time products fall back to the client's price (`price_micros` in `/verify`, when believable) or the build's product price, subscriptions to the renewal price Google reports. Set prices on Android products (the setup check warns about missing ones); each build has its own.
+- Partial refunds keep the purchase and take their amount out of revenue: Stripe and Xsolla partial refunds, Google Play refunds of some units of a multi-quantity purchase (their share of the price), and App Store prorated refunds (`revocationType` `REFUND_PRORATED`: the purchase is revoked, the refund counts `revocationPercentage` of the price).
 - A free-trial period is recorded with price 0 (Google reports the price of the next renewal, which is not what the buyer paid), so integrations get no revenue for it either. Trials are detected from Google's `lineItems[].offerPhase.freeTrial` (subscriptionsv2) and Apple's `offerDiscountType` = `FREE_TRIAL` (older Apple payloads: introductory offer with price 0).
 - MRR divides each subscription's price by its billing period, guessed from the paid period (weekly, monthly, quarterly, half-yearly, yearly).
 - Days are UTC.
@@ -33,7 +34,7 @@ Proceeds = net revenue − estimated store fee. The fee is a commission percent 
 - **Subscriptions after 12 paid months**: both stores charge 15% on a subscription after its first year of paid service. A renewal recorded 365 days or more after the subscription's first paid period uses `min(app percent, this percent)` (default 15).
 - Refunds return the commission too: the fee is taken on net revenue.
 
-Taxes (VAT, digital services taxes) are not modelled, so real payouts are lower in countries where the store withholds them. Settings: Revenue → **Store fee**, or `admin_set_setting` with the server settings `store_commission_percent` (`"30"`), `store_commission_after_year_percent` (`"15"`) and `store_commission_by_app` (`{"com.example.mygame": 30}`); an empty value restores the default.
+Revenue includes the taxes in the price (VAT, digital services taxes), so real payouts are lower in countries where the store withholds them; the `net` amount of integration events deducts the tax Google reported, or an estimate from the billing country. Settings: Revenue → **Store fee**, or `admin_set_setting` with the server settings `store_commission_percent` (`"30"`), `store_commission_after_year_percent` (`"15"`) and `store_commission_by_app` (`{"com.example.mygame": 30}`); an empty value restores the default.
 
 ## Subscriptions
 

@@ -16,7 +16,7 @@ Event (`v1` argument or webhook body; the webhook body also has `catalog_product
 
 `event`: `grant` | `revoke`; `reason`:
 - `purchase`, `renewal`;
-- `refund`, `expire`;
+- `refund`, `expire`. A partial refund (part of a Stripe or Xsolla payment, some units of a multi-quantity Google Play purchase) sends no event: the purchase stays granted and only revenue changes. An App Store prorated refund revokes the purchase like any refund;
 - `transfer` (below);
 - `admin`: revoked by support from the admin page; handle it like `refund`;
 - `replaced`: the player switched to another subscription (upgrade, downgrade, crossgrade in Google Play, an App Store subscription group or Stripe). The `grant` of the new product comes with its own `transaction_id`;

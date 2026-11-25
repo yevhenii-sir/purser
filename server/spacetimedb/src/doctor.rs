@@ -829,6 +829,7 @@ fn check_integrations(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut 
 fn probe_ga4(ctx: &mut impl Ctx, app: &GameApp, firebase_app_id: &str, api_secret: &str) -> Verdict {
     let now_ms = ctx.now_ms();
     let event = OutEvent {
+        tax_micros: 0,
         kind: event_kind::TEST.into(),
         app_id: app.app_id.clone(),
         platform: app.platform.clone(),

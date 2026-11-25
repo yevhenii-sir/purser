@@ -36,6 +36,27 @@ pub fn from_units_nanos(units: i64, nanos: i64) -> Option<i64> {
     units.checked_mul(1_000_000)?.checked_add(nanos / 1000)
 }
 
+/// Thousandths of a percent of a share (Apple `revocationPercentage`: 100_000 is all).
+pub const WHOLE_SHARE_MILLI: u32 = 100_000;
+
+/// `share_milli` thousandths of a percent of `amount_micros` (0 or 100_000 and above: all of it),
+/// rounded to the nearest micro.
+pub fn share_of(amount_micros: i64, share_milli: u32) -> i64 {
+    if share_milli == 0 || share_milli >= WHOLE_SHARE_MILLI {
+        return amount_micros;
+    }
+    ((amount_micros as i128 * share_milli as i128 + WHOLE_SHARE_MILLI as i128 / 2) / WHOLE_SHARE_MILLI as i128) as i64
+}
+
+/// `units` of `count` of `amount_micros` (a refund of some units of a purchase), rounded down;
+/// all of it when `units >= count`.
+pub fn units_of(amount_micros: i64, units: u32, count: u32) -> i64 {
+    if count == 0 || units >= count {
+        return amount_micros;
+    }
+    (amount_micros as i128 * units as i128 / count as i128) as i64
+}
+
 /// A currency code the server stores: three ASCII capital letters (ISO 4217 style).
 pub fn is_currency_code(s: &str) -> bool {
     s.len() == 3 && s.bytes().all(|b| b.is_ascii_uppercase())
@@ -68,6 +89,19 @@ pub fn believable_client_price(client_micros: i64, client_currency: &str, client
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shares_and_units_of_an_amount() {
+        assert_eq!(share_of(4_990_000, 0), 4_990_000, "0: all of it");
+        assert_eq!(share_of(4_990_000, 100_000), 4_990_000);
+        assert_eq!(share_of(4_990_000, 40_000), 1_996_000);
+        assert_eq!(share_of(10_000_000, 67_932), 6_793_200);
+        assert_eq!(share_of(1, 50_000), 1, "rounded to the nearest micro");
+        assert_eq!(units_of(9_000_000, 2, 3), 6_000_000);
+        assert_eq!(units_of(10_000_000, 1, 3), 3_333_333);
+        assert_eq!(units_of(9_000_000, 5, 3), 9_000_000);
+        assert_eq!(units_of(9_000_000, 1, 0), 9_000_000);
+    }
 
     #[test]
     fn decimals_round_trip() {

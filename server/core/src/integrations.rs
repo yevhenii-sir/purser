@@ -199,6 +199,10 @@ pub struct OutEvent {
     /// (empty: `transaction_id:kind`). Platforms that deduplicate get it.
     #[serde(default)]
     pub event_id: String,
+    /// Tax included in `price_micros` when the store reported it (Google Orders API); 0: unknown,
+    /// estimated from `country` instead.
+    #[serde(default)]
+    pub tax_micros: i64,
 }
 
 /// What an integration reports as revenue (`revenue` in its settings).
@@ -293,15 +297,20 @@ impl OutEvent {
     }
 
     /// Gross, proceeds after the store commission, and proceeds after the commission and taxes.
-    /// Estimates: the commission from the server's settings, the tax from the billing country
-    /// ([`crate::tax`]).
+    /// Estimates: the commission from the server's settings, the tax from the store when it
+    /// reported it ([`OutEvent::tax_micros`]), from the billing country otherwise ([`crate::tax`]).
     pub fn amounts(&self) -> Amounts {
         let gross = self.price_micros as f64;
         let keep = 1.0 - self.commission_percent.clamp(0.0, 100.0) / 100.0;
+        let before_tax = if self.tax_micros > 0 && self.tax_micros <= self.price_micros {
+            (self.price_micros - self.tax_micros) as f64
+        } else {
+            crate::tax::without_tax(gross, &self.country)
+        };
         Amounts {
             gross_micros: self.price_micros,
             proceeds_micros: (gross * keep).round() as i64,
-            net_micros: (crate::tax::without_tax(gross, &self.country) * keep).round() as i64,
+            net_micros: (before_tax * keep).round() as i64,
         }
     }
 
@@ -1503,6 +1512,7 @@ mod tests {
         attribution.insert("idfv".into(), "A1B2C3D4-0000-1111-2222-333344445555".into());
         attribution.insert("att".into(), "true".into());
         OutEvent {
+            tax_micros: 0,
             kind: kind.into(),
             app_id: "com.test.game".into(),
             platform: platform.into(),
@@ -1742,6 +1752,13 @@ mod tests {
         ev.commission_percent = crate::revenue::DEFAULT_COMMISSION_PERCENT;
         assert_eq!(ev.amounts().net_micros, ev.amounts().proceeds_micros);
         assert_eq!(ev.amounts().proceeds_micros, 10_115_000);
+
+        // The tax the store reported wins over the estimate (7% in a country without a rate).
+        ev.commission_percent = 30.0;
+        ev.tax_micros = 1_000_000;
+        assert_eq!(ev.amounts().net_micros, 7_630_000);
+        ev.tax_micros = 99_000_000;
+        assert_eq!(ev.amounts().net_micros, ev.amounts().proceeds_micros, "more tax than price: ignored");
     }
 
     #[test]

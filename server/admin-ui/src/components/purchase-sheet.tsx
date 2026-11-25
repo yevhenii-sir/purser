@@ -98,7 +98,7 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
                     ["Product", `${p.product_id} (${p.kind})`],
                     ["Player", <a key="u" href={"#" + playerRoute(p.user_id)} onClick={close} className="hover:underline" title="Open the player"><Mono className="break-all">{p.user_id}</Mono></a>],
                     ["Transaction", <Mono key="t" className="break-all">{p.transaction_id}</Mono>],
-                    ["Price", money(p.price_micros, p.currency)],
+                    ["Price", <PriceText key="p" purchase={p} />],
                     ["Reason", p.reason],
                     ["Expires", fmtMs(p.expires_at_ms)],
                     ["Created", fmtTime(p.created_at_micros)],
@@ -137,6 +137,21 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
 }
 
 /** Refunds a Google Play order in the store (`admin_refund_purchase`): the money goes back and access ends. */
+/** The price with its units, the tax the store reported and what was refunded. */
+function PriceText({ purchase: p }: { purchase: Purchase }) {
+  const notes: string[] = []
+  if (p.quantity > 1) notes.push(`${p.quantity} units`)
+  if (p.tax_micros > 0) notes.push(`tax ${money(p.tax_micros, p.currency)}`)
+  if (p.refunded_micros > 0) notes.push(`${money(p.refunded_micros, p.currency)} refunded`)
+  if (p.refund_share_milli > 0) notes.push(`refund of ${p.refund_share_milli / 1000}%`)
+  return (
+    <>
+      {money(p.price_micros, p.currency)}
+      {notes.length > 0 && <span className="text-muted-foreground"> · {notes.join(" · ")}</span>}
+    </>
+  )
+}
+
 function RefundDialog({ purchase, onClose, onDone }: { purchase: Purchase; onClose: () => void; onDone: () => void }) {
   const [note, setNote] = useState("")
   const [busy, setBusy] = useState(false)

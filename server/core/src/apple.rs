@@ -174,6 +174,15 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
         TxState::Active
     };
     let original = s("originalTransactionId");
+    // A prorated refund returned part of the price: `revocationPercentage` in thousandths of a
+    // percent (API 1.19). A full refund, or one without the fields, returned all of it.
+    let refund_share_milli = match (state, s("revocationType").as_str()) {
+        (TxState::Revoked, "REFUND_PRORATED") => {
+            let share = ms("revocationPercentage").clamp(0, crate::money::WHOLE_SHARE_MILLI as i64) as u32;
+            if share >= crate::money::WHOLE_SHARE_MILLI { 0 } else { share }
+        }
+        _ => 0,
+    };
 
     Ok(StoreTx {
         store: store::APPLE,
@@ -205,6 +214,9 @@ pub fn parse_transaction_payload(p: &Value, now_ms: i64) -> Result<StoreTx, Stri
         offer_type: offer_type(p["offerType"].as_i64()).to_string(),
         promotional: false,
         quantity: (ms("quantity").clamp(1, crate::google::MAX_QUANTITY as i64)) as u32,
+        tax_micros: 0,
+        refunded_quantity: 0,
+        refund_share_milli,
         paused_until_ms: 0,
         grace_until_ms: 0,
         billing_issue: false,
@@ -282,13 +294,15 @@ fn id_text(v: &Value) -> String {
     }
 }
 
-/// `offerType` of a transaction: 1 introductory, 2 promotional, 3 offer code, 4 win-back.
+/// `offerType` of a transaction: 1 introductory, 2 promotional, 3 offer code, 4 win-back, 5 retention
+/// (API 1.24).
 pub fn offer_type(code: Option<i64>) -> &'static str {
     match code {
         Some(1) => "intro",
         Some(2) => "promo",
         Some(3) => "code",
         Some(4) => "winback",
+        Some(5) => "retention",
         _ => "",
     }
 }
@@ -669,6 +683,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parse_transaction_payload(&p, 0).unwrap().state, TxState::Revoked);
+        assert_eq!(parse_transaction_payload(&p, 0).unwrap().refund_share_milli, 0, "all of it");
+    }
+
+    #[test]
+    fn a_prorated_refund_returns_part_of_the_price() {
+        let parse = |extra: &str| {
+            let p: Value = serde_json::from_str(&format!(r#"{{"transactionId":"1","price":9990,"currency":"USD"{extra}}}"#)).unwrap();
+            parse_transaction_payload(&p, 0).unwrap()
+        };
+        let prorated = parse(r#","revocationDate":1,"revocationType":"REFUND_PRORATED","revocationPercentage":40000"#);
+        assert_eq!((prorated.state, prorated.refund_share_milli), (TxState::Revoked, 40_000));
+        assert_eq!(parse(r#","revocationDate":1,"revocationType":"REFUND_FULL","revocationPercentage":100000"#).refund_share_milli, 0);
+        assert_eq!(parse(r#","revocationDate":1,"revocationType":"REFUND_PRORATED","revocationPercentage":100000"#).refund_share_milli, 0);
+        assert_eq!(parse(r#","revocationType":"REFUND_PRORATED","revocationPercentage":40000"#).refund_share_milli, 0, "reversed: no revocationDate");
+        assert_eq!(offer_type(Some(5)), "retention");
     }
 
     #[test]

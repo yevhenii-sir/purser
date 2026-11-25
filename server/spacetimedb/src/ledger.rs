@@ -215,7 +215,20 @@ fn record(
     if product.kind == kind::SUBSCRIPTION {
         replace_older(tx, st, &recorded.0);
     }
+    if st.refunded_quantity > 0 {
+        refund_units(tx, &recorded.0, st);
+    }
     Ok(recorded)
+}
+
+/// The store refunded some units of a multi-quantity purchase and the rest stays paid (Google
+/// `refundableQuantity`): their part of the price is a partial refund (the game keeps what it
+/// granted, as with other partial refunds). Applied once per unit count.
+fn refund_units(tx: &TxContext, id: &str, st: &StoreTx) {
+    let Some(p) = tx.db.purchase().id().find(id.to_string()) else { return };
+    let units = st.refunded_quantity.min(p.quantity.max(1));
+    let total = purser_core::money::units_of(p.price_micros, units, p.quantity.max(1));
+    partial_refund(tx, p, total, &format!("{units} of {} units refunded in the store", st.quantity.max(1)));
 }
 
 /// Subscription changes (integration events) when the store reports new renewal details.
@@ -396,6 +409,9 @@ fn record_row(
     // Every price source is the price of one unit.
     let quantity = st.quantity.max(1);
     let price_micros = unit_micros.saturating_mul(quantity as i64);
+    // The store's tax goes with the store's price only.
+    let store_priced = unit_micros > 0 && unit_micros == st.price_micros && currency == st.currency;
+    let tax_micros = if store_priced { st.tax_micros.clamp(0, unit_micros).saturating_mul(quantity as i64) } else { 0 };
     let mut row = Purchase {
         quantity,
         original_transaction_id: st.original_transaction_id.clone(),
@@ -421,6 +437,7 @@ fn record_row(
         offer_id: if st.offer_id.is_empty() { claim.offer_id.clone() } else { st.offer_id.clone() },
         offer_type: st.offer_type.clone(),
         family_shared: st.family_shared,
+        tax_micros,
         ..Purchase::new(st.store, &st.transaction_id, &st.app_id, product, user_id, now)
     };
     // A renewal keeps the paywall of the subscription's first purchase; else the client's.
@@ -507,8 +524,9 @@ pub fn mark_inactive(tx: &TxContext, p: Purchase, new_status: &str, expires_at_m
     set_inactive(tx, p, new_status, expires_at_ms, details, true)
 }
 
-/// Part of an owned purchase was refunded: `total_micros` so far (Stripe partial refunds). The
-/// purchase stays granted; revenue loses the new part. False when nothing changed.
+/// Part of an owned purchase was refunded: `total_micros` so far (Stripe, Xsolla partial refunds,
+/// Google refunds of some units). The purchase stays granted; revenue loses the new part. False
+/// when nothing changed.
 pub fn partial_refund(tx: &TxContext, mut p: Purchase, total_micros: i64, details: &str) -> bool {
     let total = total_micros.min(p.price_micros);
     let more = total - p.refunded_micros;
@@ -527,6 +545,12 @@ pub fn partial_refund(tx: &TxContext, mut p: Purchase, total_micros: i64, detail
     true
 }
 
+/// What a store refund of the purchase takes back: the price less its earlier partial refunds, or
+/// the share of it a prorated refund returned (`refund_share_milli`).
+pub fn refund_amount(p: &Purchase) -> i64 {
+    purser_core::money::share_of((p.price_micros - p.refunded_micros).max(0), p.refund_share_milli)
+}
+
 /// A purchase the store took back is valid again (Stripe: the merchant won the dispute; App Store:
 /// `REFUND_REVERSED`): its money counts again and it is granted again (reason `reinstated`),
 /// unless it is a subscription period that has ended meanwhile, which only gets its money back.
@@ -537,6 +561,8 @@ pub fn reinstate(tx: &TxContext, mut p: Purchase, details: &str) -> Option<Strin
         return None;
     }
     crate::revenue::on_reinstate(tx, &p);
+    // The refund is undone: a later one says again how much it returns.
+    p.refund_share_milli = 0;
     let now = tx_now_micros(tx);
     if p.kind != kind::CONSUMABLE {
         let before = tx
@@ -667,7 +693,13 @@ pub fn record_inactive(tx: &TxContext, st: &StoreTx, details: &str) -> Option<St
     // Kept even when the status does not change (a pause noticed on a row that expired already).
     let facts = (before != (p.billing_issue, p.auto_renew_off, p.grace_until_ms, p.paused_until_ms)).then(|| p.clone());
     let changed = match st.state {
-        purser_core::model::TxState::Revoked => mark_inactive(tx, p, status::REVOKE_PENDING, now_ms, details),
+        purser_core::model::TxState::Revoked => {
+            // Before the revenue hooks read it: a prorated refund returns part of the price.
+            if st.refund_share_milli > 0 && !matches!(p.status.as_str(), status::REVOKED | status::REVOKE_PENDING) {
+                p.refund_share_milli = st.refund_share_milli;
+            }
+            mark_inactive(tx, p, status::REVOKE_PENDING, now_ms, details)
+        }
         purser_core::model::TxState::Expired => {
             let exp = if st.expires_at_ms > 0 { st.expires_at_ms } else { now_ms };
             mark_inactive(tx, p, status::EXPIRE_PENDING, exp, details)

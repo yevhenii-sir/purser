@@ -68,11 +68,11 @@ pub fn voided_purchases_url(package: &str) -> Result<String, String> {
 }
 
 /// One page of the purchases voided in `[start_ms, end_ms]`: refunds, chargebacks and revocations of
-/// one-time products and subscriptions (`type=1`), up to 1000, after the page of `page_token`. Only
-/// whole refunds: a refund of some units of a multi-quantity purchase is left out.
+/// one-time products and subscriptions (`type=1`), up to 1000, after the page of `page_token`, with
+/// the refunds of some units of a multi-quantity purchase (their [`Voided::voided_quantity`]).
 pub fn voided_purchases_page_url(package: &str, start_ms: i64, end_ms: i64, page_token: &str) -> Result<String, String> {
     let mut url = format!(
-        "{API}/{}/purchases/voidedpurchases?type=1&maxResults=1000&startTime={start_ms}&endTime={end_ms}",
+        "{API}/{}/purchases/voidedpurchases?type=1&includeQuantityBasedPartialRefund=true&maxResults=1000&startTime={start_ms}&endTime={end_ms}",
         sanitize_segment(package)?
     );
     if !page_token.is_empty() {
@@ -94,6 +94,9 @@ pub struct Voided {
     /// 0 other, 1 remorse, 2 not received, 3 defective, 4 accidental purchase, 5 fraud, 6 friendly
     /// fraud, 7 chargeback, 8 unacknowledged purchase.
     pub reason: i64,
+    /// A refund of this many units of a multi-quantity purchase (the rest stays paid); 0: the
+    /// whole purchase.
+    pub voided_quantity: u32,
 }
 
 /// `voidedpurchases` answer: the voided purchases and the token of the next page (`None`: the last).
@@ -112,6 +115,7 @@ pub fn parse_voided_purchases(body: &str) -> Result<(Vec<Voided>, Option<String>
                         voided_time_ms: num(&p["voidedTimeMillis"]),
                         source: num(&p["voidedSource"]),
                         reason: num(&p["voidedReason"]),
+                        voided_quantity: num(&p["voidedQuantity"]).clamp(0, MAX_QUANTITY as i64) as u32,
                     })
                 })
                 .collect()
@@ -129,6 +133,72 @@ pub fn order_refund_url(package: &str, order_id: &str) -> Result<String, String>
         return Err("the purchase has no Google order id (a test purchase): refund it in Play Console".into());
     }
     Ok(format!("{API}/{}/orders/{}:refund?revoke=true", sanitize_segment(package)?, sanitize_segment(order_id)?))
+}
+
+/// `orders.get`: what the buyer paid for an order (a one-time purchase or a subscription period).
+/// Needs *View financial data, orders, and cancellation survey responses* (like the voided purchases).
+pub fn order_url(package: &str, order_id: &str) -> Result<String, String> {
+    if order_id.is_empty() || order_id.starts_with("token-") {
+        return Err("no Google order id".into());
+    }
+    Ok(format!("{API}/{}/orders/{}", sanitize_segment(package)?, sanitize_segment(order_id)?))
+}
+
+/// What an order says the buyer paid ([`parse_order`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderPrice {
+    /// The order's total, tax included.
+    pub total_micros: i64,
+    /// The tax in `total_micros` (0 when not reported).
+    pub tax_micros: i64,
+    pub currency: String,
+    /// Buyer country (ISO 3166-1 alpha-2); empty when not reported.
+    pub country: String,
+    /// Units of a one-time purchase, at least 1.
+    pub quantity: u32,
+}
+
+/// Parses `orders.get` (Order): `total` and `tax` are Money (`currencyCode`, `units` as a string,
+/// `nanos`).
+pub fn parse_order(body: &str) -> Result<OrderPrice, String> {
+    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad Order: {e}"))?;
+    let money = |m: &Value| -> Option<(i64, String)> {
+        let units = match &m["units"] {
+            Value::String(u) => u.parse::<i64>().ok()?,
+            Value::Number(n) => n.as_i64()?,
+            _ => 0,
+        };
+        let currency = m["currencyCode"].as_str()?.to_ascii_uppercase();
+        Some((crate::money::from_units_nanos(units, m["nanos"].as_i64().unwrap_or(0))?, currency))
+    };
+    let (total_micros, currency) = money(&v["total"]).ok_or("Order without a total")?;
+    if total_micros < 0 || !crate::money::is_currency_code(&currency) {
+        return Err(format!("Order with a total of {total_micros} {currency}"));
+    }
+    let tax_micros = money(&v["tax"]).filter(|(t, c)| *c == currency && (0..=total_micros).contains(t)).map_or(0, |(t, _)| t);
+    let quantity = v["lineItems"][0]["oneTimePurchaseDetails"]["quantity"].as_i64().unwrap_or(1).clamp(1, MAX_QUANTITY as i64) as u32;
+    Ok(OrderPrice {
+        total_micros,
+        tax_micros,
+        currency,
+        country: crate::country::normalize(v["buyerAddress"]["buyerCountry"].as_str().unwrap_or("")),
+        quantity,
+    })
+}
+
+/// Puts what the order says the buyer paid on a transaction (prices of one unit). An order of
+/// another quantity than the purchase is not this purchase's: left alone.
+pub fn apply_order(st: &mut StoreTx, order: &OrderPrice) {
+    let units = st.quantity.max(1);
+    if order.quantity != units {
+        return;
+    }
+    st.price_micros = order.total_micros / units as i64;
+    st.tax_micros = order.tax_micros / units as i64;
+    st.currency = order.currency.clone();
+    if st.country.is_empty() {
+        st.country = order.country.clone();
+    }
 }
 
 /// `purchases.subscriptions.defer`: moves the next renewal of a subscription later (the player keeps
@@ -182,6 +252,9 @@ pub fn parse_product_purchase(
     let v: Value = serde_json::from_str(body).map_err(|e| format!("bad ProductPurchase: {e}"))?;
     // Several units in one purchase (multi-quantity turned on in Play Console): granted together.
     let quantity = v["quantity"].as_i64().unwrap_or(1).clamp(1, MAX_QUANTITY as i64) as u32;
+    // Units refunded so far (quantity-based partial refunds; a full refund cancels the purchase).
+    let refundable = v["refundableQuantity"].as_i64().map(|r| r.clamp(0, quantity as i64) as u32);
+    let refunded_quantity = refundable.map_or(0, |r| quantity - r);
     // purchaseState: 0 purchased, 1 canceled, 2 pending; a reply without one grants nothing.
     let state = match v["purchaseState"].as_i64() {
         Some(0) => TxState::Active,
@@ -224,6 +297,9 @@ pub fn parse_product_purchase(
         // purchaseType 1 promo code, 2 rewarded (watched an ad): access without a payment.
         promotional: matches!(v["purchaseType"].as_i64(), Some(1 | 2)),
         quantity,
+        tax_micros: 0,
+        refunded_quantity,
+        refund_share_milli: 0,
     })
 }
 
@@ -340,6 +416,9 @@ pub fn parse_subscription_v2(package: &str, token: &str, body: &str, now_ms: i64
         offer_type: String::new(),
         promotional: false,
         quantity: 1,
+        tax_micros: 0,
+        refunded_quantity: 0,
+        refund_share_milli: 0,
     })
 }
 
@@ -439,15 +518,17 @@ mod tests {
         let url = voided_purchases_page_url("com.example.mygame", 10, 20, "a b").unwrap();
         assert_eq!(
             url,
-            "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/com.example.mygame/purchases/voidedpurchases?type=1&maxResults=1000&startTime=10&endTime=20&token=a%20b"
+            "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/com.example.mygame/purchases/voidedpurchases?type=1&includeQuantityBasedPartialRefund=true&maxResults=1000&startTime=10&endTime=20&token=a%20b"
         );
         assert!(voided_purchases_page_url("../x", 0, 1, "").is_err());
         let body = r#"{"voidedPurchases":[
             {"purchaseToken":"tok-1","orderId":"GPA.1..2","voidedTimeMillis":"1700000000000","voidedSource":1,"voidedReason":7},
+            {"purchaseToken":"tok-2","orderId":"GPA.3","voidedQuantity":2},
             {"orderId":"no-token"}],
             "tokenPagination":{"nextPageToken":"next"}}"#;
         let (list, next) = parse_voided_purchases(body).unwrap();
-        assert_eq!(list, vec![Voided { purchase_token: "tok-1".into(), order_id: "GPA.1..2".into(), voided_time_ms: 1_700_000_000_000, source: 1, reason: 7 }]);
+        assert_eq!(list[0], Voided { purchase_token: "tok-1".into(), order_id: "GPA.1..2".into(), voided_time_ms: 1_700_000_000_000, source: 1, reason: 7, voided_quantity: 0 });
+        assert_eq!((list.len(), list[1].voided_quantity), (2, 2), "a refund of some units");
         assert_eq!(next.as_deref(), Some("next"));
         assert_eq!(parse_voided_purchases("{}").unwrap(), (vec![], None));
     }
@@ -507,6 +588,41 @@ mod tests {
         assert_eq!(parse_product_purchase("com.game", "gems", "tok", one).unwrap().quantity, 1);
         let silly = r#"{"purchaseState":0,"orderId":"GPA.1","quantity":-4}"#;
         assert_eq!(parse_product_purchase("com.game", "gems", "tok", silly).unwrap().quantity, 1);
+    }
+
+    #[test]
+    fn refunded_units_of_a_purchase_come_from_its_refundable_quantity() {
+        let parse = |b: &str| parse_product_purchase("com.game", "gems", "tok", b).unwrap();
+        let two_of_five = parse(r#"{"purchaseState":0,"orderId":"GPA.1","quantity":5,"refundableQuantity":3}"#);
+        assert_eq!((two_of_five.state, two_of_five.quantity, two_of_five.refunded_quantity), (TxState::Active, 5, 2));
+        assert_eq!(parse(r#"{"purchaseState":0,"orderId":"GPA.1","quantity":5}"#).refunded_quantity, 0, "not reported");
+        assert_eq!(parse(r#"{"purchaseState":0,"orderId":"GPA.1","refundableQuantity":7}"#).refunded_quantity, 0, "more than bought");
+    }
+
+    #[test]
+    fn an_order_gives_the_price_tax_and_country() {
+        assert_eq!(
+            order_url("com.game", "GPA.1-2..0").unwrap(),
+            "https://androidpublisher.googleapis.com/androidpublisher/v3/applications/com.game/orders/GPA.1-2..0"
+        );
+        assert!(order_url("com.game", "token-abc").is_err() && order_url("com.game", "a/b").is_err());
+        let body = r#"{"orderId":"GPA.1","state":"PROCESSED","buyerAddress":{"buyerCountry":"DE"},
+            "total":{"currencyCode":"eur","units":"5","nanos":970000000},"tax":{"currencyCode":"EUR","units":"0","nanos":950000000},
+            "lineItems":[{"productId":"gems","oneTimePurchaseDetails":{"quantity":3}}]}"#;
+        let o = parse_order(body).unwrap();
+        assert_eq!(o, OrderPrice { total_micros: 5_970_000, tax_micros: 950_000, currency: "EUR".into(), country: "DE".into(), quantity: 3 });
+        let mut st = parse_product_purchase("com.game", "gems", "tok", r#"{"purchaseState":0,"orderId":"GPA.1","quantity":3}"#).unwrap();
+        apply_order(&mut st, &o);
+        assert_eq!((st.price_micros, st.tax_micros, st.currency.as_str(), st.country.as_str()), (1_990_000, 316_666, "EUR", "DE"));
+        let mut other = parse_product_purchase("com.game", "gems", "tok", r#"{"purchaseState":0,"orderId":"GPA.1","regionCode":"AT"}"#).unwrap();
+        apply_order(&mut other, &o);
+        assert_eq!(other.price_micros, 0, "an order of another quantity is not applied");
+        let sub = parse_order(r#"{"total":{"currencyCode":"USD","units":"0"},"lineItems":[{"subscriptionDetails":{}}]}"#).unwrap();
+        assert_eq!((sub.total_micros, sub.tax_micros, sub.quantity), (0, 0, 1), "a free trial period");
+        assert!(parse_order(r#"{"total":{"units":"1"}}"#).is_err(), "no currency");
+        assert!(parse_order(r#"{"total":{"currencyCode":"USD","units":"-1"}}"#).is_err());
+        let foreign_tax = parse_order(r#"{"total":{"currencyCode":"USD","units":"2"},"tax":{"currencyCode":"EUR","units":"1"}}"#).unwrap();
+        assert_eq!(foreign_tax.tax_micros, 0);
     }
 
     #[test]

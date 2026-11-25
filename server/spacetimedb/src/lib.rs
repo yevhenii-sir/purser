@@ -295,12 +295,18 @@ pub struct Purchase {
     pub renew_product_id: String,
     /// Ledger id of the subscription that replaced this one (upgrade / crossgrade); empty otherwise.
     pub replaced_by: String,
-    /// Part of `price_micros` refunded while the purchase stays granted (Stripe partial refunds).
+    /// Part of `price_micros` refunded while the purchase stays granted (Stripe, Xsolla partial
+    /// refunds; Google refunds of some units of a multi-quantity purchase).
     pub refunded_micros: i64,
+    /// Tax included in `price_micros` when the store reported it (Google Orders API); 0: unknown.
+    pub tax_micros: i64,
+    /// A store refund that returned part of the price (Apple prorated refund): the part, in
+    /// thousandths of a percent of what was left (`ledger::refund_amount`); 0: all of it.
+    pub refund_share_milli: u32,
     /// The store offer of the purchase: what the store reports (Google offer / base plan id, Apple
     /// `offerIdentifier`), else what the client said; empty when none.
     pub offer_id: String,
-    /// Kind of that offer when the store says (`intro` | `promo` | `code` | `winback`); empty otherwise.
+    /// Kind of that offer when the store says (`intro` | `promo` | `code` | `winback` | `retention`); empty otherwise.
     pub offer_type: String,
     /// Subscriptions: paused by the player until then (Google); 0 = not paused.
     pub paused_until_ms: i64,
@@ -361,6 +367,8 @@ impl Purchase {
             renew_product_id: String::new(),
             replaced_by: String::new(),
             refunded_micros: 0,
+            tax_micros: 0,
+            refund_share_milli: 0,
             offer_id: String::new(),
             offer_type: String::new(),
             paused_until_ms: 0,
@@ -1243,6 +1251,8 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             renew_product_id: r.renew_product_id,
             replaced_by: r.replaced_by,
             refunded_micros: r.refunded_micros,
+            tax_micros: 0,
+            refund_share_milli: 0,
             offer_id: r.offer_id,
             offer_type: String::new(),
             paused_until_ms: 0,
@@ -1347,6 +1357,7 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
         .ok_or("[ERR_BAD_INTEGRATION] unknown app_id")?;
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     let event = OutEvent {
+        tax_micros: 0,
         kind: event_kind::TEST.to_string(),
         app_id: app.app_id.clone(),
         platform: app.platform.clone(),

@@ -435,6 +435,9 @@ fn store_tx(m: &Meta, transaction_id: &str, original: &str, token: &str, livemod
         offer_type: String::new(),
         promotional: false,
         quantity: 1,
+        tax_micros: 0,
+        refunded_quantity: 0,
+        refund_share_milli: 0,
     }
 }
 

@@ -46,7 +46,19 @@ pub fn send(
     headers: &[(&str, &str)],
     body: impl Into<Body>,
 ) -> Result<HttpResult, String> {
-    let timeout = crate::ctx::call_timeout_micros(TIMEOUT_SECS * 1_000_000);
+    send_within(http, method, url, headers, body, TIMEOUT_SECS)
+}
+
+/// [`send`] limited to `max_secs` (an optional answer that must not hold a request up long).
+pub fn send_within(
+    http: &HttpClient,
+    method: &str,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: impl Into<Body>,
+    max_secs: i64,
+) -> Result<HttpResult, String> {
+    let timeout = crate::ctx::call_timeout_micros(max_secs.min(TIMEOUT_SECS) * 1_000_000);
     let mut builder = http::Request::builder().method(method).uri(url).extension(Timeout::from(TimeDuration::from_micros(timeout)));
     for (k, v) in headers {
         builder = builder.header(*k, *v);

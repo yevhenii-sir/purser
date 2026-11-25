@@ -989,19 +989,28 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         }
         Rtdn::Voided { token, order_id, product_type, refund_type, .. } => {
             // Refund / chargeback of a purchase of this package (the secret may be shared by several).
+            let found = (product_type == google::VOIDED_ONE_TIME_PRODUCT)
+                .then(|| {
+                    ctx.tx(|tx| {
+                        let row = tx.db.purchase().purchase_token().filter(token.as_str()).max_by_key(|p| p.created_at_micros)?;
+                        config::find_product(tx, &app.app_id, &row.product_id)
+                    })
+                })
+                .flatten();
             if refund_type == google::REFUND_TYPE_PARTIAL_QUANTITY {
-                // Some units of a multi-quantity purchase: the rest stays paid (purchases of more
-                // than one unit are not granted, see `stores::google_fetch`).
-                log::warn!("Google partial refund of order {order_id} for {}: not revoked", app.app_id);
-                return Outcome::status(200, "ignored", "partial quantity refund");
+                // Some units of a multi-quantity purchase, the rest stays paid: the purchase says
+                // how many (`refundableQuantity`), the ledger counts their part as a partial refund.
+                let Some(product) = found else {
+                    return Outcome::status(200, "ignored", "partial quantity refund of an unknown purchase");
+                };
+                return match stores::google_fetch(ctx, &app, &product, &token, &mut auth) {
+                    Ok(st) => sync_store_tx(ctx, &app, st, &format!("rtdn voided units of order={order_id}")),
+                    Err(e) => notification_fetch_error(e),
+                };
             }
             // A one-time product is checked with Google first: a forged notification (someone who has
             // the push URL) must not revoke a paid purchase. Google reports a refunded one canceled.
             if product_type == google::VOIDED_ONE_TIME_PRODUCT {
-                let found = ctx.tx(|tx| {
-                    let row = tx.db.purchase().purchase_token().filter(token.as_str()).max_by_key(|p| p.created_at_micros)?;
-                    config::find_product(tx, &app.app_id, &row.product_id)
-                });
                 if let Some(product) = found {
                     match stores::google_fetch(ctx, &app, &product, &token, &mut auth) {
                         Ok(st) if st.state == TxState::Active => {

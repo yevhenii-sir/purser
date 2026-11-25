@@ -29,7 +29,7 @@ pub const LIST_SCAN_LIMIT: usize = 20_000;
 
 /// A ledger row with the field names of the `purchase` columns, so the page reads it like `/sql` rows.
 pub fn purchase_row(p: &Purchase) -> Value {
-    json!({
+    let mut row = json!({
         "id": p.id, "store": p.store, "app_id": p.app_id, "product_id": p.product_id, "kind": p.kind,
         "transaction_id": p.transaction_id, "original_transaction_id": p.original_transaction_id,
         "purchase_token": p.purchase_token, "user_id": p.user_id, "status": p.status, "reason": p.reason,
@@ -42,7 +42,13 @@ pub fn purchase_row(p: &Purchase) -> Value {
         "paywall_test_id": p.paywall_test_id, "paywall_id": p.paywall_id,
         "grace_until_ms": p.grace_until_ms, "billing_issue": p.billing_issue, "auto_renew_off": p.auto_renew_off,
         "renew_product_id": p.renew_product_id, "replaced_by": p.replaced_by, "refunded_micros": p.refunded_micros, "offer_id": p.offer_id, "offer_type": p.offer_type, "paused_until_ms": p.paused_until_ms, "family_shared": p.family_shared,
-    })
+    });
+    // Another object: one `json!` of all columns is past the macro's recursion limit.
+    let more = json!({ "tax_micros": p.tax_micros, "refund_share_milli": p.refund_share_milli, "quantity": p.quantity });
+    if let (Some(row), Value::Object(more)) = (row.as_object_mut(), more) {
+        row.extend(more);
+    }
+    row
 }
 
 /// One row per build for the Apps page: the last setup check, the catalog ids of its products and

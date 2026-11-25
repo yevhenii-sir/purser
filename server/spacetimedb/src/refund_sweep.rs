@@ -172,7 +172,11 @@ fn sweep_google(ctx: &mut impl Ctx, app: &GameApp, start_ms: i64, end_ms: i64, b
         }
         let (voided, next) = google::parse_voided_purchases(&res.body)?;
         for v in voided {
-            revoke_google(ctx, app, &v);
+            if v.voided_quantity > 0 {
+                refund_google_units(ctx, app, &v, &mut auth);
+            } else {
+                revoke_google(ctx, app, &v);
+            }
         }
         match next {
             None => return Ok(()),
@@ -194,6 +198,22 @@ fn revoke_google(ctx: &mut impl Ctx, app: &GameApp, v: &google::Voided) {
         let now_ms = tx_now_micros(tx) / 1000;
         crate::ledger::mark_inactive(tx, row, status::REVOKE_PENDING, now_ms, &details)
     });
+}
+
+/// Some units of a multi-quantity purchase were refunded: the purchase is read again (its
+/// `refundableQuantity`) and the ledger counts their part as a partial refund.
+fn refund_google_units(ctx: &mut impl Ctx, app: &GameApp, v: &google::Voided, auth: &mut Auth) {
+    let product = ctx.tx(|tx| {
+        let row = tx.db.purchase().purchase_token().filter(v.purchase_token.as_str()).max_by_key(|p| p.created_at_micros)?;
+        crate::config::find_product(tx, &app.app_id, &row.product_id)
+    });
+    let Some(product) = product else { return };
+    match stores::google_fetch(ctx, app, &product, &v.purchase_token, auth) {
+        Ok(st) => {
+            crate::handlers::sync_store_tx(ctx, app, st, &format!("refund sweep: Google refunded {} units of order={}", v.voided_quantity, v.order_id));
+        }
+        Err(e) => log::warn!("Refund sweep of {}: order {}: {}", app.app_id, v.order_id, e.message()),
+    }
 }
 
 fn sweep_apple(ctx: &mut impl Ctx, app: &GameApp, start_ms: i64, end_ms: i64, budget: Budget) -> Result<(), String> {

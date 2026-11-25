@@ -665,6 +665,9 @@ pub fn store_tx(app_id: &str, product_id: &str, p: &Paid, original: &str) -> Sto
         offer_type: String::new(),
         promotional: false,
         quantity: 1,
+        tax_micros: 0,
+        refunded_quantity: 0,
+        refund_share_milli: 0,
     }
 }
 

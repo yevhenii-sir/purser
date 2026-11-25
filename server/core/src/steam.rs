@@ -840,6 +840,9 @@ pub fn store_tx(p: &Purchase) -> StoreTx {
         offer_type: String::new(),
         promotional: false,
         quantity: 1,
+        tax_micros: 0,
+        refunded_quantity: 0,
+        refund_share_milli: 0,
     }
 }
 
