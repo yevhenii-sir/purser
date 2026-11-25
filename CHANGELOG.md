@@ -23,6 +23,13 @@
 - Refunds and extensions from the purchase page: **Refund** returns the money of a Google Play order in the store (`orders.refund`, access revoked; `admin_refund_purchase`) and revokes the purchase as a store refund; **Extend** moves the next renewal of a Google Play (`defer`, 1-365 days) or App Store subscription (Extend Renewal Date, 1-90 days with a reason) later and grants the new expiry (`admin_extend_subscription`). Both need the Support role and are in the audit log.
 - Refunds a store notification missed are found by the stores themselves: every 6 hours per build the worker reads Google Play's Voided Purchases API (the last 30 days, then from where it stopped) and the App Store notification history (`REFUND`), and revokes what the ledger still has as paid. The setup check shows the last reading and how many refunds the notifications had missed (a sign the notification setup is broken); `admin_sweep_refunds(app_id)` reads them now. New table `refund_sweep`: publish in place.
 
+### Fixed
+
+- Imported purchases that were refunded or expired before the import (`admin_import_purchases`, `import_revenuecat.py`) count as refunds and churn again: the import logs what the live hooks would have counted, which the revenue rebuild replays; it counted none of them.
+- The Alerts page and other tables with an action column without a title no longer fail to render once they have rows.
+- The `/metrics` URL on the Server page uses the public address when one is set.
+- The admin page demo shows the current features: Huawei AppGallery and Telegram Stars builds, VAT and multi-unit purchases, a prorated refund, promo codes, an alert channel with business alerts and the daily summary.
+
 ## 0.10.0 - 2026-11-25
 
 ### Breaking

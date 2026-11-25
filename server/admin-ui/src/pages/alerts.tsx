@@ -317,7 +317,7 @@ export function AlertsPage() {
               initialSort={{ id: "Time", desc: true }}
               columns={[
                 { title: "Time", sort: (r) => Number(r.at_micros), cell: (r) => <span className="text-xs whitespace-nowrap">{fmtTime(r.at_micros)}</span> },
-                { id: "State", title: "", sort: (r) => r.state, cell: (r) => <Tone tone={r.state === "resolved" ? "ok" : r.state === "test" ? "muted" : "bad"}>{r.state}</Tone> },
+                { id: "State", title: "", sort: (r) => r.state, cell: (r) => <Tone tone={r.state === "resolved" ? "ok" : r.state === "test" || r.state === "digest" ? "muted" : "bad"}>{r.state}</Tone> },
                 {
                   title: "Message",
                   className: "max-w-xl whitespace-normal",

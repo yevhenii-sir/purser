@@ -6466,6 +6466,38 @@ fn imports_defer_the_revenue_rebuild_until_they_stop() {
 }
 
 #[test]
+fn imported_refunds_and_expirations_are_counted_by_the_rebuild() {
+    let w = World::new();
+    w.as_admin(true);
+    add_subscription_product(&w);
+    let row = |n: u32, product: &str, kind: &str, st: &str, days_ago: i64, expires_days_ago: i64| {
+        let order = format!("GPA.5555-0000-0000-0000{n}");
+        let at = NOW_MICROS - days_ago * DAY_MICROS;
+        json!({
+            "id": format!("google:{order}"), "store": "google", "app_id": APP, "product_id": product, "kind": kind,
+            "transaction_id": order, "original_transaction_id": order, "purchase_token": format!("tok-{n}"),
+            "user_id": "player-1", "status": st, "reason": "purchase", "store_action": "",
+            "expires_at_ms": if kind == "subscription" { (NOW_MICROS - expires_days_ago * DAY_MICROS) / 1000 } else { 0 },
+            "environment": "production", "price_micros": 4_990_000, "currency": "USD",
+            "created_at_micros": at, "updated_at_micros": NOW_MICROS - 2 * DAY_MICROS, "was_granted": true,
+        })
+    };
+    let rows = json!([
+        row(1, "gems", "consumable", "revoked", 10, 0),
+        row(2, "vip", "subscription", "expired", 40, 10),
+        row(3, "vip", "subscription", "completed", 5, -25),
+    ]);
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_import_purchases(ctx, rows.to_string())).unwrap();
+    w.advance_clock(6 * 60);
+    w.run_worker();
+    let (refunds, expirations, refunded) = w.read(|tx| {
+        use crate::revenue::revenue_daily;
+        tx.db.revenue_daily().iter().fold((0, 0, 0), |(r, e, m), d| (r + d.refunds, e + d.expirations, m + d.refunded_micros))
+    });
+    assert_eq!((refunds, expirations, refunded), (1, 1, 4_990_000), "the history's refund and churn are counted");
+}
+
+#[test]
 fn active_subscriptions_are_read_from_the_expiry_index() {
     let w = World::new();
     w.as_admin(false);

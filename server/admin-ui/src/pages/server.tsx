@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DataTable, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
 import { RichTable, type RichColumn } from "@/components/rich-table"
 import { SecretField } from "@/components/secret-field"
-import { call, getSetting, ROUTE, select } from "@/lib/api"
+import { call, getSetting, publicRoute, ROUTE, select } from "@/lib/api"
 import { BUILTIN_SPACETIME_HOST } from "@/lib/delivery"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { useAppIndex, useApps } from "@/lib/apps"
@@ -155,8 +155,10 @@ function MetricsSection() {
     const rows = await select<{ key: string }>({ table: "credential", columns: ["key"] })
     return rows.some((r) => r.key === "default/metrics_token")
   })
+  // The public address when one is set (a scraper reaches the server there, not through this page's tunnel).
+  const base = useAsync(publicRoute)
   const [shown, setShown] = useState("")
-  const url = `${location.origin}${ROUTE}/metrics`
+  const url = `${base.data || location.origin + ROUTE}/metrics`
   const create = async () => {
     if (data && !confirm("Create a new token? Scrapers with the old one get 401 until they are updated.")) return
     const bytes = new Uint8Array(24)

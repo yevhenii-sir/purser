@@ -431,6 +431,28 @@ fn counted(tx: &ReducerContext, p: &Purchase, event: &str, amount_micros: i64) {
     }
 }
 
+/// An imported row that was refunded or expired before the import: logs what the live hooks would
+/// have counted, when it happened (the refund at the row's last change, the expiration at its end),
+/// so the rebuild that follows an import counts it (the rebuild only replays these events).
+pub fn on_import(tx: &ReducerContext, p: &Purchase) {
+    if not_a_sale(p) {
+        return;
+    }
+    let ended = p.expires_at_ms.saturating_mul(1000);
+    let (event, amount, at) = match p.status.as_str() {
+        status::REVOKE_PENDING | status::REVOKED => (COUNTED_REFUND, crate::ledger::refund_amount(p), p.updated_at_micros),
+        status::EXPIRE_PENDING | status::EXPIRED => (COUNTED_EXPIRATION, 0, if ended > 0 && ended <= p.updated_at_micros { ended } else { p.updated_at_micros }),
+        _ => return,
+    };
+    tx.db.purchase_log().insert(crate::PurchaseLog {
+        id: 0,
+        purchase_id: p.id.clone(),
+        event: event.to_string(),
+        details: format!("{amount} {}", u8::from(p.was_granted)),
+        at_micros: at,
+    });
+}
+
 /// `(amount, was_granted)` of a counted event's details.
 fn counted_details(details: &str) -> Option<(i64, bool)> {
     let (amount, granted) = details.split_once(' ')?;

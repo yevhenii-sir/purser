@@ -55,7 +55,8 @@ export function RichTable<T extends object>({
   const defs = useMemo<ColumnDef<DataGridFeatures, T>[]>(
     () =>
       columns.map((c, i) => {
-        const id = c.id || (typeof c.title === "string" ? c.title : `col${i}`)
+        // A column without a title (actions) still needs an id: the table refuses an empty one.
+        const id = c.id || (typeof c.title === "string" && c.title ? c.title : `col${i}`)
         const label = typeof c.title === "string" ? c.title : id
         const cellClass = cn(c.num && "text-right tabular-nums", c.className)
         return {

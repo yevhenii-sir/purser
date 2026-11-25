@@ -79,6 +79,7 @@ GAMES = {
             ("com.example.galaxyminer", "android", "", "google"),
             ("com.example.galaxyminer.ios", "ios", "", "apple"),
             ("com.example.galaxyminer.amazon", "amazon", "", "amazon"),
+            ("com.example.galaxyminer.huawei", "huawei", "", "huawei"),
         ],
         "products": [
             ("gems_small", "consumable", 0.99, 30),
@@ -94,6 +95,7 @@ GAMES = {
             ("com.example.wordgarden", "android", "", "google"),
             ("com.example.wordgarden.ios", "ios", "", "apple"),
             ("com.example.wordgarden.web", "web", "stripe", "stripe"),
+            ("com.example.wordgarden.tg", "web", "telegram", "telegram"),
         ],
         "products": [
             ("hints_10", "consumable", 1.99, 25),
@@ -103,6 +105,14 @@ GAMES = {
         ],
     },
 }
+# Telegram Stars: a product's price in Stars (a Star is worth about $0.013).
+STAR_USD = 0.013
+
+
+def stars_micros(usd):
+    return int(round(usd / STAR_USD)) * 1_000_000
+
+
 def store_pid(store, pid):
     """The product's id in a store: a Stripe build sells Price ids (`price_…`), the others use the catalog id."""
     if store != "stripe":
@@ -130,6 +140,10 @@ def tx_id(store, rnd):
         return "2000000%09d" % rnd.randrange(10**9)
     if store == "amazon":
         return "amzn1.receipt.%016x" % rnd.getrandbits(64)
+    if store == "huawei":
+        return "2026%016d.%07d" % (rnd.randrange(10**16), rnd.randrange(10**7))
+    if store == "telegram":
+        return "stxTg%032x" % rnd.getrandbits(128)
     return "cs_live_%024x" % rnd.getrandbits(96)
 
 
@@ -145,7 +159,7 @@ def make_purchases(now_ms, rnd):
     """A year of purchases that grows over time; subscriptions renew monthly until they churn."""
     rows, seq = [], 0
     builds = [(g, b) for g, d in GAMES.items() for b in d["builds"]]
-    weights = [6, 4, 1, 5, 3, 2]
+    weights = [6, 4, 1, 1, 5, 3, 2, 1]
     users, home = {}, {}
 
     def user(game):
@@ -196,6 +210,8 @@ def make_purchases(now_ms, rnd):
             if store == "stripe":
                 ccy, rate = ("USD", 1.0) if ccy not in ("EUR", "GBP") else (ccy, rate)
             price = local_price(usd, rate, ccy)
+            if store == "telegram":
+                ccy, price = "XTR", stars_micros(usd)
             if t > now_ms - 60_000:
                 continue
             if kind != "subscription":
@@ -231,6 +247,74 @@ def make_purchases(now_ms, rnd):
     return rows
 
 
+def store_facts(srv, rows, now_ms):
+    """What the stores report beyond the client (an import cannot set it): a few Google Play purchases
+    of several units, the VAT of recent European Google Play orders (Orders API) and an App Store
+    refund of part of a subscription (prorated)."""
+    multi = [r for r in rows if r["store"] == "google" and r["kind"] == "consumable" and r["status"] == "completed"][-6:]
+    for r in multi:
+        srv.sql(f"UPDATE purchase SET quantity = 3, price_micros = {r['price_micros'] * 3} WHERE id = '{r['id']}'")
+    vat = {"DE": 0.19, "FR": 0.20, "ES": 0.21, "PL": 0.23, "GB": 0.20}
+    skip = {r["id"] for r in multi}
+    for r in rows:
+        if (r["store"] == "google" and r["country"] in vat and r["price_micros"] > 0 and r["id"] not in skip
+                and r["created_at_micros"] > (now_ms - 120 * DAY_MS) * 1000):
+            tax = int(r["price_micros"] * vat[r["country"]] / (1 + vat[r["country"]]))
+            srv.sql(f"UPDATE purchase SET tax_micros = {tax} WHERE id = '{r['id']}'")
+    prorated = [r for r in rows if r["store"] == "apple" and r["kind"] == "subscription" and r["price_micros"] > 0 and r["status"] == "revoked"][-2:]
+    for r in prorated:
+        srv.sql(f"UPDATE purchase SET refund_share_milli = 40000, refunded_micros = {r['price_micros'] * 2 // 5} WHERE id = '{r['id']}'")
+
+
+def alerts(srv, rnd, now_ms):
+    """An alert channel with the business rules on, and what they reported lately."""
+    srv.call("admin_upsert_alert_channel", json.dumps({"name": "Ops webhook", "kind": "webhook", "enabled": True,
+                                                       "settings": {"url": "https://hooks.example.com/purser-alerts"},
+                                                       "secret": "demo-%x" % rnd.getrandbits(64)}))
+    srv.call("admin_set_alert_rules", json.dumps({"digest": True, "digest_hour": 8}))
+    hour = 3_600_000_000
+    now = now_ms * 1000
+    states = [
+        ("revenue_drop", "com.example.galaxyminer.amazon", True, now - 7 * hour,
+         "Yesterday $12.40 gross (3 paid purchases), 31% of the average day of the week before ($40.10)."),
+        ("refund_spike", "com.example.wordgarden.ios", False, now - 52 * hour,
+         "Yesterday 4 refunds ($19.96) against 11 paid purchases."),
+    ]
+    for i, (rule, app, active, at, detail) in enumerate(states):
+        srv.sql("INSERT INTO alert_state (key, rule, app_id, active, first_at_micros, last_at_micros, last_sent_at_micros, suppressed, total, detail) "
+                f"VALUES ('{rule}/{app}', '{rule}', '{app}', {str(active).lower()}, {at}, {at}, {at}, 0, 1, '{detail}')")
+    log = [
+        (now - 52 * hour, "refund_spike", "alert", "com.example.wordgarden.ios", "[ALERT] Refunds spiked", states[1][4]),
+        (now - 28 * hour, "refund_spike", "resolved", "com.example.wordgarden.ios", "[RESOLVED] Refunds are back to normal", ""),
+        (now - 26 * hour, "digest", "digest", "", "[DAILY] Daily summary",
+         "Galaxy Miner: $418.20 yesterday (+6% on the day before), 61 purchases, 9 new subscriptions, 1 refund. "
+         "Word Garden: $187.35 (-3%), 34 purchases, 4 new subscriptions, 0 refunds."),
+        (now - 7 * hour, "revenue_drop", "alert", "com.example.galaxyminer.amazon", "[ALERT] Revenue dropped", states[0][4]),
+    ]
+    for i, (at, rule, st, app, title, detail) in enumerate(log):
+        srv.sql("INSERT INTO alert_log (id, at_micros, rule, state, app_id, title, detail, repeats, results_json) "
+                f"VALUES ({900001 + i}, {at}, '{rule}', '{st}', '{app}', '{title}', '{detail}', 0, '{{\"Ops webhook\":\"sent\"}}')")
+
+
+def report(srv, q):
+    """A revenue report; the full one is counted in the background: asked again until it is kept."""
+    for _ in range(600):
+        r = srv.proc("admin_revenue_stats", json.dumps(q))
+        if "ERR_REPORT_COUNTING" not in str(r.get("error", "")):
+            return r
+        time.sleep(0.5)
+    raise SystemExit(f"revenue report {q} was not counted in 5 minutes")
+
+
+def promo_codes(srv):
+    srv.call("admin_upsert_promo_code", json.dumps({"game_key": "galaxy-miner", "code": "STARDUST-2026", "product_id": "gems_medium",
+                                                    "max_redemptions": 500, "note": "Launch week stream"}))
+    srv.call("admin_upsert_promo_code", json.dumps({"game_key": "galaxy-miner", "code": "VIP-WEEK-7K2Q", "product_id": "vip_monthly",
+                                                    "duration_days": 7, "max_redemptions": 50, "note": "Community moderators"}))
+    srv.call("admin_upsert_promo_code", json.dumps({"game_key": "word-garden", "code": "HINTS-FOR-YOU", "product_id": "hints_10",
+                                                    "note": "Support: apology for a lost purchase"}))
+
+
 def attribute_paywalls(rows, now_ms, rnd):
     """Purchases of the last 30 days in Galaxy Miner partly come from the shop paywall test."""
     for r in rows:
@@ -252,6 +336,9 @@ OK_TEXT = {
     "delivery_identity": "The billing identity may call the game reducers",
     "delivery_game": "grant_purchase and revoke_purchase exist (args v1)",
     "delivery_webhook": "Last delivery answered 200 in 84 ms",
+    "huawei_api": "Huawei IAP answers for this app (app-level token, site europe)",
+    "telegram_bot": "Bot @wordgarden_game_bot answers getMe",
+    "telegram_webhook": "The bot's webhook points here (secret_token set)",
 }
 PENDING_APP = "com.example.wordgarden"
 
@@ -311,8 +398,16 @@ def main():
             srv.call("admin_set_credential", app, "spacetime_token" if game == "galaxy-miner" else "webhook_secret", "demo-%x" % rnd.getrandbits(64))
             if st == "google":
                 srv.call("admin_set_credential", app, "google_rtdn_secret", "%032x" % rnd.getrandbits(128))
+            if st == "huawei":
+                srv.call("admin_set_credential", app, "huawei_client_id", "1%08d" % rnd.randrange(10**8))
+                srv.call("admin_set_credential", app, "huawei_client_secret", "%064x" % rnd.getrandbits(256))
+                srv.call("admin_set_credential", app, "huawei_notify_secret", "%032x" % rnd.getrandbits(128))
+            if st == "telegram":
+                srv.call("admin_set_credential", app, "telegram_bot_token", "70%08d:AA%033x" % (rnd.randrange(10**8), rnd.getrandbits(132)))
+                srv.call("admin_set_credential", app, "telegram_webhook_secret", "%032x" % rnd.getrandbits(128))
             srv.call("admin_upsert_products", json.dumps([
-                {"app_id": app, "product_id": store_pid(st, p), "catalog_id": p, "kind": k, "price_micros": int(usd * 1e6), "currency": "USD",
+                {"app_id": app, "product_id": store_pid(st, p), "catalog_id": p, "kind": k,
+                 **({"price_micros": stars_micros(usd), "currency": "XTR"} if st == "telegram" else {"price_micros": int(usd * 1e6), "currency": "USD"}),
                  **LISTING.get(p, {})}
                 for p, k, usd, _ in d["products"]]))
     for app in ("com.example.galaxyminer", "com.example.galaxyminer.ios"):
@@ -373,6 +468,7 @@ def main():
     for i in range(0, len(rows), 500):
         srv.call("admin_import_purchases", json.dumps(rows[i:i + 500]))
     print("imported", len(rows), "purchases of", len({r["user_id"] for r in rows}), "players")
+    store_facts(srv, rows, now_ms)
     player = rows[-1]["user_id"]
     max_.call("admin_grant_manual", json.dumps({"app_id": "com.example.galaxyminer", "user_id": player, "product_id": "gems_medium",
                                                  "note": "compensation: lost gems after a crash"}))
@@ -396,6 +492,7 @@ def main():
         srv.sql("INSERT INTO integration_health (key, app_id, kind, last_sent_at_micros, last_failed_at_micros, last_error, "
                 "last_failure_final, last_skipped_at_micros, last_skip_reason) VALUES "
                 f"('{app}/{kind}', '{app}', '{kind}', {sent}, 0, '', false, {skipped}, '{reason}')")
+    promo_codes(srv)
     # Start the revenue rebuild now instead of 5 minutes after the import.
     srv.sql("UPDATE server_state SET value = '0' WHERE key = 'last_import_micros'")
     srv.call("admin_ensure_worker")
@@ -414,13 +511,17 @@ def main():
         if "error sending request" in p["last_error"]:
             srv.sql(f"UPDATE purchase SET last_error = 'delivery: game database answered HTTP 503 (stdb.example.com)' WHERE id = '{p['id']}'")
 
+    # The worker checked the business rules when it started (hourly): what they reported lately is
+    # written now, so that check does not resolve it.
+    alerts(srv, rnd, now_ms)
+
     # --- Snapshot ------------------------------------------------------------------------------
     apps = [r["app_id"] for r in srv.sql("SELECT app_id FROM game_app")]
     checks = {app: green(srv.proc("admin_check_app", app, json.dumps({"online": False, "apple_test": False}))) for app in apps}
     tables = {}
     for t in ["game_app", "product", "purchase", "purchase_log", "integration", "app_check", "admin", "retry_schedule",
               "alert_channel", "alert_state", "alert_log", "spacetime_host", "server_state", "paywall", "placement", "paywall_test", "integration_health",
-              "app_profile", "admin_audit"]:
+              "app_profile", "admin_audit", "promo_code", "integration_dead", "app_policy"]:
         tables[t] = srv.sql(f"SELECT * FROM {t}")
     tables["credential"] = srv.sql("SELECT key FROM credential")  # names only, never values
     tables["server_key"] = [{k: v for k, v in r.items() if k != "key_hash"} for r in srv.sql("SELECT * FROM server_key")]
@@ -450,7 +551,7 @@ def main():
             for q in ({"from": iso(frm), "to": iso(day), "game_key": game, "summary": False},
                       {"from": iso(frm), "to": iso(day), "game_key": game, "summary": True},
                       {"from": iso(prev_from), "to": iso(prev_to), "game_key": game, "summary": True}):
-                revenue[rkey(q)] = srv.proc("admin_revenue_stats", json.dumps({**q, "include_sandbox": False}))
+                revenue[rkey(q)] = report(srv, {**q, "include_sandbox": False})
     profiles = {u: srv.proc("admin_user_profile", u) for u in sorted({r["user_id"] for r in tables["purchase"]})}
     paywall_results = {}
     for test in ("shop-ab-1", ""):

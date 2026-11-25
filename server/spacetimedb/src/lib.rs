@@ -1225,7 +1225,7 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
         }
         let id = r.id.clone();
         imported_apps.insert(r.app_id.clone());
-        crate::ledger::insert_purchase(ctx, Purchase {
+        let row = Purchase {
             id: r.id,
             store: r.store,
             app_id: r.app_id,
@@ -1279,7 +1279,9 @@ pub fn admin_import_purchases(ctx: &ReducerContext, json: String) -> Result<(), 
             paywall_variant_id: r.paywall_variant_id,
             paywall_test_id: r.paywall_test_id,
             paywall_id: r.paywall_id,
-        });
+        };
+        revenue::on_import(ctx, &row);
+        crate::ledger::insert_purchase(ctx, row);
         ctx.db.purchase_log().insert(PurchaseLog {
             id: 0,
             purchase_id: id,
