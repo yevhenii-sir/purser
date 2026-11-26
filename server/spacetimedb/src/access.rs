@@ -240,6 +240,7 @@ pub fn admin_upsert_admin(ctx: &ReducerContext, json: String) -> Result<(), Stri
     let hex = identity.to_hex().to_string();
     match existing {
         Some(mut a) => {
+            crate::sign_in::detach(ctx, identity);
             a.name = name.clone();
             a.role = role.as_str().into();
             a.game_keys = game_keys.join(",");
@@ -272,7 +273,7 @@ pub fn admin_remove_admin(ctx: &ReducerContext, identity_hex: String) -> Result<
     let Some(a) = ctx.db.admin().identity().find(identity) else { return Ok(()) };
     roles::may_manage(who.role, Some(Role::of(a.protected, &a.role)), None)?;
     ctx.db.admin().identity().delete(identity);
-    crate::sign_in::forget(ctx, identity);
+    crate::sign_in::forget(ctx, identity, &who.identity.to_hex());
     audit(ctx, &who, "admin_remove_admin", &identity.to_hex(), &a.name);
     Ok(())
 }
@@ -368,6 +369,7 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
         "admin" => rows(db.admin().iter()),
         "admin_invite" => crate::sign_in::invite_rows(ctx),
         "admin_sign_in" => crate::sign_in::sign_in_rows(ctx),
+        "admin_domain_rule" => crate::sign_in::domain_rule_rows(ctx),
         // Never the key hashes.
         "server_key" if column == "game_key" => crate::server_api::key_rows(ctx, Some(value)),
         "server_key" => crate::server_api::key_rows(ctx, None),
@@ -448,7 +450,7 @@ enum Equals {
 /// only the asked `columns` of each row (all when empty).
 pub fn select(ctx: &ReducerContext, q: &SelectQuery) -> Result<Vec<Value>, String> {
     // The admin list, invitations and the audit log are for admins who manage admins (and see every app).
-    let who = if matches!(q.table.as_str(), "admin" | "admin_audit" | "admin_invite" | "admin_sign_in") { require(ctx, Cap::Admins)? } else { require_scoped(ctx, Cap::Read)? };
+    let who = if matches!(q.table.as_str(), "admin" | "admin_audit" | "admin_invite" | "admin_sign_in" | "admin_domain_rule") { require(ctx, Cap::Admins)? } else { require_scoped(ctx, Cap::Read)? };
     let mut out = match &q.filter {
         None => read(ctx, &q.table, "", "")?,
         Some(w) => {

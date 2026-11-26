@@ -1,7 +1,10 @@
 import { useMemo, useState } from "react"
-import { CopyIcon, KeyRoundIcon, MailIcon, Trash2Icon, UserPlusIcon } from "lucide-react"
+import { CopyIcon, GlobeIcon, KeyRoundIcon, MailIcon, PencilIcon, Trash2Icon, UserPlusIcon } from "lucide-react"
 import { toast } from "sonner"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -46,7 +49,24 @@ interface InviteRow {
 interface SignInRow {
   identity: string
   email: string
+  /** The domain rule the admin joined through; empty: an invitation. */
+  domain_rule: string
 }
+
+/** Everyone with a verified email of `domain` joins with `role` (`admin_domain_rule`). */
+interface DomainRuleRow {
+  domain: string
+  role: string
+  game_keys: string
+  require_hosted_domain: boolean
+  /** Admins who joined through it. */
+  joined: number
+  /** Emails removed from the admins: the rule no longer lets them in. */
+  blocked: string[]
+}
+
+/** Roles a domain rule may give (`purser_core::sign_in::RULE_ROLES`). */
+const RULE_ROLES = ROLES.filter((r) => r.id === "viewer" || r.id === "support")
 
 const roleOf = (a: AdminRow): Role => (a.protected ? "owner" : ((ROLES.some((r) => r.id === a.role) ? a.role : "viewer") as Role))
 
@@ -58,13 +78,18 @@ export function AdminsPage({ me }: PageProps) {
   const { data, error, loading, reload: reloadAdmins } = useAsync(() => select<AdminRow>({ table: "admin" }))
   const invites = useAsync(() => select<InviteRow>({ table: "admin_invite" }))
   const bound = useAsync(() => select<SignInRow>({ table: "admin_sign_in" }))
+  const domainRules = useAsync(() => select<DomainRuleRow>({ table: "admin_domain_rule" }))
+  /** The rule being added (`null`: a new one) or changed; `undefined`: none. */
+  const [editingRule, setEditingRule] = useState<DomainRuleRow | null | undefined>(undefined)
   const provider = useAsync(signInConfig)
   const reload = () => {
     reloadAdmins()
     invites.reload()
     bound.reload()
+    domainRules.reload()
   }
   const emails = new Map((bound.data || []).map((b) => [hex(b.identity), b.email]))
+  const viaRule = new Map((bound.data || []).filter((b) => b.domain_rule).map((b) => [hex(b.identity), b.domain_rule]))
   /** Roles the signed-in admin may give or take away (only the owner manages admins). */
   const manageable = (r: Role) => r !== "owner" && (myRole === "owner" || r !== "admin")
   const names = new Map((data || []).map((a) => [hex(a.identity), a.name]))
@@ -96,6 +121,7 @@ export function AdminsPage({ me }: PageProps) {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{a.name || (a.protected ? "Owner" : "Unnamed")}</span>
                       {hex(a.identity) === me && <Tone tone="ok">you</Tone>}
+                      {viaRule.get(hex(a.identity)) && <Tone tone="muted">via @{viaRule.get(hex(a.identity))}</Tone>}
                     </div>
                     {emails.get(hex(a.identity)) && <div className="text-xs text-muted-foreground">{emails.get(hex(a.identity))}</div>}
                     <Mono className="break-all text-muted-foreground">{hex(a.identity)}</Mono>
@@ -182,6 +208,60 @@ export function AdminsPage({ me }: PageProps) {
           />
         </Section>
       )}
+      {(provider.data || (domainRules.data?.length ?? 0) > 0) && (
+        <Section
+          title="Domain rules"
+          description="Everyone with a verified email of a company domain joins on their first sign-in, with a low role. Use it only with a provider the company controls."
+          actions={provider.data && <Button variant="outline" size="sm" onClick={() => setEditingRule(null)}><GlobeIcon /> Add a rule</Button>}
+        >
+          {domainRules.error ? <ErrorBox error={domainRules.error} /> : !domainRules.data?.length ? (
+            <p className="text-sm text-muted-foreground">None: only invited people and tokens get in.</p>
+          ) : (
+            <DataTable
+              rows={domainRules.data}
+              rowKey={(r) => r.domain}
+              columns={[
+                { title: "Domain", cell: (r) => <Mono>@{r.domain}</Mono> },
+                { title: "Role", cell: (r) => <Tone tone="muted">{roleLabel(r.role as Role)}</Tone> },
+                { title: "Apps", className: "whitespace-normal", cell: (r) => <span className="text-sm text-muted-foreground">{keysOf(r).length ? keysOf(r).map(appName).join(", ") : "Every app"}</span> },
+                { title: "Organization check", cell: (r) => (r.require_hosted_domain ? <Tone tone="ok">hd claim</Tone> : <span className="text-xs text-muted-foreground">email only</span>) },
+                {
+                  title: "Joined",
+                  className: "whitespace-normal",
+                  cell: (r) => (
+                    <div className="text-xs text-muted-foreground">
+                      {r.joined}
+                      {r.blocked?.length > 0 && <div title={r.blocked.join(", ")}>{r.blocked.length} removed, kept out</div>}
+                    </div>
+                  ),
+                },
+                {
+                  title: "",
+                  className: "text-right",
+                  cell: (r) => (
+                    <div className="flex justify-end gap-1">
+                      <Button variant="ghost" size="icon-sm" aria-label="Change the rule" onClick={() => setEditingRule(r)}><PencilIcon /></Button>
+                      <Button variant="ghost" size="icon-sm" className="text-destructive" aria-label="Remove the rule" onClick={async () => {
+                        const who = r.joined ? ` and the ${r.joined} admin${r.joined === 1 ? "" : "s"} who joined through it` : ""
+                        if (!confirm(`Remove the rule for @${r.domain}${who}?`)) return
+                        await tryAct(() => call("admin_delete_domain_rule", r.domain), "Rule removed")
+                        reload()
+                      }}><Trash2Icon /></Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+          )}
+        </Section>
+      )}
+      <Dialog open={editingRule !== undefined} onOpenChange={(o) => !o && setEditingRule(undefined)}>
+        <DialogContent className="sm:max-w-lg">
+          {editingRule !== undefined && provider.data && (
+            <DomainRuleForm rule={editingRule} provider={provider.data} onClose={() => setEditingRule(undefined)} onSaved={reload} />
+          )}
+        </DialogContent>
+      </Dialog>
       <SignInSection config={provider.data ?? null} loading={provider.loading} canEdit={myRole === "owner" || myRole === "admin"} onSaved={provider.reload} />
       <Section title="What each role may do" description="The Owner is the identity that published the database. Limiting an admin to some apps narrows any role to those apps.">
         <RoleMatrix highlight={myRole} />
@@ -305,6 +385,86 @@ function SignInSection({ config, loading, canEdit, onSaved }: { config: SignInCo
         </div>
       )}
     </Section>
+  )
+}
+
+/** Adds or changes a domain rule; the usage rules must be acknowledged. */
+function DomainRuleForm({ rule, provider, onClose, onSaved }: { rule: DomainRuleRow | null; provider: SignInConfig; onClose: () => void; onSaved: () => void }) {
+  const [domain, setDomain] = useState(rule?.domain || "")
+  const [role, setRole] = useState(rule?.role || "viewer")
+  const [apps, setApps] = useState<string[]>(rule ? keysOf(rule) : [])
+  const [hd, setHd] = useState(rule?.require_hosted_domain ?? false)
+  const [understood, setUnderstood] = useState(!!rule)
+  const [busy, setBusy] = useState(false)
+  const typed = domain.trim().replace(/^@/, "").toLowerCase()
+  /** The domain as the texts name it. */
+  const shown = typed ? `@${typed}` : "the domain's"
+  const save = async () => {
+    setBusy(true)
+    const ok = await tryAct(
+      () => call("admin_upsert_domain_rule", JSON.stringify({ domain: domain.trim(), role, game_keys: apps, require_hosted_domain: hd })),
+      rule ? "Rule changed" : "Rule added",
+    )
+    setBusy(false)
+    if (ok !== undefined) {
+      onSaved()
+      onClose()
+    }
+  }
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>{rule ? `Rule for @${rule.domain}` : "Add a domain rule"}</DialogTitle>
+        <DialogDescription>
+          Everyone who signs in with {providerName(provider)} using a verified {shown} address becomes an admin with this role, without an invitation.
+        </DialogDescription>
+      </DialogHeader>
+      <DialogBody className="space-y-4">
+        {!rule && <Field label="Domain"><Input placeholder="studio.com" value={domain} onChange={(e) => setDomain(e.target.value)} autoFocus /></Field>}
+        <Field label="Role">
+          <Select value={role} onValueChange={setRole}>
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>{RULE_ROLES.map((r) => <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>)}</SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">{RULE_ROLES.find((r) => r.id === role)?.description}. Admins and editors are invited one by one.</p>
+        </Field>
+        <Field label="Apps"><AdminAppsPicker value={apps} onChange={setApps} /></Field>
+        <div className="flex items-start gap-2">
+          <Checkbox id="rule-hd" checked={hd} onCheckedChange={(v) => setHd(v === true)} />
+          <Label htmlFor="rule-hd" className="text-sm leading-snug font-normal">
+            <span>
+              Only accounts of the organization: the token must carry the Google Workspace <code>hd</code> claim of {typed || "the domain"}. A personal
+              account with a company address is refused. Providers that do not pass the claim (SpacetimeAuth today) let nobody in with this on.
+            </span>
+          </Label>
+        </div>
+        <Alert>
+          <AlertTitle>Rules of use</AlertTitle>
+          <AlertDescription>
+            <ul className="list-disc space-y-1 pl-4 text-xs">
+              <li>Only for a provider the company controls (Google Workspace, its own Keycloak or Okta), where leaving the company ends the account.</li>
+              <li>Not with GitHub, Discord or other personal accounts: an address verified there stays verified after the person leaves.</li>
+              <li>Public email domains (gmail.com, outlook.com, …) are refused: anyone can have an address there.</li>
+              <li>Give the lowest role that works (Viewer). People who need more are invited one by one.</li>
+              <li>Check the admin list from time to time: everyone who joined shows "via @domain". Removing one keeps them out of the rule.</li>
+              <li>Remove the rule when it is no longer needed: its admins lose access at once.</li>
+            </ul>
+          </AlertDescription>
+        </Alert>
+        {!rule && (
+          <div className="flex items-start gap-2">
+            <Checkbox id="rule-understood" checked={understood} onCheckedChange={(v) => setUnderstood(v === true)} />
+            <Label htmlFor="rule-understood" className="text-sm leading-snug font-normal">
+              <span>Only people of this company can have a verified {shown} address with {providerName(provider)}.</span>
+            </Label>
+          </div>
+        )}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button onClick={save} disabled={busy || !understood || !domain.trim()}>{rule ? "Save" : "Add the rule"}</Button>
+      </DialogFooter>
+    </>
   )
 }
 

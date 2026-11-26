@@ -7,6 +7,12 @@
 //! through an invitation are bound to the issuer and client id they signed in with
 //! ([`token_allowed`]), and an invitation is claimed only with a verified email of a token issued
 //! for this server's client ([`invited_email`]).
+//!
+//! A domain rule lets everyone with a verified email of a company domain in with a low role
+//! ([`RULE_ROLES`]): only for a provider the company controls (Google Workspace, its own Keycloak),
+//! where leaving the company ends the account. Public email domains are refused
+//! ([`check_domain`]), and an admin who joined through a rule keeps access only while every token
+//! still shows a verified email of that domain and the rule exists ([`DomainRule::admits`]).
 
 use serde_json::Value;
 
@@ -133,6 +139,8 @@ pub struct Person {
     pub email: String,
     /// `name`, else `preferred_username`; may be empty.
     pub name: String,
+    /// The `hd` claim (Google Workspace: the account's organization domain), lowercase; empty when absent.
+    pub hosted_domain: String,
 }
 
 /// The verified email of a token issued by the configured provider for this server's client: what
@@ -158,7 +166,62 @@ pub fn invited_email(payload: &str, config: &Config) -> Result<Person, String> {
         return Err("[ERR_SIGN_IN] your email is not verified with the provider".into());
     }
     let name = claims["name"].as_str().filter(|s| !s.trim().is_empty()).or(claims["preferred_username"].as_str()).unwrap_or("");
-    Ok(Person { email: normalize_email(email)?, name: name.trim().chars().take(80).collect() })
+    let hosted_domain = claims["hd"].as_str().unwrap_or("").trim().to_ascii_lowercase();
+    Ok(Person { email: normalize_email(email)?, name: name.trim().chars().take(80).collect(), hosted_domain })
+}
+
+/// Roles a domain rule may give: reading, and support work on players. Admins and editors are
+/// invited one by one.
+pub const RULE_ROLES: &[&str] = &["viewer", "support"];
+
+/// Email domains anyone can get an address at: a rule for one would let strangers in.
+const PUBLIC_DOMAINS: &[&str] = &[
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "yahoo.com", "ymail.com", "aol.com",
+    "icloud.com", "me.com", "mac.com", "proton.me", "protonmail.com", "pm.me", "gmx.com", "gmx.net", "gmx.de", "web.de",
+    "mail.com", "zoho.com", "yandex.com", "yandex.ru", "ya.ru", "mail.ru", "bk.ru", "inbox.ru", "list.ru", "ukr.net",
+    "i.ua", "meta.ua", "qq.com", "163.com", "126.com", "naver.com", "fastmail.com", "tutanota.com", "tuta.io", "hey.com",
+    "duck.com", "users.noreply.github.com",
+];
+
+/// The domain of a rule: lowercase, no `@`, at least two labels of `a-z 0-9 -`, not a public email domain.
+pub fn check_domain(domain: &str) -> Result<String, String> {
+    let d = domain.trim().trim_start_matches('@').to_ascii_lowercase();
+    let labels_ok = d.len() <= 253
+        && d.split('.').count() >= 2
+        && d.split('.').all(|l| !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-') && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    if !labels_ok {
+        return Err("[ERR_BAD_DOMAIN] a domain like example.com".into());
+    }
+    if PUBLIC_DOMAINS.contains(&d.as_str()) {
+        return Err(format!("[ERR_PUBLIC_DOMAIN] anyone can have an address at {d}: invite people one by one instead"));
+    }
+    Ok(d)
+}
+
+/// The domain of a normalized email.
+pub fn domain_of(email: &str) -> &str {
+    email.rsplit_once('@').map(|(_, d)| d).unwrap_or("")
+}
+
+/// A domain rule: who it lets in.
+pub struct DomainRule<'a> {
+    pub domain: &'a str,
+    /// The token must also carry `hd` (Google Workspace's organization domain) equal to the domain:
+    /// a personal Google account with an address there is not enough.
+    pub require_hosted_domain: bool,
+}
+
+impl DomainRule<'_> {
+    /// The person's verified email is of this domain (and the organization claim matches when required).
+    pub fn admits(&self, p: &Person) -> Result<(), String> {
+        if domain_of(&p.email) != self.domain {
+            return Err(format!("[ERR_NOT_INVITED] {} is not an address of {}", p.email, self.domain));
+        }
+        if self.require_hosted_domain && p.hosted_domain != self.domain {
+            return Err(format!("[ERR_NOT_INVITED] {} is not an account of the {} organization (the token's hd claim)", p.email, self.domain));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -223,7 +286,7 @@ mod tests {
             c.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
             c.to_string()
         };
-        assert_eq!(invited_email(&token(json!({})), &config()).unwrap(), Person { email: "anna@example.com".into(), name: "Anna".into() });
+        assert_eq!(invited_email(&token(json!({})), &config()).unwrap(), Person { email: "anna@example.com".into(), name: "Anna".into(), hosted_domain: String::new() });
         assert_eq!(invited_email(&token(json!({ "aud": ["other", "client_123"], "name": null, "preferred_username": "anna" })), &config()).unwrap().name, "anna");
         for (claims, why) in [
             (json!({ "aud": "another_app" }), "another application"),
@@ -239,5 +302,31 @@ mod tests {
         assert!(token_allowed(SPACETIMEAUTH_ISSUER, &["client_123".into()], SPACETIMEAUTH_ISSUER, "client_123"));
         assert!(!token_allowed(SPACETIMEAUTH_ISSUER, &["other".into()], SPACETIMEAUTH_ISSUER, "client_123"));
         assert!(!token_allowed("https://evil.example.com", &["client_123".into()], SPACETIMEAUTH_ISSUER, "client_123"));
+    }
+
+    #[test]
+    fn domain_rules_take_company_domains_and_check_the_organization() {
+        assert_eq!(check_domain(" @Studio.Example.com ").unwrap(), "studio.example.com");
+        for bad in ["example", "exa mple.com", "-a.com", "a..com", "*.example.com", "a@b.com"] {
+            assert!(check_domain(bad).unwrap_err().contains("ERR_BAD_DOMAIN"), "{bad}");
+        }
+        for public in ["gmail.com", "Outlook.com", "ukr.net", "proton.me"] {
+            assert!(check_domain(public).unwrap_err().contains("ERR_PUBLIC_DOMAIN"), "{public}");
+        }
+        let person = |email: &str, hd: &str| Person { email: email.into(), name: String::new(), hosted_domain: hd.into() };
+        let rule = DomainRule { domain: "studio.com", require_hosted_domain: false };
+        assert!(rule.admits(&person("anna@studio.com", "")).is_ok());
+        assert!(rule.admits(&person("anna@evil-studio.com", "")).is_err());
+        assert!(rule.admits(&person("anna@mail.studio.com", "")).is_err(), "no subdomains");
+        let workspace = DomainRule { domain: "studio.com", require_hosted_domain: true };
+        assert!(workspace.admits(&person("anna@studio.com", "studio.com")).is_ok());
+        assert!(workspace.admits(&person("anna@studio.com", "")).unwrap_err().contains("hd claim"), "a personal account with a company address");
+        let hd = invited_email(
+            &json!({ "iss": SPACETIMEAUTH_ISSUER, "aud": "client_123", "email": "a@studio.com", "email_verified": true, "hd": "Studio.com" }).to_string(),
+            &config(),
+        )
+        .unwrap()
+        .hosted_domain;
+        assert_eq!(hd, "studio.com");
     }
 }

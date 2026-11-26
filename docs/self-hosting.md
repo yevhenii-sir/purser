@@ -110,6 +110,24 @@ Instead of handing out tokens, admins can sign in through an OpenID Connect prov
 3. **Purser.** Admins → **Sign-in with a provider** → *Set up*: the issuer (`https://auth.spacetimedb.com/oidc` for SpacetimeAuth) and the client ID. Purser reads the provider's discovery document right away and refuses an issuer it does not name exactly or a provider without PKCE (`S256`). The page then shows **Sign in with …** and its Content-Security-Policy lets it call the provider's token endpoint, nothing else.
 4. **Invite.** Admins → **Add admin** → name, role, apps → the coworker's email → **Invite**. They open the admin page, sign in with the provider using that email, and become an admin with that role. An invitation works once, for 7 days, and only with an email the provider marks as verified.
 
+#### Domain rules
+
+A domain rule lets everyone with a verified email of a company domain in without an invitation: Admins → **Domain rules** → *Add a rule* → the domain (`studio.com`), the role (**Viewer** or **Support** only), the apps. Their first sign-in through the provider makes them an admin with that role; the list shows them as *via @studio.com*.
+
+- **Organization check.** With *Only accounts of the organization* on, the token must also carry `hd` equal to the domain: Google Workspace sets it for accounts of the organization, so a personal Google account with a company address is refused. Use it with Google as the provider (an OpenID Connect client in Google Cloud). SpacetimeAuth does not pass `hd` today: with the check on, nobody gets in through it.
+- **Every request.** An admin of a rule acts only while the rule exists and every token still shows a verified address of the domain (and `hd`, when required). Removing the rule removes its admins at once.
+- **Removing one person.** Removing an admin who joined through a rule keeps their email out of the rule; only an invitation lets them back in.
+- **Changing one person.** Changing the role or apps of such an admin by hand detaches them from the rule: from then on they are like an invited admin, and the rule's changes or removal no longer touch them.
+
+**Rules of use.** A domain rule trusts the provider's word that an address belongs to someone who works there. Follow these, or invite people one by one:
+
+1. Use it only with a provider the company controls (Google Workspace, the company's Keycloak, Okta, Entra ID), where an account ends when the person leaves the company. Turn the organization check on where the provider supports it.
+2. Never with providers of personal accounts (GitHub, Discord, Twitch): an address verified there stays verified on the person's own account after they leave the company. Public email domains (gmail.com, outlook.com, ukr.net, …) are refused.
+3. Give the lowest role that does the job: Viewer reads revenue, purchases and settings, Support also grants, revokes and refunds purchases. Admins and editors are invited one by one; a rule cannot give their roles.
+4. Limit the rule to the apps the team works on when it does not need every app.
+5. Look through the admin list after people leave or join: everyone of a rule shows *via @domain*, and the Audit log records every join (`admin_accept_invite`) and every change of a rule.
+6. Remove the rule when it is no longer needed, or when the company changes its email domain or provider.
+
 Admins who joined by invitation are bound to the provider and client they signed in with: SpacetimeDB checks a token's signature and expiry but not which application it was issued for, so Purser refuses their identity with a token of another client of the same provider. Removing them on the Admins page ends their access at once. Provider tokens are short-lived: when one expires, the page asks to sign in again (usually one click while the provider's session lasts).
 
 ## Delivery to games on the same server

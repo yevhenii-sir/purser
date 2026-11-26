@@ -10646,3 +10646,69 @@ fn invited_admins_join_with_their_verified_email_and_stay_bound_to_this_client()
     admin_call(&w, |ctx| crate::access::admin_remove_admin(ctx, anna.to_hex().to_string())).unwrap();
     assert_eq!(w.read(|tx| crate::sign_in::email_of(tx, anna)), None);
 }
+
+/// A provider's ID token of user `sub` for this server's client, with an organization claim when `hd` is set.
+fn colleague(sub: &str, email: &str, hd: &str) -> TestAuth {
+    let mut claims = json!({ "iss": SSO_ISSUER, "sub": sub, "aud": "client_1", "email": email, "email_verified": true, "name": sub });
+    if !hd.is_empty() {
+        claims["hd"] = json!(hd);
+    }
+    TestAuth::from_jwt_payload(claims.to_string(), spacetimedb::ConnectionId::ZERO).unwrap()
+}
+
+fn rule(w: &World, domain: &str, role: &str, require_hd: bool) -> Result<(), String> {
+    admin_call(w, |ctx| {
+        crate::sign_in::admin_upsert_domain_rule(ctx, json!({ "domain": domain, "role": role, "require_hosted_domain": require_hd }).to_string())
+    })
+}
+
+#[test]
+fn a_domain_rule_lets_a_company_in_as_viewers_while_it_exists() {
+    let w = sso_world();
+    assert!(rule(&w, "gmail.com", "viewer", false).unwrap_err().contains("ERR_PUBLIC_DOMAIN"));
+    assert!(rule(&w, "studio.com", "editor", false).unwrap_err().contains("ERR_BAD_ROLE"), "editors and admins are invited one by one");
+    rule(&w, "@Studio.com", "viewer", true).unwrap();
+
+    // Only verified addresses of the domain, and here only accounts of the organization (hd).
+    assert!(accept(&w, colleague("u-eve", "eve@other.com", "other.com")).unwrap_err().contains("ERR_NOT_INVITED"));
+    assert!(accept(&w, colleague("u-ann", "ann@studio.com", "")).unwrap_err().contains("hd claim"), "a personal account with a company address");
+    accept(&w, colleague("u-ann", "ann@studio.com", "studio.com")).unwrap();
+    let ann = Identity::from_claims(SSO_ISSUER, "u-ann");
+    assert_eq!(w.read(|tx| tx.db.admin().identity().find(ann)).map(|a| a.role), Some("viewer".into()));
+    let acts = |auth: TestAuth| w.test.with_reducer_tx(auth, |ctx| crate::access::require_scoped(ctx, purser_core::roles::Cap::Read).map(|who| who.role));
+    assert!(acts(colleague("u-ann", "ann@studio.com", "studio.com")).is_ok());
+    // Every token must still show the company account.
+    assert!(acts(colleague("u-ann", "ann@home.org", "")).unwrap_err().contains("ERR_ADMIN_UNAUTHORIZED"));
+
+    // A change of the rule applies to who joined through it.
+    rule(&w, "studio.com", "support", true).unwrap();
+    assert_eq!(w.read(|tx| tx.db.admin().identity().find(ann)).map(|a| a.role), Some("support".into()));
+    let rows = w.read(crate::sign_in::domain_rule_rows);
+    assert_eq!((rows[0]["domain"].as_str(), rows[0]["joined"].as_i64()), (Some("studio.com"), Some(1)));
+
+    // Someone removed stays out of the rule until an invitation lets them in.
+    accept(&w, colleague("u-bob", "bob@studio.com", "studio.com")).unwrap();
+    let bob = Identity::from_claims(SSO_ISSUER, "u-bob");
+    admin_call(&w, |ctx| crate::access::admin_remove_admin(ctx, bob.to_hex().to_string())).unwrap();
+    assert!(accept(&w, colleague("u-bob", "bob@studio.com", "studio.com")).unwrap_err().contains("only an invitation"));
+    invite(&w, "bob@studio.com", "viewer").unwrap();
+    accept(&w, colleague("u-bob", "bob@studio.com", "studio.com")).unwrap();
+
+    // Removing the rule removes its admins; the invited one stays.
+    admin_call(&w, |ctx| crate::sign_in::admin_delete_domain_rule(ctx, "studio.com".into())).unwrap();
+    assert!(w.read(|tx| tx.db.admin().identity().find(ann)).is_none());
+    assert!(acts(colleague("u-ann", "ann@studio.com", "studio.com")).is_err());
+    assert!(acts(colleague("u-bob", "bob@studio.com", "studio.com")).is_ok());
+}
+
+#[test]
+fn an_admin_changed_by_hand_no_longer_depends_on_the_rule() {
+    let w = sso_world();
+    rule(&w, "studio.com", "viewer", false).unwrap();
+    accept(&w, colleague("u-ann", "ann@studio.com", "")).unwrap();
+    let ann = Identity::from_claims(SSO_ISSUER, "u-ann");
+    let upsert = json!({ "identity": ann.to_hex().to_string(), "name": "Ann", "role": "editor" }).to_string();
+    admin_call(&w, |ctx| crate::access::admin_upsert_admin(ctx, upsert.clone())).unwrap();
+    admin_call(&w, |ctx| crate::sign_in::admin_delete_domain_rule(ctx, "studio.com".into())).unwrap();
+    assert_eq!(w.read(|tx| tx.db.admin().identity().find(ann)).map(|a| a.role), Some("editor".into()));
+}
