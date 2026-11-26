@@ -83,6 +83,24 @@
       }
     },
     {
+      "route": "/verify/samsung",
+      "body": {
+        "app_id": "com.studio.game.samsung",
+        "user_id": "player-1",
+        "product_id": "gems",
+        "purchase_token": "579cc7245d57cc1ba072b81d06e6f86cd49d3da63854538eea68927378799a37",
+        "order_id": "S20261101KRA0000001",
+        "price_micros": 4990000,
+        "currency": "EUR",
+        "client": {
+          "device": "Samsung SM-S928B",
+          "os": "Android OS 16 / API-36",
+          "app_version": "1.2.1",
+          "sdk_version": "0.11.0"
+        }
+      }
+    },
+    {
       "route": "/verify/steam",
       "body": {
         "app_id": "480",

@@ -59,6 +59,9 @@ impl Auth {
             store::AMAZON => config::secret(tx, app, secret_name::AMAZON_SHARED_SECRET).map(|s| s.value),
             store::HUAWEI => config::secret(tx, app, purser_core::huawei::CLIENT_ID)
                 .and_then(|id| cached(format!("huawei/{}/{}", id.scope, id.value))),
+            // `samsung_auth` keeps the service account id with the token.
+            store::SAMSUNG => config::secret(tx, app, purser_core::samsung::SERVICE_ACCOUNT_ID)
+                .and_then(|id| cached(samsung_cache_key(&id.scope, &id.value)).map(|token| format!("{}\n{token}", id.value))),
             _ => None,
         })
     }
@@ -560,6 +563,157 @@ pub fn huawei_fetch(
     })
 }
 
+// ---------------------------------------------------------------------
+// Samsung Galaxy Store
+// ---------------------------------------------------------------------
+
+/// Token cache key of a Samsung service account.
+fn samsung_cache_key(scope: &str, service_account_id: &str) -> String {
+    format!("samsung/{scope}/{service_account_id}")
+}
+
+/// Access token of the build's Galaxy Store service account, cached per account. The service
+/// account id goes with every call (`service-account-id`): `(token, service account id)`.
+pub(crate) fn samsung_token(ctx: &mut impl Ctx, app: &GameApp) -> Result<(String, String), StoreError> {
+    use purser_core::samsung;
+    let now = ctx.now_micros();
+    let app_c = app.clone();
+    let (cache_key, cached, id, key) = ctx
+        .tx(|tx| -> Result<_, String> {
+            let id = config::require_secret(tx, &app_c, samsung::SERVICE_ACCOUNT_ID)?;
+            let key = config::require_secret(tx, &app_c, samsung::PRIVATE_KEY)?;
+            let cache_key = samsung_cache_key(&id.scope, &id.value);
+            let cached = config::cached_token(tx, &cache_key, now, MIN_TOKEN_VALIDITY_MICROS);
+            Ok((cache_key, cached, id.value, key.value))
+        })
+        .map_err(StoreError::Config)?;
+    if let Some(token) = cached {
+        return Ok((token, id));
+    }
+    let jwt = samsung::service_account_jwt(&id, &key, now / 1_000_000).map_err(StoreError::Config)?;
+    let res = net::send(
+        ctx.http(),
+        "POST",
+        samsung::TOKEN_URL,
+        &[("Authorization", &bearer(&jwt)), ("Content-Type", "application/json")],
+        (),
+    )
+    .map_err(StoreError::Transient)?;
+    if !res.ok() {
+        let msg = format!("Samsung access token request failed: {}", res.describe());
+        if res.status >= 500 || res.status == 429 {
+            return Err(StoreError::Transient(msg));
+        }
+        report_rejected(ctx, app, &msg);
+        return Err(StoreError::Config(format!("{msg}: check samsung_service_account_id, samsung_private_key and the account's scopes")));
+    }
+    let token = samsung::parse_token(&res.body).map_err(StoreError::Transient)?;
+    ctx.tx(|tx| config::store_token(tx, &cache_key, &token, now + samsung::TOKEN_CACHE_SECS * 1_000_000));
+    Ok((token, id))
+}
+
+/// The API refused the cached token (revoked): the next call asks for a new one.
+fn samsung_forget_token(ctx: &mut impl Ctx, app: &GameApp, service_account_id: &str) {
+    let app_c = app.clone();
+    ctx.tx(|tx| {
+        if let Some(id) = config::secret(tx, &app_c, purser_core::samsung::SERVICE_ACCOUNT_ID) {
+            if id.value == service_account_id {
+                config::store_token(tx, &samsung_cache_key(&id.scope, &id.value), "", 0);
+            }
+        }
+    });
+}
+
+/// The package name of a Galaxy Store build (`samsung_package_name`, or its app id).
+pub(crate) fn samsung_package(ctx: &mut impl Ctx, app: &GameApp) -> String {
+    let app_c = app.clone();
+    let configured = ctx.tx(|tx| config::secret(tx, &app_c, purser_core::samsung::PACKAGE_NAME).map(|s| s.value));
+    purser_core::samsung::package_name(configured.as_deref(), &app.app_id).to_string()
+}
+
+fn samsung_answer_error(e: purser_core::samsung::AnswerError) -> StoreError {
+    match e {
+        purser_core::samsung::AnswerError::Retry(m) => StoreError::Transient(m),
+        purser_core::samsung::AnswerError::Invalid(m) => StoreError::Invalid(m),
+    }
+}
+
+/// Headers of the Galaxy Store Developer API.
+fn samsung_headers<'a>(authorization: &'a str, service_account_id: &'a str) -> [(&'static str, &'a str); 3] {
+    [("Authorization", authorization), ("service-account-id", service_account_id), ("Content-Type", "application/json")]
+}
+
+/// One payment as the receipt API reports it (`Verify a purchase`, no credentials).
+pub fn samsung_receipt(ctx: &mut impl Ctx, app: &GameApp, product: &Product, purchase_id: &str) -> Result<StoreTx, StoreError> {
+    use purser_core::samsung;
+    let url = samsung::receipt_url(purchase_id).map_err(StoreError::Invalid)?;
+    let package = samsung_package(ctx, app);
+    let res = net::send(ctx.http(), "GET", &url, &[("Accept", "application/json")], ()).map_err(StoreError::Transient)?;
+    if !res.ok() {
+        return Err(StoreError::Transient(format!("Samsung receipt: HTTP {}", res.status)));
+    }
+    samsung::parse_receipt(&package, &app.app_id, &product.product_id, &product.kind, purchase_id, &res.body).map_err(samsung_answer_error)
+}
+
+/// Looks a Samsung purchase up: a one-time product's receipt, or a subscription's status (Galaxy
+/// Store Developer API) by any purchase id of it.
+pub fn samsung_fetch(ctx: &mut impl Ctx, app: &GameApp, product: &Product, purchase_id: &str, auth: &mut Auth) -> Result<StoreTx, StoreError> {
+    use purser_core::samsung;
+    if product.kind != kind::SUBSCRIPTION {
+        return samsung_receipt(ctx, app, product, purchase_id);
+    }
+    let package = samsung_package(ctx, app);
+    let url = samsung::subscription_url(&package, purchase_id).map_err(StoreError::Invalid)?;
+    let (token, account) = samsung_auth(ctx, app, auth)?;
+    let authorization = bearer(&token);
+    let res = net::send(ctx.http(), "GET", &url, &samsung_headers(&authorization, &account), ()).map_err(StoreError::Transient)?;
+    match res.status {
+        200..=299 => samsung::parse_subscription(&app.app_id, &product.product_id, purchase_id, &res.body, ctx.now_ms()).map_err(samsung_answer_error),
+        // SLR_4014: the subscription does not exist; SLR_4016: the purchase id does not exist.
+        400 if res.body.contains("SLR_4014") || res.body.contains("SLR_4016") => {
+            Err(StoreError::Invalid(format!("Samsung subscription look-up: {}", res.describe())))
+        }
+        400..=499 if res.status != 429 => {
+            let msg = format!("Samsung subscription look-up: {}", res.describe());
+            if res.status == 401 {
+                samsung_forget_token(ctx, app, &account);
+                *auth = Auth::default();
+            }
+            report_rejected(ctx, app, &msg);
+            Err(StoreError::Config(msg))
+        }
+        _ => Err(StoreError::Transient(format!("Samsung subscription look-up: {}", res.describe()))),
+    }
+}
+
+/// The token and service account id of a Galaxy Store build, kept in `auth` as `id\ntoken` for the
+/// next calls of the request.
+fn samsung_auth(ctx: &mut impl Ctx, app: &GameApp, auth: &mut Auth) -> Result<(String, String), StoreError> {
+    let joined = auth.get(|| samsung_token(ctx, app).map(|(token, id)| format!("{id}\n{token}")))?;
+    let (id, token) = joined.split_once('\n').unwrap_or(("", joined.as_str()));
+    Ok((token.to_string(), id.to_string()))
+}
+
+/// Consumes a consumable or acknowledges a subscription (or non-consumable) after the grant
+/// (Purchase Acknowledgment API). Already done, or not something Samsung acknowledges, counts as
+/// done.
+pub fn samsung_finish(ctx: &mut impl Ctx, app: &GameApp, purchase_id: &str, action: &str, auth: &mut Auth) -> Result<(), String> {
+    use purser_core::samsung;
+    let package = samsung_package(ctx, app);
+    let url = samsung::acknowledgment_url(&package, purchase_id)?;
+    let (token, account) = samsung_auth(ctx, app, auth).map_err(|e| e.message().to_string())?;
+    let authorization = bearer(&token);
+    let res = net::send(ctx.http(), "PATCH", &url, &samsung_headers(&authorization, &account), samsung::acknowledgment_body(action))?;
+    if res.status == 401 {
+        samsung_forget_token(ctx, app, &account);
+        *auth = Auth::default();
+    }
+    if !res.ok() {
+        return Err(format!("Samsung {action} failed: {}", res.describe()));
+    }
+    samsung::parse_acknowledgment(purchase_id, &res.body).map_err(|e| format!("Samsung {action}: {e}"))
+}
+
 fn sns_cache_key(url: &str) -> String {
     format!("sns-cert/{url}")
 }
@@ -626,6 +780,7 @@ pub fn missing_field(store_id: &str, product_kind: &str, r: &ReceiptRef) -> Opti
             Some("order_id (the Huawei subscriptionId) is required for subscriptions")
         }
         store::STEAM if r.order_id.is_empty() && r.purchase_token.is_empty() => Some("order_id (from /checkout/steam) is required"),
+        store::SAMSUNG if r.purchase_token.is_empty() => Some("purchase_token (the Samsung purchaseId) is required"),
         _ => None,
     }
 }
@@ -642,6 +797,7 @@ pub fn fetch(ctx: &mut impl Ctx, app: &GameApp, product: &Product, r: &ReceiptRe
         store::AMAZON => amazon_fetch(ctx, app, product, r.store_user_id, r.order_id, auth),
         store::STEAM => crate::steam::fetch(ctx, app, product, r),
         store::HUAWEI => huawei_fetch(ctx, app, product, r.purchase_token, r.order_id, auth),
+        store::SAMSUNG => samsung_fetch(ctx, app, product, r.purchase_token, auth),
         // A new client-receipt store adds one arm here.
         other => Err(StoreError::Invalid(format!("{other} purchases are not verified from client receipts"))),
     }
@@ -699,7 +855,7 @@ pub fn refetch_auth(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth
     fetch(ctx, app, &product_of(p), &r, auth)
 }
 
-/// The store-side step after the grant (`purchase.store_action`); only Google has one today
+/// The store-side step after the grant (`purchase.store_action`): Google and Samsung
 /// (`purser_core::registry::Finish::ServerConsumeAcknowledge`).
 pub fn finish(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth: &mut Auth) -> Result<(), String> {
     use purser_core::model::store;
@@ -708,11 +864,23 @@ pub fn finish(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth: &mut
     }
     match p.store.as_str() {
         store::GOOGLE => google_finish(ctx, app, &product_of(p), purser_core::model::store_token(&p.purchase_token), &p.store_action, auth),
+        store::SAMSUNG => samsung_finish(ctx, app, &p.purchase_token, &p.store_action, auth),
         _ => Ok(()),
     }
 }
 
 /// [`finish`] calls the store for this row (its credential is worth reading beforehand).
 pub fn needs_finish(p: &crate::Purchase) -> bool {
-    p.store_action != store_action::NONE && p.store == purser_core::model::store::GOOGLE
+    use purser_core::model::store;
+    p.store_action != store_action::NONE && matches!(p.store.as_str(), store::GOOGLE | store::SAMSUNG)
+}
+
+/// The secret [`finish`] cannot work without (`ledger::blocker`).
+pub fn finish_secret(p: &crate::Purchase) -> Option<&'static str> {
+    use purser_core::model::store;
+    match p.store.as_str() {
+        store::GOOGLE => Some(secret_name::GOOGLE_SERVICE_ACCOUNT_JSON),
+        store::SAMSUNG => Some(purser_core::samsung::PRIVATE_KEY),
+        _ => None,
+    }
 }

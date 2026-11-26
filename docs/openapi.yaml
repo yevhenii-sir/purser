@@ -213,6 +213,22 @@ paths:
             schema: { $ref: "#/components/schemas/VerifyRequest" }
       responses: *verifyResponses
 
+  /verify/samsung:
+    post:
+      tags: [Purchases]
+      operationId: verifySamsung
+      summary: Verify a Samsung Galaxy Store purchase
+      description: >-
+        `purchase_token` (the Samsung `purchaseId`) is required. One-time products are looked up with the Samsung IAP
+        receipt API, subscriptions with the Galaxy Store Developer API's subscription status. After the grant the server
+        consumes consumables and acknowledges subscriptions; with `delivery` = `none` the client consumes them.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyRequest" }
+      responses: *verifyResponses
+
   /verify/steam:
     post:
       tags: [Purchases]
@@ -713,6 +729,24 @@ paths:
         content:
           application/json:
             schema: { type: object, additionalProperties: true }
+      responses: *notifyResponses
+
+  /notify/samsung:
+    post:
+      tags: [Store notifications]
+      operationId: notifySamsung
+      summary: Samsung Instant Server Notifications
+      description: >-
+        `?app=<app_id>` (without it, the build whose app id is the notification's package name). The body is a JWT
+        signed with the app's IAP key (`samsung_iap_public_key`); the purchases it names are looked up again.
+      security: []
+      parameters:
+        - { name: app, in: query, required: false, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema: { type: string, description: The signed JWT. }
       responses: *notifyResponses
 
   /notify/telegram:

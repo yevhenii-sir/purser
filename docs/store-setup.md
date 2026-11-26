@@ -1,6 +1,6 @@
 # Store setup
 
-What to create in Google Play Console, App Store Connect, the Amazon Developer Console, Steamworks, Xsolla Publisher Account and the Stripe Dashboard. Each store an app sells in is one **build** of the app (same app key): a game on Google Play and the Amazon Appstore has two Android builds. The admin panel's **Add an app** wizard asks for these keys and finishes with the URLs to paste back into the stores; the app's **Setup** tab tells you what is still missing, and its **Keys** tab where every key comes from. Keys shared by several apps are stored once per developer account (Settings → Developer accounts).
+What to create in Google Play Console, App Store Connect, the Amazon Developer Console, Samsung Seller Portal, Steamworks, Xsolla Publisher Account and the Stripe Dashboard. Each store an app sells in is one **build** of the app (same app key): a game on Google Play and the Amazon Appstore has two Android builds. The admin panel's **Add an app** wizard asks for these keys and finishes with the URLs to paste back into the stores; the app's **Setup** tab tells you what is still missing, and its **Keys** tab where every key comes from. Keys shared by several apps are stored once per developer account (Settings → Developer accounts).
 
 Every build has its developer account (the app's Delivery tab, or the wizard's first step): apps published from different Google Play / App Store Connect accounts, or a game whose iOS build is published by someone else, each use their own account's keys. Keep store keys out of `default` once you have more than one account: a build whose account has no key would fall back to another account's key.
 
@@ -149,6 +149,28 @@ AppGallery Connect → the app → **In-App Purchases → Settings → Server no
 ### Client
 
 Unity IAP has no Huawei store: the Unity package uses `HuaweiStoreAdapter` over a bridge to Huawei's IAP SDK (sample "Huawei AppGallery" for the HMS Unity Plugin). Other clients post the `purchaseToken` as `purchase_token` to `/verify/huawei`, and for subscriptions the `subscriptionId` as `order_id`; after a success they consume the purchase (`consumeOwnedPurchase`). Sandbox purchases (`purchaseType` 0, test accounts) need **Sandbox purchases** on the build.
+
+## Samsung Galaxy Store
+
+Galaxy devices buy through Samsung In-App Purchase. The server checks one-time products with Samsung's receipt API (`iap/v6/receipt`, by purchase id), reads subscriptions with the Galaxy Store Developer API's subscription status, consumes consumables and acknowledges subscriptions after the grant (Purchase Acknowledgment API), and learns about refunds and renewals from Instant Server Notifications (each only says which purchase to look up again).
+
+### The build
+
+Add an **Android** build with store **Samsung Galaxy Store** (wizard → Add a build). Its app id only has to be unique on the server: when the Google Play build already uses the package name, use e.g. `com.example.mygame.samsung` and set `samsung_package_name` to the package name (Samsung's APIs and receipts name the package). Use the same app id for the `samsung` build in the Unity `BillingConfig`. Products use the Seller Portal item ids. Samsung reports the price paid (with tax) and the buyer's country.
+
+### Keys
+
+Seller Portal → **Assistance → API Service**: create a service account with the **Publishing & ITEM** service, copy its **Service Account ID** into `samsung_service_account_id` and upload the private key (shown once, when the account is created) as `samsung_private_key`; both are stored on the developer account. The server signs a JWT with the key and exchanges it for an access token (`devapi.samsungapps.com/auth/accessToken`); the setup check asks for one.
+
+`samsung_iap_public_key`: the app's **IAP public key** from Seller Portal (PEM or the bare base64 text). Instant Server Notifications are verified with it (RS256).
+
+### Instant Server Notifications
+
+Seller Portal → the app → **In App Purchase**: the ISN URL of each item, `https://<host>/v1/database/<db>/route/notify/samsung?app=<app id>` (the app's Setup tab shows it). Samsung's documentation does not say whether the URL may carry a query string: without `?app=`, the notification goes to the build whose app id is its package name. Notifications are not trusted for their content (the purchase is looked up again) and must be signed with the IAP key. Without them, subscriptions are re-checked by the worker when their period ends, and refunds of one-time products are not noticed.
+
+### Client
+
+Unity IAP has no Samsung store: the Unity package uses `SamsungStoreAdapter` over a bridge to Samsung's IAP Unity plugin (sample "Samsung Galaxy Store"). Other clients post the `purchaseId` as `purchase_token` (and the `orderId` as `order_id`, optional) to `/verify/samsung`. The server consumes and acknowledges; a client whose build grants on the client (`delivery` = `none`) consumes a consumable itself once the reward is granted. Test purchases (`OPERATION_MODE_TEST`, licensed testers) are sandbox purchases and need **Sandbox purchases** on the build.
 
 ## Telegram Stars
 

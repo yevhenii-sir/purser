@@ -30,6 +30,7 @@ Google RTDN / App Store Notifications V2 / Amazon RTN ──▶ /notify/<store> 
 | Amazon Receipt Verification Service | The shared key of the developer account is part of the request URL; nothing to refresh. |
 | Steam `ISteamMicroTxn` | The publisher Web API key goes in the `x-webapi-key` header of every call (never in a URL); nothing to refresh. |
 | Huawei IAP | The App ID and App secret are exchanged for an app-level token (client credentials, about 1 h), cached like Google's and sent as `Basic base64("APPAT:" + token)`. |
+| Samsung (Galaxy Store Developer API) | A JWT (RS256, `iss` = the service account id, scope `publishing`) is signed with the service account's private key and exchanged for an access token at `devapi.samsungapps.com/auth/accessToken`; sent as `Bearer` with the `service-account-id` header. Samsung's tokens do not expire; the cache keeps one for an hour and drops it when an API refuses it. The receipt API (`iap.samsungapps.com/iap/v6/receipt`) takes no credentials. |
 | Telegram Bot API | The bot token is part of the method URL (`/bot<token>/…`); errors never show it. Nothing to refresh. |
 
 ## SpacetimeDB limitations to keep in mind
@@ -109,6 +110,7 @@ Every per-store fact lives in one registry, [`core/src/registry.rs`](core/src/re
 | `stripe` | `web` | webhooks; `/checkout/stripe` creates the Checkout Session, `/verify/stripe` confirms one after the redirect, `/manage/stripe` opens the customer portal | `/notify/stripe?app=<app_id>` (signed webhooks) | `stripe_secret_key`, `stripe_webhook_secret` |
 | `steam` | `steam` | `/checkout/steam` (server `InitTxn`), then `/verify/steam` (order id) | none: the worker polls `GetReport` | `steam_publisher_key` |
 | `huawei` | `huawei` | `/verify/huawei` (purchase token; subscriptions also the `subscriptionId` as `order_id`) | `/notify/huawei?app=<app_id>&secret=` (server notifications v2, looked up again) | `huawei_client_id`, `huawei_client_secret`, `huawei_notify_secret`, `huawei_site` |
+| `samsung` | `android` | `/verify/samsung` (the `purchaseId` as `purchase_token`) | `/notify/samsung?app=<app_id>` (Instant Server Notifications, RS256 with the IAP key, looked up again) | `samsung_service_account_id`, `samsung_private_key`, `samsung_iap_public_key`, `samsung_package_name` |
 | `telegram` | `web` | none: `/checkout/telegram` creates an invoice link of the bot, `/checkout/telegram/status` answers from the ledger | `/notify/telegram?app=<app_id>` (the bot's webhook, `X-Telegram-Bot-Api-Secret-Token`) | `telegram_bot_token`, `telegram_webhook_secret` |
 
 ### Products (`product`)
@@ -223,7 +225,7 @@ Client routes (`/verify/*`, `/restore`, `/entitlements`, `/attributes`, `/paywal
 - **Rate limits.** Token buckets per player of a build, and per build for what costs the build something: store look-ups (`client_api::STORE_CALLS`, 600 a minute per build, taken by `/verify` and each `/restore` item only after the request was checked, so junk requests cannot use them up), `/attributes` (1,200) and `/paywall/event` (6,000). Per player (`client_api::limits`): `/verify` 30 a minute, `/restore` 6, `/entitlements` and `/paywall` 60, .... In open builds the player id is the client's word: anyone who knows a player's id can use up that player's bucket, so use ids nobody can guess, or player tokens (`client_auth = signed`). Over a limit: `429 {"code": "ERR_RATE_LIMITED"}` with `Retry-After: <seconds>`. Buckets live in `rate_bucket`; the worker deletes idle ones.
 - **Signed answers.** With a `response_signing_key` (Ed25519 seed, 32 bytes base64; the Delivery tab creates one in the browser), `/entitlements` and `/restore` answers carry `X-Purser-Signature: <base64 signature of the exact body>`; `admin_response_public_key(app_id)` shows the public key games check it with.
 
-### `POST /verify/<store>`: `/verify/google`, `/verify/apple`, `/verify/amazon`, `/verify/steam`
+### `POST /verify/<store>`: `/verify/google`, `/verify/apple`, `/verify/amazon`, `/verify/steam`, `/verify/huawei`, `/verify/samsung`
 
 One route per client-receipt store of the registry; a build's purchases go to its store's route. The body:
 
@@ -232,7 +234,7 @@ One route per client-receipt store of the registry; a build's purchases go to it
   "app_id": "com.example.mygame",
   "user_id": "<player identity hex>",
   "product_id": "diamonds_150",
-  "purchase_token": "<Google purchaseToken>",
+  "purchase_token": "<Google purchaseToken / Samsung purchaseId>",
   "order_id": "<Apple transactionId / Amazon receiptId (required) / Google orderId (optional)>",
   "store_user_id": "<Amazon userId (required for Amazon)>",
   "app_instance_id": "<Firebase app_instance_id, optional>",
@@ -254,6 +256,8 @@ One route per client-receipt store of the registry; a build's purchases go to it
 The response also contains `transaction_id`, `product_id`, `is_sub`, `expires_date_ms`, `environment`, `delivery` (`client`: the game grants the reward; `server`: billing delivers it) and `message`. Only `revoked`, `expired`, `forbidden`, `invalid`, `pending`, `pending_or_canceled`, `success` and `error` are answered as `status`.
 
 `/verify/steam` takes `{"app_id": "<Steam App ID>", "user_id": "...", "order_id": "<order_id from /checkout/steam>"}` (`product_id` optional: the order knows it) after the game received `MicroTxnAuthorizationResponse_t`. The server calls `FinalizeTxn`, then `QueryTxn` (or `GetUserAgreementInfo` for a subscription), and records `steam:<transid>`. Only the player who started the checkout can verify its order. A denied authorization answers `pending_or_canceled`. Calling it again is safe: a finalized order is only queried.
+
+`/verify/samsung` takes the Samsung `purchaseId` as `purchase_token` (`order_id` optional). A one-time product is checked with the receipt API (`GET https://iap.samsungapps.com/iap/v6/receipt?purchaseID=…`: its package must be the build's, `samsung_package_name` or the app id, and its `itemId` the product) and recorded as `samsung:<orderId>`; a subscription is read with the Subscription API (`GET devapi.samsungapps.com/iap/seller/v6/applications/<package>/purchases/subscriptions/<purchaseId>`) and recorded per period as `samsung:<latestOrderId>`, its token the subscription's first purchase id. After the grant the server consumes consumables and acknowledges subscriptions and non-consumables (`PATCH …/iap/v6/applications/<package>/purchases/<purchaseId>`); `delivery` = `none` leaves consumables to the client. Receipt errors 9135 / 9153 (no such order, bad purchase id) answer `invalid`; others are retried.
 
 ### `POST /checkout/steam`
 
@@ -345,6 +349,10 @@ App Store Connect → App Information → App Store Server Notifications → **V
 Amazon Developer Console → the app → **App Services → Real-Time Notifications** → endpoint URL (one per app, so `?app=` names the build). Amazon delivers through Amazon SNS: the module verifies the SNS signature (certificate from `https://sns.<region>.amazonaws.com/…pem`, cached for a day, SHA1 and SHA256 signatures) and rejects anything else with 401, as well as messages more than 6 hours old and, when the build pins one (`sns_topic_arn`), messages of another topic. The endpoint confirmation message is stored, and the next setup check shows its token: paste it into the console within 48 hours. Notifications only name a receipt: the module looks it up again with RVS and applies refunds (`*_CANCELLED`), renewals and expirations. Receipts the client has not verified yet are ignored.
 
 Without notifications, Amazon subscriptions are still re-checked by the worker shortly after their renewal date (`store_poll` table; backoff 1 h → 24 h, then dropped until the client verifies or restores again). Google Play and App Store subscriptions are re-checked the same way when their access ends, so a lost notification never leaves a renewal ungranted or an ended subscription active; a Google Play grace period (the store reports no end for it) keeps access a day at a time, re-checked daily. Refunds are read from the stores as well, in case a notification was lost: every 6 hours per Google Play and App Store build the worker reads the Voided Purchases API (refunds, chargebacks, revocations of the last 30 days; the service account needs *View financial data*) and the App Store notification history (`REFUND` notifications, App Store Server API key), and revokes what the ledger still has as paid; a refund of some units of a multi-quantity Google purchase (`voidedQuantity`, or a `voidedPurchaseNotification` with `refundType` 2) reads the purchase again and counts their share of the price as a partial refund, the purchase stays granted (`refund_sweep` table; the setup check shows the last reading and how many refunds the notifications had missed; `admin_sweep_refunds(app_id)`, Support, reads them now). An Amazon subscription keeps one receipt across renewals: a renewal updates `expires_at_ms` of its ledger row and the game gets `grant` again with the new expiry (no separate renewal revenue).
+
+### `POST /notify/samsung?app=<app_id>`
+
+Seller Portal → the app → **In App Purchase** → the ISN URL of each item. The body is a JWT signed with the app's IAP key (RS256, `iss` = `iap.samsungapps.com`, `aud` = the package): it must verify with `samsung_iap_public_key` and name the build's package, else 401. Without `?app=` the build is the one whose app id is the notification's package name. `ITEM_PURCHASED` / `ITEM_REFUNDED` look the receipt up again (a refund revokes), `ARS_*` events the subscription's status (`ARS_UPDOWNGRADED` both subscriptions); `ARS_REFUNDED` revokes the refunded period's row when the ledger has it. `TEST` only counts for the setup check.
 
 ### `POST /checkout/xsolla`
 

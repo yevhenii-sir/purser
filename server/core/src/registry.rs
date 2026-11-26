@@ -340,6 +340,8 @@ pub static STORES: &[&StoreInfo] = &[
 
     &crate::telegram::STORE,
 
+    &crate::samsung::STORE,
+
     &MANUAL,
 ];
 
@@ -350,7 +352,7 @@ pub static PLATFORMS: &[PlatformInfo] = &[
         os: Some("android"),
         // Xsolla next to Google Play: an Android game that sells some players through Pay Station
         // (a build of its own with store `xsolla`; entitlements are shared by the app's builds).
-        stores: &[store::GOOGLE, store::XSOLLA],
+        stores: &[store::GOOGLE, store::XSOLLA, store::SAMSUNG],
         default_store: Some(store::GOOGLE),
     },
     PlatformInfo {
@@ -452,6 +454,7 @@ mod tests {
         assert!(build_store("desktop", "").is_err());
         assert!(build_store("web", "manual").is_err());
         assert_eq!(build_store("android", "xsolla").unwrap().id, store::XSOLLA, "Pay Station next to Google Play");
+        assert_eq!(build_store("android", "samsung").unwrap().id, store::SAMSUNG, "a Galaxy Store build of the Android game");
         assert_eq!(build_store("android", "").unwrap().id, store::GOOGLE);
     }
 
@@ -505,6 +508,11 @@ mod tests {
         assert_eq!(
             store("amazon").unwrap().notify_url(base, "com.g.amazon", false).unwrap(),
             format!("{base}/notify/amazon?app=com.g.amazon")
+        );
+        assert_eq!(
+            store("samsung").unwrap().notify_url(base, "com.g.samsung", false).unwrap(),
+            format!("{base}/notify/samsung?app=com.g.samsung"),
+            "signed notifications need no secret in the URL"
         );
     }
 
