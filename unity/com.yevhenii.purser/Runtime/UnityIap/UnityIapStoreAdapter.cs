@@ -10,8 +10,9 @@ namespace Purser
     /// <summary>
     /// <see cref="IStoreAdapter"/> on Unity IAP 5 (<c>StoreController</c>). Unity IAP products are registered
     /// with the store product id as their id, so orders map 1:1 to the billing server catalog. Reports a dropped store
-    /// connection (<see cref="IStoreConnectionEvents"/>) and changes Google Play subscriptions
-    /// (<see cref="ISubscriptionChangeStore"/>).
+    /// connection (<see cref="IStoreConnectionEvents"/>), changes Google Play subscriptions
+    /// (<see cref="ISubscriptionChangeStore"/>) and buys Google Play subscription offers chosen by the game
+    /// (<see cref="IGoogleOfferStore"/>, through the package's Android plugin).
     /// </summary>
     public sealed partial class UnityIapStoreAdapter : IStoreAdapter, IStoreConnectionEvents, ISubscriptionChangeStore,
         IOfferCodeRedemptionStore
@@ -65,6 +66,7 @@ namespace Purser
             var google = m_Store.GooglePlayStoreExtendedPurchaseService;
             if (google != null)
                 google.OnDeferredPaymentUntilRenewalDate += HandleChangeDeferred;
+            CreateGoogleOffers();
         }
 
         public async Task ConnectAsync(CancellationToken ct)
@@ -110,7 +112,10 @@ namespace Purser
             if (Platform == BillingPlatform.Apple)
                 m_Store.AppleStoreExtendedService?.SetAppAccountToken(AccountIds.AppleAccountToken(userId));
             else
-                m_Store.GooglePlayStoreExtendedService?.SetObfuscatedAccountId(AccountIds.GoogleAccountId(userId));
+            {
+                m_GoogleAccountId = AccountIds.GoogleAccountId(userId);
+                m_Store.GooglePlayStoreExtendedService?.SetObfuscatedAccountId(m_GoogleAccountId);
+            }
         }
 
         /// <summary>App Store: StoreKit's offer code redemption sheet (iOS 14 and later); false on Google Play and
@@ -148,7 +153,9 @@ namespace Purser
         /// <summary>Google consume / acknowledge (the server already did it for server deliveries), Apple
         /// finishTransaction. A Google purchase the server refused is left unconfirmed: the refusal may be
         /// the server's setup or another signed-in player, and Google refunds a purchase nobody acknowledges
-        /// within three days, so the player gets the money back instead of losing it.</summary>
+        /// within three days, so the player gets the money back instead of losing it. A purchase of a Google offer
+        /// (<see cref="PurchaseWithGoogleOffer"/>, its <see cref="StoreOrder.Native"/> a <see cref="GooglePlayPurchase"/>)
+        /// is not finished here: the server acknowledges it.</summary>
         public void Finish(StoreOrder order, bool granted)
         {
             if (!granted && order.Platform == BillingPlatform.Google)
@@ -191,6 +198,7 @@ namespace Purser
             var google = m_Store.GooglePlayStoreExtendedPurchaseService;
             if (google != null)
                 google.OnDeferredPaymentUntilRenewalDate -= HandleChangeDeferred;
+            DisposeGoogleOffers();
         }
 
         /// <summary>

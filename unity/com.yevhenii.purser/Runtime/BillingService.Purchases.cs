@@ -76,6 +76,19 @@ namespace Purser
             if (m_Waiters.ContainsKey(storeId))
                 return Done(new PurchaseResult(PurchaseStatus.AlreadyInProgress, config.id, storeId));
 
+            // A Google offer chosen by the game: bought by the adapter's Google offer client, never another offer.
+            var offerToken = NullIfEmpty(options?.GoogleOfferToken);
+            var offerId = options?.OfferId;
+            IGoogleOfferStore offerStore = null;
+            if (offerToken != null)
+            {
+                offerStore = GoogleOfferStore(config, out var offerProblem);
+                if (offerStore == null)
+                    return Done(new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: offerProblem));
+                if (string.IsNullOrEmpty(offerId))
+                    m_GoogleOfferIds.TryGetValue(offerToken, out offerId);
+            }
+
             string replacedStoreId = null;
             if (!string.IsNullOrEmpty(options?.ReplacesProductId))
             {
@@ -87,7 +100,7 @@ namespace Purser
                     problem = "only a subscription can replace a subscription";
                 else if (replaced.StoreId(m_Store.Store) == storeId)
                     problem = "the subscription cannot replace itself";
-                else if (!(m_Store is ISubscriptionChangeStore))
+                else if (offerStore == null && !(m_Store is ISubscriptionChangeStore))
                     problem = $"the {m_Store.Store} store adapter does not change subscriptions";
                 if (problem != null)
                     return Done(new PurchaseResult(PurchaseStatus.Failed, config.id, storeId, message: problem));
@@ -96,10 +109,12 @@ namespace Purser
 
             BindAccount();
             var waiter = StartWaiting(storeId);
-            m_Orders.SetPurchaseContext(storeId, options?.Paywall, options?.OfferId);
+            m_Orders.SetPurchaseContext(storeId, options?.Paywall, offerId);
             void Start()
             {
-                if (replacedStoreId != null)
+                if (offerStore != null)
+                    offerStore.PurchaseWithGoogleOffer(storeId, offerToken, replacedStoreId, options.ReplacementMode);
+                else if (replacedStoreId != null)
                     ((ISubscriptionChangeStore)m_Store).PurchaseReplacing(storeId, replacedStoreId, options.ReplacementMode);
                 else if (composite != null)
                     composite.PurchaseIn(store, storeId);

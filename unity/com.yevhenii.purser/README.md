@@ -303,15 +303,17 @@ if (p.IntroEligible == true && p.Offers.Any(o => o.HasFreeTrial))
 
 What Unity IAP 5.4.4 exposes:
 - **Google Play**: the one offer Unity IAP buys — the first offer Google Play lists for the product — with its free
-  trial, introductory and base phases. Its offer id and offer token are not exposed (`Id` and `Token` are null) and
-  another offer cannot be chosen. Google Play lists only offers the player is eligible for, so `IntroEligible` is true
-  when the offer has a trial or intro phase and unknown otherwise.
+  trial, introductory and base phases. Its offer id and offer token are not exposed (`Id` and `Token` are null). Google
+  Play lists only offers the player is eligible for, so `IntroEligible` is true when the offer has a trial or intro
+  phase and unknown otherwise. To list every offer and buy another one, see
+  [Choosing a Google Play offer](#choosing-a-google-play-offer).
 - **App Store**: the subscription period, the introductory offer and StoreKit's `isEligibleForIntroOffer` (StoreKit 2).
   StoreKit applies the introductory offer by itself; promotional offers are bought with
   `PurchaseWithPromotionalOfferAsync`.
 
 `PurchaseOptions` carries the paywall, the offer the player bought (`OfferId`, sent to the server as `offer_id` for
-revenue by offer; it does not pick the offer) and a subscription the purchase replaces:
+revenue by offer; it does not pick the offer: `GoogleOfferToken` does on Google Play) and a subscription the purchase
+replaces:
 
 ```csharp
 await billing.PurchaseAsync("premium_yearly", new PurchaseOptions
@@ -327,6 +329,54 @@ On Google Play the change goes through `UpgradeDowngradeSubscription` with the o
 subscription; with `ReplacementMode.Deferred` nothing is charged now, the purchase reports `PendingPayment` and the
 customer info shows `RenewsTo`. On the App Store a purchase in the same subscription group replaces the old one by
 itself. Other stores fail the purchase.
+
+### Choosing a Google Play offer
+
+Unity IAP 5 always buys the first offer Google Play lists for a subscription. To offer another one — an introductory
+price for new players, a win-back offer, a different base plan — list the subscription's offers and buy one by its
+**offer token**:
+
+```csharp
+if (billing.GoogleOffersSupported)
+{
+    var offers = await billing.GetGoogleOffersAsync("premium");   // base plans and the offers the player may buy
+    var winback = offers.FirstOrDefault(o => o.Tags.Contains("winback"))
+                  ?? offers.First(o => o.Id == null);              // the base plan itself
+    var result = await billing.PurchaseAsync("premium", new PurchaseOptions
+    {
+        Paywall = paywall,
+        GoogleOfferToken = winback.Token,
+    });
+}
+```
+
+Each `StoreOffer` has `Id` (the offer id; null for a base plan), `BasePlanId`, `Tags` (set in Play Console, the base
+plan's included), `PricingPhases` and `Token`. Google Play lists only the offers the player is eligible for, so an
+offer the player cannot get is not there. The purchase:
+
+- buys exactly that offer, or fails (`Failed` with the reason, `Cancelled` when the player closes the sheet): it never
+  buys another offer instead. A token from an earlier listing that Google Play no longer offers fails with
+  `ITEM_UNAVAILABLE`;
+- is verified like any other (`/verify/google` with the purchase token). `offer_id` is the offer's `Id` (or its base
+  plan's) unless `OfferId` is set; the server records the offer Google reports anyway;
+- works with `ReplacesProductId` / `ReplacementMode` (upgrade or downgrade to an offer; `Deferred` reports
+  `PendingPayment`) and is bound to the player (`obfuscatedAccountId`), as Unity IAP purchases are.
+
+How it works: Unity IAP 5 has no API for offer tokens, so the package ships a small Android plugin
+(`Runtime/Plugins/Android/PurserGoogleBilling.java`) on the Google Play Billing Library that Unity IAP 5.4+ adds to the
+Gradle project (Billing Library 9; the plugin works with 8 and later). It uses a `BillingClient` of its own, connected
+only while it lists offers or runs a purchase, and leaves Unity IAP's client alone. It **never acknowledges** a
+purchase: the server acknowledges it after verifying it (Google refunds a subscription nobody acknowledges within three
+days), and nothing finishes it on the device. Unity IAP lists the subscription among the player's purchases afterwards
+(restore, `FetchPurchases`); if it ever reports it as unfinished (the server could not acknowledge it yet), the package
+verifies it again and Unity IAP acknowledges it, which Google accepts. The package's editor code leaves the plugin out
+of builds without Unity IAP 5.4+.
+
+`GoogleOffersSupported` is false, `GetGoogleOffersAsync` throws `BillingException` and a purchase with
+`GoogleOfferToken` fails in the Editor, on other stores and without Unity IAP 5.4+. With **Minify** on (R8), keep the
+plugin's classes, which only C# calls (add to `Assets/Plugins/Android/proguard-user.txt`, enabled by **Custom
+Proguard File** in Player Settings): `-keep class com.yevhenii.purser.** { *; }`. A custom store adapter supports
+offers by implementing `IGoogleOfferStore`, for example with `GooglePlayOfferClient`.
 
 ### Prices per period, managing subscriptions, offer codes
 
@@ -525,7 +575,7 @@ var result = await billing.PurchaseWithPromotionalOfferAsync("premium", "winback
 var fromPaywall = await billing.PurchaseWithPromotionalOfferAsync("premium", "winback_50", paywall); // counts for the A/B test
 ```
 
-The server signs the offer for the current player (`POST /offers/apple/sign`, with the In-App Purchase key it already has), and the package buys through Unity IAP with the offer and the player's `appAccountToken`; the purchase is then verified like any other. App Store only: on Google Play it throws `BillingException` (Google subscription offers are picked on the client by their offer token). In the Editor the product is bought without the offer. `GetApplePromotionalOfferAsync` returns the signed offer (also as a V2 JWS) for your own StoreKit code. Unity IAP 5 has no public API for offers, so the package passes them to Unity IAP's StoreKit 2 bridge through its internals and fails rather than buying at the full price if they change. Details: [docs/apple-offers.md](../../docs/apple-offers.md).
+The server signs the offer for the current player (`POST /offers/apple/sign`, with the In-App Purchase key it already has), and the package buys through Unity IAP with the offer and the player's `appAccountToken`; the purchase is then verified like any other. App Store only: on Google Play it throws `BillingException` (Google subscription offers are picked on the client by their offer token: see [Choosing a Google Play offer](#choosing-a-google-play-offer)). In the Editor the product is bought without the offer. `GetApplePromotionalOfferAsync` returns the signed offer (also as a V2 JWS) for your own StoreKit code. Unity IAP 5 has no public API for offers, so the package passes them to Unity IAP's StoreKit 2 bridge through its internals and fails rather than buying at the full price if they change. Details: [docs/apple-offers.md](../../docs/apple-offers.md).
 
 ## Signed client requests (player tokens)
 

@@ -219,6 +219,24 @@ namespace Purser
         Task<ApplePromotionalOffer> GetApplePromotionalOfferAsync(string productId, string offerId, CancellationToken ct = default);
 
         /// <summary>
+        /// Google Play subscription offers can be listed (<see cref="GetGoogleOffersAsync"/>) and bought
+        /// (<see cref="PurchaseOptions.GoogleOfferToken"/>) here: a Google Play build with Unity IAP 5.4 or later on an
+        /// Android device. False in the Editor, on other stores and with a store adapter without
+        /// <see cref="IGoogleOfferStore"/>.
+        /// </summary>
+        bool GoogleOffersSupported { get; }
+
+        /// <summary>
+        /// Google Play: the base plans and offers of a subscription the player can buy now (Google Play lists only the
+        /// offers the player is eligible for), with their ids, tags, pricing phases and the
+        /// <see cref="StoreOffer.Token"/> that buys one with <see cref="PurchaseOptions.GoogleOfferToken"/>. Unity IAP 5
+        /// alone buys only the first offer of a product. Throws <see cref="BillingException"/> when
+        /// <see cref="GoogleOffersSupported"/> is false, for a product that is not a subscription, or when Google Play
+        /// cannot list them.
+        /// </summary>
+        Task<IReadOnlyList<StoreOffer>> GetGoogleOffersAsync(string productId, CancellationToken ct = default);
+
+        /// <summary>
         /// What to show at a placement (e.g. <c>"main_paywall"</c>): ordered products with localized prices,
         /// remote config and the A/B test variant of the current player. The last answer per placement is
         /// cached for offline starts (<see cref="Paywall.IsFromCache"/>).

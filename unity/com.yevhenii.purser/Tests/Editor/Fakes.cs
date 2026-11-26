@@ -440,4 +440,113 @@ namespace Purser.Tests
                 ExpiresAtMs = 1_800_086_400_000,
             }, null);
     }
+
+    // ---- Google Play offers ----
+
+    /// <summary>The Android plugin of Google offers: answers JSON as the Java side does.</summary>
+    internal sealed class FakeGooglePlayBillingBridge : IGooglePlayBillingBridge
+    {
+        public const string IntroToken = "token-intro";
+        public const string MonthlyToken = "token-monthly";
+
+        public bool IsAvailable { get; set; } = true;
+        public readonly List<string> OfferQueries = new List<string>();
+        public readonly List<GooglePlayBillingFlow> Flows = new List<GooglePlayBillingFlow>();
+
+        /// <summary>Answer of <see cref="QueryOffers"/>: the base plan <c>monthly</c> and its offer <c>intro</c>.</summary>
+        public string OffersJson = Offers();
+
+        /// <summary>Answer of <see cref="Purchase"/>; null: no answer yet (<see cref="Answer"/> gives it later).</summary>
+        public Func<GooglePlayBillingFlow, string> OnPurchase = flow => Purchased(flow.ProductId);
+
+        private Action<string> m_Pending;
+
+        public void QueryOffers(string productId, Action<string> onResult)
+        {
+            OfferQueries.Add(productId);
+            onResult(OffersJson);
+        }
+
+        public void Purchase(GooglePlayBillingFlow flow, Action<string> onResult)
+        {
+            Flows.Add(flow);
+            var json = OnPurchase(flow);
+            if (json == null)
+                m_Pending = onResult;
+            else
+                onResult(json);
+        }
+
+        /// <summary>Answers the purchase that had no answer yet.</summary>
+        public void Answer(string json)
+        {
+            var pending = m_Pending;
+            m_Pending = null;
+            pending(json);
+        }
+
+        public static string Offers() => @"{""code"":0,""offers"":[
+            {""basePlanId"":""monthly"",""offerToken"":""" + MonthlyToken + @""",""tags"":[],
+             ""phases"":[{""priceMicros"":4990000,""formattedPrice"":""$4.99"",""currency"":""USD"",""period"":""P1M"",""cycles"":0,""recurrenceMode"":1}]},
+            {""basePlanId"":""monthly"",""offerId"":""intro"",""offerToken"":""" + IntroToken + @""",""tags"":[""new-players"",""intro""],
+             ""phases"":[
+               {""priceMicros"":0,""formattedPrice"":""Free"",""currency"":""USD"",""period"":""P1W"",""cycles"":1,""recurrenceMode"":2},
+               {""priceMicros"":990000,""formattedPrice"":""$0.99"",""currency"":""USD"",""period"":""P1M"",""cycles"":3,""recurrenceMode"":2},
+               {""priceMicros"":4990000,""formattedPrice"":""$4.99"",""currency"":""USD"",""period"":""P1M"",""cycles"":0,""recurrenceMode"":1}]}]}";
+
+        public static string Purchased(string productId, string token = "offer-purchase-token", string orderId = "GPA.3333-4444",
+            int state = 1) =>
+            @"{""code"":0,""purchases"":[{""purchaseToken"":""" + token + @""",""orderId"":""" + orderId + @""",""products"":[""" +
+            productId + @"""],""state"":" + state + @",""acknowledged"":false}]}";
+
+        public static string Error(int code, string message) => @"{""code"":" + code + @",""message"":""" + message + @"""}";
+    }
+
+    internal sealed partial class FakeStore : IGoogleOfferStore
+    {
+        public readonly FakeGooglePlayBillingBridge GoogleBilling = new FakeGooglePlayBillingBridge();
+
+        /// <summary>Every <see cref="PurchaseWithGoogleOffer"/>: (store id, offer token, replaced store id, mode).</summary>
+        public readonly List<(string StoreId, string Token, string Replaced, ReplacementMode Mode)> GoogleOfferPurchases =
+            new List<(string, string, string, ReplacementMode)>();
+
+        private GooglePlayOfferClient m_GoogleOffers;
+
+        /// <summary>The package's offer client on <see cref="GoogleBilling"/>, raising this store's events (as
+        /// <c>UnityIapStoreAdapter</c> wires it).</summary>
+        private GooglePlayOfferClient GoogleOffers
+        {
+            get
+            {
+                if (m_GoogleOffers == null)
+                {
+                    m_GoogleOffers = new GooglePlayOfferClient(GoogleBilling, new BillingLog(BillingLogLevel.None));
+                    m_GoogleOffers.OrderPending += order => OrderPending?.Invoke(order);
+                    m_GoogleOffers.OrderDeferred += order => OrderDeferred?.Invoke(order);
+                    m_GoogleOffers.PurchaseFailed += failure => PurchaseFailed?.Invoke(failure);
+                    m_GoogleOffers.ChangeDeferred += storeId => ChangeDeferred?.Invoke(storeId);
+                }
+                return m_GoogleOffers;
+            }
+        }
+
+        public bool GoogleOffersSupported => GoogleOffers.IsSupported;
+
+        public Task<IReadOnlyList<StoreOffer>> GetGoogleOffersAsync(string storeProductId, CancellationToken ct) =>
+            GoogleOffers.GetOffersAsync(storeProductId, ct);
+
+        public void PurchaseWithGoogleOffer(string storeProductId, string offerToken, string replacedStoreProductId,
+            ReplacementMode mode)
+        {
+            GoogleOfferPurchases.Add((storeProductId, offerToken, replacedStoreProductId, mode));
+            GoogleOffers.Purchase(new GooglePlayBillingFlow
+            {
+                ProductId = storeProductId,
+                OfferToken = offerToken,
+                OldProductId = replacedStoreProductId,
+                ReplacementMode = mode,
+                ObfuscatedAccountId = BoundUserId == null ? null : AccountIds.GoogleAccountId(BoundUserId),
+            });
+        }
+    }
 }

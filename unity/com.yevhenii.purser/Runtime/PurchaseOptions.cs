@@ -29,11 +29,22 @@ namespace Purser
 
         /// <summary>
         /// The store offer the player buys (Google offer id or base plan id), sent to the server as <c>offer_id</c> for
-        /// revenue by offer. It does not choose the offer: Unity IAP 5 buys the first offer Google Play lists for the
-        /// product, and the App Store applies the introductory offer by itself (promotional offers:
+        /// revenue by offer (the store's own answer wins on the server). It does not choose the offer: without
+        /// <see cref="GoogleOfferToken"/> Unity IAP 5 buys the first offer Google Play lists for the product, and the App
+        /// Store applies the introductory offer by itself (promotional offers:
         /// <see cref="IBillingService.PurchaseWithPromotionalOfferAsync(string, string, Paywall, System.Threading.CancellationToken)"/>).
+        /// Left empty with <see cref="GoogleOfferToken"/>, it is the offer's <see cref="StoreOffer.RevenueId"/>.
         /// </summary>
         public string OfferId;
+
+        /// <summary>
+        /// Google Play: buys the subscription with this offer (<see cref="StoreOffer.Token"/> of
+        /// <see cref="IBillingService.GetGoogleOffersAsync"/>): a base plan or a developer-determined offer, e.g. an
+        /// introductory price for new players or a win-back offer. The purchase fails, never buying another offer, when
+        /// the offer is not available to the player, and on other stores and in the Editor
+        /// (<see cref="IBillingService.GoogleOffersSupported"/>). Works with <see cref="ReplacesProductId"/>.
+        /// </summary>
+        public string GoogleOfferToken;
 
         /// <summary>
         /// A subscription of the player this purchase replaces (upgrade or downgrade): its config product id or store

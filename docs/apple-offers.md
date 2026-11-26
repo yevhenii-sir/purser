@@ -122,6 +122,20 @@ are chosen on the client: the app picks an offer of the product and passes its *
 flow (`ProductDetails.SubscriptionOfferDetails.offerToken`). Eligibility rules and tags are set in Play
 Console. The purchase is verified by `/verify/google` like any other.
 
+Unity IAP 5 always buys the first offer of a product and does not expose offer tokens. The Unity package lists a
+subscription's offers and buys the one the game picks through a small Android plugin of its own:
+
+```csharp
+var offers = await billing.GetGoogleOffersAsync("premium");          // base plans and eligible offers, with tags
+var intro = offers.FirstOrDefault(o => o.Tags.Contains("new-players"));
+if (intro != null)
+    await billing.PurchaseAsync("premium", new PurchaseOptions { GoogleOfferToken = intro.Token });
+```
+
+The plugin uses a Billing Library client of its own (the library Unity IAP 5.4+ adds to the build) and never
+acknowledges the purchase: the server does, after `/verify/google`, and records the offer id (or base plan id) Google
+reports. Details, limits and the R8 keep rule: [Unity package README](../unity/com.yevhenii.purser/README.md#choosing-a-google-play-offer).
+
 ## Offer codes and win-back offers
 
 - **Offer codes**: `billing.PresentOfferCodeRedemption()` shows Apple's redemption sheet (Unity IAP's
