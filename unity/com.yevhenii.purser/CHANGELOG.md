@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `AttributionKeys.SingularDeviceId`, `AppSetId` and `KochavaDeviceId` for the server's new Singular and Kochava
+  integrations (Branch, Braze and OneSignal need no new key).
+
 ## [0.11.0] - 2026-11-26
 
 Checked in Unity 2022.3 and 6.6: the package compiles without warnings and the EditMode tests pass (320 of 320); the core

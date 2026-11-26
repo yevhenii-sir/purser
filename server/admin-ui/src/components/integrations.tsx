@@ -24,16 +24,27 @@ const REVENUE_MODES = [
   { value: "net", label: "Proceeds after store commission and taxes", hint: "Also without the VAT / GST included in the price, estimated from the buyer's billing country (standard rates; US and Canadian prices exclude tax)." },
 ]
 /** Integrations that get every amount in the event instead of one revenue figure. */
-const ALL_AMOUNTS: Kind[] = ["webhook", "gcs"]
+const ALL_AMOUNTS: Kind[] = ["webhook", "gcs", "s3"]
 const EVENT_KINDS = ["purchase", "subscription_start", "renewal", "refund", "expire", "cancel", "uncancel", "billing_issue", "billing_recovered", "product_change", "pause", "resume"]
-const AF_EVENTS: [string, string][] = [["purchase", "af_purchase"], ["subscription_start", "af_subscribe"], ["renewal", "subscription_renew"], ["refund", "refund"], ["expire", "(off)"]]
+/** Kinds whose event names `event_names` overrides, with the default names. */
+const EVENT_NAMES: Partial<Record<Kind, [string, string][]>> = {
+  appsflyer: [["purchase", "af_purchase"], ["subscription_start", "af_subscribe"], ["renewal", "subscription_renew"], ["refund", "refund"], ["expire", "(off)"]],
+  singular: [
+    ["purchase", "__iap__"], ["subscription_start", "sng_subscribe / sng_start_trial"], ["renewal", "subscription_renewed"],
+    ["refund", "subscription_refunded / refund"], ["cancel", "subscription_cancelled"], ["expire", "(off)"],
+  ],
+  kochava: [["purchase", "Purchase"], ["subscription_start", "Subscribe / Start Trial"], ["renewal", "Renewal"], ["refund", "Refund"], ["expire", "(off)"]],
+}
 const ANY = "__all__"
 
 export function TestEvent({ apps }: { apps: GameApp[] }) {
   const [app, setApp] = useState("")
   const [kind, setKind] = useState(ANY)
   const [user, setUser] = useState("")
-  const [ids, setIds] = useState<Record<string, string>>({ appsflyer_id: "", tenjin_id: "", adjust_id: "", appmetrica_device_id: "", amplitude_device_id: "", meta_anon_id: "" })
+  const [ids, setIds] = useState<Record<string, string>>({
+    appsflyer_id: "", tenjin_id: "", adjust_id: "", appmetrica_device_id: "", amplitude_device_id: "", meta_anon_id: "",
+    singular_device_id: "", kochava_device_id: "",
+  })
   const target = app || apps[0]?.app_id || ""
   const send = () => {
     const attribution = Object.fromEntries(Object.entries(ids).filter(([, v]) => v.trim()))
@@ -98,8 +109,9 @@ function IntegrationForm({ kind, row, apps, onClose, onSaved }: {
   const [enabled, setEnabled] = useState(!row || row.enabled)
   const [secret, setSecret] = useState("")
   const [scope, setScope] = useState<"app" | "account">(def.secretScope)
+  const namedEvents = EVENT_NAMES[kind] || []
   const [names, setNames] = useState<Record<string, string>>(() =>
-    Object.fromEntries(AF_EVENTS.map(([k]) => [k, initial.event_names?.[k] === "" ? "-" : initial.event_names?.[k] ?? ""])))
+    Object.fromEntries(namedEvents.map(([k]) => [k, initial.event_names?.[k] === "" ? "-" : initial.event_names?.[k] ?? ""])))
   const account = apps.find((a) => a.app_id === app)?.account || "default"
   const set = (k: string, v: unknown) => setS((x) => ({ ...x, [k]: v }))
   const check = (k: string, label: string) => (
@@ -129,9 +141,9 @@ function IntegrationForm({ kind, row, apps, onClose, onSaved }: {
 
   const save = async () => {
     const settings: Settings = { ...s }
-    if (kind === "appsflyer") {
+    if (namedEvents.length) {
       const event_names: Record<string, string> = {}
-      for (const [k] of AF_EVENTS) {
+      for (const [k] of namedEvents) {
         if (names[k] === "-") event_names[k] = ""
         else if (names[k]) event_names[k] = names[k]
       }
@@ -144,6 +156,16 @@ function IntegrationForm({ kind, row, apps, onClose, onSaved }: {
     }, "Saved")
     if (ok) { onSaved(); onClose() }
   }
+  const eventNames = namedEvents.length > 0 && (
+    <div className="space-y-2">
+      <Label className="text-xs text-muted-foreground">Event names (empty: the default, "-": do not send)</Label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {namedEvents.map(([k, d]) => (
+          <Field key={k} label={k}><Input value={names[k]} placeholder={d} onChange={(e) => setNames((n) => ({ ...n, [k]: e.target.value }))} /></Field>
+        ))}
+      </div>
+    </div>
+  )
   const remove = async () => {
     if (!row || !confirm(`Disconnect ${def.name} from ${row.app_id}? The key stays on the Secrets page.`)) return
     const ok = await tryAct(() => call("admin_delete_integration", row.app_id, row.kind), "Disconnected")
@@ -175,14 +197,68 @@ function IntegrationForm({ kind, row, apps, onClose, onSaved }: {
               <Field label="AppsFlyer app id" hint="The package name on Android, id123456789 on iOS.">
                 <Input value={s.app_id || ""} onChange={(e) => set("app_id", e.target.value.trim())} className="font-mono text-xs" />
               </Field>
-              <div className="space-y-2">
-                <Label className="text-xs text-muted-foreground">Event names (empty: the default, "-": do not send)</Label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {AF_EVENTS.map(([k, d]) => (
-                    <Field key={k} label={k}><Input value={names[k]} placeholder={d} onChange={(e) => setNames((n) => ({ ...n, [k]: e.target.value }))} /></Field>
-                  ))}
-                </div>
+              {eventNames}
+            </>
+          )}
+          {kind === "singular" && (
+            <>
+              <Field label="App identifier" hint="The package name / bundle id as Singular knows the app. Empty: the build's app id.">
+                <Input value={s.app_id || ""} onChange={(e) => set("app_id", e.target.value.trim())} placeholder="com.example.mygame" className="font-mono text-xs" />
+              </Field>
+              {eventNames}
+              <p className="text-xs text-muted-foreground">
+                With <code>singular_device_id</code> events go to the V2 endpoint (<code>sdid</code>), otherwise to V1 with the device ids.
+                The server does not know the device's IP: Singular places the event by the billing country (<code>use_ip</code> + <code>country</code>).
+                Refunds carry a negative amount.
+              </p>
+            </>
+          )}
+          {kind === "branch" && (
+            <p className="text-xs text-muted-foreground">
+              Sent: <code>PURCHASE</code> with revenue (purchases, renewals and paid subscription starts; the kind in <code>customer_event_alias</code>),
+              <code> START_TRIAL</code> (free trials), and the custom events <code>purser_refund</code> (the amount in <code>custom_data</code>; Branch takes
+              no negative revenue) and <code>purser_expire</code>.
+            </p>
+          )}
+          {kind === "kochava" && (
+            <>
+              {eventNames}
+              <p className="text-xs text-muted-foreground">
+                Revenue goes in <code>event_data.sum</code> with <code>currency</code>; refunds carry <code>refund_amount</code> instead.
+              </p>
+            </>
+          )}
+          {kind === "braze" && (
+            <div className="grid items-start gap-4 sm:grid-cols-2">
+              <Field label="REST endpoint" hint="Your instance's REST endpoint (Settings → APIs and Identifiers).">
+                <Input value={s.endpoint || ""} onChange={(e) => set("endpoint", e.target.value.trim())} placeholder="https://rest.iad-01.braze.com" className="font-mono text-xs" />
+              </Field>
+              <Field label="App identifier" hint="Optional: the API identifier of the app the purchases belong to.">
+                <Input value={s.app_id || ""} onChange={(e) => set("app_id", e.target.value.trim())} className="font-mono text-xs" />
+              </Field>
+            </div>
+          )}
+          {kind === "onesignal" && (
+            <Field label="App ID" hint="OneSignal → Settings → Keys & IDs. Custom Events need a paid plan.">
+              <Input value={s.app_id || ""} onChange={(e) => set("app_id", e.target.value.trim())} placeholder="00000000-0000-0000-0000-000000000000" className="font-mono text-xs" />
+            </Field>
+          )}
+          {kind === "s3" && (
+            <>
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <Field label="Endpoint" hint="https://host[:port] of the S3 API, without the bucket.">
+                  <Input value={s.endpoint || ""} onChange={(e) => set("endpoint", e.target.value.trim())} placeholder="https://s3.us-east-1.amazonaws.com" className="font-mono text-xs" />
+                </Field>
+                <Field label="Region" hint="The bucket's region; auto for Cloudflare R2. Empty: us-east-1.">
+                  <Input value={s.region || ""} onChange={(e) => set("region", e.target.value.trim())} placeholder="us-east-1" className="font-mono text-xs" />
+                </Field>
+                <Field label="Bucket"><Input value={s.bucket || ""} onChange={(e) => set("bucket", e.target.value.trim())} placeholder="my-billing-events" className="font-mono text-xs" /></Field>
+                <Field label="Prefix"><Input value={s.prefix || ""} onChange={(e) => set("prefix", e.target.value.trim())} placeholder="billing/events" className="font-mono text-xs" /></Field>
               </div>
+              <p className="text-xs text-muted-foreground">
+                Objects: <code>{s.prefix ? `${s.prefix}/` : ""}dt=YYYY-MM-DD/&lt;time&gt;-&lt;event&gt;-&lt;transaction&gt;.json</code>, one JSON line each,
+                uploaded with a path-style <code>PUT</code> signed with Signature V4 (AWS S3, Cloudflare R2: <code>https://&lt;account id&gt;.r2.cloudflarestorage.com</code>, MinIO and others).
+              </p>
             </>
           )}
           {kind === "adjust" && (

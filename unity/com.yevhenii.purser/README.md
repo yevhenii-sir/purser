@@ -550,7 +550,7 @@ promotional offer bridge from managed code stripping (IL2CPP, a stripping level 
 files from `Assets` only, so the package's Editor assembly hands this one to the linker during a build; nothing to set
 up.
 
-## GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Mixpanel, Meta, Apple Ads
+## GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Mixpanel, Meta, Singular, Branch, Kochava, Braze, OneSignal, Apple Ads
 
 The server sends purchase events to the connected integrations itself. The client only has to pass device identifiers:
 
@@ -562,6 +562,10 @@ The server sends purchase events to the connected integrations itself. The clien
 - **Amplitude:** nothing required: events go to the billing user id (use it as the Amplitude user id in the game). Optionally pass `amplitude_device_id` (`AttributionKeys.AmplitudeDeviceId`) to tie them to the device.
 - **Mixpanel:** nothing: events go to the billing user id as `distinct_id` (identify players by it in the game).
 - **Meta Conversions API:** pass `meta_anon_id` (`AttributionKeys.MetaAnonId`, the Facebook SDK's anonymous id) or an advertising id (`advertising_id`; on iOS `idfa` with `att` = "true"), plus `os_version` and `app_version`.
+- **Singular:** pass `os_version` and the Singular SDK's device id (`AttributionKeys.SingularDeviceId`), or the device ids: `idfv` (and `idfa`, `att`) on iOS, `app_set_id` (`AttributionKeys.AppSetId`) / `advertising_id` on Android.
+- **Branch:** pass `advertising_id` (or `oaid`) on Android, `idfv` / `idfa` on iOS, plus `os_version` and `app_version`.
+- **Kochava:** pass `kochava_device_id` (`AttributionKeys.KochavaDeviceId`, the Kochava SDK's device id) or a device id (`advertising_id`; `idfa` / `idfv` on iOS), plus `os_version`.
+- **Braze, OneSignal:** nothing: events go to the billing user id as `external_id` (use it as the user id of their SDKs).
 - **Apple Ads:** tick `collectAppleAdsAttribution` in `BillingConfig`. On iOS 14.3+ the SDK takes an AdServices token, asks Apple once per install which campaign brought it and adds `asa_campaign_id`, `asa_ad_group_id`, `asa_keyword_id`, … to every purchase. No framework setup: the native part loads AdServices at run time.
 
 ```csharp

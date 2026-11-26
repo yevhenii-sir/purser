@@ -14,7 +14,7 @@ use crate::stores::{self, StoreError};
 use crate::{game_app, health, integration, product, purchase, GameApp, Integration};
 use purser_core::doctor::{self as d, Level, Report, Verdict};
 use purser_core::event::{delivery, signature_header, SIGNATURE_HEADER};
-use purser_core::integrations::{adjust, event_kind, gcs, ga4, integration_kind, meta, mixpanel, webhook, Built, OutEvent};
+use purser_core::integrations::{adjust, braze, event_kind, gcs, ga4, integration_kind, meta, mixpanel, s3, webhook, Built, OutEvent};
 use purser_core::jwt::{self, AppleApiKey, GoogleServiceAccount};
 use purser_core::model::{environment, kind, store};
 use purser_core::registry::{self, StoreInfo};
@@ -787,8 +787,14 @@ const INTEGRATION_TITLES: &[(&str, &str)] =
         ("amplitude", "Amplitude"),
         ("mixpanel", "Mixpanel"),
         ("meta", "Meta Conversions API"),
+        ("singular", "Singular"),
+        ("branch", "Branch"),
+        ("kochava", "Kochava"),
+        ("braze", "Braze"),
+        ("onesignal", "OneSignal"),
         ("webhook", "Webhook integration"),
         ("gcs", "Cloud Storage export"),
+        ("s3", "S3 export"),
     ];
 
 fn integration_title(kind: &str) -> &str {
@@ -861,6 +867,37 @@ fn check_integrations(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut 
                 Ok(_) => v(Level::Ok, "the service account key works", "Send a test event: it must appear in the bucket"),
                 Err(e) => v(Level::Fail, e.message().to_string(), "Paste the JSON key of a service account with Storage Object Creator on the bucket"),
             },
+            integration_kind::S3 => match s3::credentials(&secret) {
+                Ok(_) => {
+                    let to = s3::Settings::parse(&i.settings_json).map(|s| format!("{}/{}/{}", s.endpoint, s.bucket, s.prefix)).unwrap_or_default();
+                    v(Level::Ok, format!("configured; objects go to {}", to.trim_end_matches('/')), "Send a test event: it must appear in the bucket")
+                }
+                Err(e) => v(Level::Fail, e, "Paste the access key as ACCESS_KEY_ID:SECRET_ACCESS_KEY"),
+            },
+            integration_kind::SINGULAR => v(
+                Level::Ok,
+                "configured; the client must send os_version and singular_device_id, or idfv (iOS) / app_set_id or advertising_id (Android); events need the billing country",
+                "Use Send test event to see purser_test in Singular",
+            ),
+            integration_kind::BRANCH => v(
+                Level::Ok,
+                "configured; the client must send advertising_id or oaid (Android) / idfv or idfa (iOS); recommended os_version, app_version",
+                "Use Send test event to see purser_test in Branch Liveview",
+            ),
+            integration_kind::KOCHAVA => v(
+                Level::Ok,
+                "configured; the client must send kochava_device_id or a device id (advertising_id / idfa, idfv)",
+                "Use Send test event to see purser_test in Kochava",
+            ),
+            integration_kind::BRAZE => {
+                let endpoint = braze::Settings::parse(&i.settings_json).map(|s| s.endpoint).unwrap_or_default();
+                v(Level::Ok, format!("configured; events go to {endpoint} for the billing user id as external_id"), "Use Send test event to see purser_test on a user profile")
+            }
+            integration_kind::ONESIGNAL => v(
+                Level::Ok,
+                "configured; events go to the billing user id as external_id (Custom Events need a paid OneSignal plan)",
+                "Use Send test event to see purser_test in OneSignal",
+            ),
             _ => v(Level::Skip, "offline check", ""),
         };
         let verdict = match s.integration_health.iter().find(|h| h.kind == i.kind) {

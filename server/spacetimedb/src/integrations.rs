@@ -1,5 +1,6 @@
 //! Outgoing integrations enabled in `integration`: GA4, AppsFlyer, Tenjin, Adjust, AppMetrica,
-//! Amplitude, Mixpanel, Meta Conversions API, webhook, Google Cloud Storage export. Ledger
+//! Amplitude, Mixpanel, Meta Conversions API, Singular, Branch, Kochava, Braze, OneSignal, webhook,
+//! Google Cloud Storage and S3-compatible exports. Ledger
 //! transitions enqueue one outbox row per integration in the same transaction;
 //! `send_integration_event` delivers it with retries.
 
@@ -8,8 +9,8 @@ use crate::ctx::Ctx;
 use crate::net;
 use crate::{game_app, GameApp, Purchase};
 use purser_core::integrations::{
-    adjust, amplitude, appmetrica, appsflyer, event_kind, gcs, ga4, integration_kind, is_retryable_status, meta, mixpanel, revenue_mode,
-    tenjin, webhook, Built, HttpCall, OutEvent,
+    adjust, amplitude, appmetrica, appsflyer, branch, braze, event_kind, gcs, ga4, integration_kind, is_retryable_status, kochava, meta,
+    mixpanel, onesignal, revenue_mode, s3, singular, tenjin, webhook, Built, HttpCall, OutEvent,
 };
 use purser_core::retry_delay_secs;
 use spacetimedb::{ProcedureContext, ReducerContext, ScheduleAt, Table, TxContext};
@@ -256,6 +257,12 @@ pub fn validate_settings(kind: &str, settings_json: &str) -> Result<(), String> 
         integration_kind::AMPLITUDE => amplitude::Settings::parse(settings_json).map(|_| ()),
         integration_kind::MIXPANEL => mixpanel::Settings::parse(settings_json).map(|_| ()),
         integration_kind::META => meta::Settings::parse(settings_json).map(|_| ()),
+        integration_kind::S3 => s3::Settings::parse(settings_json).map(|_| ()),
+        integration_kind::SINGULAR => singular::Settings::parse(settings_json).map(|_| ()),
+        integration_kind::BRANCH => branch::Settings::parse(settings_json).map(|_| ()),
+        integration_kind::KOCHAVA => kochava::Settings::parse(settings_json).map(|_| ()),
+        integration_kind::BRAZE => braze::Settings::parse(settings_json).map(|_| ()),
+        integration_kind::ONESIGNAL => onesignal::Settings::parse(settings_json).map(|_| ()),
         other => Err(format!("unknown integration kind '{other}'")),
     }
 }
@@ -273,6 +280,12 @@ pub fn secret_for(kind: &str) -> Option<&'static str> {
         integration_kind::AMPLITUDE => Some(secret_name::AMPLITUDE_API_KEY),
         integration_kind::MIXPANEL => Some(secret_name::MIXPANEL_SERVICE_ACCOUNT),
         integration_kind::META => Some(secret_name::META_ACCESS_TOKEN),
+        integration_kind::S3 => Some(secret_name::S3_ACCESS_KEY),
+        integration_kind::SINGULAR => Some(secret_name::SINGULAR_SDK_KEY),
+        integration_kind::BRANCH => Some(secret_name::BRANCH_KEY),
+        integration_kind::KOCHAVA => Some(secret_name::KOCHAVA_APP_GUID),
+        integration_kind::BRAZE => Some(secret_name::BRAZE_REST_API_KEY),
+        integration_kind::ONESIGNAL => Some(secret_name::ONESIGNAL_API_KEY),
         _ => None,
     }
 }
@@ -349,10 +362,11 @@ fn build_call(tx: &TxContext, row: &IntegrationOutbox, event: &OutEvent, access_
         return Ok(Built::Skip(reason));
     }
     let secret = |name: &str| config::require_secret(tx, &app, name).map(|s| s.value);
-    // What the analytics integrations report as revenue; the webhook and the export carry all amounts.
+    // What the analytics integrations report as revenue; the webhook and the exports carry all amounts.
     let priced = event.with_revenue_mode(revenue_mode::of_settings(&integration.settings_json)?);
+    let now_ms = tx.timestamp.to_micros_since_unix_epoch() / 1000;
     let event = match row.kind.as_str() {
-        integration_kind::WEBHOOK | integration_kind::GCS => event,
+        integration_kind::WEBHOOK | integration_kind::GCS | integration_kind::S3 => event,
         _ => &priced,
     };
     match row.kind.as_str() {
@@ -392,7 +406,30 @@ fn build_call(tx: &TxContext, row: &IntegrationOutbox, event: &OutEvent, access_
             event,
             &meta::Settings::parse(&integration.settings_json)?,
             &secret(secret_name::META_ACCESS_TOKEN)?,
-            tx.timestamp.to_micros_since_unix_epoch() / 1000,
+            now_ms,
+        ),
+        // Signed when built: every attempt is built anew just before it is sent.
+        integration_kind::S3 => {
+            s3::build(event, &s3::Settings::parse(&integration.settings_json)?, &secret(secret_name::S3_ACCESS_KEY)?, now_ms)
+        }
+        integration_kind::SINGULAR => singular::build(
+            event,
+            &singular::Settings::parse(&integration.settings_json)?,
+            &secret(secret_name::SINGULAR_SDK_KEY)?,
+        ),
+        integration_kind::BRANCH => {
+            branch::build(event, &branch::Settings::parse(&integration.settings_json)?, &secret(secret_name::BRANCH_KEY)?)
+        }
+        integration_kind::KOCHAVA => {
+            kochava::build(event, &kochava::Settings::parse(&integration.settings_json)?, &secret(secret_name::KOCHAVA_APP_GUID)?)
+        }
+        integration_kind::BRAZE => {
+            braze::build(event, &braze::Settings::parse(&integration.settings_json)?, &secret(secret_name::BRAZE_REST_API_KEY)?)
+        }
+        integration_kind::ONESIGNAL => onesignal::build(
+            event,
+            &onesignal::Settings::parse(&integration.settings_json)?,
+            &secret(secret_name::ONESIGNAL_API_KEY)?,
         ),
         other => Err(format!("unknown integration '{other}'")),
     }
@@ -447,7 +484,7 @@ fn send_event(ctx: &mut ProcedureContext, row: &IntegrationOutbox) {
         match crate::stores::google_token(ctx, &app, secret_name::GCS_SERVICE_ACCOUNT_JSON, gcs::SCOPE, "gcs") {
             Ok(t) => t,
             Err(crate::stores::StoreError::Transient(e)) => {
-                retry(ctx, &row, &label, 0, e);
+                retry(ctx, &row, &label, true, e);
                 return;
             }
             Err(e) => {
@@ -486,17 +523,21 @@ fn send_event(ctx: &mut ProcedureContext, row: &IntegrationOutbox) {
         }
     };
 
-    let (status, detail) = match send(ctx, &call) {
-        Ok(res) if res.ok() => {
-            log::info!("Integration {label}: {} sent", event.kind);
-            ctx.tx(|tx| record(tx, &row.app_id, &row.kind, Outcome::Sent));
-            return;
-        }
-        Ok(res) => (res.status, res.describe()),
-        Err(e) => (0, e),
+    let (retryable, detail) = match send(ctx, &call) {
+        // Some platforms answer 2xx and name the events they refused in the body.
+        Ok(res) if res.ok() => match purser_core::integrations::response_error(&row.kind, &res.body) {
+            None => {
+                log::info!("Integration {label}: {} sent", event.kind);
+                ctx.tx(|tx| record(tx, &row.app_id, &row.kind, Outcome::Sent));
+                return;
+            }
+            Some((retryable, text)) => (retryable, format!("HTTP {}: {text}", res.status)),
+        },
+        Ok(res) => (is_retryable_status(res.status), res.describe()),
+        Err(e) => (true, e),
     };
 
-    retry(ctx, &row, &label, status, detail);
+    retry(ctx, &row, &label, retryable, detail);
 }
 
 /// An event an integration did not take (it refused it, or it kept failing): kept so an admin can
@@ -582,9 +623,9 @@ pub fn admin_replay_integration_events(ctx: &ReducerContext, app_id: String, kin
 }
 
 /// Logs a failed delivery and queues the next attempt when the failure is transient.
-fn retry(ctx: &mut ProcedureContext, row: &IntegrationOutbox, label: &str, status: u16, detail: String) {
+fn retry(ctx: &mut ProcedureContext, row: &IntegrationOutbox, label: &str, retryable: bool, detail: String) {
     let attempts = row.attempts + 1;
-    if !is_retryable_status(status) || attempts >= MAX_ATTEMPTS {
+    if !retryable || attempts >= MAX_ATTEMPTS {
         log::error!("Integration {label} failed after {attempts} attempt(s): {detail}");
         let text = format!("{label}: dropped after {attempts} attempt(s): {detail}");
         ctx.tx(|tx| {

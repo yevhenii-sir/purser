@@ -59,6 +59,19 @@ pub mod secret_name {
     pub const MIXPANEL_SERVICE_ACCOUNT: &str = "mixpanel_service_account";
     /// Meta Events Manager → dataset → Settings → Conversions API access token (`Authorization: Bearer`).
     pub const META_ACCESS_TOKEN: &str = "meta_access_token";
+    /// S3-compatible export: `ACCESS_KEY_ID:SECRET_ACCESS_KEY` of a key allowed to put objects into
+    /// the bucket (Signature V4).
+    pub const S3_ACCESS_KEY: &str = "s3_access_key";
+    /// Singular → Developer Tools → SDK Integration → SDK keys: the SDK key (`a` of the S2S API).
+    pub const SINGULAR_SDK_KEY: &str = "singular_sdk_key";
+    /// Branch → Account settings → Branch key (`key_live_...`), sent in the event body.
+    pub const BRANCH_KEY: &str = "branch_key";
+    /// Kochava → the app → App GUID (`kochava_app_id` of the server-to-server events).
+    pub const KOCHAVA_APP_GUID: &str = "kochava_app_guid";
+    /// Braze → Settings → APIs and Identifiers → REST API key with `users.track` (`Authorization: Bearer`).
+    pub const BRAZE_REST_API_KEY: &str = "braze_rest_api_key";
+    /// OneSignal → Settings → Keys & IDs → App API key (`Authorization: Key`).
+    pub const ONESIGNAL_API_KEY: &str = "onesignal_api_key";
     /// Alerts (server-wide, stored in the `default` scope): Telegram bot token from @BotFather.
     pub const ALERT_TELEGRAM_BOT_TOKEN: &str = "alert_telegram_bot_token";
     /// Alerts: Slack incoming webhook URL.
@@ -103,6 +116,12 @@ pub mod secret_name {
                 | AMPLITUDE_API_KEY
                 | MIXPANEL_SERVICE_ACCOUNT
                 | META_ACCESS_TOKEN
+                | S3_ACCESS_KEY
+                | SINGULAR_SDK_KEY
+                | BRANCH_KEY
+                | KOCHAVA_APP_GUID
+                | BRAZE_REST_API_KEY
+                | ONESIGNAL_API_KEY
                 | CLIENT_AUTH_SECRET
                 | RESPONSE_SIGNING_KEY
                 | ALERT_TELEGRAM_BOT_TOKEN

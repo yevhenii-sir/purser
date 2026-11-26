@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- S3-compatible export (`s3`): every event as the same NDJSON object as the Cloud Storage export, uploaded with a path-style `PUT` to AWS S3, Cloudflare R2, MinIO or any S3-compatible endpoint (`endpoint`, `region`, `bucket`, `prefix`; secret `s3_access_key` = `ACCESS_KEY_ID:SECRET_ACCESS_KEY`), signed with AWS Signature V4 (`purser_core::sigv4`, checked against AWS's published test suite).
+- Singular integration (`singular`, S2S EVENT endpoint, `singular_sdk_key`): revenue events with the Singular SDK's device id (`sdid`, V2) or the device ids (V1), refunds with a negative amount, cancellations as `subscription_cancelled`; `event_names` renames them. New attribution keys `singular_device_id` and `app_set_id`.
+- Branch integration (`branch`, v2 Event API, `branch_key`): purchases, renewals and paid subscription starts as `PURCHASE` with revenue, free trials as `START_TRIAL`, refunds and expirations as custom events.
+- Kochava integration (`kochava`, server-to-server events, `kochava_app_guid`): events with the revenue in `sum`, matched by the new attribution key `kochava_device_id` or the device ids.
+- Braze integration (`braze`, `/users/track`, `braze_rest_api_key`): purchases (refunds with a negative price) and `purser_<kind>` custom events, subscription changes included, for `external_id` = the billing user id.
+- OneSignal integration (`onesignal`, Custom Events API, `onesignal_api_key`): every event as a `purser_<kind>` custom event for `external_id` = the billing user id, with an idempotency key.
+- Integrations that answer 2xx and name refused events in the body (Singular, Braze, OneSignal) count those events as failed instead of sent.
+
 ## 0.11.0 - 2026-11-26
 
 ### Breaking

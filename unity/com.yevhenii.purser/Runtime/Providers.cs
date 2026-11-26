@@ -117,6 +117,15 @@ namespace Purser
         /// <c>FBSDKBasicUtility.anonymousID</c> on iOS) — for Meta Conversions API events (or send an advertising id).
         /// </summary>
         public const string MetaAnonId = "meta_anon_id";
+        /// <summary>
+        /// Singular Device ID (SDID) the Singular SDK reports — for Singular events (or send the device ids:
+        /// <see cref="Idfv"/> on iOS, <see cref="AppSetId"/> / <see cref="AdvertisingId"/> on Android).
+        /// </summary>
+        public const string SingularDeviceId = "singular_device_id";
+        /// <summary>Android App Set ID (<c>AppSet.getClient(context).getAppSetIdInfo()</c>) — Singular's <c>asid</c>.</summary>
+        public const string AppSetId = "app_set_id";
+        /// <summary>The Kochava SDK's device id (the tracker's <c>GetDeviceId</c>) — for Kochava events (or send a device id).</summary>
+        public const string KochavaDeviceId = "kochava_device_id";
         /// <summary>Apple Ads attribution, filled by <see cref="AppleAdsAttributionProvider"/>.</summary>
         public const string AppleAdsOrgId = "asa_org_id";
         public const string AppleAdsCampaignId = "asa_campaign_id";
