@@ -1275,7 +1275,8 @@ components:
             receipt id in `order_id`), the Meta user id (required for `/verify/meta`).
         store_user_proof:
           type: string
-          description: Meta only (required): a nonce from `Users.GetUserProof` proving the client is `store_user_id`; good for one check.
+          description: >-
+            Meta only (required): a nonce from `Users.GetUserProof` proving the client is `store_user_id`; good for one check.
         placement:
           type: string
           description: Paywall placement the purchase was made from (A/B test results, see `/paywall`).
