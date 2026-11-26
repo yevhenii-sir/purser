@@ -29,6 +29,12 @@ export function LoginPage({ error, onSignedIn }: { error?: string; onSignedIn: (
   }
   const config = provider.data
   const tokenForm = !config || withToken
+  const go = async (anotherAccount: boolean) => {
+    if (!config) return
+    setLeaving(true)
+    await tryAct(() => startSignIn(config, anotherAccount))
+    setLeaving(false)
+  }
   return (
     <Centered>
       <Card>
@@ -45,15 +51,17 @@ export function LoginPage({ error, onSignedIn }: { error?: string; onSignedIn: (
         <CardContent className="space-y-4">
           {config && (
             <div className="space-y-2">
-              <Button className="w-full" disabled={leaving} onClick={async () => {
-                setLeaving(true)
-                await tryAct(() => startSignIn(config))
-                setLeaving(false)
-              }}>
+              {/* After a failed sign-in the provider would send the same account back: ask for its sign-in page. */}
+              <Button className="w-full" disabled={leaving} onClick={() => go(!!error)}>
                 Sign in with {providerName(config)}
               </Button>
               {config.issuer === SPACETIMEAUTH_ISSUER && (
                 <p className="text-center text-xs text-muted-foreground">Google, GitHub, Discord and the other accounts this server allows.</p>
+              )}
+              {!error && (
+                <Button variant="link" size="sm" className="w-full text-muted-foreground" disabled={leaving} onClick={() => go(true)}>
+                  Use another account
+                </Button>
               )}
             </div>
           )}

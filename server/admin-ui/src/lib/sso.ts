@@ -65,8 +65,11 @@ async function challengeOf(verifier: string): Promise<string> {
   return base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))))
 }
 
-/** Leaves for the provider's sign-in page. */
-export async function startSignIn(c: SignInConfig): Promise<void> {
+/**
+ * Leaves for the provider's sign-in page. The provider remembers who signed in there and sends the
+ * same account straight back; `anotherAccount` asks it to show its sign-in page again (`prompt=login`).
+ */
+export async function startSignIn(c: SignInConfig, anotherAccount = false): Promise<void> {
   const pending: Pending = { state: random(), nonce: random(), verifier: random(), token_endpoint: c.token_endpoint, client_id: c.client_id, hash: location.hash }
   sessionStorage.setItem(PENDING_KEY, JSON.stringify(pending))
   const url = new URL(c.authorization_endpoint)
@@ -80,6 +83,7 @@ export async function startSignIn(c: SignInConfig): Promise<void> {
     code_challenge: await challengeOf(pending.verifier),
     code_challenge_method: "S256",
   }
+  if (anotherAccount) params.prompt = "login"
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
   location.assign(url.toString())
 }

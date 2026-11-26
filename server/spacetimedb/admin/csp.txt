@@ -1,1 +1,1 @@
-default-src 'none'; script-src 'sha256-wtkqNOtN72SlOULMmlop1/FpO+s60Rzt9qGV7UE42Ek='; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+default-src 'none'; script-src 'sha256-/dTuPlT6U1wn6OV6YOf/oThdxBvFG62Fxk+VPUZNUwQ='; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
