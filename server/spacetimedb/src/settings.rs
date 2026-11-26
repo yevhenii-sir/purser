@@ -55,6 +55,9 @@ pub mod key {
     /// How much revenue analytics the server keeps: `full` (default), `light` or `off`
     /// (`purser_core::revenue::analytics`).
     pub const ANALYTICS: &str = "analytics";
+    /// The OpenID Connect provider the admin page signs in with (`purser_core::sign_in::Config` as
+    /// JSON); absent: tokens only. Set by `admin_set_sign_in`.
+    pub const SIGN_IN: &str = "sign_in";
 }
 
 /// A worker that has not run for this long has stopped (it runs every minute).

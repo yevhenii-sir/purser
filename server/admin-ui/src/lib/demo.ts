@@ -248,6 +248,8 @@ export function call(name: string, args: unknown[]): string {
 
 export function route(path: string): { status: number; json: unknown } {
   if (path === "/healthz") return { status: 200, json: { status: "healthy", version: S.version } }
+  // The demo signs in without a provider.
+  if (path === "/admin/sign-in") return { status: 200, json: {} }
   return { status: 403, json: { error: READ_ONLY } }
 }
 

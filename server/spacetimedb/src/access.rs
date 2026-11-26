@@ -77,6 +77,7 @@ pub const SCOPE_ERROR: &str = "[ERR_SCOPE] you have no access to";
 /// The caller as an admin whose role has `cap`, limited to their apps or not.
 fn caller(ctx: &ReducerContext, cap: Cap) -> Result<Who, String> {
     let row = ctx.db.admin().identity().find(ctx.sender()).ok_or("[ERR_ADMIN_UNAUTHORIZED] Admin only")?;
+    crate::sign_in::check_token(ctx, row.identity)?;
     let role = Role::of(row.protected, &row.role);
     if !role.can(cap) {
         return Err(roles::denied(role, cap));
@@ -193,9 +194,13 @@ pub fn prune_audit(ctx: &ReducerContext) {
 pub fn admin_me(ctx: &mut ProcedureContext) -> String {
     crate::ctx::Ctx::tx(ctx, |tx| match tx.db.admin().identity().find(tx.sender()) {
         Some(a) => {
+            if let Err(e) = crate::sign_in::check_token(tx, a.identity) {
+                return json!({ "error": e });
+            }
             let role = Role::of(a.protected, &a.role);
             let game_keys = if a.protected { Vec::new() } else { split_game_keys(&a.game_keys) };
-            json!({ "identity": a.identity.to_hex().to_string(), "name": a.name, "role": role.as_str(), "owner": a.protected, "game_keys": game_keys })
+            let email = crate::sign_in::email_of(tx, a.identity);
+            json!({ "identity": a.identity.to_hex().to_string(), "name": a.name, "role": role.as_str(), "owner": a.protected, "game_keys": game_keys, "email": email })
         }
         None => json!({ "error": "[ERR_ADMIN_UNAUTHORIZED] this token is not an admin of this database" }),
     })
@@ -226,12 +231,7 @@ pub fn admin_upsert_admin(ctx: &ReducerContext, json: String) -> Result<(), Stri
     let identity = parse_identity(&i.identity)?;
     let role = Role::assignable(i.role.trim()).ok_or("[ERR_BAD_ROLE] role must be admin, editor, support or viewer")?;
     let name: String = i.name.trim().chars().take(80).collect();
-    let mut game_keys: Vec<String> = i.game_keys.iter().map(|g| g.trim().to_string()).filter(|g| !g.is_empty()).collect();
-    game_keys.sort();
-    game_keys.dedup();
-    if let Some(unknown) = game_keys.iter().find(|g| ctx.db.game_app().game_key().filter(g.as_str()).next().is_none()) {
-        return Err(format!("[ERR_BAD_APP] no app {unknown}"));
-    }
+    let game_keys = crate::sign_in::checked_game_keys(ctx, &i.game_keys)?;
     let existing = ctx.db.admin().identity().find(identity);
     if identity == ctx.sender() && existing.as_ref().is_some_and(|a| Role::of(a.protected, &a.role) != role) {
         return Err("[ERR_ADMIN_SELF] you cannot change your own role".into());
@@ -272,6 +272,7 @@ pub fn admin_remove_admin(ctx: &ReducerContext, identity_hex: String) -> Result<
     let Some(a) = ctx.db.admin().identity().find(identity) else { return Ok(()) };
     roles::may_manage(who.role, Some(Role::of(a.protected, &a.role)), None)?;
     ctx.db.admin().identity().delete(identity);
+    crate::sign_in::forget(ctx, identity);
     audit(ctx, &who, "admin_remove_admin", &identity.to_hex(), &a.name);
     Ok(())
 }
@@ -365,6 +366,8 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
         "spacetime_host" => rows(db.spacetime_host().iter()),
         "retry_schedule" => rows(db.retry_schedule().iter()),
         "admin" => rows(db.admin().iter()),
+        "admin_invite" => crate::sign_in::invite_rows(ctx),
+        "admin_sign_in" => crate::sign_in::sign_in_rows(ctx),
         // Never the key hashes.
         "server_key" if column == "game_key" => crate::server_api::key_rows(ctx, Some(value)),
         "server_key" => crate::server_api::key_rows(ctx, None),
@@ -444,8 +447,8 @@ enum Equals {
 /// owner's): every value of the filter looked up through the index where the column has one, and
 /// only the asked `columns` of each row (all when empty).
 pub fn select(ctx: &ReducerContext, q: &SelectQuery) -> Result<Vec<Value>, String> {
-    // The admin list and the audit log are for admins who manage admins (and see every app).
-    let who = if matches!(q.table.as_str(), "admin" | "admin_audit") { require(ctx, Cap::Admins)? } else { require_scoped(ctx, Cap::Read)? };
+    // The admin list, invitations and the audit log are for admins who manage admins (and see every app).
+    let who = if matches!(q.table.as_str(), "admin" | "admin_audit" | "admin_invite" | "admin_sign_in") { require(ctx, Cap::Admins)? } else { require_scoped(ctx, Cap::Read)? };
     let mut out = match &q.filter {
         None => read(ctx, &q.table, "", "")?,
         Some(w) => {

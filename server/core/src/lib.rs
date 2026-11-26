@@ -32,6 +32,7 @@ pub mod roles;
 pub mod samsung;
 pub mod server_api;
 pub mod sigv4;
+pub mod sign_in;
 pub mod sns;
 pub mod stripe;
 pub mod steam;

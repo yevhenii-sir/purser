@@ -5,7 +5,8 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { call, DB_NAME, getToken, setToken, sql } from "@/lib/api"
-import { tryAct } from "@/lib/hooks"
+import { tryAct, useAsync } from "@/lib/hooks"
+import { providerName, signInConfig, SPACETIMEAUTH_ISSUER, startSignIn } from "@/lib/sso"
 
 function Centered({ children }: { children: ReactNode }) {
   return (
@@ -18,35 +19,68 @@ function Centered({ children }: { children: ReactNode }) {
 
 export function LoginPage({ error, onSignedIn }: { error?: string; onSignedIn: () => void }) {
   const [token, setTokenValue] = useState("")
+  const provider = useAsync(signInConfig)
+  const [withToken, setWithToken] = useState(false)
+  const [leaving, setLeaving] = useState(false)
   const submit = () => {
     if (!token.trim()) return
     setToken(token.trim())
     onSignedIn()
   }
+  const config = provider.data
+  const tokenForm = !config || withToken
   return (
     <Centered>
       <Card>
         <CardHeader>
           <CardTitle>Sign in</CardTitle>
           <CardDescription>
-            Use the token of the owner of database <code className="font-mono">{DB_NAME}</code>. Get it from the CLI:
+            {config ? (
+              <>Admins of database <code className="font-mono">{DB_NAME}</code> sign in with the account they were invited with.</>
+            ) : (
+              <>Use the token of the owner of database <code className="font-mono">{DB_NAME}</code>. Get it from the CLI:</>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <pre className="rounded-md bg-muted px-3 py-2 font-mono text-xs">spacetime login show --token</pre>
-          <div className="grid gap-1.5">
-            <Label htmlFor="token">Token</Label>
-            <Input id="token" type="password" autoComplete="off" spellCheck={false} value={token}
-              onChange={(e) => setTokenValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
-          </div>
+          {config && (
+            <div className="space-y-2">
+              <Button className="w-full" disabled={leaving} onClick={async () => {
+                setLeaving(true)
+                await tryAct(() => startSignIn(config))
+                setLeaving(false)
+              }}>
+                Sign in with {providerName(config)}
+              </Button>
+              {config.issuer === SPACETIMEAUTH_ISSUER && (
+                <p className="text-center text-xs text-muted-foreground">Google, GitHub, Discord and the other accounts this server allows.</p>
+              )}
+            </div>
+          )}
           {error && (
             <Alert variant="destructive">
               <AlertDescription className="break-all">{error}</AlertDescription>
             </Alert>
           )}
+          {config && !withToken && (
+            <Button variant="link" size="sm" className="w-full text-muted-foreground" onClick={() => setWithToken(true)}>
+              Sign in with a token instead
+            </Button>
+          )}
+          {tokenForm && (
+            <>
+              {config && <p className="border-t pt-4 text-sm text-muted-foreground">The owner's or an admin's SpacetimeDB token, e.g. from the CLI:</p>}
+              <pre className="rounded-md bg-muted px-3 py-2 font-mono text-xs">spacetime login show --token</pre>
+              <div className="grid gap-1.5">
+                <Label htmlFor="token">Token</Label>
+                <Input id="token" type="password" autoComplete="off" spellCheck={false} value={token}
+                  onChange={(e) => setTokenValue(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+              </div>
+            </>
+          )}
         </CardContent>
         <CardFooter className="flex-col items-stretch gap-3">
-          <Button onClick={submit}>Sign in</Button>
+          {tokenForm && <Button variant={config ? "outline" : "default"} onClick={submit}>Sign in with the token</Button>}
           <p className="text-xs text-muted-foreground">
             The token is kept for this tab only and sent only to this database; it is forgotten when the tab is closed. Every
             database on a SpacetimeDB host shares this page's address: on a shared host such as maincloud, sign out when you are

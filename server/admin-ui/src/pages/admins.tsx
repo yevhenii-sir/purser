@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { CopyIcon, KeyRoundIcon, Trash2Icon, UserPlusIcon } from "lucide-react"
+import { CopyIcon, KeyRoundIcon, MailIcon, Trash2Icon, UserPlusIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -8,7 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
 import { RoleAccess, RoleMatrix } from "@/components/role-matrix"
 import { AppsPicker } from "@/components/apps-picker"
-import { call, createIdentity, select } from "@/lib/api"
+import { call, createIdentity, proc, select } from "@/lib/api"
+import { providerName, redirectUri, signInConfig, SPACETIMEAUTH_ISSUER, type SignInConfig } from "@/lib/sso"
 import { ago, errorText } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { useApps } from "@/lib/apps"
@@ -28,14 +29,42 @@ interface AdminRow {
   game_keys: string
 }
 
-const keysOf = (a: AdminRow) => a.game_keys.split(",").map((k) => k.trim()).filter(Boolean)
+const keysOf = (a: { game_keys: string }) => a.game_keys.split(",").map((k) => k.trim()).filter(Boolean)
+
+/** An invitation by email (`admin_invite`), claimed by the first sign-in through the provider. */
+interface InviteRow {
+  email: string
+  name: string
+  role: string
+  game_keys: string
+  invited_by: string
+  invited_at_micros: number
+  expires_at_micros: number
+}
+
+/** How an admin who joined through an invitation signs in (`admin_sign_in`). */
+interface SignInRow {
+  identity: string
+  email: string
+}
 
 const roleOf = (a: AdminRow): Role => (a.protected ? "owner" : ((ROLES.some((r) => r.id === a.role) ? a.role : "viewer") as Role))
+
+const inviteRole = (i: InviteRow): Role => (ROLES.some((r) => r.id === i.role) ? i.role : "viewer") as Role
 
 export function AdminsPage({ me }: PageProps) {
   const myRole = useRole()
   const [adding, setAdding] = useState(false)
-  const { data, error, loading, reload } = useAsync(() => select<AdminRow>({ table: "admin" }))
+  const { data, error, loading, reload: reloadAdmins } = useAsync(() => select<AdminRow>({ table: "admin" }))
+  const invites = useAsync(() => select<InviteRow>({ table: "admin_invite" }))
+  const bound = useAsync(() => select<SignInRow>({ table: "admin_sign_in" }))
+  const provider = useAsync(signInConfig)
+  const reload = () => {
+    reloadAdmins()
+    invites.reload()
+    bound.reload()
+  }
+  const emails = new Map((bound.data || []).map((b) => [hex(b.identity), b.email]))
   /** Roles the signed-in admin may give or take away (only the owner manages admins). */
   const manageable = (r: Role) => r !== "owner" && (myRole === "owner" || r !== "admin")
   const names = new Map((data || []).map((a) => [hex(a.identity), a.name]))
@@ -68,6 +97,7 @@ export function AdminsPage({ me }: PageProps) {
                       <span className="font-medium">{a.name || (a.protected ? "Owner" : "Unnamed")}</span>
                       {hex(a.identity) === me && <Tone tone="ok">you</Tone>}
                     </div>
+                    {emails.get(hex(a.identity)) && <div className="text-xs text-muted-foreground">{emails.get(hex(a.identity))}</div>}
                     <Mono className="break-all text-muted-foreground">{hex(a.identity)}</Mono>
                   </div>
                 ),
@@ -123,10 +153,40 @@ export function AdminsPage({ me }: PageProps) {
           />
         )}
       </Section>
+      {(invites.data?.length ?? 0) > 0 && (
+        <Section title="Invitations" description="Each is claimed by the first sign-in through the provider with that verified email, until it expires.">
+          <DataTable
+            rows={invites.data || []}
+            rowKey={(i) => i.email}
+            columns={[
+              { title: "Email", cell: (i) => <div className="min-w-0"><div className="font-medium">{i.email}</div>{i.name && <div className="text-xs text-muted-foreground">{i.name}</div>}</div> },
+              { title: "Role", cell: (i) => <Tone tone="muted">{roleLabel(inviteRole(i))}</Tone> },
+              { title: "Apps", className: "whitespace-normal", cell: (i) => <span className="text-sm text-muted-foreground">{keysOf(i).length ? keysOf(i).map(appName).join(", ") : "Every app"}</span> },
+              {
+                title: "Expires",
+                cell: (i) => Number(i.expires_at_micros) / 1000 < Date.now()
+                  ? <Tone tone="warn">expired</Tone>
+                  : <span className="text-xs text-muted-foreground">{new Date(Number(i.expires_at_micros) / 1000).toLocaleDateString()}</span>,
+              },
+              {
+                title: "",
+                className: "text-right",
+                cell: (i) => manageable(inviteRole(i)) && (
+                  <Button variant="ghost" size="icon-sm" className="text-destructive" aria-label="Cancel the invitation" onClick={async () => {
+                    await tryAct(() => call("admin_cancel_invite", i.email), "Invitation canceled")
+                    reload()
+                  }}><Trash2Icon /></Button>
+                ),
+              },
+            ]}
+          />
+        </Section>
+      )}
+      <SignInSection config={provider.data ?? null} loading={provider.loading} canEdit={myRole === "owner" || myRole === "admin"} onSaved={provider.reload} />
       <Section title="What each role may do" description="The Owner is the identity that published the database. Limiting an admin to some apps narrows any role to those apps.">
         <RoleMatrix highlight={myRole} />
       </Section>
-      <AddAdminDialog open={adding} onClose={() => setAdding(false)} onAdded={reload} roles={ROLES.filter((r) => manageable(r.id))} />
+      <AddAdminDialog open={adding} onClose={() => setAdding(false)} onAdded={reload} roles={ROLES.filter((r) => manageable(r.id))} provider={provider.data ?? null} />
       <Dialog open={!!editingApps} onOpenChange={(o) => !o && setEditingApps(null)}>
         <DialogContent className="sm:max-w-md">
           {editingApps && <EditApps admin={editingApps} onClose={() => setEditingApps(null)} onSaved={reload} />}
@@ -169,15 +229,89 @@ function EditApps({ admin, onClose, onSaved }: { admin: AdminRow; onClose: () =>
   )
 }
 
-function AddAdminDialog({ open, onClose, onAdded, roles }: { open: boolean; onClose: () => void; onAdded: () => void; roles: typeof ROLES }) {
+function AddAdminDialog({ open, onClose, onAdded, roles, provider }: { open: boolean; onClose: () => void; onAdded: () => void; roles: typeof ROLES; provider: SignInConfig | null }) {
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-lg">{open && <AddAdmin onClose={onClose} onAdded={onAdded} roles={roles} />}</DialogContent>
+      <DialogContent className="sm:max-w-lg">{open && <AddAdmin onClose={onClose} onAdded={onAdded} roles={roles} provider={provider} />}</DialogContent>
     </Dialog>
   )
 }
 
-function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: () => void; roles: typeof ROLES }) {
+/** The provider admins sign in with: SpacetimeAuth on maincloud or any OpenID Connect provider. */
+function SignInSection({ config, loading, canEdit, onSaved }: { config: SignInConfig | null; loading: boolean; canEdit: boolean; onSaved: () => void }) {
+  const [issuer, setIssuer] = useState("")
+  const [clientId, setClientId] = useState("")
+  const [editing, setEditing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const edit = () => {
+    setIssuer(config?.issuer || SPACETIMEAUTH_ISSUER)
+    setClientId(config?.client_id || "")
+    setEditing(true)
+  }
+  const save = async (i: string, c: string, ok: string) => {
+    setBusy(true)
+    const done = await tryAct(() => proc("admin_set_sign_in", i.trim(), c.trim()), ok)
+    setBusy(false)
+    if (done !== undefined) {
+      setEditing(false)
+      onSaved()
+    }
+  }
+  return (
+    <Section
+      title="Sign-in with a provider"
+      description="Admins sign in with Google, GitHub, Discord and other accounts through an OpenID Connect provider instead of pasting a token: SpacetimeAuth on maincloud, or any provider on your own server. Invite them by email; tokens keep working."
+    >
+      {loading ? <Loading /> : editing ? (
+        <div className="max-w-xl space-y-4">
+          <Field label="Issuer" hint={<>SpacetimeAuth: <code>{SPACETIMEAUTH_ISSUER}</code>; another provider: its issuer exactly as its tokens name it.</>}>
+            <Input className="font-mono text-xs" value={issuer} onChange={(e) => setIssuer(e.target.value)} />
+          </Field>
+          <Field label="Client ID" hint="Maincloud dashboard → this database → SpacetimeAuth → Clients (the client ID is not a secret).">
+            <Input className="font-mono text-xs" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+          </Field>
+          <Field label="Redirect URI to register with the client">
+            <div className="flex gap-2">
+              <Input readOnly className="font-mono text-xs" value={redirectUri()} onFocus={(e) => e.target.select()} />
+              <Button variant="outline" size="icon" aria-label="Copy the redirect URI" onClick={() => tryAct(() => navigator.clipboard.writeText(redirectUri()), "Copied")}><CopyIcon /></Button>
+            </div>
+          </Field>
+          <div className="flex gap-2">
+            <Button disabled={busy || !issuer.trim() || !clientId.trim()} onClick={() => save(issuer, clientId, "Admins can sign in with the provider")}>Save</Button>
+            <Button variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+          </div>
+        </div>
+      ) : config ? (
+        <div className="space-y-3 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <Tone tone="ok">on</Tone>
+            <span>{providerName(config)}</span>
+            <Mono className="text-muted-foreground">client {config.client_id}</Mono>
+          </div>
+          <p className="text-xs text-muted-foreground">Redirect URI registered with the client: <Mono className="break-all">{redirectUri()}</Mono></p>
+          {canEdit && (
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={edit}>Change</Button>
+              <Button variant="ghost" size="sm" className="text-destructive" disabled={busy} onClick={() => {
+                if (confirm("Turn signing in with the provider off? Admins who joined by invitation cannot sign in until it is on again.")) void save("", "", "Signing in with a provider is off")
+              }}>Turn off</Button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-3 text-sm text-muted-foreground">
+          <p>Off: admins sign in with SpacetimeDB tokens.</p>
+          {canEdit && <Button variant="outline" size="sm" onClick={edit}>Set up</Button>}
+        </div>
+      )}
+    </Section>
+  )
+}
+
+function AddAdmin({ onClose, onAdded, roles, provider }: { onClose: () => void; onAdded: () => void; roles: typeof ROLES; provider: SignInConfig | null }) {
+  const [email, setEmail] = useState("")
+  /** The email just invited: what to tell the coworker. */
+  const [invited, setInvited] = useState<string | null>(null)
   const [name, setName] = useState("")
   const [role, setRole] = useState<string>(roles.find((r) => r.id === "viewer")?.id || roles[0]?.id || "viewer")
   const [identity, setIdentity] = useState("")
@@ -213,7 +347,41 @@ function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: (
     if (ok) onClose()
   }
 
+  const invite = async () => {
+    if (!email.trim()) return toast.error("Enter an email")
+    setBusy(true)
+    const ok = await tryAct(async () => {
+      await call("admin_invite_admin", JSON.stringify({ email: email.trim(), name: name.trim(), role, game_keys: apps }))
+      return true
+    })
+    setBusy(false)
+    if (ok) {
+      onAdded()
+      setInvited(email.trim())
+    }
+  }
+
   const link = location.origin + location.pathname
+  if (invited && provider) {
+    return (
+      <>
+        <DialogHeader>
+          <DialogTitle>Invited {invited}</DialogTitle>
+          <DialogDescription>
+            Send them the link. They open it, choose Sign in with {providerName(provider)} and use the account of {invited} (its email must be
+            verified with the provider). The invitation is valid for 7 days and works once.
+          </DialogDescription>
+        </DialogHeader>
+        <Field label="Admin page">
+          <div className="flex gap-2">
+            <Input readOnly className="font-mono text-xs" value={link} onFocus={(e) => e.target.select()} />
+            <Button variant="outline" size="icon" aria-label="Copy the link" onClick={() => tryAct(() => navigator.clipboard.writeText(link), "Copied")}><CopyIcon /></Button>
+          </div>
+        </Field>
+        <DialogFooter><Button onClick={onClose}>Done</Button></DialogFooter>
+      </>
+    )
+  }
   if (token) {
     return (
       <>
@@ -245,7 +413,11 @@ function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: (
     <>
       <DialogHeader>
         <DialogTitle>Add admin</DialogTitle>
-        <DialogDescription>Generate a token to hand to a coworker, or add the identity of someone who already has a SpacetimeDB login.</DialogDescription>
+        <DialogDescription>
+          {provider
+            ? `Invite a coworker by email (they sign in with ${providerName(provider)}), generate a token to hand over, or add the identity of someone who already has a SpacetimeDB login.`
+            : "Generate a token to hand to a coworker, or add the identity of someone who already has a SpacetimeDB login."}
+        </DialogDescription>
       </DialogHeader>
       <DialogBody className="space-y-4">
         <Field label="Name"><Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Anna (support)" autoFocus /></Field>
@@ -262,7 +434,13 @@ function AddAdmin({ onClose, onAdded, roles }: { onClose: () => void; onAdded: (
         <Field label="This admin will be able to">
           <RoleAccess role={role as Role} limited={apps.length > 0} />
         </Field>
-        <Button className="w-full" onClick={generate} disabled={busy}><KeyRoundIcon /> Generate a token</Button>
+        {provider && (
+          <div className="flex gap-2">
+            <Input type="email" placeholder="email they sign in with" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => e.key === "Enter" && invite()} />
+            <Button onClick={invite} disabled={busy || !email.trim()}><MailIcon /> Invite</Button>
+          </div>
+        )}
+        <Button className="w-full" variant={provider ? "outline" : "default"} onClick={generate} disabled={busy}><KeyRoundIcon /> Generate a token</Button>
         <div className="space-y-2 border-t pt-4">
           <p className="text-xs text-muted-foreground">Or add an existing identity (theirs: <code>spacetime login show --identity</code>):</p>
           <div className="flex gap-2">

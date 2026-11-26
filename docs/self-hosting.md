@@ -101,6 +101,17 @@ Admins → **Add admin** → name, role (Admin, Editor, Support or Viewer) → *
 - Logs need the owner.
 - Someone with their own SpacetimeDB login can send you their identity (`spacetime login show --identity`) instead; add it in the same dialog.
 
+### Sign-in with Google, GitHub and other accounts
+
+Instead of handing out tokens, admins can sign in through an OpenID Connect provider: [SpacetimeAuth](https://spacetimedb.com/docs/core-concepts/authentication/spacetimeauth/) on maincloud (Google, GitHub, Discord, Twitch, Kick, magic links), or any provider whose tokens your SpacetimeDB server accepts (Keycloak, Auth0, Zitadel, ...) on your own server. Tokens keep working: the owner still signs in with the CLI token, and the token sign-in stays as a fallback.
+
+1. **The provider.** On maincloud: the database's dashboard → **SpacetimeAuth** → *Use SpacetimeAuth*, choose the identity providers, and in **Clients** take the client ID (not a secret). Elsewhere: a public client (no secret) with the authorization code flow and PKCE.
+2. **The redirect URI.** Register the admin page's address exactly as the browser opens it, without `#…`: `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin` (or your server's address of it).
+3. **Purser.** Admins → **Sign-in with a provider** → *Set up*: the issuer (`https://auth.spacetimedb.com/oidc` for SpacetimeAuth) and the client ID. Purser reads the provider's discovery document right away and refuses an issuer it does not name exactly or a provider without PKCE (`S256`). The page then shows **Sign in with …** and its Content-Security-Policy lets it call the provider's token endpoint, nothing else.
+4. **Invite.** Admins → **Add admin** → name, role, apps → the coworker's email → **Invite**. They open the admin page, sign in with the provider using that email, and become an admin with that role. An invitation works once, for 7 days, and only with an email the provider marks as verified.
+
+Admins who joined by invitation are bound to the provider and client they signed in with: SpacetimeDB checks a token's signature and expiry but not which application it was issued for, so Purser refuses their identity with a token of another client of the same provider. Removing them on the Admins page ends their access at once. Provider tokens are short-lived: when one expires, the page asks to sign in again (usually one click while the provider's session lasts).
+
 ## Delivery to games on the same server
 
 A game database on the same SpacetimeDB server is best reached with the `spacetimedb_idc` delivery: inter-database calls inside the server, no HTTP, no token, nothing to open in the proxy ([game integration](game-integration.md)). The build's `spacetime_db` is the game database's identity.

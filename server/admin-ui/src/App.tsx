@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Shell } from "@/components/shell"
-import { call, clearToken, getToken, isAuthError, proc, select, SERVED_BY_MODULE, setReadThroughProcedure, whoami } from "@/lib/api"
+import { call, clearToken, getToken, isAuthError, proc, select, SERVED_BY_MODULE, setReadThroughProcedure, setToken, SIGNED_OUT_EVENT, tokenFromProvider, whoami } from "@/lib/api"
+import { claimsOf, finishSignIn } from "@/lib/sso"
 import { can, RoleContext, type Role, ScopeContext } from "@/lib/roles"
 import { AppsProvider } from "@/lib/apps"
 import { errorText } from "@/lib/format"
@@ -27,13 +28,45 @@ interface Me {
   game_keys: string[]
 }
 
+/** Signs in with the provider's token, claiming an invitation of its email when the caller is not
+ * an admin yet. */
+async function meThroughProvider(): Promise<Me> {
+  try {
+    return await proc<Me>("admin_me")
+  } catch (e) {
+    if (!isAuthError(e)) throw e
+    await call("admin_accept_invite")
+    return await proc<Me>("admin_me")
+  }
+}
+
 /** Checks the stored token with the server. Only a rejected token is forgotten: a network or server
  * failure keeps it, so a page reload during an outage does not sign the admin out. */
 async function signIn(): Promise<Auth> {
+  try {
+    const idToken = await finishSignIn()
+    if (idToken) setToken(idToken, true)
+  } catch (e) {
+    return { state: "login", error: "Sign-in failed: " + errorText(e) }
+  }
   if (!getToken()) return { state: "login" }
   setReadThroughProcedure(false)
   let me: Me
-  try {
+  if (tokenFromProvider()) {
+    // Provider tokens are short-lived: an expired one is refused by the server anyway.
+    if (Number(claimsOf(getToken()).exp || 0) * 1000 < Date.now()) {
+      clearToken()
+      return { state: "login", error: "Your sign-in has expired: sign in again." }
+    }
+    try {
+      me = await meThroughProvider()
+    } catch (e) {
+      if (!isAuthError(e) && !/ERR_NOT_INVITED|ERR_SIGN_IN|ERR_ADMIN/.test(errorText(e))) return { state: "unreachable", error: errorText(e) }
+      const email = String(claimsOf(getToken()).email || "")
+      clearToken()
+      return { state: "login", error: (email ? `${email}: ` : "") + errorText(e) }
+    }
+  } else try {
     me = await proc<Me>("admin_me")
   } catch (e) {
     // The owner of a database the module was published over (created in the dashboard): `init` never ran, there is no admin yet.
@@ -73,6 +106,15 @@ export default function App() {
     return () => {
       alive = false
     }
+  }, [])
+
+  useEffect(() => {
+    const onSignedOut = () => {
+      clearToken()
+      setAuth({ state: "login", error: "Your sign-in has expired: sign in again." })
+    }
+    window.addEventListener(SIGNED_OUT_EVENT, onSignedOut)
+    return () => window.removeEventListener(SIGNED_OUT_EVENT, onSignedOut)
   }, [])
 
   useEffect(() => {

@@ -13,7 +13,7 @@ curl -LO https://github.com/yevhenii-sir/purser/releases/latest/download/purser.
 spacetime publish --server maincloud --bin-path purser.wasm <your-billing-db>
 ```
 
-The admin panel is at `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin`; sign in with your token (`spacetime login show --token`).
+The admin panel is at `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin`; sign in with your token (`spacetime login show --token`). Coworkers can later sign in with Google, GitHub or Discord through SpacetimeAuth instead of tokens ([sign-in with a provider](self-hosting.md#sign-in-with-google-github-and-other-accounts)).
 
 ### On your own server (Docker)
 

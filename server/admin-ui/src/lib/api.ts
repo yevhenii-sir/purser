@@ -16,6 +16,8 @@ export const DB_NAME = decodeURIComponent(DB_BASE.split("/").pop() || "")
 export const SERVED_BY_MODULE = DEMO || /\/v1\/database\/[^/]+\/route\/admin\/?$/.test(location.pathname)
 
 const TOKEN_KEY = "purserAdminToken"
+/** Set while the token is an ID token of the server's sign-in provider (not a pasted SpacetimeDB token). */
+const PROVIDER_KEY = "purserAdminProvider"
 
 // Only for this tab (sessionStorage), never localStorage: every database's routes on a SpacetimeDB
 // host share one origin, so a page another module serves there could read a stored token.
@@ -36,6 +38,7 @@ try {
 
 /** The token when the browser refuses storage (private mode, blocked site data): kept for this page load only. */
 let memoryToken = ""
+let memoryProvider = false
 
 export function getToken(): string {
   if (__DEMO__) return "demo"
@@ -46,19 +49,34 @@ export function getToken(): string {
   }
 }
 
-export function setToken(token: string) {
+/** Keeps the token for this tab; `fromProvider`: an ID token of the server's sign-in provider. */
+export function setToken(token: string, fromProvider = false) {
   memoryToken = token
+  memoryProvider = fromProvider
   try {
     storage()?.setItem(TOKEN_KEY, token)
+    if (fromProvider) storage()?.setItem(PROVIDER_KEY, "1")
+    else storage()?.removeItem(PROVIDER_KEY)
   } catch {
     // Storage refused or full: `memoryToken` holds it.
   }
 }
 
+/** The signed-in token came from the server's sign-in provider. */
+export function tokenFromProvider(): boolean {
+  try {
+    return storage()?.getItem(PROVIDER_KEY) === "1" || memoryProvider
+  } catch {
+    return memoryProvider
+  }
+}
+
 export function clearToken() {
   memoryToken = ""
+  memoryProvider = false
   try {
     storage()?.removeItem(TOKEN_KEY)
+    storage()?.removeItem(PROVIDER_KEY)
   } catch {
     // Nothing could be stored either.
   }
@@ -84,6 +102,13 @@ export class HttpError extends Error {
     super(text || `HTTP ${status}`)
     this.status = status
   }
+}
+
+/** Fired when the server refuses a provider's token mid-session (it expired): the page signs out. */
+export const SIGNED_OUT_EVENT = "purser-signed-out"
+
+function noticeRejected(status: number) {
+  if (status === 401 && tokenFromProvider()) window.dispatchEvent(new Event(SIGNED_OUT_EVENT))
 }
 
 /** The token was rejected (as opposed to the network or the server failing). */
@@ -166,7 +191,10 @@ export async function sql<T = Row>(query: string): Promise<T[]> {
   if (__DEMO__) return (await import("./demo")).sql()
   const res = await fetch(DB_BASE + "/sql", { method: "POST", headers: { Authorization: "Bearer " + getToken() }, body: query })
   const text = await res.text()
-  if (!res.ok) throw new HttpError(res.status, text)
+  if (!res.ok) {
+    noticeRejected(res.status)
+    throw new HttpError(res.status, text)
+  }
   const result = (JSON.parse(text) as SqlResult[])[0]
   // SpacetimeDB 2.10+ canonicalizes column names with digits (a_1b → a_1_b); map them back.
   const cols = result.schema.elements.map((e) => (typeof e.name === "string" ? e.name : e.name.some).replace(/([a-z])_(\d)/g, "$1$2"))
@@ -182,7 +210,10 @@ export async function call(name: string, ...args: unknown[]): Promise<string> {
     body: JSON.stringify(args),
   })
   const text = await res.text()
-  if (!res.ok) throw new HttpError(res.status, text.replace(/^Error: /, ""))
+  if (!res.ok) {
+    noticeRejected(res.status)
+    throw new HttpError(res.status, text.replace(/^Error: /, ""))
+  }
   return text
 }
 

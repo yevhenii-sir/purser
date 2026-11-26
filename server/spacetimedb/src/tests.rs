@@ -9354,7 +9354,7 @@ fn the_admin_page_is_served_compressed_and_cached_by_its_etag() {
         if !value.is_empty() {
             h.insert(name, value.parse().unwrap());
         }
-        admin_page_response(&h)
+        admin_page_response(&h, None)
     };
     let header = |r: &Response, name: &str| r.headers().get(name).map(|v| v.to_str().unwrap().to_string());
 
@@ -10539,3 +10539,110 @@ fn a_subscription_code_lasts_its_duration_and_expired_codes_are_refused() {
 
 #[path = "profile.rs"]
 mod profile;
+
+// ---------------------------------------------------------------------
+// Signing in through an OpenID Connect provider
+// ---------------------------------------------------------------------
+
+const SSO_ISSUER: &str = purser_core::sign_in::SPACETIMEAUTH_ISSUER;
+
+fn discovery(issuer: &str) -> String {
+    json!({ "issuer": issuer, "authorization_endpoint": "https://auth.spacetimedb.com/oidc/auth",
+            "token_endpoint": "https://auth.spacetimedb.com/oidc/token",
+            "response_types_supported": ["code"], "code_challenge_methods_supported": ["S256"] })
+    .to_string()
+}
+
+/// A provider's ID token of user `sub` for client `aud`.
+fn person(sub: &str, aud: &str, email: &str, verified: bool) -> TestAuth {
+    let claims = json!({ "iss": SSO_ISSUER, "sub": sub, "aud": aud, "email": email, "email_verified": verified, "name": "Anna K" });
+    TestAuth::from_jwt_payload(claims.to_string(), spacetimedb::ConnectionId::ZERO).unwrap()
+}
+
+fn sso_world() -> World {
+    let w = World::new();
+    w.as_admin(true);
+    w.script("/.well-known/openid-configuration", 200, &discovery(SSO_ISSUER));
+    crate::sign_in::set_sign_in(&mut w.ctx(), SSO_ISSUER, "client_1").unwrap();
+    w
+}
+
+fn invite(w: &World, email: &str, role: &str) -> Result<(), String> {
+    admin_call(w, |ctx| crate::sign_in::admin_invite_admin(ctx, json!({ "email": email, "role": role, "game_keys": ["game"] }).to_string()))
+}
+
+fn accept(w: &World, auth: TestAuth) -> Result<(), String> {
+    w.test.with_reducer_tx(auth, crate::sign_in::admin_accept_invite)
+}
+
+#[test]
+fn a_sign_in_provider_is_checked_with_its_discovery_document() {
+    let w = World::new();
+    assert!(crate::sign_in::set_sign_in(&mut w.ctx(), SSO_ISSUER, "client_1").unwrap_err().contains("ERR_ADMIN_UNAUTHORIZED"));
+    w.as_admin(false);
+    w.script("/.well-known/openid-configuration", 200, &discovery("https://auth.spacetimedb.com/oidc/"));
+    let e = crate::sign_in::set_sign_in(&mut w.ctx(), SSO_ISSUER, "client_1").unwrap_err();
+    assert!(e.contains("use exactly that"), "{e}");
+    assert!(crate::sign_in::set_sign_in(&mut w.ctx(), "http://auth.example.com", "client_1").unwrap_err().contains("ERR_BAD_SIGN_IN"));
+    assert_eq!(w.read(crate::sign_in::public_config), json!({}));
+
+    w.fake.borrow_mut().overrides.clear();
+    w.script("/.well-known/openid-configuration", 200, &discovery(SSO_ISSUER));
+    crate::sign_in::set_sign_in(&mut w.ctx(), SSO_ISSUER, "client_1").unwrap();
+    let public = w.read(crate::sign_in::public_config);
+    assert_eq!((public["client_id"].as_str(), public["token_endpoint"].as_str()), (Some("client_1"), Some("https://auth.spacetimedb.com/oidc/token")));
+    // The page may call the token endpoint, nothing else.
+    let origin = w.read(|tx| crate::sign_in::config(tx).and_then(|c| c.connect_origin()));
+    let csp = crate::handlers::admin_csp(origin.as_deref());
+    assert!(csp.contains("connect-src 'self' https://auth.spacetimedb.com;"), "{csp}");
+    assert_eq!(crate::handlers::admin_csp(None), include_str!("../admin/csp.txt").trim());
+
+    crate::sign_in::set_sign_in(&mut w.ctx(), "", "").unwrap();
+    assert_eq!(w.read(crate::sign_in::public_config), json!({}));
+}
+
+#[test]
+fn invited_admins_join_with_their_verified_email_and_stay_bound_to_this_client() {
+    let w = World::new();
+    w.as_admin(true);
+    assert!(invite(&w, "anna@example.com", "support").unwrap_err().contains("ERR_SIGN_IN_OFF"));
+    let w = sso_world();
+    assert!(invite(&w, "not an email", "support").unwrap_err().contains("ERR_BAD_EMAIL"));
+    invite(&w, " Anna@Example.com ", "support").unwrap();
+    w.as_admin(false);
+    assert!(invite(&w, "boss@example.com", "admin").unwrap_err().contains("ERR_OWNER_ONLY"), "only the owner invites admins");
+    w.as_admin(true);
+
+    // Tokens of another application of the provider, unverified or other emails claim nothing.
+    assert!(accept(&w, person("u-anna", "another_app", "anna@example.com", true)).unwrap_err().contains("another application"));
+    assert!(accept(&w, person("u-anna", "client_1", "anna@example.com", false)).unwrap_err().contains("not verified"));
+    assert!(accept(&w, person("u-eve", "client_1", "eve@example.com", true)).unwrap_err().contains("ERR_NOT_INVITED"));
+
+    accept(&w, person("u-anna", "client_1", "ANNA@example.com", true)).unwrap();
+    let anna = Identity::from_claims(SSO_ISSUER, "u-anna");
+    let row = w.read(|tx| tx.db.admin().identity().find(anna)).expect("admin");
+    assert_eq!((row.role.as_str(), row.game_keys.as_str(), row.name.as_str()), ("support", "game", "Anna K"));
+    assert_eq!(w.read(|tx| crate::sign_in::email_of(tx, anna)).as_deref(), Some("anna@example.com"));
+    assert!(w.read(crate::sign_in::invite_rows).is_empty(), "the invitation is used up");
+    assert!(accept(&w, person("u-anna", "client_1", "anna@example.com", true)).unwrap_err().contains("ERR_ADMIN_EXISTS"));
+
+    // Anna acts with tokens of this client only: another application's token has the same identity.
+    let acts = |auth: TestAuth| w.test.with_reducer_tx(auth, |ctx| crate::access::require_scoped(ctx, purser_core::roles::Cap::Read).map(|who| who.role));
+    assert_eq!(acts(person("u-anna", "client_1", "anna@example.com", true)), Ok(purser_core::roles::Role::Support));
+    assert!(acts(person("u-anna", "another_app", "anna@example.com", true)).unwrap_err().contains("another application"));
+    let me = |auth: TestAuth| {
+        let mut ctx = w.test.procedure_context_builder(auth).build();
+        serde_json::from_str::<Value>(&crate::access::admin_me(&mut ctx)).unwrap()
+    };
+    assert_eq!(me(person("u-anna", "client_1", "anna@example.com", true))["email"], "anna@example.com");
+    assert!(me(person("u-anna", "another_app", "anna@example.com", true))["error"].as_str().unwrap().contains("another application"));
+
+    // An invitation expires.
+    invite(&w, "bob@example.com", "viewer").unwrap();
+    w.advance_clock(purser_core::sign_in::INVITE_DAYS * 86_400 + 1);
+    assert!(accept(&w, person("u-bob", "client_1", "bob@example.com", true)).unwrap_err().contains("ERR_NOT_INVITED"));
+
+    // A removed admin's binding goes with them.
+    admin_call(&w, |ctx| crate::access::admin_remove_admin(ctx, anna.to_hex().to_string())).unwrap();
+    assert_eq!(w.read(|tx| crate::sign_in::email_of(tx, anna)), None);
+}

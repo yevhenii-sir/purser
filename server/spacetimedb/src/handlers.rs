@@ -1598,7 +1598,17 @@ const ADMIN_CSP: &str = include_str!("../admin/csp.txt");
 
 /// The admin page for a request with these headers: `304` when the browser has this version,
 /// gzipped when it accepts gzip, unpacked otherwise.
-fn admin_page_response(headers: &http::HeaderMap) -> Response {
+/// The page's Content-Security-Policy: the built one, and the provider's token endpoint the page
+/// calls when it signs in through a provider (`connect_origin`, an https origin).
+pub fn admin_csp(connect_origin: Option<&str>) -> String {
+    let csp = ADMIN_CSP.trim();
+    match connect_origin {
+        Some(origin) => csp.replacen("connect-src 'self'", &format!("connect-src 'self' {origin}"), 1),
+        None => csp.to_string(),
+    }
+}
+
+fn admin_page_response(headers: &http::HeaderMap, connect_origin: Option<&str>) -> Response {
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("");
     let b = http::Response::builder()
         .header("ETag", ADMIN_ETAG)
@@ -1607,7 +1617,7 @@ fn admin_page_response(headers: &http::HeaderMap) -> Response {
         .header("X-Frame-Options", "DENY")
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
-        .header("Content-Security-Policy", ADMIN_CSP.trim());
+        .header("Content-Security-Policy", admin_csp(connect_origin));
     // A proxy that compresses may have made the tag weak (`W/"…"`): the value inside still matches.
     if header("if-none-match").contains(ADMIN_ETAG) {
         return b.status(304).body(Body::from(Vec::new())).expect("valid response");
@@ -1630,8 +1640,9 @@ fn admin_page_html() -> Vec<u8> {
 }
 
 #[handler]
-fn admin_page(_ctx: &mut HandlerContext, req: Request) -> Response {
-    admin_page_response(req.headers())
+fn admin_page(ctx: &mut HandlerContext, req: Request) -> Response {
+    let origin = ctx.tx(|tx| crate::sign_in::config(tx).and_then(|c| c.connect_origin()));
+    admin_page_response(req.headers(), origin.as_deref())
 }
 
 /// `POST /checkout/steam`: the server starts a Steam purchase with its publisher key.
@@ -1705,6 +1716,7 @@ fn routes() -> Router {
         .get("/healthz", healthz)
         .get("/metrics", metrics)
         .get("/admin", admin_page)
+        .get("/admin/sign-in", crate::sign_in::admin_sign_in_route)
         .post("/restore", restore)
         .post("/entitlements", entitlements)
         .post("/paywall", paywall)

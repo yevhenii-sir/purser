@@ -50,6 +50,7 @@ mod subs_count;
 mod wallet;
 mod server_api;
 mod settings;
+mod sign_in;
 mod steam;
 mod store_actions;
 mod store_create;

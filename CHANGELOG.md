@@ -4,6 +4,7 @@
 
 ### Added
 
+- Admins sign in with Google, GitHub, Discord and other accounts through an OpenID Connect provider: SpacetimeAuth on maincloud, any provider on a self-hosted server (docs/self-hosting.md, *Sign-in with Google, GitHub and other accounts*). Admins → *Sign-in with a provider* sets the issuer and client ID (Purser checks the provider's discovery document: exact issuer, PKCE with S256); coworkers are invited by email with a role and apps, and the first sign-in with that verified email within 7 days makes them an admin. They stay bound to the provider and client they joined with: a token another application got from the same provider is refused. Tokens keep working. New tables `admin_invite` and `admin_sign_in` migrate in place.
 - A logo (`docs/images/purser.svg`): the docs site's logo and favicon, the admin page's favicon and its mark in the sidebar.
 - Docs: *How it works* (`docs/flows.md`), sequence diagrams of purchases, store notifications, delivery retries, restores on another player, Stripe, Steam and Telegram checkout, analytics events, paywalls and the wallet.
 
