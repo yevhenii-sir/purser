@@ -89,7 +89,7 @@ test("verify sends the server's field names and the client info", async () => {
     placement: "store",
     variant_id: "var-a",
     paywall_id: "pw-1",
-    client: { device: "Chrome 131", os: "Windows", app_version: "1.2.1", sdk_version: "typescript/0.12.0" },
+    client: { device: "Chrome 131", os: "Windows", app_version: "1.2.1", sdk_version: "typescript/0.13.0" },
   });
 });
 

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Purser HTTP API
-  version: 0.12.0
+  version: 0.13.0
   summary: Purchase verification, restore, entitlements and store notifications.
   description: |
     The public HTTP API of the billing module (`server/spacetimedb/src/handlers.rs`). It is served

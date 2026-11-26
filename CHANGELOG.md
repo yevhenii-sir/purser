@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.13.0 - 2026-11-26
+
+Publishes over 0.12.0 in place (new tables only): no `--delete-data`, no backup needed.
+
 ### Added
 
 - Admins sign in with Google, GitHub, Discord and other accounts through an OpenID Connect provider: SpacetimeAuth on maincloud, any provider on a self-hosted server (docs/self-hosting.md, *Sign-in with Google, GitHub and other accounts*). Admins → *Sign-in with a provider* sets the issuer and client ID (Purser checks the provider's discovery document: exact issuer, PKCE with S256); coworkers are invited by email with a role and apps, and the first sign-in with that verified email within 7 days makes them an admin. They stay bound to the provider and client they joined with: a token another application got from the same provider is refused. Tokens keep working. Domain rules let everyone with a verified email of a company domain in as Viewer or Support, optionally only accounts of the organization (Google Workspace's `hd` claim); public email domains are refused, the docs list the rules of use, removing the rule removes its admins, and someone removed stays out of the rule until invited. New tables `admin_invite`, `admin_sign_in`, `admin_domain_rule` and `admin_domain_block` migrate in place.

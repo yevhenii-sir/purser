@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-26
+
+No changes in the package: the version follows the server 0.13.0 (admin sign-in through a provider, role-aware admin page).
+
 ## [0.12.0] - 2026-11-26
 
 Not yet checked in a Unity editor: the EditMode tests were run outside Unity (dotnet with stand-ins for the Unity APIs, 348
