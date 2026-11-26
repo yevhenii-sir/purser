@@ -26,6 +26,7 @@ import { parseUnityConfig, productIdIn, suggestGameKey, toUnityConfig, type Pars
 import type { CatalogRow, GameApp, Kind, Platform, Product, Report } from "@/lib/types"
 import { catalogIdOf, KINDS } from "@/lib/types"
 import { cn } from "@/lib/utils"
+import { useAllowed } from "@/lib/roles"
 
 const STEPS = ["App", "Delivery", "Store keys", "Products", "Check"]
 
@@ -117,6 +118,8 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         }
       : INITIAL)
   const [busy, setBusy] = useState(false)
+  /** Keys need the secrets capability: an editor sets up the app, and an admin adds the keys later. */
+  const canKeys = useAllowed("secrets")
   const [creds, setCreds] = useState<Set<string> | null>(null)
   const [token, setToken] = useState("")
   const [keys, setKeys] = useState<Record<string, string>>({})
@@ -147,7 +150,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
   const onCatalogPick = useCallback((p: PickedProduct[]) => setCatalogPick(p), [])
 
   const saveSecret = async (scope: string, name: string, value: string) => {
-    if (!value.trim()) return
+    if (!value.trim() || !canKeys) return
     onChange()
     await call("admin_set_credential", scope, name, value.trim())
     setCreds((c) => new Set([...(c || []), `${scope}/${name}`]))
@@ -212,13 +215,13 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
           }))
         }
         appsChanged()
-        const keyless = w.delivery === "webhook" ? apps().filter((b) => !has("webhook_secret", b)) : []
+        const keyless = w.delivery === "webhook" && canKeys ? apps().filter((b) => !has("webhook_secret", b)) : []
         if (keyless.length) {
           const secret = genSecret()
           for (const scope of scopes("webhook_secret", keyless)) await saveSecret(scope, "webhook_secret", secret)
           setGenerated((g) => ({ ...g, webhook_secret: secret }))
         }
-      } else if (step === 2) {
+      } else if (step === 2 && canKeys) {
         // Account-wide store keys go to the developer account; a build's own keys to the build.
         for (const g of keyGroups()) {
           for (const spec of g.store.secrets.filter((x) => x.need !== "optional")) {
@@ -411,24 +414,56 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
               <DeliveryFields value={w} onChange={(patch) => setW((x) => ({ ...x, ...patch }))} />
               {w.delivery === "spacetimedb" && (
                 <>
-                  <SecretInput label="Billing token (the identity the app database trusts)" value={token} onChange={setToken}
-                    isSet={apps().length > 0 && apps().every((b) => has("spacetime_token", b))} hint={idHint} />
-                  <Button variant="outline" size="sm" onClick={createIdentity}><PlusIcon /> Create billing identity</Button>
+                  {canKeys ? (
+                    <>
+                      <SecretInput label="Billing token (the identity the app database trusts)" value={token} onChange={setToken}
+                        isSet={apps().length > 0 && apps().every((b) => has("spacetime_token", b))} hint={idHint} />
+                      <Button variant="outline" size="sm" onClick={createIdentity}><PlusIcon /> Create billing identity</Button>
+                    </>
+                  ) : (
+                    <KeysByAdmin what="The billing token (spacetime_token)" />
+                  )}
                   <pre className="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">{reducerSnippet(w.identity)}</pre>
                 </>
               )}
-              {w.delivery === "webhook" && (
+              {w.delivery === "webhook" && (canKeys ? (
                 <p className="text-sm text-muted-foreground">
                   A new HMAC key is generated and shown on the last step unless one is already set. Verify <code>X-Billing-Signature</code> and answer 2xx to unknown events.
                 </p>
-              )}
+              ) : (
+                <KeysByAdmin what="The webhook's HMAC key (webhook_secret)" />
+              ))}
               {w.delivery === "none" && (
                 <p className="text-sm text-muted-foreground">The server verifies purchases and keeps entitlements; the app grants rewards on <code>PurchaseSucceeded</code>.</p>
               )}
             </>
           )}
 
-          {step === 2 && (
+          {step === 2 && !canKeys && (
+            <>
+              <KeysByAdmin what="Store keys" />
+              <ul className="space-y-1 text-sm">
+                {keyGroups().map((g) => {
+                  const specs = g.store.secrets.filter((x) => x.need !== "optional" && x.name !== g.store.notify_secret)
+                  const missing = specs.filter((spec) => !g.builds.every((b) => has(spec.name, b)))
+                  return (
+                    <li key={`${g.store.id}|${g.account}`}>
+                      <span className="font-medium">{g.store.name}</span>
+                      {g.account !== "default" && <span className="text-muted-foreground"> · account {g.account}</span>}
+                      {": "}
+                      {!specs.length ? <span className="text-muted-foreground">no keys needed</span>
+                        : !missing.length ? <span className="text-muted-foreground">set</span>
+                        : <span className="text-muted-foreground">{missing.map((s) => s.label).join(", ")}</span>}
+                    </li>
+                  )
+                })}
+              </ul>
+              {keyGroups().some((g) => g.store.notify_secret) && (
+                <p className="text-xs text-muted-foreground">An admin also generates the secret of the notification URL (the build's Setup tab).</p>
+              )}
+            </>
+          )}
+          {step === 2 && canKeys && (
             <>
               {keyGroups().map((g) => {
                 const specs = g.store.secrets.filter((x) => x.need !== "optional" && x.name !== g.store.notify_secret)
@@ -580,5 +615,14 @@ function UnityPaste({ onApply }: { onApply: (c: ParsedUnityConfig) => void }) {
         <DialogFooter><Button onClick={apply} disabled={!text.trim()}>Fill in</Button></DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** A step's keys are left to an admin: the signed-in role cannot set keys. */
+function KeysByAdmin({ what }: { what: string }) {
+  return (
+    <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+      {what}: an admin adds them on the app's Keys tab. Your role sets up the app without keys; the last step shows what is still missing.
+    </p>
   )
 }
