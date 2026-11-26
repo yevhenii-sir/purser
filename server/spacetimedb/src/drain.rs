@@ -159,6 +159,9 @@ pub fn drain_pending(ctx: &mut ProcedureContext, run: DrainSchedule) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    if ctx.tx(|tx| crate::moving::holds(tx)) {
+        return; // moving: the new server's worker drains its copy of the queue
+    }
     // The lane is this run's (a run started late may find it given to another one): held for
     // this run's budget from now.
     let mine = ctx.tx(|tx| {

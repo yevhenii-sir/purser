@@ -49,6 +49,7 @@ mod scan;
 mod subs_count;
 mod wallet;
 mod server_api;
+mod moving;
 mod settings;
 mod sign_in;
 mod steam;

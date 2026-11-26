@@ -121,6 +121,17 @@ def main():
     code, _, _ = req("POST", f"{route}/server/entitlements", json.dumps({"app_id": app, "user_id": "player-4"}).encode())
     check(code == 401, "/server/entitlements without a key is refused")
 
+    # Moving to another server: a paused server asks callers to come back later; ending the move
+    # serves the routes again (forwarding needs a public https server: module tests cover it).
+    ok = lambda body: json.loads(json.loads(body)).get("ok") is True
+    check(ok(call("admin_set_move", "paused", "")), "admin_set_move paused")
+    code, h, body = req("POST", f"{route}/entitlements", json.dumps({"app_id": app, "user_id": "player-3"}).encode())
+    check(code == 503 and h.get("retry-after") == "60" and b"ERR_MOVING" in body, f"a paused server answers 503 with Retry-After ({code} {body[:120]!r})")
+    check(json.loads(req("GET", f"{route}/healthz")[2]).get("moving") == "paused", "/healthz reports the move")
+    check(ok(call("admin_set_move", "", "")), "the move ended")
+    code, _, body = req("POST", f"{route}/entitlements", json.dumps({"app_id": app, "user_id": "player-3"}).encode())
+    check(code == 200, "the routes are served again")
+
     if a.game_wasm:
         idc(a, base, tok, db, req, check, call, sql)
 

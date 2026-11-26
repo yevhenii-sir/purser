@@ -448,6 +448,18 @@ pub fn send_integration_event(ctx: &mut ProcedureContext, row: IntegrationOutbox
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    // Moving: the event waits (its copy on the new server is sent there).
+    let held = ctx.tx(|tx| {
+        let held = crate::moving::holds(tx);
+        if held {
+            let at = ScheduleAt::Time(tx.timestamp + Duration::from_secs(crate::moving::HOLD_SECS));
+            tx.db.integration_outbox().insert(IntegrationOutbox { id: 0, scheduled_at: at, ..row.clone() });
+        }
+        held
+    });
+    if held {
+        return;
+    }
     let guard = ctx.tx(|tx| {
         (row.attempts + 1 < MAX_ATTEMPTS).then(|| {
             let at = ScheduleAt::Time(tx.timestamp + Duration::from_secs(ATTEMPT_GUARD_SECS));

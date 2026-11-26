@@ -72,7 +72,8 @@ paths:
       summary: Health check
       description: |
         Answers as long as the database and its module are running, with the worker's state and queue for
-        monitors. `backlog`: a purchase has been due for 15 minutes (the queue is not keeping up).
+        monitors. `backlog`: a purchase has been due for 15 minutes (the queue is not keeping up). `moving`: the
+        server is moving to another one (docs/moving-servers.md), paused or forwarding its routes.
       responses:
         "200":
           description: The module and its worker are running.
@@ -1151,11 +1152,15 @@ components:
       properties:
         status:
           type: string
-          enum: [healthy, starting, backlog, worker_stopped]
+          enum: [healthy, starting, backlog, worker_stopped, moving]
         version:
           type: string
           description: Version of the published module (`purser` crate).
           examples: ["0.9.0"]
+        moving:
+          type: [string, "null"]
+          enum: [paused, forwarding, null]
+          description: The server is moving to another one (docs/moving-servers.md); null when not.
         worker_age_secs:
           type: [integer, "null"]
           description: Seconds since the minute worker last ran (null before its first run).

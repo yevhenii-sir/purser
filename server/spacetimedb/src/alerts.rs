@@ -752,6 +752,18 @@ pub fn send_alert(ctx: &mut ProcedureContext, row: AlertOutbox) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    // Moving: the message waits (its copy on the new server is sent there).
+    let held = ctx.tx(|tx| {
+        let held = crate::moving::holds(tx);
+        if held {
+            let at = ScheduleAt::Time(tx.timestamp + Duration::from_secs(crate::moving::HOLD_SECS));
+            tx.db.alert_outbox().insert(AlertOutbox { id: 0, scheduled_at: at, message_json: row.message_json.clone(), channel: row.channel.clone(), ..row });
+        }
+        held
+    });
+    if held {
+        return;
+    }
     let guard = ctx.tx(|tx| {
         (row.attempts + 1 < MAX_ATTEMPTS).then(|| {
             let at = ScheduleAt::Time(tx.timestamp + Duration::from_secs(crate::integrations::ATTEMPT_GUARD_SECS));

@@ -195,6 +195,8 @@ const PROCS: Record<string, (...args: never[]) => unknown> = {
   whoami: () => "0x" + S.identity,
   admin_response_public_key: () => ({ public_key: null }),
   admin_transfer_policy: () => ({ mode: "always", cooldown_days: 0, max_transfers: 0 }),
+  // The demo server is not moving and was not moved in.
+  admin_move_checklist: () => ({ moved_in: null }),
   // `?role=viewer` (editor, support, admin) shows the demo as that role sees it.
   admin_me: () => {
     const asked = new URLSearchParams(location.search).get("role") || ""

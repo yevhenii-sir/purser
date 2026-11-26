@@ -370,6 +370,12 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
         "admin_invite" => crate::sign_in::invite_rows(ctx),
         "admin_sign_in" => crate::sign_in::sign_in_rows(ctx),
         "admin_domain_rule" => crate::sign_in::domain_rule_rows(ctx),
+        // `since`: the counts from this day (days since the epoch) on, through the `day` index.
+        "forwarded_daily" if column == "since" => {
+            let since: i32 = value.parse().map_err(|_| "[ERR_BAD_QUERY] since must be a day number")?;
+            return Ok(crate::moving::forwarded_rows(ctx, since));
+        }
+        "forwarded_daily" => crate::moving::forwarded_rows(ctx, 0),
         // Never the key hashes.
         "server_key" if column == "game_key" => crate::server_api::key_rows(ctx, Some(value)),
         "server_key" => crate::server_api::key_rows(ctx, None),
@@ -383,7 +389,10 @@ fn read(ctx: &ReducerContext, table: &str, column: &str, value: &str) -> Result<
         "server_state" => db
             .server_state()
             .iter()
-            .filter(|s| crate::settings::ADMIN_KEYS.contains(&s.key.as_str()) || s.key == crate::alerts::RULES_KEY)
+            .filter(|s| {
+                crate::settings::ADMIN_KEYS.contains(&s.key.as_str())
+                    || [crate::alerts::RULES_KEY, crate::settings::key::MOVE, crate::settings::key::MOVED_IN].contains(&s.key.as_str())
+            })
             .map(|s| json!({ "key": s.key, "value": s.value }))
             .collect(),
         "purchase" => match column {
@@ -414,7 +423,7 @@ fn has_index(table: &str, column: &str) -> bool {
             | ("product" | "integration" | "integration_health" | "integration_dead" | "app_check" | "store_create_job" | "steam_build", "app_id")
             | ("paywall" | "placement", "game_key")
             | ("paywall_test", "placement_key")
-            | ("admin_audit", "since")
+            | ("admin_audit" | "forwarded_daily", "since")
             | ("purchase" | "purchase_log", _)
     )
 }

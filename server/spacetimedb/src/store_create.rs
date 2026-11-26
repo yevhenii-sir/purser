@@ -407,6 +407,18 @@ pub fn run_store_create_job(ctx: &mut ProcedureContext, tick: StoreCreateTick) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    // Moving: the job waits (its copy on the new server runs there).
+    let held = ctx.tx(|tx| {
+        let held = crate::moving::holds(tx);
+        if held {
+            let at = ScheduleAt::Time(tx.timestamp + std::time::Duration::from_secs(crate::moving::HOLD_SECS));
+            tx.db.store_create_tick().insert(StoreCreateTick { id: 0, job_id: tick.job_id, scheduled_at: at });
+        }
+        held
+    });
+    if held {
+        return;
+    }
     run_job(ctx, tick.job_id);
 }
 

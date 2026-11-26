@@ -86,6 +86,18 @@ pub fn send_apple_consumption(ctx: &mut ProcedureContext, row: AppleConsumptionO
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    // Moving: the answer waits (its copy on the new server is sent there).
+    let held = ctx.tx(|tx| {
+        let held = crate::moving::holds(tx);
+        if held {
+            let at = ScheduleAt::Time(tx.timestamp + Duration::from_secs(crate::moving::HOLD_SECS));
+            tx.db.apple_consumption_outbox().insert(AppleConsumptionOutbox { id: 0, scheduled_at: at, ..row.clone() });
+        }
+        held
+    });
+    if held {
+        return;
+    }
     let guard = ctx.tx(|tx| {
         let at = tx_now_micros(tx) + crate::integrations::ATTEMPT_GUARD_SECS as i64 * 1_000_000;
         (at <= row.deadline_at_micros).then(|| {

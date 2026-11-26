@@ -22,6 +22,7 @@ pub mod meta;
 pub mod metrics;
 pub mod model;
 pub mod money;
+pub mod moving;
 pub mod offers;
 pub mod paywall;
 pub mod promo;

@@ -1549,6 +1549,10 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
 /// `/notify/<store>` for every store of the registry that calls the server.
 #[handler]
 fn notify_store(ctx: &mut HandlerContext, req: Request) -> Response {
+    let req = match crate::moving::guard(ctx, req) {
+        Ok(req) => req,
+        Err(moved) => return *moved,
+    };
     dispatch_notification(ctx, req).into_response()
 }
 
@@ -1677,8 +1681,11 @@ fn health_report(ctx: &mut impl Ctx) -> Outcome {
         )
     });
     let stale = crate::settings::WORKER_STALE_MICROS / 1_000_000;
+    // Moving to another server: the routes pause or forward, the queue waits for the new server.
+    let moving = ctx.tx(|tx| crate::moving::state(tx).map(|m| m.mode));
     let oldest_due_secs = if queue.due > 0 { (now - queue.oldest_due_micros).max(0) / 1_000_000 } else { 0 };
     let (http, status) = match age {
+        _ if moving.is_some() => (200, "moving"),
         None => (200, "starting"),
         Some(a) if a > stale => (503, "worker_stopped"),
         Some(_) if oldest_due_secs >= crate::drain::BACKLOG_AFTER_MICROS / 1_000_000 => (200, "backlog"),
@@ -1693,7 +1700,7 @@ fn health_report(ctx: &mut impl Ctx) -> Outcome {
             "status": status, "version": env!("CARGO_PKG_VERSION"), "worker_age_secs": age,
             "pending_purchases": pending, "due_purchases": queue.due, "oldest_due_secs": oldest_due_secs,
             "queue_drainers": drainers, "stuck_purchases": stuck, "blocked_purchases": blocked,
-            "queued_integration_events": outbox,
+            "queued_integration_events": outbox, "moving": moving,
         }),
     )
 }

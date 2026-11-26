@@ -116,6 +116,42 @@ class Migrate(unittest.TestCase):
                 pass
         self.assertEqual(seen.get("resume"), False)
 
+    def run_switch(self, restore_fails=False, extra=()):
+        import migrate
+        from stdb import StdbError
+        steps = []
+
+        def restore(a, base, *_):
+            steps.append(("restore", base, a.database))
+            if restore_fails:
+                raise StdbError("restore failed")
+
+        def call(base, db, tok, name, *args):
+            steps.append((name, base, db) + args)
+            return {"ok": True} if name == "admin_set_move" else None
+
+        argv = ["migrate.py", "--from", "http://127.0.0.1:1", "--from-db", "old", "--to", "http://127.0.0.1:2", "--to-db", "new", "--switch", *extra]
+        with mock.patch.object(migrate.backup, "backup", lambda a, base, *_: steps.append(("backup", base, a.database))),                 mock.patch.object(migrate.backup, "restore", restore), mock.patch.object(migrate, "call", call),                 mock.patch.object(sys, "argv", argv), mock.patch.object(migrate, "token", lambda *_: "t"),                 mock.patch("builtins.print"):
+            try:
+                migrate.main()
+            except SystemExit:
+                pass
+        return steps
+
+    def test_switch_pauses_copies_marks_and_forwards(self):
+        steps = self.run_switch()
+        self.assertEqual([s[0] for s in steps], ["admin_set_move", "backup", "restore", "admin_mark_moved_in", "admin_set_move"])
+        self.assertEqual(steps[0], ("admin_set_move", "http://127.0.0.1:1", "old", "paused", ""))
+        self.assertEqual(steps[3][1:3], ("http://127.0.0.1:2", "new"))
+        self.assertEqual(steps[4], ("admin_set_move", "http://127.0.0.1:1", "old", "forwarding", "http://127.0.0.1:2/v1/database/new/route"))
+        to_url = self.run_switch(extra=["--to-url", "https://billing.example.com/"])
+        self.assertEqual(to_url[-1][-1], "https://billing.example.com")
+
+    def test_a_failed_copy_resumes_the_old_database(self):
+        steps = self.run_switch(restore_fails=True)
+        self.assertEqual([s[0] for s in steps], ["admin_set_move", "backup", "restore", "admin_set_move"])
+        self.assertEqual(steps[-1], ("admin_set_move", "http://127.0.0.1:1", "old", "", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

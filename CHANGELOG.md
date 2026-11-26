@@ -4,7 +4,8 @@
 
 ### Added
 
-- Docs: *Moving to another server* (`docs/moving-servers.md`): a stable address of your own in front of the server (Caddy and Cloudflare Worker recipes) so a move needs no new game build and no store console changes, everything that knows the server's address, and copying the database. The public address setting accepts such an address (`https://billing.example.com`), not only the route base.
+- Moving to another server without losing a purchase (`docs/moving-servers.md`). `migrate.py --switch` pauses the old server (every client, server-key and store route answers `503` + `Retry-After`, its worker, deliveries, integration events and alerts wait), copies the database, marks the new one as moved in and then forwards every route of the old server to the new one, body and headers as they were, until nothing reaches it. The old server's Server page counts what still arrives per route and build; the new one lists per build whether purchases and store notifications reach it yet and what else points back (provider sign-in, inter-database delivery, admins with tokens); every page of a moving server says so. `/healthz` reports `moving`. Owner procedures `admin_set_move`, `admin_mark_moved_in`, `admin_move_checklist`; the new table `forwarded_daily` migrates in place.
+- Docs: a stable address of your own in front of the server (Caddy and Cloudflare Worker recipes) so a move needs no new game build and no store console changes, and everything that knows the server's address. The public address setting accepts such an address (`https://billing.example.com`), not only the route base.
 
 ## 0.13.0 - 2026-11-26
 

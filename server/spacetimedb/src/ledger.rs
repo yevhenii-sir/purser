@@ -1188,6 +1188,17 @@ pub fn process_pending(ctx: &mut ProcedureContext, _schedule: RetrySchedule) {
     if ctx.sender() != ctx.database_identity() {
         return; // scheduled only
     }
+    // Moving to another server: the copy there does the work; the heartbeat shows the worker is alive.
+    let moving = ctx.tx(|tx| {
+        let held = crate::moving::holds(tx);
+        if held {
+            crate::settings::set(tx, crate::settings::key::WORKER_HEARTBEAT, &tx_now_micros(tx).to_string());
+        }
+        held
+    });
+    if moving {
+        return;
+    }
     let upkeep = ctx.tx(|tx| {
         let now = tx_now_micros(tx);
         crate::ledger_index::reindex_step(tx);

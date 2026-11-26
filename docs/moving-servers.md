@@ -86,18 +86,38 @@ copied with the database: games and backends keep working with them.
 
 ## Moving the database
 
-1. Publish the same Purser version on the new server, and allow its delivery hosts (Settings → Server).
-2. Copy the database, as the owner of both (every copied table of the new database is replaced):
+`migrate.py --switch` does the whole move, as the owner of both databases:
 
-    ```bash
-    python migrate.py --from maincloud --from-db <your-billing-db> --to myserver --to-db new-billing --dry-run
-    python migrate.py --from maincloud --from-db <your-billing-db> --to myserver --to-db new-billing
-    ```
+```bash
+python migrate.py --from maincloud --from-db <your-billing-db> --to myserver --to-db new-billing --dry-run
+python migrate.py --from maincloud --from-db <your-billing-db> --to myserver --to-db new-billing --switch
+```
 
-3. Point the stable address at the new server, or, without one, change everything in the table above right away:
-   purchases the old server records after the copy stay there (copy again before the switch to start over).
-4. Keep the old server until nothing reaches it any more, then delete it.
+Before it: publish the same Purser version on the new server and allow its delivery hosts there (Settings → Server).
+The dry run backs up the old database and prints what would be written. `--switch` then:
 
-Unfinished rows (`next_attempt_at_micros > 0`) are completed by the new server's worker, but while the old server is
-still running it may complete them too. That is safe: games apply each `event_id` once, and a consume that was done
-already counts as done.
+1. **Pauses the old server.** Every client, server-key and store route answers `503` with `Retry-After: 60` and the code
+   `ERR_MOVING`; its worker, deliveries, integration events, alerts and store product creation wait. Nothing is lost:
+   the Unity package and the SDKs do not finish a purchase on `503` and send it again, and stores send their
+   notifications again. Nothing is done twice: the old server starts no new work while the copy is taken.
+2. **Copies the database** (`backup.py` backup and restore; every copied table of the new database is replaced). If the
+   copy fails, the old server is resumed and nothing moved.
+3. **Marks the new database as moved in.** Its Server page shows, per build, whether purchases and store notifications
+   reach it yet, and what else still points at the old server (provider sign-in, inter-database delivery, admins with
+   tokens). The pause the copy carries over is dropped there.
+4. **Forwards the old server to the new one.** Every route is sent on with its body and headers (signatures, player
+   tokens and server keys still check out) to the new server's route base, `--to-url` (default
+   `<the --to server>/v1/database/<to-db>/route`; with a stable address, the address itself), and the answer comes
+   back as it is. Before forwarding, the old server checks that the new one answers `/healthz` with the same version.
+
+Then point the stable address at the new server, or, without one, change everything in the table above: until then
+forwarding serves the games and stores that still call the old address. The old server's Server page counts what still
+reaches it per route and build over the last 14 days: when nothing arrives any more, delete the old database. A request
+that comes back already forwarded is refused (`508`): a new server pointing back at the old one cannot loop.
+
+The steps can also be taken by hand: Settings → Server → **Moving to another server** (the owner: Pause, Forward, End
+the move), `admin_set_move(mode, target)` and `admin_mark_moved_in(from)`. Without `--switch`, `migrate.py` only copies:
+purchases the old server records after the copy stay there.
+
+`/healthz` of a moving server answers `200` with `status` `moving` and `moving`: `paused` or `forwarding`, so a
+monitor does not take the paused worker for a stopped one.

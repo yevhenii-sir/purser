@@ -16,6 +16,7 @@ import { forgetRevenue } from "@/lib/revenue"
 import { isFileSecret } from "@/lib/secrets"
 import { buildLabel } from "@/lib/stores"
 import { SECRET_NAMES } from "@/lib/types"
+import { MovingSection } from "@/components/moving"
 
 export function ServerPage() {
   return (
@@ -28,6 +29,7 @@ export function ServerPage() {
         <AnalyticsSection />
         <MetricsSection />
       </div>
+      <MovingSection />
       <RawSecrets />
     </>
   )

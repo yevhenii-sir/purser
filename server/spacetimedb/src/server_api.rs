@@ -358,6 +358,10 @@ fn route<T: serde::de::DeserializeOwned>(
     req: Request,
     f: impl FnOnce(&mut HandlerContext, &str, &T) -> (web::Answer, Option<u64>),
 ) -> Response {
+    let req = match crate::moving::guard(ctx, req) {
+        Ok(req) => req,
+        Err(moved) => return *moved,
+    };
     let authorization = authorization(&req);
     match web::json::<T>(req) {
         Ok(body) => {

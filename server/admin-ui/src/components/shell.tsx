@@ -17,6 +17,7 @@ import { Logo } from "@/components/logo"
 import { useGroups } from "@/lib/apps"
 import { can, roleLabel, useRole, useScoped } from "@/lib/roles"
 import { appRoute, PAGES, type PageDef, type Route } from "@/routes"
+import { MovingBanner } from "@/components/moving"
 
 function ThemeMenu() {
   const { theme, setTheme } = useTheme()
@@ -220,7 +221,10 @@ export function Shell({ route, go, me, onSignOut, children }: {
           </Button>
           <ThemeMenu />
         </header>
-        <div className="mx-auto w-full max-w-7xl space-y-6 p-4 md:p-6">{children}</div>
+        <div className="mx-auto w-full max-w-7xl space-y-6 p-4 md:p-6">
+          <MovingBanner />
+          {children}
+        </div>
       </SidebarInset>
       <CommandMenu open={palette} setOpen={setPalette} groups={all} go={go} />
     </SidebarProvider>

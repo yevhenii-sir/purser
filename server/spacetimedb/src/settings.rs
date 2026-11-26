@@ -59,6 +59,12 @@ pub mod key {
     /// The OpenID Connect provider the admin page signs in with (`purser_core::sign_in::Config` as
     /// JSON); absent: tokens only. Set by `admin_set_sign_in`.
     pub const SIGN_IN: &str = "sign_in";
+    /// This server is moving to another one (`moving::Move` as JSON: paused or forwarding); absent:
+    /// not moving. Set by `admin_set_move`.
+    pub const MOVE: &str = "move";
+    /// This database was copied from another server (`moving::MovedIn` as JSON). Set by
+    /// `admin_mark_moved_in` (`migrate.py` calls it).
+    pub const MOVED_IN: &str = "moved_in";
 }
 
 /// A worker that has not run for this long has stopped (it runs every minute).

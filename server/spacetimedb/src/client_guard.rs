@@ -171,6 +171,10 @@ pub fn run_tx<C: Ctx, T: DeserializeOwned + ClientRequest>(
     signs: bool,
     f: impl Fn(&TxContext, &T) -> Answer,
 ) -> Response {
+    let req = match crate::moving::guard(ctx, req) {
+        Ok(req) => req,
+        Err(moved) => return *moved,
+    };
     let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
     let r: T = match web::json(req) {
         Ok(r) => r,
@@ -190,6 +194,10 @@ pub fn run<C: Ctx, T: DeserializeOwned + ClientRequest>(
     signs: bool,
     f: impl FnOnce(&mut C, &T) -> Answer,
 ) -> Response {
+    let req = match crate::moving::guard(ctx, req) {
+        Ok(req) => req,
+        Err(moved) => return *moved,
+    };
     let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
     let r: T = match web::json(req) {
         Ok(r) => r,
