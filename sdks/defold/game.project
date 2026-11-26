@@ -1,0 +1,6 @@
+[project]
+title = Purser
+version = 0.11.0
+
+[library]
+include_dirs = purser
