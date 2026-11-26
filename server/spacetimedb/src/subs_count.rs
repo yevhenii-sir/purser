@@ -22,7 +22,7 @@ use std::time::Duration;
 /// Subscriptions read per step, at least: a step reads whole windows, up to about three times as
 /// many (a window twice as wide as all before it).
 pub fn batch() -> usize {
-    crate::ctx::batch(2, 2_000)
+    crate::ctx::batch(2, 500)
 }
 /// The first window of a walk (subscriptions whose access ends in the next ten minutes), and how far
 /// ahead access normally ends (a yearly subscription with its grace period); later rows are read
