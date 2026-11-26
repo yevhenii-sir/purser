@@ -4,6 +4,7 @@
 
 ### Added
 
+- A logo (`docs/images/purser.svg`): the docs site's logo and favicon, the admin page's favicon and its mark in the sidebar.
 - Docs: *How it works* (`docs/flows.md`), sequence diagrams of purchases, store notifications, delivery retries, restores on another player, Stripe, Steam and Telegram checkout, analytics events, paywalls and the wallet.
 
 ## 0.12.0 - 2026-11-26

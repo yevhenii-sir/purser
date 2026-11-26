@@ -16,4 +16,6 @@ cd server/admin-ui && npm run build:demo && python -m http.server 5190 -d dist-d
 chrome --headless=new --hide-scrollbars --lang=en-US --force-device-scale-factor=1   --blink-settings=preferredColorScheme=1 --window-size=1600,1000 --virtual-time-budget=8000   --screenshot=docs/images/admin-setup.png "http://127.0.0.1:5190/#app/galaxy-miner/setup"
 ```
 
+`purser.svg` is the logo: the docs site's logo and favicon; the admin page draws the same mark in `src/components/logo.tsx` and has it as its favicon (`index.html`).
+
 Keep each file under 500 KB and use demo data only: no real app ids, players, tokens, order ids or revenue.

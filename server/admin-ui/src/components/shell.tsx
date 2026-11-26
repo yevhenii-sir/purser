@@ -13,6 +13,7 @@ import {
   SidebarProvider, SidebarTrigger,
 } from "@/components/ui/sidebar"
 import { DB_NAME, DEMO, moduleVersion } from "@/lib/api"
+import { Logo } from "@/components/logo"
 import { useGroups } from "@/lib/apps"
 import { can, roleLabel, useRole, useScoped } from "@/lib/roles"
 import { appRoute, PAGES, type PageDef, type Route } from "@/routes"
@@ -91,6 +92,7 @@ export function Shell({ route, go, me, onSignOut, children }: {
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarMenuButton size="lg" onClick={() => go("overview")}>
+                <Logo />
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="flex min-w-0 items-baseline gap-1.5">
                     <span className="truncate font-semibold">Purser</span>
