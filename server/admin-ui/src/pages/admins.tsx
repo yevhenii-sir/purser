@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
+import { RichTable } from "@/components/rich-table"
 import { RoleAccess, RoleMatrix } from "@/components/role-matrix"
 import { AppsPicker } from "@/components/apps-picker"
 import { call, createIdentity, proc, select } from "@/lib/api"
@@ -72,6 +73,21 @@ const roleOf = (a: AdminRow): Role => (a.protected ? "owner" : ((ROLES.some((r) 
 
 const inviteRole = (i: InviteRow): Role => (ROLES.some((r) => r.id === i.role) ? i.role : "viewer") as Role
 
+/** Asks before a hand change detaches an admin from the domain rule they joined through. */
+function confirmDetach(rule: string | undefined): boolean {
+  return (
+    !rule ||
+    confirm(
+      `This admin joined through the rule for @${rule}. Changing their role or apps by hand detaches them from it: ` +
+        `from then on they are like an invited admin, and changing or removing the rule no longer touches them. Continue?`,
+    )
+  )
+}
+
+/** The role filter of the admin list: a role, or the admins of domain rules. */
+const ALL_ADMINS = "all"
+const VIA_RULES = "rules"
+
 export function AdminsPage({ me }: PageProps) {
   const myRole = useRole()
   const [adding, setAdding] = useState(false)
@@ -97,9 +113,20 @@ export function AdminsPage({ me }: PageProps) {
   const [editingApps, setEditingApps] = useState<AdminRow | null>(null)
   const appName = useAppNames()
   const setRole = async (a: AdminRow, role: string) => {
+    if (!confirmDetach(viaRule.get(hex(a.identity)))) return
     await tryAct(() => call("admin_upsert_admin", JSON.stringify({ identity: hex(a.identity), name: a.name, role, game_keys: keysOf(a) })), "Role changed")
     reload()
   }
+  const [text, setText] = useState("")
+  const [shownRole, setShownRole] = useState(ALL_ADMINS)
+  const shown = (data || []).filter((a) => {
+    const id = hex(a.identity)
+    if (shownRole === VIA_RULES ? !viaRule.has(id) : shownRole !== ALL_ADMINS && roleOf(a) !== shownRole) return false
+    const q = text.trim().toLowerCase()
+    if (!q) return true
+    const apps = keysOf(a).map((k) => `${k} ${appName(k)}`).join(" ")
+    return `${a.name} ${emails.get(id) || ""} ${id} ${roleLabel(roleOf(a))} ${viaRule.get(id) || ""} ${apps}`.toLowerCase().includes(q)
+  })
   return (
     <>
       <PageHeader
@@ -109,13 +136,31 @@ export function AdminsPage({ me }: PageProps) {
       />
       <Section>
         {error ? <ErrorBox error={error} /> : loading || !data ? <Loading /> : (
-          <DataTable
-            rows={[...data].sort((a, b) => Number(b.protected) - Number(a.protected) || a.name.localeCompare(b.name))}
+          <RichTable
+            rows={[...shown].sort((a, b) => Number(b.protected) - Number(a.protected) || a.name.localeCompare(b.name))}
             rowKey={(a) => hex(a.identity)}
+            noun="admins"
+            empty={text || shownRole !== ALL_ADMINS ? "No admin matches." : "No admins."}
+            toolbar={
+              <div className="flex flex-wrap gap-2">
+                <Input className="h-8 w-64" placeholder="Search name, email, identity, app…" value={text} onChange={(e) => setText(e.target.value)} />
+                <Select value={shownRole} onValueChange={setShownRole}>
+                  <SelectTrigger className="h-8 w-44"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_ADMINS}>Every role</SelectItem>
+                    <SelectItem value="owner">Owner</SelectItem>
+                    {ROLES.map((r) => <SelectItem key={r.id} value={r.id}>{r.label}</SelectItem>)}
+                    <SelectItem value={VIA_RULES}>Joined by a domain rule</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            }
             columns={[
               {
                 title: "Admin",
                 className: "whitespace-normal",
+                size: 360,
+                sort: (a) => (a.name || (a.protected ? "Owner" : "")).toLowerCase(),
                 cell: (a) => (
                   <div className="min-w-0 space-y-0.5">
                     <div className="flex flex-wrap items-center gap-2">
@@ -130,6 +175,8 @@ export function AdminsPage({ me }: PageProps) {
               },
               {
                 title: "Role",
+                size: 160,
+                sort: (a) => ["owner", ...ROLES.map((r) => r.id)].indexOf(roleOf(a)),
                 cell: (a) => {
                   const r = roleOf(a)
                   if (!manageable(r) || hex(a.identity) === me) return <Tone tone={r === "owner" ? "muted" : "ok"}>{roleLabel(r)}</Tone>
@@ -144,6 +191,8 @@ export function AdminsPage({ me }: PageProps) {
               {
                 title: "Apps",
                 className: "whitespace-normal",
+                size: 220,
+                sort: (a) => (a.protected || !keysOf(a).length ? "" : keysOf(a).map(appName).join(", ").toLowerCase()),
                 cell: (a) => {
                   const keys = keysOf(a)
                   const text = a.protected || !keys.length ? "Every app" : keys.map(appName).join(", ")
@@ -157,6 +206,8 @@ export function AdminsPage({ me }: PageProps) {
               },
               {
                 title: "Added",
+                size: 200,
+                sort: (a) => Number(a.added_at_micros),
                 cell: (a) => (
                   <span className="text-xs text-muted-foreground">
                     {Number(a.added_at_micros) > 0 ? ago(a.added_at_micros) : "—"}
@@ -269,7 +320,7 @@ export function AdminsPage({ me }: PageProps) {
       <AddAdminDialog open={adding} onClose={() => setAdding(false)} onAdded={reload} roles={ROLES.filter((r) => manageable(r.id))} provider={provider.data ?? null} />
       <Dialog open={!!editingApps} onOpenChange={(o) => !o && setEditingApps(null)}>
         <DialogContent className="sm:max-w-md">
-          {editingApps && <EditApps admin={editingApps} onClose={() => setEditingApps(null)} onSaved={reload} />}
+          {editingApps && <EditApps admin={editingApps} rule={viaRule.get(hex(editingApps.identity))} onClose={() => setEditingApps(null)} onSaved={reload} />}
         </DialogContent>
       </Dialog>
     </>
@@ -291,9 +342,10 @@ function AdminAppsPicker({ value, onChange }: { value: string[]; onChange: (keys
   return <AppsPicker value={value} onChange={onChange} summary={summary} />
 }
 
-function EditApps({ admin, onClose, onSaved }: { admin: AdminRow; onClose: () => void; onSaved: () => void }) {
+function EditApps({ admin, rule, onClose, onSaved }: { admin: AdminRow; rule?: string; onClose: () => void; onSaved: () => void }) {
   const [keys, setKeys] = useState(keysOf(admin))
   const save = async () => {
+    if (!confirmDetach(rule)) return
     const ok = await tryAct(() => call("admin_upsert_admin", JSON.stringify({ identity: hex(admin.identity), name: admin.name, role: admin.role, game_keys: keys })), "Saved")
     if (ok !== undefined) { onSaved(); onClose() }
   }

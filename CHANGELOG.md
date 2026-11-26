@@ -8,6 +8,10 @@
 - A logo (`docs/images/purser.svg`): the docs site's logo and favicon, the admin page's favicon and its mark in the sidebar.
 - Docs: *How it works* (`docs/flows.md`), sequence diagrams of purchases, store notifications, delivery retries, restores on another player, Stripe, Steam and Telegram checkout, analytics events, paywalls and the wallet.
 
+### Changed
+
+- Admins page: the admin list is a sortable grid with a search (name, email, identity, apps) and a role filter (one of them: the admins of domain rules); changing the role or apps of an admin who joined through a domain rule asks first, since it detaches them from the rule.
+
 ## 0.12.0 - 2026-11-26
 
 ### Breaking
