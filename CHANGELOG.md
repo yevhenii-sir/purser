@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Docs: *How it works* (`docs/flows.md`), sequence diagrams of purchases, store notifications, delivery retries, restores on another player, Stripe, Steam and Telegram checkout, analytics events, paywalls and the wallet.
+
 ## 0.12.0 - 2026-11-26
 
 ### Breaking

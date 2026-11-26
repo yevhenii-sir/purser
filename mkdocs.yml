@@ -60,6 +60,7 @@ exclude_docs: |
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - How it works: flows.md
   - Store setup: store-setup.md
   - Bulk setup: bulk-setup.md
   - Games with their own IAP code: observer-mode.md

@@ -86,6 +86,7 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 
 | | |
 |---|---|
+| [docs/flows.md](docs/flows.md) | How it works: sequence diagrams of purchases, notifications, retries, restores, web and Steam checkout, paywalls, wallet |
 | [docs/store-setup.md](docs/store-setup.md) | Google Play service account and RTDN, App Store keys and notifications |
 | [docs/game-integration.md](docs/game-integration.md) | Delivery contract (reducers, webhook), games without a backend, other engines |
 | [docs/observer-mode.md](docs/observer-mode.md) | Games that keep their own IAP code: report purchases to the server |

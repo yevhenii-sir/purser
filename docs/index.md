@@ -19,6 +19,8 @@ flowchart LR
     purser -->|"purchase events"| tools
 ```
 
+Step by step, flow by flow: [how it works](flows.md).
+
 ## Features
 
 - **Stores**: Google Play, App Store, Amazon Appstore, Steam and web payments (Stripe, Xsolla). Server-side verification, consume / acknowledge, restore, entitlements shared between all builds of a game.
