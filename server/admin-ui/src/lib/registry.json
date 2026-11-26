@@ -7,7 +7,8 @@
       "os": "android",
       "stores": [
         "google",
-        "xsolla"
+        "xsolla",
+        "samsung"
       ]
     },
     {
@@ -454,6 +455,62 @@
       ],
       "verification": "webhook",
       "verify_route": null
+    },
+    {
+      "app_id_is_store_id": false,
+      "app_id_label": "App id (package name, or e.g. package.samsung when the Google Play build uses it)",
+      "app_id_placeholder": "com.example.mygame.samsung",
+      "binding": "none",
+      "docs": "samsung-galaxy-store",
+      "finish": "server_consume_acknowledge",
+      "id": "samsung",
+      "implemented": true,
+      "name": "Samsung Galaxy Store",
+      "notifications": true,
+      "notify_label": "Instant Server Notification URL (Seller Portal → the app → In App Purchase: the ISN URL of each item)",
+      "notify_query": "app={app_id}",
+      "notify_route": "/notify/samsung",
+      "notify_secret": null,
+      "platforms": [
+        "android"
+      ],
+      "polls_subscriptions": true,
+      "product_create": [],
+      "product_import": false,
+      "refunds": "Instant Server Notifications (looked up again) and subscription re-checks by the worker",
+      "reports_price": true,
+      "secrets": [
+        {
+          "account_wide": true,
+          "file": false,
+          "label": "Service account ID (Seller Portal → Assistance → API Service)",
+          "name": "samsung_service_account_id",
+          "need": "required"
+        },
+        {
+          "account_wide": true,
+          "file": true,
+          "label": "Private key of the service account (PEM, downloaded when the account was created)",
+          "name": "samsung_private_key",
+          "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "IAP public key (Seller Portal): verifies Instant Server Notifications",
+          "name": "samsung_iap_public_key",
+          "need": "recommended"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "Package name in Galaxy Store (empty: the app id)",
+          "name": "samsung_package_name",
+          "need": "optional"
+        }
+      ],
+      "verification": "client_receipt",
+      "verify_route": "/verify/samsung"
     },
     {
       "app_id_is_store_id": false,

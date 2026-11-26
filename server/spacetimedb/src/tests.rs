@@ -4173,6 +4173,167 @@ fn the_huawei_setup_check_asks_for_a_token() {
     assert_eq!(level(&w, "huawei_site").as_deref(), Some("fail"));
 }
 
+// ---------------------------------------------------------------------
+// Samsung Galaxy Store
+// ---------------------------------------------------------------------
+
+const SAMSUNG_APP: &str = "com.studio.game.samsung";
+const SAMSUNG_PURCHASE: &str = "579cc7245d57cc1ba072b81d06e6f86cd49d3da63854538eea68927378799a37";
+
+/// A Galaxy Store build of the game (an Android build next to the Google Play one) with its
+/// service account and IAP key; `package`: its `samsung_package_name`, if any.
+fn add_samsung_build(w: &World, package: Option<&str>) {
+    w.as_admin(false);
+    let app = json!({
+        "app_id": SAMSUNG_APP, "platform": "android", "store": "samsung", "game_key": "game", "delivery": "spacetimedb",
+        "spacetime_url": "https://maincloud.spacetimedb.com", "spacetime_db": "game-db",
+        "grant_reducer": "billing_grant", "revoke_reducer": "billing_revoke", "allow_sandbox": false,
+    });
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_game_app(ctx, app.to_string())).unwrap();
+    let products = json!([
+        { "app_id": SAMSUNG_APP, "product_id": "gems", "kind": "consumable" },
+        { "app_id": SAMSUNG_APP, "product_id": "vip", "kind": "subscription" },
+    ]);
+    w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_products(ctx, products.to_string())).unwrap();
+    w.set_secret(purser_core::samsung::SERVICE_ACCOUNT_ID, "sa-0001");
+    w.set_secret(purser_core::samsung::PRIVATE_KEY, purser_core::samsung::testing::PRIVATE_PEM);
+    w.set_secret(purser_core::samsung::IAP_PUBLIC_KEY, purser_core::samsung::testing::PUBLIC_PEM);
+    if let Some(p) = package {
+        w.set_secret(purser_core::samsung::PACKAGE_NAME, p);
+    }
+    w.script("devapi.samsungapps.com/auth/accessToken", 200, r#"{"ok":true,"createdItem":{"accessToken":"sam-at"}}"#);
+    w.script("PATCH https://devapi.samsungapps.com/iap/v6/applications/", 200, r#"{"totalCount":1,"purchaseItemList":[{"purchaseId":"x","statusCode":"0","statusString":"success."}]}"#);
+}
+
+/// Scripts the answer of `needle` (replacing an earlier one).
+fn samsung_answer(w: &World, needle: &str, body: Value) {
+    w.fake.borrow_mut().overrides.retain(|(n, ..)| n != needle);
+    w.script(needle, 200, &body.to_string());
+}
+
+fn samsung_verify(w: &World, user: &str, product_id: &str, purchase_id: &str) -> Outcome {
+    let r: VerifyRequest = serde_json::from_value(json!({
+        "app_id": SAMSUNG_APP, "user_id": user, "product_id": product_id, "purchase_token": purchase_id, "order_id": "S-order",
+    }))
+    .unwrap();
+    verify(&mut w.ctx(), "samsung", &r)
+}
+
+fn samsung_notification(w: &World, query: &str, jwt: &str) -> Outcome {
+    let req = http::Request::builder().method("POST").uri(format!("/notify/samsung{query}")).body(Body::from(jwt.to_string())).unwrap();
+    dispatch_notification(&mut w.ctx(), req)
+}
+
+fn samsung_receipt(status: &str) -> Value {
+    json!({ "itemId": "gems", "paymentId": "2026110101TRAN", "orderId": "S20261101KRA0000001", "packageName": "com.studio.game",
+        "itemName": "Gems", "itemType": "Item", "countryCode": "DEU", "purchaseDate": "2026-11-01 10:00:00", "paymentAmount": "4.99",
+        "status": status, "paymentMethod": "Credit Card", "mode": "PRODUCTION", "consumeYN": "N", "acknowledgeYN": "N",
+        "currencyCode": "EUR", "currencyUnit": "€" })
+}
+
+#[test]
+fn samsung_purchases_are_verified_consumed_and_refunded() {
+    let w = World::new();
+    add_samsung_build(&w, Some("com.studio.game"));
+    samsung_answer(&w, "iap.samsungapps.com/iap/v6/receipt", samsung_receipt("success"));
+    assert_eq!(samsung_verify(&w, "player-1", "gems", "").body["status"], "error", "the purchase id is required");
+    let o = samsung_verify(&w, "player-1", "gems", SAMSUNG_PURCHASE);
+    assert_eq!((o.http, o.body["status"].as_str()), (200, Some("success")), "{}", o.body);
+    let p = find(&w, "samsung:S20261101KRA0000001").expect("ledger row");
+    assert_eq!((p.status.as_str(), p.price_micros, p.currency.as_str(), p.country.as_str()), (status::COMPLETED, 4_990_000, "EUR", "DE"));
+    assert_eq!(p.purchase_token, SAMSUNG_PURCHASE);
+    assert_eq!(w.calls("/call/billing_grant"), 1);
+    // The server consumes it with the service account's token.
+    let consume = w.fake.borrow().calls.iter().find(|c| c.starts_with("PATCH ")).cloned().unwrap();
+    assert_eq!(
+        consume,
+        format!("PATCH https://devapi.samsungapps.com/iap/v6/applications/com.studio.game/purchases/{SAMSUNG_PURCHASE} {{\"action\":\"consume\"}}")
+    );
+    assert_eq!(w.calls("auth/accessToken"), 1);
+    assert_eq!(samsung_verify(&w, "player-2", "gems", SAMSUNG_PURCHASE).http, 403, "another player cannot claim it");
+
+    // A receipt of another app is not this build's purchase.
+    let mut other = samsung_receipt("success");
+    other["orderId"] = json!("S-other");
+    other["packageName"] = json!("com.other.game");
+    samsung_answer(&w, "iap.samsungapps.com/iap/v6/receipt", other);
+    assert_eq!(samsung_verify(&w, "player-3", "gems", "other-purchase").body["status"], "invalid");
+
+    // Refunded: a notification signed with another key is refused, Samsung's is looked up again.
+    samsung_answer(&w, "iap.samsungapps.com/iap/v6/receipt", samsung_receipt("cancel"));
+    let data = json!({ "orderId": "S20261101KRA0000001", "purchaseId": SAMSUNG_PURCHASE, "testPayYn": "N", "betaTestYn": "N" });
+    let signed = purser_core::samsung::testing::notification(purser_core::samsung::testing::PRIVATE_PEM, "ITEM_REFUNDED", "com.studio.game", data.clone());
+    let forged = purser_core::samsung::testing::notification(purser_core::samsung::testing::PRIVATE_PEM, "ITEM_REFUNDED", "com.other.game", data);
+    assert_eq!(samsung_notification(&w, &format!("?app={SAMSUNG_APP}"), &forged).http, 401, "for another package");
+    let mut tampered = signed.clone();
+    tampered.pop();
+    assert_eq!(samsung_notification(&w, &format!("?app={SAMSUNG_APP}"), &tampered).http, 401);
+    let o = samsung_notification(&w, &format!("?app={SAMSUNG_APP}"), &signed);
+    assert_eq!(o.http, 200, "{}", o.body);
+    assert_eq!(find(&w, "samsung:S20261101KRA0000001").unwrap().status, status::REVOKED);
+    assert_eq!(w.calls("/call/billing_revoke"), 1);
+}
+
+#[test]
+fn samsung_subscriptions_follow_their_status() {
+    let w = World::new();
+    add_samsung_build(&w, None);
+    let month = NOW_MICROS / 1000 + 30 * 86_400_000;
+    let date = |ms: i64| purser_core::time::format_rfc3339(ms).replace('T', " ")[..19].to_string();
+    let status_of = |order: &str, end_ms: i64| {
+        json!({ "subscriptionPurchaseDate": "2026-11-01 10:00:00", "subscriptionEndDate": date(end_ms), "subscriptionStatus": "ACTIVE",
+            "subscriptionFirstPurchaseID": "first-1", "countryCode": "USA", "price": { "localCurrencyCode": "USD", "localPrice": 4.99 },
+            "itemID": "vip", "freeTrial": "N", "realMode": "Y", "latestOrderId": order, "currentPaymentPlan": "R", "gracePeriodYN": "N" })
+    };
+    let needle = "GET https://devapi.samsungapps.com/iap/seller/v6/applications/com.studio.game.samsung/purchases/subscriptions/";
+    samsung_answer(&w, needle, status_of("S-ORDER-1", month));
+    let o = samsung_verify(&w, "player-1", "vip", "first-1");
+    assert_eq!(o.body["status"], "success", "{}", o.body);
+    let p = find(&w, "samsung:S-ORDER-1").unwrap();
+    assert_eq!((p.original_transaction_id.as_str(), p.purchase_token.as_str()), ("first-1", "first-1"));
+    assert_eq!((p.expires_at_ms, p.price_micros, p.status.as_str()), (month, 4_990_000, status::COMPLETED));
+    let ack = w.fake.borrow().calls.iter().find(|c| c.starts_with("PATCH ")).cloned().unwrap();
+    assert!(ack.ends_with("/purchases/first-1 {\"action\":\"acknowledge\"}"), "{ack}");
+
+    // A renewal: the notification (here without ?app=: its package names the build) names the
+    // subscription, the status names the new period.
+    samsung_answer(&w, needle, status_of("S-ORDER-2", month + 30 * 86_400_000));
+    let renewed = json!({ "itemId": "vip", "firstOrderId": "S-ORDER-1", "firstPurchaseId": "first-1", "renewedOrderId": "S-ORDER-2",
+        "renewedPurchaseId": "second-2", "paymentPlan": "Regular", "testPayYn": "N", "betaTestYn": "N" });
+    let jwt = purser_core::samsung::testing::notification(purser_core::samsung::testing::PRIVATE_PEM, "ARS_RENEWED", SAMSUNG_APP, renewed);
+    let o = samsung_notification(&w, "", &jwt);
+    assert_eq!(o.http, 200, "{}", o.body);
+    let renewal = find(&w, "samsung:S-ORDER-2").expect("the renewal is a row of its own");
+    assert_eq!((renewal.reason.as_str(), renewal.original_transaction_id.as_str(), renewal.user_id.as_str()), ("renewal", "first-1", "player-1"));
+
+    // A revoked token is dropped: the next call asks for a new one.
+    w.fake.borrow_mut().overrides.retain(|(n, ..)| n != needle);
+    w.script(needle, 401, r#"{"code":"SLR_4008","message":"gateway authorization failed"}"#);
+    let before = w.calls("auth/accessToken");
+    assert_ne!(samsung_verify(&w, "player-1", "vip", "first-1").body["status"], "invalid");
+    samsung_answer(&w, needle, status_of("S-ORDER-2", month + 30 * 86_400_000));
+    assert_eq!(samsung_verify(&w, "player-1", "vip", "first-1").body["status"], "success");
+    assert_eq!(w.calls("auth/accessToken"), before + 1);
+}
+
+#[test]
+fn the_samsung_setup_check_asks_for_a_token() {
+    let w = World::new();
+    add_samsung_build(&w, None);
+    w.as_admin(false);
+    let opts: crate::doctor::Options = serde_json::from_value(json!({ "online": true })).unwrap();
+    let level = |w: &World, id: &str| {
+        let report = crate::doctor::check_app(&mut w.ctx(), SAMSUNG_APP, &opts).unwrap();
+        report["checks"].as_array().unwrap().iter().find(|c| c["id"] == id).map(|c| c["level"].as_str().unwrap().to_string())
+    };
+    assert_eq!(level(&w, "samsung_api").as_deref(), Some("ok"));
+    let token_call = w.fake.borrow().calls.iter().find(|c| c.contains("auth/accessToken")).cloned().unwrap();
+    assert!(token_call.starts_with("POST https://devapi.samsungapps.com/auth/accessToken"), "{token_call}");
+    assert_eq!(level(&w, "samsung_iap_key"), None);
+    w.set_secret(purser_core::samsung::IAP_PUBLIC_KEY, "not a key");
+    assert_eq!(level(&w, "samsung_iap_key").as_deref(), Some("fail"));
+}
+
 fn amazon_notification(w: &World, query: &str, body: &str) -> Outcome {
     let req = http::Request::builder()
         .method("POST")

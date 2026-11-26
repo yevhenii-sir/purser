@@ -28,6 +28,7 @@ pub mod player;
 pub mod registry;
 pub mod revenue;
 pub mod roles;
+pub mod samsung;
 pub mod server_api;
 pub mod sigv4;
 pub mod sns;

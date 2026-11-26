@@ -497,7 +497,7 @@ fn record_row(
 /// Apps whose client consumes purchases itself (`client_consumes`) opt out.
 pub fn consumed_elsewhere(tx: &TxContext, app: &GameApp, product: &Product, st: &StoreTx) -> bool {
     !app.client_consumes
-        && st.store == store::GOOGLE
+        && matches!(st.store, store::GOOGLE | store::SAMSUNG)
         && product.kind == kind::CONSUMABLE
         && st.consumed
         && tx.db.purchase().id().find(st.ledger_id()).is_none()
@@ -854,7 +854,7 @@ fn blocker(tx: &TxContext, app: &GameApp, row: &Purchase, delivers: bool, delive
         return delivery_client::blocker(app, delivery, row.status == status::VERIFIED);
     }
     if row.status == status::GRANTED && stores::needs_finish(row) {
-        return config::require_secret(tx, app, config::secret_name::GOOGLE_SERVICE_ACCOUNT_JSON).err();
+        return stores::finish_secret(row).and_then(|name| config::require_secret(tx, app, name).err());
     }
     None
 }

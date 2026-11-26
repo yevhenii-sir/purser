@@ -17,6 +17,8 @@ pub mod store {
     pub const HUAWEI: &str = "huawei";
     /// Telegram Stars (Telegram Mini Apps and bots).
     pub const TELEGRAM: &str = "telegram";
+    /// Samsung Galaxy Store (Samsung IAP on Android).
+    pub const SAMSUNG: &str = "samsung";
     /// Granted by an admin (support compensation, promo). Never touches a store.
     pub const MANUAL: &str = "manual";
 }

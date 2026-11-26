@@ -1317,6 +1317,122 @@ fn handle_huawei_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     }
 }
 
+/// Samsung Instant Server Notification (`/notify/samsung?app=<app_id>`): a JWT signed with the
+/// app's IAP key (`samsung_iap_public_key`) that only says which purchase changed, so it is looked
+/// up again. Without `?app=` the build is the one whose app id is the notification's package name
+/// (Samsung's docs do not say whether the ISN URL may carry a query).
+fn handle_samsung_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
+    use purser_core::samsung::{self, Lookup};
+    const SOURCE: &str = "Samsung Instant Server Notifications";
+    let app_param = web::query_param(&req, "app");
+    let body = match web::text(req) {
+        Ok(b) => b,
+        Err(a) => return a.into(),
+    };
+    let app_id = if app_param.is_empty() {
+        // Unverified: only picks the build whose key then verifies the notification.
+        let token = serde_json::from_str::<String>(body.trim()).unwrap_or_else(|_| body.trim().to_string());
+        purser_core::jwt::decode_jws_payload(&token)
+            .ok()
+            .and_then(|p| p["aud"].as_array().and_then(|a| a.first()).and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_default()
+    } else {
+        app_param
+    };
+    let found = ctx.tx(|tx| {
+        let app = config::find_app(tx, &app_id).filter(|a| config::app_store(a).id == store::SAMSUNG)?;
+        let key = config::secret(tx, &app, samsung::IAP_PUBLIC_KEY).map(|s| s.value);
+        let package = config::secret(tx, &app, samsung::PACKAGE_NAME).map(|s| s.value);
+        let package = samsung::package_name(package.as_deref(), &app.app_id).to_string();
+        Some((app, key, package))
+    });
+    let Some((app, key, package)) = found else {
+        log::warn!("Samsung notification for unknown app {}", log_id(&app_id));
+        return Outcome::status(200, "ignored", "unknown app: the URL needs ?app=<app_id>");
+    };
+    let verified = key
+        .ok_or_else(|| "samsung_iap_public_key is not set".to_string())
+        .and_then(|key| samsung::parse_notification(&body, &key))
+        .and_then(|n| {
+            if n.packages.contains(&package) {
+                Ok(n)
+            } else {
+                Err(format!("the notification is for {:?}, not {package}", n.packages))
+            }
+        });
+    let n = match verified {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!("Samsung notification for {} rejected: {e}", app.app_id);
+            ctx.tx(|tx| record_notification(tx, &app.app_id, SOURCE, Some(&e), false));
+            return Outcome::status(401, "error", "unauthorized");
+        }
+    };
+    let now = ctx.now_micros();
+    // Each look-up with its product (from the notification, or the ledger rows it names) and,
+    // for a refunded subscription period, that period's row.
+    let (lookups, mut auth) = ctx.tx(|tx| {
+        record_notification(tx, &app.app_id, SOURCE, None, n.event == "TEST");
+        let product = |id: &str| (!id.is_empty()).then(|| config::find_product(tx, &app.app_id, id)).flatten();
+        let row = |order_id: &str| tx.db.purchase().id().find(purser_core::model::ledger_id(store::SAMSUNG, order_id));
+        let lookups: Vec<(Lookup, Option<Product>, Option<crate::Purchase>)> = n
+            .lookups
+            .iter()
+            .map(|l| match l {
+                Lookup::Receipt { order_id, product_id, .. } => {
+                    let id = if product_id.is_empty() { row(order_id).map(|p| p.product_id).unwrap_or_default() } else { product_id.clone() };
+                    (l.clone(), product(&id), None)
+                }
+                Lookup::Subscription { purchase_id, product_id } => {
+                    let id = if product_id.is_empty() {
+                        tx.db.purchase().original_transaction_id().filter(purchase_id.as_str()).find(|p| p.app_id == app.app_id).map(|p| p.product_id).unwrap_or_default()
+                    } else {
+                        product_id.clone()
+                    };
+                    let p = (!id.is_empty()).then(|| product_or_subscription(&app, product(&id), &id, kind::SUBSCRIPTION));
+                    (l.clone(), p, None)
+                }
+                Lookup::RefundedPeriod { order_id, .. } => {
+                    let period = row(order_id).filter(|p| p.app_id == app.app_id);
+                    let p = period.as_ref().map(|p| Product::new(&app.app_id, &p.product_id, &p.kind));
+                    (l.clone(), p, period)
+                }
+            })
+            .collect();
+        (lookups, Auth::cached(tx, &app, now))
+    });
+    let mut outcome = Outcome::status(200, "ok", "");
+    for (lookup, product, period) in lookups {
+        let Some(product) = product else {
+            outcome = Outcome::status(200, "ignored", "unknown product or purchase");
+            continue;
+        };
+        let source = format!("samsung {}", n.event);
+        let fetched = match &lookup {
+            Lookup::Receipt { purchase_id, .. } => stores::samsung_fetch(ctx, &app, &product, purchase_id, &mut auth),
+            Lookup::Subscription { purchase_id, .. } => stores::samsung_fetch(ctx, &app, &product, purchase_id, &mut auth),
+            // Only the refund of that payment: the subscription itself may go on.
+            Lookup::RefundedPeriod { purchase_id, .. } => stores::samsung_receipt(ctx, &app, &product, purchase_id).map(|mut st| {
+                if let Some(p) = &period {
+                    st.original_transaction_id = p.original_transaction_id.clone();
+                    st.purchase_token = p.purchase_token.clone();
+                }
+                st
+            }),
+        };
+        let o = match fetched {
+            Ok(st) if matches!(lookup, Lookup::RefundedPeriod { .. }) && st.state != TxState::Revoked => Outcome::status(200, "ignored", "not refunded"),
+            Ok(st) => sync_store_tx(ctx, &app, st, &source),
+            Err(e) => notification_fetch_error(e),
+        };
+        if o.http != 200 {
+            return o;
+        }
+        outcome = o;
+    }
+    outcome
+}
+
 fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     let app_param = web::query_param(&req, "app");
     let body = match web::text(req) {
@@ -1435,6 +1551,7 @@ fn dispatch_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         store::APPLE => handle_apple_notification(ctx, req),
         store::AMAZON => handle_amazon_notification(ctx, req),
         store::HUAWEI => handle_huawei_notification(ctx, req),
+        store::SAMSUNG => handle_samsung_notification(ctx, req),
         store::XSOLLA => {
             let (http, body) = crate::xsolla::notification(ctx, req);
             Outcome::new(http, body)

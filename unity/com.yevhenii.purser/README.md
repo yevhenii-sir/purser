@@ -350,7 +350,7 @@ to the portal's login link (docs/store-setup.md, Stripe → Customer portal). `P
 is where the portal's Return link leads. On WebGL a page opened after an await may be blocked as a popup. `PresentOfferCodeRedemption()` shows the App Store's sheet for redeeming an
 offer code (iOS 14 and later; false elsewhere); a redeemed code arrives as a purchase and is verified like any other.
 
-## Amazon Appstore, Huawei AppGallery, Steam, web, Telegram
+## Amazon Appstore, Huawei AppGallery, Samsung Galaxy Store, Steam, web, Telegram
 
 Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `BillingDependencies.Store`:
 
@@ -366,6 +366,12 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
   Huawei build (`HuaweiAppGallery` forces it). The server looks the purchase token up (`/verify/huawei`; for
   subscriptions with the subscription id); the adapter consumes consumables after the server's answer. Unconsumed
   purchases are verified again at the next launch.
+- **Samsung Galaxy Store**: `SamsungStoreAdapter` over a bridge to Samsung's IAP Unity plugin (import the **Samsung Galaxy
+  Store** sample, define `PURSER_SAMSUNG_IAP`). Add a `samsung` build with the app id of the Galaxy Store build on the
+  server and, if the item ids differ, `samsung` rows in `storeIds`. `androidStore = Auto` treats an install by Galaxy Store
+  as a Samsung build (`SamsungGalaxyStore` forces it). The server looks the purchase id up (`/verify/samsung`) and
+  consumes / acknowledges; the adapter consumes granted consumables too. Unconsumed purchases are verified again at the
+  next launch.
 - **Telegram Stars** (a WebGL game as a Telegram Mini App): `TelegramStoreAdapter` with a bridge that opens invoices
   (import the **Telegram Mini App** sample: a jslib calling `Telegram.WebApp.openInvoice`). Add a `telegram` build with
   the app id of the Telegram build on the server, where products are priced in Stars (`XTR`). The server creates an

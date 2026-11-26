@@ -10,6 +10,11 @@
   `ErrorCodes.InsufficientFunds`, `ReferenceUsed`, `SignedOnly`.
 - `AttributionKeys.SingularDeviceId`, `AppSetId` and `KochavaDeviceId` for the server's new Singular and Kochava
   integrations (Branch, Braze and OneSignal need no new key).
+- `SamsungStoreAdapter` (Samsung Galaxy Store) over an `ISamsungIap` bridge to Samsung's IAP Unity plugin (sample "Samsung
+  Galaxy Store", scripting define `PURSER_SAMSUNG_IAP`): verifies on `/verify/samsung` (the purchase id), consumes granted
+  consumables (the server consumes and acknowledges too), verifies unconsumed ones again at launch.
+  `BillingPlatform.Samsung`, `AndroidStore.SamsungGalaxyStore` (`Auto` picks it when Galaxy Store installed the app),
+  `BillingStores.Samsung`, `BillingPlatforms.IsSamsungGalaxyStoreInstall()`.
 
 ## [0.11.0] - 2026-11-26
 

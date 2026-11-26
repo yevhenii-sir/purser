@@ -42,6 +42,11 @@
       "path": "Samples~/HuaweiAppGallery"
     },
     {
+      "displayName": "Samsung Galaxy Store",
+      "description": "Bridge from SamsungStoreAdapter to Samsung's IAP Unity plugin (Unity IAP has no Samsung store).",
+      "path": "Samples~/SamsungGalaxyStore"
+    },
+    {
       "displayName": "Telegram Mini App",
       "description": "Opens Telegram Stars invoices of TelegramStoreAdapter with Telegram.WebApp.openInvoice (WebGL jslib).",
       "path": "Samples~/TelegramMiniApp"

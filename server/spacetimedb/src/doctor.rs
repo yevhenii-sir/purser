@@ -269,6 +269,7 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
         store::APPLE => check_apple(ctx, &s, opts, &mut r),
         store::AMAZON => check_amazon(ctx, &s, opts, &mut r),
         store::HUAWEI => check_huawei(ctx, &s, opts, &mut r),
+        store::SAMSUNG => check_samsung(ctx, &s, opts, &mut r),
         store::TELEGRAM => check_telegram(ctx, &s, opts, &mut r),
         store::XSOLLA => crate::xsolla::check(
             ctx,
@@ -646,6 +647,34 @@ fn check_huawei(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report
         Err(e) => v(Level::Fail, e.message(), "Copy the App ID and App secret from AppGallery Connect → the app → App information"),
     };
     r.add("huawei_api", "Huawei IAP", verdict);
+}
+
+/// Samsung: the IAP public key notifications are verified with, and an access token for the service
+/// account.
+fn check_samsung(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report) {
+    use purser_core::samsung;
+    if let Some(key) = s.value(samsung::IAP_PUBLIC_KEY) {
+        if let Err(e) = samsung::check_public_key(key) {
+            r.add("samsung_iap_key", "Samsung IAP public key", v(Level::Fail, e, "Copy the IAP public key from Seller Portal (the app → In App Purchase)"));
+        }
+    }
+    if s.value(samsung::SERVICE_ACCOUNT_ID).is_none() || s.value(samsung::PRIVATE_KEY).is_none() {
+        return;
+    }
+    if !opts.online {
+        r.add("samsung_api", "Galaxy Store Developer API", v(Level::Skip, "offline check", ""));
+        return;
+    }
+    let verdict = match crate::stores::samsung_token(ctx, &s.app) {
+        Ok(_) => v(Level::Ok, "an access token was issued for the service account", ""),
+        Err(StoreError::Transient(m)) => v(Level::Warn, m, "Try again later"),
+        Err(e) => v(
+            Level::Fail,
+            e.message(),
+            "Create a service account with the Publishing & ITEM scope in Seller Portal → Assistance → API Service; copy its ID and private key",
+        ),
+    };
+    r.add("samsung_api", "Galaxy Store Developer API", verdict);
 }
 
 /// Inter-database delivery: the game database's identity, and this database's identity the game
