@@ -812,7 +812,7 @@ fn blocker(tx: &TxContext, app: &GameApp, row: &Purchase, delivers: bool, delive
         return delivery_client::blocker(app, delivery, row.status == status::VERIFIED);
     }
     if row.status == status::GRANTED && stores::needs_finish(row) {
-        return config::require_secret(tx, app, config::secret_name::GOOGLE_SERVICE_ACCOUNT_JSON).err();
+        return stores::finish_blocker(tx, app, row);
     }
     None
 }

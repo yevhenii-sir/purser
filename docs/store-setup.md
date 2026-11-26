@@ -150,6 +150,35 @@ AppGallery Connect → the app → **In-App Purchases → Settings → Server no
 
 Unity IAP has no Huawei store: the Unity package uses `HuaweiStoreAdapter` over a bridge to Huawei's IAP SDK (sample "Huawei AppGallery" for the HMS Unity Plugin). Other clients post the `purchaseToken` as `purchase_token` to `/verify/huawei`, and for subscriptions the `subscriptionId` as `order_id`; after a success they consume the purchase (`consumeOwnedPurchase`). Sandbox purchases (`purchaseType` 0, test accounts) need **Sandbox purchases** on the build.
 
+## Meta Quest
+
+The Meta Horizon Store: add-ons (consumables and durables) and subscriptions of a Quest app, looked up with the Platform SDK's [server-to-server APIs](https://developers.meta.com/horizon/documentation/unity/ps-iap-s2s/) on `graph.oculus.com`.
+
+### The build
+
+Add a build with platform **Android** and store **Meta Horizon Store** (wizard → Add a build). Its app id only has to be unique on the server: when the Google Play build already uses the package name, use e.g. `com.example.mygame.quest`, and the same value for the `meta` build in the Unity `BillingConfig`. Products use the add-on SKUs of the Developer Dashboard. Meta's server APIs report no price for add-ons: give products a price, or let the client send the localized one (the Unity package does). A subscription period counts the price of its current term.
+
+### Keys
+
+Developer Dashboard → the app → **Development → API**: copy the **App ID** into `meta_app_id` and the **App secret** into `meta_app_secret`. The server calls Meta with the app access token `OC|<App ID>|<App secret>`; the setup check lists the app's add-ons with it. In **Data Use Checkup**, request **User ID** and **In-App Purchases** (and **Subscriptions** if the app sells them): without User ID the client's user id is 0 and nothing can be verified.
+
+### How purchases are checked
+
+The client sends the player's Meta user id (`store_user_id`) and a user proof (`store_user_proof`, a nonce from `Users.GetUserProof`, good for one check). The server checks the proof with `user_nonce_validate` first, so nobody can claim another Meta user's purchases. Then:
+
+- add-ons: `viewer_purchases` lists what the user owns now (durables and consumables not consumed yet); `order_id` (the SDK's `Purchase.ID`) picks one, otherwise the latest of the SKU. The ledger id is `meta:<purchase id>`.
+- subscriptions: `application/subscriptions` (`owner_id`, the SKU) gives the current period; each period is a ledger row of its own (`meta:<subscription id>.<period start>`). For a subscription with several terms the product id may be the term's SKU (`<SKU>:SUBSCRIPTION__MONTHLY`): the server asks for `<SKU>`.
+
+The server consumes consumables (`consume_entitlement`) after it delivered the reward; when the client grants (`delivery: none`) the client consumes them after the server's answer. The client must not consume a purchase before the server answered: Meta no longer lists a consumed purchase, so the server could not verify it.
+
+### No notifications
+
+Meta sends no server notifications: subscriptions are re-checked by the worker when their period ends (renewed, ended or extended), and refunds are not noticed. Meta's answers do not tell test purchases apart either: purchases of test users count as production.
+
+### Client
+
+Unity IAP has no Meta store: the Unity package uses `MetaQuestStoreAdapter` over a bridge to the Meta XR Platform SDK (sample "Meta Quest"). Other clients post `store_user_id`, a fresh `store_user_proof` per request and the SKU as `product_id` to `/verify/meta` (and `store_user_proof` once per `/restore` call).
+
 ## Telegram Stars
 
 Games in Telegram (Mini Apps, bots) sell digital goods for Telegram Stars (currency `XTR`). The server creates invoice links of the game's bot and is the bot's webhook: it answers the pre-checkout query, grants on `successful_payment` and revokes on `refunded_payment`.

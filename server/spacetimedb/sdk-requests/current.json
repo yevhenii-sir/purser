@@ -139,6 +139,39 @@
       }
     },
     {
+      "route": "/verify/meta",
+      "body": {
+        "app_id": "com.studio.game.quest",
+        "user_id": "player-1",
+        "product_id": "gems",
+        "order_id": "9001",
+        "store_user_id": "5550001",
+        "store_user_proof": "nonce-1",
+        "price_micros": 0,
+        "client": {
+          "device": "Oculus Quest 3",
+          "os": "Android OS 14 / API-34",
+          "app_version": "1.2.1",
+          "sdk_version": "0.11.0"
+        }
+      }
+    },
+    {
+      "route": "/restore",
+      "body": {
+        "app_id": "com.studio.game.quest",
+        "user_id": "player-1",
+        "store_user_proof": "nonce-2",
+        "purchases": [
+          {
+            "product_id": "no_ads",
+            "order_id": "9003",
+            "store_user_id": "5550001"
+          }
+        ]
+      }
+    },
+    {
       "route": "/entitlements",
       "replay": true,
       "body": {

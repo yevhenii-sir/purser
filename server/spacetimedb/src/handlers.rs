@@ -148,9 +148,13 @@ struct VerifyRequest {
     #[serde(default)]
     order_id: String,
     /// The player's id in the store, when the store needs it to look the purchase up
-    /// (Amazon userId).
+    /// (Amazon userId, Meta user id).
     #[serde(default)]
     store_user_id: String,
+    /// Proof that the client is `store_user_id`, for stores that check it (Meta: a nonce from
+    /// `Users.GetUserProof`, good for one check).
+    #[serde(default)]
+    store_user_proof: String,
     /// Firebase `app_instance_id` of the client, for GA4.
     #[serde(default)]
     app_instance_id: String,
@@ -253,6 +257,7 @@ fn receipt_of<'a>(r: &'a VerifyRequest, environment: &'a str) -> stores::Receipt
         purchase_token: &r.purchase_token,
         order_id: &r.order_id,
         store_user_id: &r.store_user_id,
+        user_proof: &r.store_user_proof,
         user_id: &r.user_id,
         environment,
     }
@@ -549,9 +554,12 @@ struct RestoreItem {
 struct RestoreRequest {
     app_id: String,
     user_id: String,
-    /// The player's id in the store for every item (Amazon userId).
+    /// The player's id in the store for every item (Amazon userId, Meta user id).
     #[serde(default)]
     store_user_id: String,
+    /// Proof that the client is `store_user_id` (Meta), checked once for every item.
+    #[serde(default)]
+    store_user_proof: String,
     #[serde(default)]
     app_instance_id: String,
     #[serde(default)]
@@ -652,6 +660,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
             purchase_token: item.purchase_token.clone(),
             order_id: item.order_id.clone(),
             store_user_id: if item.store_user_id.is_empty() { r.store_user_id.clone() } else { item.store_user_id.clone() },
+            store_user_proof: r.store_user_proof.clone(),
             app_instance_id: r.app_instance_id.clone(),
             price_micros: 0,
             currency: String::new(),

@@ -17,6 +17,9 @@ pub mod store {
     pub const HUAWEI: &str = "huawei";
     /// Telegram Stars (Telegram Mini Apps and bots).
     pub const TELEGRAM: &str = "telegram";
+
+    /// Meta Horizon Store (Meta Quest).
+    pub const META: &str = "meta";
     /// Granted by an admin (support compensation, promo). Never touches a store.
     pub const MANUAL: &str = "manual";
 }

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Meta Horizon Store (Meta Quest; store `meta` of `android` builds): `/verify/meta` checks the player's user proof (`store_user_proof`, a nonce from `Users.GetUserProof`, with the Meta user id as `store_user_id`) with `user_nonce_validate`, then looks add-ons up in `viewer_purchases` and subscriptions in `application/subscriptions` with the app access token (`meta_app_id`, `meta_app_secret`). The server consumes consumables after the grant (`consume_entitlement`); Meta sends no notifications, so subscriptions are re-checked when their period ends. `/restore` takes one `store_user_proof` for all its items. The setup check lists the app's add-ons with the token.
+- Unity: `MetaQuestStoreAdapter` with its bridge (sample "Meta Quest").
+
 ## 0.11.0 - 2026-11-26
 
 ### Breaking
