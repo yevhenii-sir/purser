@@ -18,6 +18,7 @@ pub mod google_setup;
 pub mod huawei;
 pub mod integrations;
 pub mod jwt;
+pub mod meta;
 pub mod metrics;
 pub mod model;
 pub mod money;

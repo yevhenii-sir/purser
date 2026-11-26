@@ -44,7 +44,7 @@ namespace Purser
                     })
                     .Select((item, i) => (item, i))
                     .GroupBy(x => x.i / RestoreRequest.MaxItems, x => x.item)
-                    .Select(chunk => (AppId: m_Config.AppIdFor(store.Key), Items: chunk.ToList())))
+                    .Select(chunk => (Store: store.Key, AppId: m_Config.AppIdFor(store.Key), Items: chunk.ToList())))
                 .ToList();
             // ... but what the player gets from them belongs to the answer: wait for them, as long as one request may take.
             await m_Orders.WaitForInFlightAsync(TimeSpan.FromSeconds(Math.Max(1, m_Config.requestTimeoutSeconds)), ct);
@@ -66,6 +66,8 @@ namespace Purser
                     Purchases = batch.Items,
                     Client = m_Client,
                 };
+                if ((composite?.Find(batch.Store) ?? m_Store) is IStoreUserProof proofs)
+                    request.StoreUserProof = await UserProofAsync(proofs, ct);
                 var response = await m_Api.RestoreAsync(request, ct);
                 if (response.IsHttpSuccess && response.Value?.CustomerInfo != null)
                     latest = response;
@@ -77,6 +79,21 @@ namespace Purser
                 return await RefreshCustomerInfoAsync(ct);
             m_Refresher.Set(user, latest.Value.CustomerInfo, new SignedAnswer(latest.RawBody, latest.Signature, true));
             return m_Refresher.Current;
+        }
+
+        /// <summary>A new store user proof for one <c>/restore</c> (<see cref="IStoreUserProof"/>); null when the store
+        /// gave none: the server then answers an error for each item.</summary>
+        private async Task<string> UserProofAsync(IStoreUserProof proofs, CancellationToken ct)
+        {
+            try
+            {
+                return NullIfEmpty(await proofs.GetUserProofAsync(ct));
+            }
+            catch (Exception e) when (!(e is OperationCanceledException))
+            {
+                m_Log.Warning("No store user proof for the restore: " + e.Message);
+                return null;
+            }
         }
 
         /// <inheritdoc/>

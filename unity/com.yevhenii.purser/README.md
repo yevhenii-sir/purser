@@ -372,6 +372,12 @@ Unity IAP 5 covers Google Play and the App Store. Other stores plug in through `
   as a Samsung build (`SamsungGalaxyStore` forces it). The server looks the purchase id up (`/verify/samsung`) and
   consumes / acknowledges; the adapter consumes granted consumables too. Unconsumed purchases are verified again at the
   next launch.
+- **Meta Quest** (Meta Horizon Store): `MetaQuestStoreAdapter` over a bridge to the Meta XR Platform SDK (import the
+  **Meta Quest** sample). Add a `meta` build with the app id of the Quest build on the server and, if the SKUs differ,
+  `meta` rows in `storeIds`. Every `/verify/meta` and `/restore` request carries the Meta user id and a new user proof
+  (`Users.GetUserProof`), which the server checks with Meta before it looks the purchase up. The server consumes
+  consumables when it delivers the reward; for builds where the game grants, the adapter consumes them after the
+  server's answer.
 - **Telegram Stars** (a WebGL game as a Telegram Mini App): `TelegramStoreAdapter` with a bridge that opens invoices
   (import the **Telegram Mini App** sample: a jslib calling `Telegram.WebApp.openInvoice`). Add a `telegram` build with
   the app id of the Telegram build on the server, where products are priced in Stars (`XTR`). The server creates an

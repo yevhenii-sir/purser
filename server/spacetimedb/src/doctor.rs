@@ -271,6 +271,7 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
         store::HUAWEI => check_huawei(ctx, &s, opts, &mut r),
         store::SAMSUNG => check_samsung(ctx, &s, opts, &mut r),
         store::TELEGRAM => check_telegram(ctx, &s, opts, &mut r),
+        store::META => check_meta(ctx, &s, opts, &mut r),
         store::XSOLLA => crate::xsolla::check(
             ctx,
             &s.app,
@@ -675,6 +676,27 @@ fn check_samsung(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Repor
         ),
     };
     r.add("samsung_api", "Galaxy Store Developer API", verdict);
+}
+
+/// Meta: the App ID's form, and (online) whether Meta lists the app's add-ons for the app token.
+fn check_meta(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report) {
+    use purser_core::meta;
+    let (Some(id), Some(secret)) = (s.value(meta::APP_ID), s.value(meta::APP_SECRET)) else { return };
+    let fix = "Copy the App ID and App secret from the Meta Horizon Developer Dashboard → the app → Development → API";
+    let token = match meta::access_token(id, secret) {
+        Ok(token) => token,
+        Err(e) => return r.add("meta_api", "Meta Horizon Store API", v(Level::Fail, e, fix)),
+    };
+    if !opts.online {
+        r.add("meta_api", "Meta Horizon Store API", v(Level::Skip, "offline check", ""));
+        return;
+    }
+    let verdict = match net::send(ctx.http(), "GET", &meta::available_purchases_url(&token), &[], ()) {
+        Ok(res) => d::classify_meta_credentials(res.status, &res.body),
+        // The URL carries the app token: never show the transport error as is.
+        Err(_) => v(Level::Warn, "Meta did not answer", "Try again later"),
+    };
+    r.add("meta_api", "Meta Horizon Store API", verdict);
 }
 
 /// Inter-database delivery: the game database's identity, and this database's identity the game

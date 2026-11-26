@@ -60,7 +60,8 @@ pub enum Verification {
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum Finish {
-    /// The server consumes / acknowledges (Google Play); see `StoreTx::store_action_after_grant`.
+    /// The server consumes / acknowledges (Google Play; Meta consumes consumables); see
+    /// `StoreTx::store_action_after_grant`.
     ServerConsumeAcknowledge,
     /// The client finishes the transaction in the store SDK after the server's answer
     /// (Apple `finishTransaction`, Amazon `notifyFulfillment`, ...). The ledger goes straight to
@@ -341,6 +342,7 @@ pub static STORES: &[&StoreInfo] = &[
     &crate::telegram::STORE,
 
     &crate::samsung::STORE,
+    &crate::meta::STORE,
 
     &MANUAL,
 ];
@@ -351,8 +353,9 @@ pub static PLATFORMS: &[PlatformInfo] = &[
         name: "Android",
         os: Some("android"),
         // Xsolla next to Google Play: an Android game that sells some players through Pay Station
-        // (a build of its own with store `xsolla`; entitlements are shared by the app's builds).
-        stores: &[store::GOOGLE, store::XSOLLA, store::SAMSUNG],
+        // (a build of its own with store `xsolla`; entitlements are shared by the app's builds),
+        // and the Meta Horizon Store: a Quest build is an Android build of its own with store `meta`.
+        stores: &[store::GOOGLE, store::XSOLLA, store::SAMSUNG, store::META],
         default_store: Some(store::GOOGLE),
     },
     PlatformInfo {
@@ -456,6 +459,7 @@ mod tests {
         assert_eq!(build_store("android", "xsolla").unwrap().id, store::XSOLLA, "Pay Station next to Google Play");
         assert_eq!(build_store("android", "samsung").unwrap().id, store::SAMSUNG, "a Galaxy Store build of the Android game");
         assert_eq!(build_store("android", "").unwrap().id, store::GOOGLE);
+        assert_eq!(build_store("android", "meta").unwrap().id, store::META, "a Quest build");
     }
 
     #[test]

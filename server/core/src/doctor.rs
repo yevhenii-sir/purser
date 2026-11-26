@@ -201,6 +201,24 @@ pub fn classify_amazon_secret(status: u16) -> Verdict {
     }
 }
 
+/// Meta `application/available_purchases` called with the app access token: it lists the app's
+/// add-ons only when the App ID and secret are right.
+pub fn classify_meta_credentials(status: u16, body: &str) -> Verdict {
+    use crate::meta::{classify_failure, Failure};
+    let fix = "Copy the App ID and App secret from the Meta Horizon Developer Dashboard → the app → Development → API";
+    if (200..300).contains(&status) {
+        let count = serde_json::from_str::<Value>(body).ok().and_then(|v| v["data"].as_array().map(Vec::len));
+        return match count {
+            Some(n) => v(Level::Ok, format!("Meta accepts the App ID and secret ({n} add-on(s) on the first page)"), ""),
+            None => v(Level::Warn, "Meta answered without a list of add-ons", "Try the check again later"),
+        };
+    }
+    match classify_failure(status, body) {
+        Failure::Credentials | Failure::Refused => v(Level::Fail, format!("Meta refused the App ID or secret (HTTP {status})"), fix),
+        Failure::Retry => v(Level::Warn, format!("Meta answered HTTP {status}"), "Try the check again later"),
+    }
+}
+
 /// Notifications of a store (`store_notify_health`). Times are in microseconds; 0 = never.
 /// `last_test_at`: the last test notification (Google, Apple), `confirmation_token`: the last
 /// subscription confirmation (Amazon RTN), which must be pasted into the store's console.
@@ -318,6 +336,15 @@ mod tests {
         assert_eq!(integration_activity(broken.clone(), &a(5, 7, true, 0), when), broken, "the configuration comes first");
         let warn = v(Level::Warn, "no event tokens: nothing is sent", "Create events");
         assert_eq!(integration_activity(warn, &a(5, 0, false, 0), when).1, "no event tokens: nothing is sent; last event sent t5");
+    }
+
+    #[test]
+    fn meta_credentials() {
+        assert_eq!(classify_meta_credentials(200, r#"{"data":[{"id":"1","sku":"gems"}]}"#).0, Level::Ok);
+        assert_eq!(classify_meta_credentials(200, "{}").0, Level::Warn);
+        let oauth = r#"{"error":{"message":"Invalid OAuth access token","type":"OAuthException","code":190}}"#;
+        assert_eq!(classify_meta_credentials(400, oauth).0, Level::Fail);
+        assert_eq!(classify_meta_credentials(503, "").0, Level::Warn);
     }
 
     #[test]

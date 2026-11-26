@@ -8,7 +8,8 @@
       "stores": [
         "google",
         "xsolla",
-        "samsung"
+        "samsung",
+        "meta"
       ]
     },
     {
@@ -511,6 +512,48 @@
       ],
       "verification": "client_receipt",
       "verify_route": "/verify/samsung"
+    },
+    {
+      "app_id_is_store_id": false,
+      "app_id_label": "App id (any unique id, e.g. package.quest when the Google Play build uses the package)",
+      "app_id_placeholder": "com.example.mygame.quest",
+      "binding": "none",
+      "docs": "meta-quest",
+      "finish": "server_consume_acknowledge",
+      "id": "meta",
+      "implemented": true,
+      "name": "Meta Horizon Store",
+      "notifications": false,
+      "notify_label": "",
+      "notify_query": "",
+      "notify_route": null,
+      "notify_secret": null,
+      "platforms": [
+        "android"
+      ],
+      "polls_subscriptions": true,
+      "product_create": [],
+      "product_import": false,
+      "refunds": "Not reported by Meta (no server notifications); subscriptions are re-checked by the worker when their period ends",
+      "reports_price": false,
+      "secrets": [
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "App ID (Developer Dashboard → the app → Development → API)",
+          "name": "meta_app_id",
+          "need": "required"
+        },
+        {
+          "account_wide": false,
+          "file": false,
+          "label": "App secret (the same API page)",
+          "name": "meta_app_secret",
+          "need": "required"
+        }
+      ],
+      "verification": "client_receipt",
+      "verify_route": "/verify/meta"
     },
     {
       "app_id_is_store_id": false,

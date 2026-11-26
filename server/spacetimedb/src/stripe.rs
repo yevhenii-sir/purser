@@ -62,7 +62,7 @@ fn check_stripe_app(app_id: &str, app: Option<GameApp>) -> Result<GameApp, Answe
 
 /// The build's secret key, if configured (else [`call`] reports the missing secret).
 fn secret_key(tx: &TxContext, app: &GameApp) -> Auth {
-    Auth(config::secret(tx, app, st::SECRET_KEY).map(|s| s.value))
+    Auth::new(config::secret(tx, app, st::SECRET_KEY).map(|s| s.value))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -709,7 +709,7 @@ pub fn check(ctx: &mut impl Ctx, app: &GameApp, key: Option<&str>, webhook_secre
     }
     let Some(key) = key else { return out };
     out.push(("stripe_key", "Stripe key", st::classify_key(key, app.allow_sandbox)));
-    let mut auth = Auth(Some(key.to_string()));
+    let mut auth = Auth::new(Some(key.to_string()));
     if !online {
         out.push(("stripe_api", "Stripe API", (Level::Skip, "offline check".into(), String::new())));
         return out;

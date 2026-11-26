@@ -261,7 +261,7 @@ fn apply_apple(ctx: &mut impl Ctx, app: &GameApp, body: &str, token: &str) {
     if n.bundle_id != app.app_id {
         return;
     }
-    let mut auth = Auth(Some(token.to_string()));
+    let mut auth = Auth::new(Some(token.to_string()));
     crate::handlers::apply_apple_notification(ctx, app, &n, &mut auth, " (refund sweep)");
 }
 

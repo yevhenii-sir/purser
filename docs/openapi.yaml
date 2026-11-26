@@ -229,6 +229,23 @@ paths:
             schema: { $ref: "#/components/schemas/VerifyRequest" }
       responses: *verifyResponses
 
+  /verify/meta:
+    post:
+      tags: [Purchases]
+      operationId: verifyMeta
+      summary: Verify a Meta Horizon Store (Meta Quest) purchase
+      description: >-
+        Checks the player's user proof (`store_user_proof`, a nonce from `Users.GetUserProof`, good for one check)
+        for `store_user_id` (the Meta user id), then looks the purchase up in the Platform server-to-server APIs:
+        add-ons in what the user owns now (`viewer_purchases`), subscriptions in `application/subscriptions`.
+        `order_id` (the SDK's `Purchase.ID`) is optional. The server consumes consumables after the grant.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VerifyRequest" }
+      responses: *verifyResponses
+
   /verify/steam:
     post:
       tags: [Purchases]
@@ -1253,7 +1270,12 @@ components:
           $ref: "#/components/schemas/Attribution"
         store_user_id:
           type: string
-          description: Amazon Appstore user id (required for `/verify/amazon`, with the receipt id in `order_id`).
+          description: >-
+            The player's id in the store: the Amazon Appstore user id (required for `/verify/amazon`, with the
+            receipt id in `order_id`), the Meta user id (required for `/verify/meta`).
+        store_user_proof:
+          type: string
+          description: Meta only (required): a nonce from `Users.GetUserProof` proving the client is `store_user_id`; good for one check.
         placement:
           type: string
           description: Paywall placement the purchase was made from (A/B test results, see `/paywall`).
@@ -1443,6 +1465,12 @@ components:
         client_finished:
           type: boolean
           description: As in `/verify`, for every item.
+        store_user_id:
+          type: string
+          description: The player's id in the store for every item that does not name one (Amazon, Meta).
+        store_user_proof:
+          type: string
+          description: Meta builds (required) - one user proof for every item.
         client:
           $ref: "#/components/schemas/ClientInfo"
         purchases:
@@ -1460,6 +1488,9 @@ components:
               order_id:
                 type: string
                 description: Apple `transactionId` (iOS builds).
+              store_user_id:
+                type: string
+                description: The player's id in the store (Amazon, Meta); defaults to the request's.
 
     RestoreResponse:
       type: object

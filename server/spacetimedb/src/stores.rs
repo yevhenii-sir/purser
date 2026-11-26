@@ -35,10 +35,15 @@ impl StoreError {
 }
 
 /// The credential a build's store API is called with (Google access token, App Store API JWT,
-/// Amazon shared secret), reused for every call of one request instead of reading it in a
-/// transaction of its own each time.
+/// Amazon shared secret, Meta app access token), reused for every call of one request instead of
+/// reading it in a transaction of its own each time.
 #[derive(Default)]
-pub struct Auth(pub(crate) Option<String>);
+pub struct Auth {
+    pub(crate) credential: Option<String>,
+    /// The store user whose proof this request has checked (Meta: a user proof is good for one
+    /// check, and the items of a `/restore` share it).
+    pub(crate) proven_user: Option<String>,
+}
 
 impl Auth {
     /// Reads the build's credential from the token cache / secrets in a transaction the caller
@@ -46,7 +51,7 @@ impl Auth {
     pub fn cached(tx: &TxContext, app: &GameApp, now_micros: i64) -> Auth {
         use purser_core::model::store;
         let cached = |key: String| config::cached_token(tx, &key, now_micros, MIN_TOKEN_VALIDITY_MICROS);
-        Auth(match config::app_store(app).id {
+        Auth::new(match config::app_store(app).id {
             store::GOOGLE => config::secret(tx, app, secret_name::GOOGLE_SERVICE_ACCOUNT_JSON)
                 .and_then(|s| cached(format!("google/{}", s.scope))),
             store::APPLE => {
@@ -62,17 +67,22 @@ impl Auth {
             // `samsung_auth` keeps the service account id with the token.
             store::SAMSUNG => config::secret(tx, app, purser_core::samsung::SERVICE_ACCOUNT_ID)
                 .and_then(|id| cached(samsung_cache_key(&id.scope, &id.value)).map(|token| format!("{}\n{token}", id.value))),
+            store::META => meta_token_of(tx, app).ok(),
             _ => None,
         })
     }
 
+    pub(crate) fn new(credential: Option<String>) -> Auth {
+        Auth { credential, proven_user: None }
+    }
+
     /// The credential, read (and refreshed if needed) with `load` on first use.
     pub(crate) fn get(&mut self, load: impl FnOnce() -> Result<String, StoreError>) -> Result<String, StoreError> {
-        if let Some(v) = &self.0 {
+        if let Some(v) = &self.credential {
             return Ok(v.clone());
         }
         let v = load()?;
-        self.0 = Some(v.clone());
+        self.credential = Some(v.clone());
         Ok(v)
     }
 }
@@ -714,6 +724,155 @@ pub fn samsung_finish(ctx: &mut impl Ctx, app: &GameApp, purchase_id: &str, acti
     samsung::parse_acknowledgment(purchase_id, &res.body).map_err(|e| format!("Samsung {action}: {e}"))
 }
 
+// ---------------------------------------------------------------------
+// Meta Horizon Store (Meta Quest)
+// ---------------------------------------------------------------------
+
+/// The build's Meta app access token (`OC|<App ID>|<App secret>`), read in a transaction.
+fn meta_token_of(tx: &TxContext, app: &GameApp) -> Result<String, String> {
+    use purser_core::meta;
+    let id = config::require_secret(tx, app, meta::APP_ID)?;
+    let secret = config::require_secret(tx, app, meta::APP_SECRET)?;
+    meta::access_token(&id.value, &secret.value)
+}
+
+pub(crate) fn meta_token(ctx: &mut impl Ctx, app: &GameApp) -> Result<String, StoreError> {
+    let app_c = app.clone();
+    ctx.tx(|tx| meta_token_of(tx, &app_c)).map_err(StoreError::Config)
+}
+
+/// The secret part of an app access token, kept out of error texts.
+fn meta_secret(token: &str) -> &str {
+    token.rsplit('|').next().unwrap_or("")
+}
+
+/// A failed Meta call as a store error; rejected credentials alert the owner.
+fn meta_error(ctx: &mut impl Ctx, app: &GameApp, what: &str, res: &net::HttpResult, token: &str) -> StoreError {
+    use purser_core::meta::{self, Failure};
+    let msg = format!("Meta {what}: {}", meta::error_message(res.status, &res.body, meta_secret(token)));
+    match meta::classify_failure(res.status, &res.body) {
+        Failure::Credentials => {
+            report_rejected(ctx, app, &msg);
+            StoreError::Config(msg)
+        }
+        Failure::Refused => StoreError::Invalid(msg),
+        Failure::Retry => StoreError::Transient(msg),
+    }
+}
+
+/// The URLs of GET calls carry the app token: transport errors name the call instead.
+fn meta_get(ctx: &mut impl Ctx, url: &str, what: &str) -> Result<net::HttpResult, StoreError> {
+    net::send(ctx.http(), "GET", url, &[], ()).map_err(|e| StoreError::Transient(e.replace(net::shown_url(url), what)))
+}
+
+/// Checks the player's user proof (`Users.GetUserProof`) for the Meta user id, once per request.
+/// A refused proof is `Invalid` and never alerts the owner: clients send it.
+fn meta_check_proof(ctx: &mut impl Ctx, token: &str, meta_user_id: &str, proof: &str, auth: &mut Auth) -> Result<(), StoreError> {
+    use purser_core::meta::{self, Failure};
+    if auth.proven_user.as_deref() == Some(meta_user_id) {
+        return Ok(());
+    }
+    let (url, body) = meta::nonce_request(token, proof, meta_user_id).map_err(StoreError::Invalid)?;
+    let res = net::send(ctx.http(), "POST", &url, &[("Content-Type", "application/x-www-form-urlencoded")], body)
+        .map_err(StoreError::Transient)?;
+    if res.ok() {
+        if !meta::parse_nonce_answer(&res.body).map_err(StoreError::Transient)? {
+            return Err(StoreError::Invalid("the Meta user proof is not valid for this user (a proof is good for one check)".into()));
+        }
+        auth.proven_user = Some(meta_user_id.to_string());
+        return Ok(());
+    }
+    let msg = format!("Meta user proof: {}", meta::error_message(res.status, &res.body, meta_secret(token)));
+    Err(match meta::classify_failure(res.status, &res.body) {
+        // Developers report an invalid nonce answered as an OAuthException (code 190) too: it may
+        // be the client's proof rather than our credentials, which every other call checks.
+        Failure::Credentials | Failure::Refused => StoreError::Invalid(msg),
+        Failure::Retry => StoreError::Transient(msg),
+    })
+}
+
+/// What the Meta user owns now, page by page until `product_id` is found (a few pages at most).
+fn meta_owned(
+    ctx: &mut impl Ctx,
+    app: &GameApp,
+    token: &str,
+    meta_user_id: &str,
+    product_id: &str,
+) -> Result<Vec<purser_core::meta::Purchase>, StoreError> {
+    use purser_core::meta;
+    const MAX_PAGES: usize = 5;
+    let mut url = meta::purchases_url(token, meta_user_id).map_err(StoreError::Invalid)?;
+    let mut owned = Vec::new();
+    for _ in 0..MAX_PAGES {
+        let res = meta_get(ctx, &url, "Meta viewer_purchases")?;
+        if !res.ok() {
+            return Err(meta_error(ctx, app, "viewer_purchases", &res, token));
+        }
+        let (page, next) = meta::parse_purchases(&res.body).map_err(StoreError::Transient)?;
+        let found = page.iter().any(|p| p.sku == product_id);
+        owned.extend(page);
+        match next {
+            Some(next) if !found => url = next,
+            _ => break,
+        }
+    }
+    Ok(owned)
+}
+
+/// Looks a Meta purchase up: an add-on among what the user owns now (`viewer_purchases`), a
+/// subscription in `application/subscriptions`. A client request (`r.user_id` set) proves the Meta
+/// user with its user proof first; trusted look-ups (re-checks, the consume step) do not.
+pub fn meta_fetch(ctx: &mut impl Ctx, app: &GameApp, product: &Product, r: &ReceiptRef, auth: &mut Auth) -> Result<StoreTx, StoreError> {
+    use purser_core::meta;
+    let meta_user_id = r.store_user_id;
+    let token = auth.get(|| meta_token(ctx, app))?;
+    if !r.user_id.is_empty() {
+        if r.user_proof.is_empty() {
+            return Err(StoreError::Invalid("store_user_proof is required".into()));
+        }
+        meta_check_proof(ctx, &token, meta_user_id, r.user_proof, auth)?;
+    }
+    if product.kind == kind::SUBSCRIPTION {
+        let url = meta::subscriptions_url(&token, meta_user_id, &product.product_id).map_err(StoreError::Invalid)?;
+        let res = meta_get(ctx, &url, "Meta subscriptions")?;
+        if !res.ok() {
+            return Err(meta_error(ctx, app, "subscriptions", &res, &token));
+        }
+        return meta::parse_subscriptions(&app.app_id, meta_user_id, &product.product_id, &res.body, ctx.now_ms())
+            .map_err(StoreError::Transient)?
+            .ok_or_else(|| StoreError::Invalid(format!("the Meta user has no subscription {}", product.product_id)));
+    }
+    let owned = meta_owned(ctx, app, &token, meta_user_id, &product.product_id)?;
+    // A consumable that is not listed was consumed (or never bought): nothing to grant.
+    meta::find_purchase(&owned, &product.product_id, r.order_id)
+        .map(|p| meta::purchase_tx(&app.app_id, meta_user_id, &product.product_id, p))
+        .ok_or_else(|| StoreError::Invalid(format!("the Meta user does not own {}", product.product_id)))
+}
+
+/// Consumes a Meta consumable after the reward was granted. A consume that fails while the purchase
+/// is no longer listed was done already (by the client SDK, or an earlier try whose answer was
+/// lost).
+pub fn meta_finish(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth: &mut Auth) -> Result<(), String> {
+    use purser_core::meta;
+    if p.store_action != store_action::CONSUME {
+        return Ok(());
+    }
+    let token = auth.get(|| meta_token(ctx, app)).map_err(|e| e.message().to_string())?;
+    let (url, body) = meta::consume_request(&token, &p.purchase_token, &p.product_id)?;
+    let res = net::send(ctx.http(), "POST", &url, &[("Content-Type", "application/x-www-form-urlencoded")], body)?;
+    if res.ok() && meta::parse_success(&res.body) {
+        return Ok(());
+    }
+    if res.status < 500 && res.status != 429 {
+        let owned = meta_owned(ctx, app, &token, &p.purchase_token, &p.product_id).map_err(|e| e.message().to_string())?;
+        let listed = owned.iter().any(|o| o.sku == p.product_id && meta::transaction_id(o, &p.purchase_token) == p.transaction_id);
+        if !listed {
+            return Ok(());
+        }
+    }
+    Err(format!("Meta consume failed: {}", meta::error_message(res.status, &res.body, meta_secret(&token))))
+}
+
 fn sns_cache_key(url: &str) -> String {
     format!("sns-cert/{url}")
 }
@@ -756,8 +915,11 @@ pub struct ReceiptRef<'a> {
     pub purchase_token: &'a str,
     /// Apple transactionId, Amazon receiptId (Google orderId, optional).
     pub order_id: &'a str,
-    /// Amazon userId (`PurchaseResponse.getUserData().getUserId()`).
+    /// Amazon userId (`PurchaseResponse.getUserData().getUserId()`), Meta user id.
     pub store_user_id: &'a str,
+    /// Proof that the client is `store_user_id` (Meta `Users.GetUserProof`); empty for trusted
+    /// look-ups.
+    pub user_proof: &'a str,
     /// The player the client verifies for; empty for trusted look-ups (stores that bind orders to
     /// a player check it: Steam).
     pub user_id: &'a str,
@@ -781,6 +943,8 @@ pub fn missing_field(store_id: &str, product_kind: &str, r: &ReceiptRef) -> Opti
         }
         store::STEAM if r.order_id.is_empty() && r.purchase_token.is_empty() => Some("order_id (from /checkout/steam) is required"),
         store::SAMSUNG if r.purchase_token.is_empty() => Some("purchase_token (the Samsung purchaseId) is required"),
+        store::META if r.store_user_id.is_empty() => Some("store_user_id (the Meta user id) is required"),
+        store::META if r.user_proof.is_empty() => Some("store_user_proof (Users.GetUserProof) is required"),
         _ => None,
     }
 }
@@ -798,6 +962,7 @@ pub fn fetch(ctx: &mut impl Ctx, app: &GameApp, product: &Product, r: &ReceiptRe
         store::STEAM => crate::steam::fetch(ctx, app, product, r),
         store::HUAWEI => huawei_fetch(ctx, app, product, r.purchase_token, r.order_id, auth),
         store::SAMSUNG => samsung_fetch(ctx, app, product, r.purchase_token, auth),
+        store::META => meta_fetch(ctx, app, product, r, auth),
         // A new client-receipt store adds one arm here.
         other => Err(StoreError::Invalid(format!("{other} purchases are not verified from client receipts"))),
     }
@@ -830,13 +995,13 @@ pub fn refetch_auth(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth
         // No look-up API: the row itself says whether its time is up.
         return Ok(crate::telegram::recheck(p, ctx.now_ms()));
     }
-    // Amazon keeps its user id in `purchase_token` (see `purser_core::amazon`), Steam its order id,
-    // a Huawei subscription its `subscriptionId` in `original_transaction_id`.
+    // Amazon and Meta keep their user id in `purchase_token` (see `purser_core::amazon`), Steam its
+    // order id, a Huawei subscription its `subscriptionId` in `original_transaction_id`.
     let huawei_subscription = p.store == purser_core::model::store::HUAWEI && p.kind == kind::SUBSCRIPTION;
     // An add-on of a Google subscription is looked up as its purchase, and answered as the add-on.
     let token = purser_core::model::store_token(&p.purchase_token);
     if token.len() < p.purchase_token.len() {
-        let r = ReceiptRef { purchase_token: token, order_id: &p.transaction_id, store_user_id: token, user_id: "", environment: &p.environment };
+        let r = ReceiptRef { purchase_token: token, order_id: &p.transaction_id, store_user_id: token, user_id: "", environment: &p.environment, user_proof: "" };
         let st = fetch(ctx, app, &product_of(p), &r, auth)?;
         let now_ms = ctx.now_ms();
         return Ok(st.add_on_of(&p.product_id, now_ms).unwrap_or_else(|| {
@@ -849,14 +1014,15 @@ pub fn refetch_auth(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth
         purchase_token: &p.purchase_token,
         order_id: if huawei_subscription { &p.original_transaction_id } else { &p.transaction_id },
         store_user_id: &p.purchase_token,
+        user_proof: "",
         user_id: "",
         environment: &p.environment,
     };
     fetch(ctx, app, &product_of(p), &r, auth)
 }
 
-/// The store-side step after the grant (`purchase.store_action`): Google and Samsung
-/// (`purser_core::registry::Finish::ServerConsumeAcknowledge`).
+/// The store-side step after the grant (`purchase.store_action`): Google and Samsung consume /
+/// acknowledge, Meta consumes (`purser_core::registry::Finish::ServerConsumeAcknowledge`).
 pub fn finish(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth: &mut Auth) -> Result<(), String> {
     use purser_core::model::store;
     if !needs_finish(p) {
@@ -865,6 +1031,7 @@ pub fn finish(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth: &mut
     match p.store.as_str() {
         store::GOOGLE => google_finish(ctx, app, &product_of(p), purser_core::model::store_token(&p.purchase_token), &p.store_action, auth),
         store::SAMSUNG => samsung_finish(ctx, app, &p.purchase_token, &p.store_action, auth),
+        store::META => meta_finish(ctx, app, p, auth),
         _ => Ok(()),
     }
 }
@@ -872,7 +1039,7 @@ pub fn finish(ctx: &mut impl Ctx, app: &GameApp, p: &crate::Purchase, auth: &mut
 /// [`finish`] calls the store for this row (its credential is worth reading beforehand).
 pub fn needs_finish(p: &crate::Purchase) -> bool {
     use purser_core::model::store;
-    p.store_action != store_action::NONE && matches!(p.store.as_str(), store::GOOGLE | store::SAMSUNG)
+    p.store_action != store_action::NONE && matches!(p.store.as_str(), store::GOOGLE | store::SAMSUNG | store::META)
 }
 
 /// The secret [`finish`] cannot work without (`ledger::blocker`).
@@ -881,6 +1048,7 @@ pub fn finish_secret(p: &crate::Purchase) -> Option<&'static str> {
     match p.store.as_str() {
         store::GOOGLE => Some(secret_name::GOOGLE_SERVICE_ACCOUNT_JSON),
         store::SAMSUNG => Some(purser_core::samsung::PRIVATE_KEY),
+        store::META => Some(purser_core::meta::APP_SECRET),
         _ => None,
     }
 }

@@ -52,6 +52,13 @@ namespace Purser
                 var failOpenAt = CanFailOpen(owner, config) ? m_Context.UtcNow() + TimeSpan.FromSeconds(m_Config.failOpenAfterSeconds) : (DateTime?)null;
                 while (true)
                 {
+                    if (owner is IStoreUserProof proofs)
+                    {
+                        // Good for one check: a new one for every attempt.
+                        request.StoreUserProof = await UserProofAsync(proofs);
+                        if (m_Context.IsDisposed)
+                            return;
+                    }
                     // Webhook stores (Stripe, Xsolla) have no receipt: the adapter asks the server about the order.
                     var call = owner is IWebhookStoreAdapter webhookStore
                         ? webhookStore.CheckOrderAsync(order, request, m_Context.Lifetime)
@@ -283,6 +290,21 @@ namespace Purser
         }
 
         private static string NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
+
+        /// <summary>A new store user proof for one request (<see cref="IStoreUserProof"/>); null when the store gave
+        /// none: the server then answers a retryable error.</summary>
+        private async Task<string> UserProofAsync(IStoreUserProof proofs)
+        {
+            try
+            {
+                return NullIfEmpty(await proofs.GetUserProofAsync(m_Context.Lifetime));
+            }
+            catch (Exception e) when (!(e is OperationCanceledException))
+            {
+                m_Log.Warning("No store user proof for the request: " + e.Message);
+                return null;
+            }
+        }
 
         internal static Outcome Classify(ApiResult<VerifyResponse> response)
         {

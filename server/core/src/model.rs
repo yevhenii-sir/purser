@@ -19,6 +19,9 @@ pub mod store {
     pub const TELEGRAM: &str = "telegram";
     /// Samsung Galaxy Store (Samsung IAP on Android).
     pub const SAMSUNG: &str = "samsung";
+
+    /// Meta Horizon Store (Meta Quest).
+    pub const META: &str = "meta";
     /// Granted by an admin (support compensation, promo). Never touches a store.
     pub const MANUAL: &str = "manual";
 }

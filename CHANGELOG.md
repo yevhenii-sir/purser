@@ -23,6 +23,8 @@
 - Braze integration (`braze`, `/users/track`, `braze_rest_api_key`): purchases (refunds with a negative price) and `purser_<kind>` custom events, subscription changes included, for `external_id` = the billing user id.
 - OneSignal integration (`onesignal`, Custom Events API, `onesignal_api_key`): every event as a `purser_<kind>` custom event for `external_id` = the billing user id, with an idempotency key.
 - Integrations that answer 2xx and name refused events in the body (Singular, Braze, OneSignal) count those events as failed instead of sent.
+- Meta Horizon Store (Meta Quest; store `meta` of `android` builds): `/verify/meta` checks the player's user proof (`store_user_proof`, a nonce from `Users.GetUserProof`, with the Meta user id as `store_user_id`) with `user_nonce_validate`, then looks add-ons up in `viewer_purchases` and subscriptions in `application/subscriptions` with the app access token (`meta_app_id`, `meta_app_secret`). The server consumes consumables after the grant (`consume_entitlement`); Meta sends no notifications, so subscriptions are re-checked when their period ends. `/restore` takes one `store_user_proof` for all its items. The setup check lists the app's add-ons with the token.
+- Unity: `MetaQuestStoreAdapter` with its bridge (sample "Meta Quest").
 
 ## 0.11.0 - 2026-11-26
 

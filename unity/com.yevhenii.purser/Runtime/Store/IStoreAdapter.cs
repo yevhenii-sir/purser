@@ -402,6 +402,18 @@ namespace Purser
     }
 
     /// <summary>
+    /// Optional <see cref="IStoreAdapter"/> capability: the server checks that the client is the store user it names
+    /// (<see cref="StoreOrder.StoreUserId"/>) with a proof that is good for one check (Meta <c>Users.GetUserProof</c>).
+    /// <see cref="BillingService"/> asks for a new one before every <c>/verify</c> attempt and every <c>/restore</c>.
+    /// Implemented by <see cref="MetaQuestStoreAdapter"/>.
+    /// </summary>
+    public interface IStoreUserProof
+    {
+        /// <summary>A new proof; throws when the store cannot give one (the request is then retried).</summary>
+        Task<string> GetUserProofAsync(CancellationToken ct);
+    }
+
+    /// <summary>
     /// Optional <see cref="IStoreAdapter"/> capability: the store's page where a player manages subscriptions comes
     /// from the billing server or the adapter's settings (<see cref="IBillingService.OpenManageSubscriptionsAsync"/>).
     /// Implemented by <see cref="StripeStoreAdapter"/>.

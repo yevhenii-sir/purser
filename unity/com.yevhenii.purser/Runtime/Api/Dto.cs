@@ -38,8 +38,11 @@ namespace Purser
         [JsonProperty("purchase_token", NullValueHandling = NullValueHandling.Ignore)] public string PurchaseToken;
         /// <summary>Apple transactionId, Amazon receiptId (required) / Google orderId (optional).</summary>
         [JsonProperty("order_id", NullValueHandling = NullValueHandling.Ignore)] public string OrderId;
-        /// <summary>The player's id in the store (Amazon userId).</summary>
+        /// <summary>The player's id in the store (Amazon userId, Meta user id).</summary>
         [JsonProperty("store_user_id", NullValueHandling = NullValueHandling.Ignore)] public string StoreUserId;
+        /// <summary>Proof that the client is <see cref="StoreUserId"/> (Meta <c>Users.GetUserProof</c>, good for one
+        /// check: a new one for every request, <see cref="IStoreUserProof"/>).</summary>
+        [JsonProperty("store_user_proof", NullValueHandling = NullValueHandling.Ignore)] public string StoreUserProof;
         [JsonProperty("app_instance_id", NullValueHandling = NullValueHandling.Ignore)] public string AppInstanceId;
         [JsonProperty("price_micros")] public long PriceMicros;
         [JsonProperty("currency", NullValueHandling = NullValueHandling.Ignore)] public string Currency;
@@ -117,6 +120,8 @@ namespace Purser
 
         [JsonProperty("app_id")] public string AppId;
         [JsonProperty("user_id")] public string UserId;
+        /// <summary>Proof that the client is the items' store user (Meta), checked once for all of them.</summary>
+        [JsonProperty("store_user_proof", NullValueHandling = NullValueHandling.Ignore)] public string StoreUserProof;
         [JsonProperty("app_instance_id", NullValueHandling = NullValueHandling.Ignore)] public string AppInstanceId;
         [JsonProperty("attribution", NullValueHandling = NullValueHandling.Ignore)] public Dictionary<string, string> Attribution;
         [JsonProperty("purchases")] public List<RestoreItem> Purchases = new List<RestoreItem>();
