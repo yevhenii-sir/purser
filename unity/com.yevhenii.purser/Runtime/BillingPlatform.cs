@@ -27,18 +27,23 @@ namespace Purser
         Web,
         /// <summary>Huawei AppGallery (HMS devices). Use <see cref="HuaweiStoreAdapter"/>.</summary>
         Huawei,
+        /// <summary>Samsung Galaxy Store (Samsung IAP on Android). Use <see cref="SamsungStoreAdapter"/>.</summary>
+        Samsung,
     }
 
     /// <summary>Which store an Android build talks to.</summary>
     public enum AndroidStore
     {
-        /// <summary>Google Play, unless the app was installed by the Amazon Appstore or Huawei AppGallery.</summary>
+        /// <summary>Google Play, unless the app was installed by the Amazon Appstore, Huawei AppGallery or Galaxy Store.</summary>
         Auto,
         GooglePlay,
         AmazonAppstore,
         /// <summary>Huawei AppGallery (<see cref="HuaweiStoreAdapter"/>); <see cref="Auto"/> picks it when AppGallery
         /// installed the app.</summary>
         HuaweiAppGallery,
+        /// <summary>Samsung Galaxy Store (<see cref="SamsungStoreAdapter"/>); <see cref="Auto"/> picks it when Galaxy
+        /// Store installed the app.</summary>
+        SamsungGalaxyStore,
     }
 
     /// <summary>
@@ -57,9 +62,11 @@ namespace Purser
         public const string Huawei = "huawei";
         /// <summary>Telegram Stars (Telegram Mini Apps).</summary>
         public const string Telegram = "telegram";
+        /// <summary>Samsung Galaxy Store (an Android build of its own on the server).</summary>
+        public const string Samsung = "samsung";
 
         /// <summary>Stores the server knows, in the order the inspector lists them.</summary>
-        public static readonly IReadOnlyList<string> All = new[] { Google, Apple, Amazon, Steam, Stripe, Xsolla, Huawei, Telegram };
+        public static readonly IReadOnlyList<string> All = new[] { Google, Apple, Amazon, Steam, Stripe, Xsolla, Huawei, Telegram, Samsung };
 
         /// <summary>The store a platform implies; null for <see cref="BillingPlatform.Web"/> (Stripe, Xsolla or Telegram:
         /// the adapter names it) and <see cref="BillingPlatform.Unsupported"/>.</summary>
@@ -72,6 +79,7 @@ namespace Purser
                 case BillingPlatform.Amazon: return Amazon;
                 case BillingPlatform.Steam: return Steam;
                 case BillingPlatform.Huawei: return Huawei;
+                case BillingPlatform.Samsung: return Samsung;
                 default: return null;
             }
         }
@@ -84,6 +92,9 @@ namespace Purser
 
         /// <summary>Store package of Huawei AppGallery.</summary>
         public const string HuaweiInstallerPackage = "com.huawei.appmarket";
+
+        /// <summary>Store package of Samsung Galaxy Store.</summary>
+        public const string SamsungInstallerPackage = "com.sec.android.app.samsungapps";
 
         /// <summary>Platform Unity IAP serves on this device (Google on every Android device).</summary>
         public static BillingPlatform Current
@@ -105,7 +116,7 @@ namespace Purser
         }
 
         /// <summary>Platform for a config: <see cref="Current"/>, with Android builds resolved by
-        /// <see cref="BillingConfig.androidStore"/> (Auto = Amazon or Huawei when installed by their store).</summary>
+        /// <see cref="BillingConfig.androidStore"/> (Auto = Amazon, Huawei or Samsung when installed by their store).</summary>
         public static BillingPlatform For(BillingConfig config)
         {
             var current = Current;
@@ -117,10 +128,13 @@ namespace Purser
                     return BillingPlatform.Amazon;
                 case AndroidStore.HuaweiAppGallery:
                     return BillingPlatform.Huawei;
+                case AndroidStore.SamsungGalaxyStore:
+                    return BillingPlatform.Samsung;
                 case AndroidStore.Auto:
                     var installer = InstallerPackage();
                     return installer == AmazonInstallerPackage ? BillingPlatform.Amazon
                         : installer == HuaweiInstallerPackage ? BillingPlatform.Huawei
+                        : installer == SamsungInstallerPackage ? BillingPlatform.Samsung
                         : BillingPlatform.Google;
                 default:
                     return BillingPlatform.Google;
@@ -132,6 +146,9 @@ namespace Purser
 
         /// <summary>True when Huawei AppGallery installed this app (Android only).</summary>
         public static bool IsHuaweiAppGalleryInstall() => InstallerPackage() == HuaweiInstallerPackage;
+
+        /// <summary>True when Samsung Galaxy Store installed this app (Android only).</summary>
+        public static bool IsSamsungGalaxyStoreInstall() => InstallerPackage() == SamsungInstallerPackage;
 
         /// <summary>The package of the store that installed this app; null when unknown or not Android.</summary>
         public static string InstallerPackage()

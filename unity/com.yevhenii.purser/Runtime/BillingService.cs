@@ -234,6 +234,14 @@ namespace Purser
                 log.Warning("Installed by Huawei AppGallery, but no HuaweiStoreAdapter was given in BillingDependencies.Store: using Google Play.");
                 platform = BillingPlatform.Google;
             }
+            if (platform == BillingPlatform.Samsung)
+            {
+                if (config.androidStore == AndroidStore.SamsungGalaxyStore)
+                    throw new BillingException("androidStore is Samsung Galaxy Store: pass a SamsungStoreAdapter in BillingDependencies.Store " +
+                                               "(Unity IAP has no Samsung store)");
+                log.Warning("Installed by Samsung Galaxy Store, but no SamsungStoreAdapter was given in BillingDependencies.Store: using Google Play.");
+                platform = BillingPlatform.Google;
+            }
             var factory = Billing.DefaultStoreFactory
                           ?? throw new BillingException("No store adapter: install Unity IAP (com.unity.purchasing) 5.4 or later for " +
                                                         "the default UnityIapStoreAdapter, or pass a store in BillingDependencies.Store " +

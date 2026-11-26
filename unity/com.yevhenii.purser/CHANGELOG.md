@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `SamsungStoreAdapter` (Samsung Galaxy Store) over an `ISamsungIap` bridge to Samsung's IAP Unity plugin (sample "Samsung
+  Galaxy Store", scripting define `PURSER_SAMSUNG_IAP`): verifies on `/verify/samsung` (the purchase id), consumes granted
+  consumables (the server consumes and acknowledges too), verifies unconsumed ones again at launch.
+  `BillingPlatform.Samsung`, `AndroidStore.SamsungGalaxyStore` (`Auto` picks it when Galaxy Store installed the app),
+  `BillingStores.Samsung`, `BillingPlatforms.IsSamsungGalaxyStoreInstall()`.
+
 ## [0.11.0] - 2026-11-26
 
 Checked in Unity 2022.3 and 6.6: the package compiles without warnings and the EditMode tests pass (320 of 320); the core
