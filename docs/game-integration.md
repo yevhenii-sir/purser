@@ -174,6 +174,8 @@ the audit log under `server-key:<key_id>`. Never ship a server key in a client: 
 
 **Unity:** a ready-made package [`unity/com.yevhenii.purser`](../unity/com.yevhenii.purser/README.md) on Unity IAP 5. It handles verification, order confirmation, restore, entitlements and binding purchases to the player.
 
+**TypeScript (web, Cocos Creator, PlayCanvas, Telegram Mini Apps), Godot, Defold:** the SDKs in [`sdks/`](sdks.md) speak the same contract and finish purchases by the same rules.
+
 For other clients (GameMaker, etc.):
 1. Bind the purchase to the player using the same rule as the server:
    - Google: `obfuscatedAccountId` = `user_id` (if `user_id` is longer than 64 characters — SHA-256 hex);

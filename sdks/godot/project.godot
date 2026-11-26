@@ -1,0 +1,10 @@
+; A project around the addon, only for its tests:
+;   godot --headless --path sdks/godot -s tests/test_purser.gd
+; Copy addons/purser into your own project to use it.
+
+config_version=5
+
+[application]
+
+config/name="Purser SDK tests"
+config/version="1.2.1"

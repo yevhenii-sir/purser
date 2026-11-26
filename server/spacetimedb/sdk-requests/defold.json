@@ -1,0 +1,183 @@
+{
+  "note": "What the Defold module (sdks/defold) sends to the server; its tests compare it (UPDATE_SDK_REQUESTS=1 rewrites it).",
+  "requests": [
+    {
+      "route": "/verify/google",
+      "replay": true,
+      "body": {
+        "app_id": "com.studio.game",
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "currency": "USD",
+        "offer_id": "monthly-intro",
+        "order_id": "GPA.1111-2222-3333-44444",
+        "paywall_id": "pw-1",
+        "placement": "store",
+        "price_micros": 990000,
+        "product_id": "gems",
+        "purchase_token": "tok-1",
+        "test_id": "test-1",
+        "user_id": "player-1",
+        "variant_id": "var-a"
+      }
+    },
+    {
+      "route": "/verify/apple",
+      "body": {
+        "app_id": "com.studio.game",
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "order_id": "2000000123",
+        "price_micros": 0,
+        "product_id": "gems",
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/verify/amazon",
+      "body": {
+        "app_id": "com.studio.game",
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "order_id": "receipt-1",
+        "price_micros": 0,
+        "product_id": "gems",
+        "store_user_id": "amzn1.account.TEST",
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/restore",
+      "body": {
+        "app_id": "com.studio.game",
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "purchases": [
+          {
+            "order_id": "GPA.1",
+            "product_id": "no_ads",
+            "purchase_token": "tok-old"
+          }
+        ],
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/entitlements",
+      "replay": true,
+      "body": {
+        "app_id": "com.studio.game",
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/paywall",
+      "body": {
+        "app_id": "com.studio.game",
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "placement": "store",
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/paywall/event",
+      "body": {
+        "app_id": "com.studio.game",
+        "event": "view",
+        "placement": "store",
+        "test_id": "test-1",
+        "user_id": "player-1",
+        "variant_id": "var-a"
+      }
+    },
+    {
+      "route": "/attributes",
+      "replay": true,
+      "body": {
+        "app_id": "com.studio.game",
+        "attributes": {
+          "clan": "wolves",
+          "level": 7,
+          "old": ""
+        },
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/redeem",
+      "body": {
+        "app_id": "com.studio.game",
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "code": "SUMMER-2026",
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/wallet",
+      "body": {
+        "app_id": "com.studio.game",
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "user_id": "player-1"
+      }
+    },
+    {
+      "route": "/wallet/spend",
+      "body": {
+        "amount": 30,
+        "app_id": "com.studio.game",
+        "client": {
+          "app_version": "1.2.1",
+          "device": "Pixel 8",
+          "os": "Android 15",
+          "sdk_version": "defold/0.11.0"
+        },
+        "currency": "gems",
+        "reference": "sword-1",
+        "user_id": "player-1"
+      }
+    }
+  ]
+}

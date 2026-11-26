@@ -34,13 +34,14 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 | `server/setup_google.py` | Google Play setup from the terminal: gets a `gcloud` access token and calls the `admin_setup_google` procedure (APIs, service account + key, Pub/Sub topic, RTDN push subscriptions). |
 | `server/mcp_server.py` | MCP server (stdlib JSON-RPC over stdio) over the admin procedures; see docs/mcp.md. |
 | `unity/com.yevhenii.purser` | UPM package: `BillingService`, `BillingConfig`, providers, Editor inspector, EditMode tests, native iOS plugin (`Runtime/Plugins/iOS`). The core (`Purser.Runtime`) does not reference Unity IAP; the Unity IAP 5 adapter is the assembly `Purser.UnityIap` (`Runtime/UnityIap`, compiled only with `com.unity.purchasing` 5.4+ via the `PURSER_UNITY_IAP5` version define, registers `Billing.DefaultStoreFactory` on load), its tests are `Purser.Tests.UnityIap` (`Tests/Editor/UnityIap`). |
+| `sdks/` | Client SDKs for other engines, the same HTTP contract and purchase-finishing rules as the Unity package (docs/sdks.md): `typescript` (`@purser/client`, `fetch`, no runtime dependencies; tests: `npm install && npm test`, Node 22+, a fake fetch), `godot` (`addons/purser/purser_client.gd`, `HTTPRequest`; tests: `godot --headless --path sdks/godot -s tests/test_purser.gd`, not run in CI), `defold` (`purser/purser.lua`, `http.request`, `game.project` shares `purser` as a library; tests: `lua tests/test_purser.lua` from `sdks/defold`, any Lua 5.1-5.4 or LuaJIT). What each sends is in `server/spacetimedb/sdk-requests/<sdk>.json` (the TypeScript and Defold tests rewrite theirs with `UPDATE_SDK_REQUESTS=1`, the Godot test compares its own); the module's `every_request_of_every_sdk_is_accepted` parses every file and refuses fields the server does not read. |
 | `docs/` | store setup, game integration contract, analytics, self-hosting, migrating from Adapty. |
 | `tools/generate_unity_meta.py` | Creates `.meta` files for new Unity package files (deterministic GUIDs). |
 | `tools/e2e.py` | End-to-end check of a built module on a real SpacetimeDB server (CI runs it in a container). |
 | `tools/demo_snapshot.py`, `tools/mkdocs_hooks.py` | The admin page demo's snapshot (`admin-ui/demo`), hooks of the docs site build. |
 | `deploy/docker/` | Self-hosting with `docker compose`: SpacetimeDB, `publish.sh`, an optional Caddy proxy with the public allowlist. |
 | `tools/loadtest.py` | Load test of a built module on a local SpacetimeDB, with a local proxy standing in for a slow store (not in CI). |
-| `.github/workflows/` | `ci.yml` (tests, wasm, end to end on SpacetimeDB, admin page freshness, scripts, personal-infra grep guard), `release.yml` (tag `v*`), `docs.yml` (the docs site and the admin page demo), `audit.yml` (weekly `cargo deny` of the module's wasm dependencies, configured in `server/deny.toml`, and `npm audit`); `dependabot.yml`. |
+| `.github/workflows/` | `ci.yml` (tests, wasm, end to end on SpacetimeDB, admin page freshness, scripts, the TypeScript and Defold SDKs, personal-infra grep guard), `release.yml` (tag `v*`), `docs.yml` (the docs site and the admin page demo), `audit.yml` (weekly `cargo deny` of the module's wasm dependencies, configured in `server/deny.toml`, and `npm audit`); `dependabot.yml`. |
 
 ## Domain model (names used everywhere)
 
@@ -171,6 +172,9 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - `server/spacetimedb/sdk-requests/current.json` holds what the current Unity SDK sends;
   `every_request_of_the_unity_sdk_is_accepted` parses it and `the_unity_sdk_purchase_flow_works`
   replays the purchase flow. Change it together with `Runtime/Api/Dto.cs` and the store adapters.
+- The SDKs of `sdks/` keep theirs next to it (`typescript.json`, `godot.json`, `defold.json`): a new client
+  field goes to every SDK that needs it and its file; a field only they send is listed in
+  `unity_fields` of `tests.rs`.
 
 ## Commands
 
@@ -186,6 +190,8 @@ npm run build      # writes ../spacetimedb/admin/index.html and csp.txt — comm
 npm run dev        # proxies to a local `spacetime start` on :3000 (SPACETIME_URL to change)
 
 python tools/generate_unity_meta.py          # after adding files to the Unity package
+cd sdks/typescript && npm install && npm test # TypeScript SDK (fake fetch)
+cd sdks/defold && lua tests/test_purser.lua   # Defold SDK (stubbed http.request)
 python -m py_compile server/*.py tools/*.py
 python -m unittest discover -s server/tests   # unit tests of the scripts
 python tools/loadtest.py --help               # load test on a local SpacetimeDB (see its docstring)

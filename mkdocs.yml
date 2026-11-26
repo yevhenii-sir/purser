@@ -65,6 +65,7 @@ nav:
   - Games with their own IAP code: observer-mode.md
   - Purchase events in BigQuery: bigquery.md
   - Game integration: game-integration.md
+  - SDKs for other engines: sdks.md
   - Paywalls and A/B tests: paywalls.md
   - App Store promotional offers: apple-offers.md
   - Virtual currency: wallet.md
