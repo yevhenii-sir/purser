@@ -2,8 +2,12 @@
 
 ## [Unreleased]
 
-Google Play offers are not yet checked in a Unity editor or on an Android device: the EditMode tests were run outside Unity (dotnet with
-stand-ins for the Unity APIs) and the Android plugin compiled against stubs of the Billing Library 9 API.
+## [0.12.0] - 2026-11-26
+
+Not yet checked in a Unity editor: the EditMode tests were run outside Unity (dotnet with stand-ins for the Unity APIs, 348
+of 350; the two others need the editor), the Google Play offers plugin was compiled against stubs of the Billing Library 9 API,
+and the Samsung, Meta Quest and Google offer adapters were not run on a device. Needs the server 0.12.0, a `--delete-data`
+release (see the server changelog), for wallets, Samsung Galaxy Store and Meta Quest.
 
 ### Added
 

@@ -48,7 +48,7 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
   }
   return (
     <Sheet open={!!id} onOpenChange={(open) => !open && close()}>
-      <SheetContent className="w-full gap-0 sm:max-w-2xl">
+      <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
         <SheetHeader>
           <SheetTitle className="font-mono text-sm break-all">{id}</SheetTitle>
           <SheetDescription>Ledger row and everything that happened to it.</SheetDescription>
@@ -120,7 +120,7 @@ export function PurchaseSheet({ id, onClose }: { id: string | null; onClose: (ch
                     columns={[
                       { title: "Time", cell: (r) => <span className="whitespace-nowrap">{fmtTime(r.at_micros)}</span> },
                       { title: "Event", cell: (r) => r.event },
-                      { title: "Details", className: "whitespace-normal", cell: (r) => <Mono className="break-all">{r.details}</Mono> },
+                      { title: "Details", className: "whitespace-normal", cell: (r) => <Mono className="[overflow-wrap:anywhere]">{r.details}</Mono> },
                     ]}
                   />
                 </div>

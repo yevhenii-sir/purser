@@ -102,7 +102,7 @@ test("verify body", function()
 		purchase_token = "tok-1",
 		price_micros = 990000,
 		currency = "USD",
-		client = { device = "Pixel 8", os = "Android 15", app_version = "1.2.1", sdk_version = "defold/0.11.0" },
+		client = { device = "Pixel 8", os = "Android 15", app_version = "1.2.1", sdk_version = "defold/0.12.0" },
 	}), "verify body")
 end)
 

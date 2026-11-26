@@ -262,7 +262,7 @@ const RULES: { key: keyof Rules; title: string; description: string; thresholds?
   },
 ]
 
-const ruleTitle = (id: string) => RULES.find((r) => r.key === id)?.title || id
+export const ruleTitle = (id: string) => RULES.find((r) => r.key === id)?.title || id
 
 export function AlertsPage() {
   const { data, error, loading, reload } = useAsync(async () => {

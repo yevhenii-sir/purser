@@ -6,7 +6,7 @@
 
 local M = {}
 
-M.SDK_VERSION = "0.11.0"
+M.SDK_VERSION = "0.12.0"
 M.MAX_RESTORE_ITEMS = 20
 --- A Retry-After longer than this (seconds) is cut to it.
 M.MAX_RETRY_AFTER = 60

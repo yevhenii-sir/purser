@@ -4,14 +4,16 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { DataTable, ErrorBox, Loading, Mono, PageHeader, Section, Stat, StatusBadge, Tone } from "@/components/common"
 import { PurchaseSheet } from "@/components/purchase-sheet"
-import { call, proc, route } from "@/lib/api"
+import { call, proc, route, select } from "@/lib/api"
+import { useAppIndex } from "@/lib/apps"
+import { ruleTitle } from "@/pages/alerts"
 import { fmtTime, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { useCan } from "@/lib/roles"
 import { revenueOverview, revenueOverviewIfOn } from "@/lib/revenue"
 import { RevenueUpdated } from "@/components/revenue-updated"
 import { STATUSES, type Overview, type PurchaseStatus, type RevenueOverview, type Waiting } from "@/lib/types"
-import type { PageProps } from "@/routes"
+import { appRoute, type PageProps } from "@/routes"
 
 /** Listed even when no purchase is in them. */
 const ALWAYS_LISTED: readonly PurchaseStatus[] = ["completed", "verified"]
@@ -21,13 +23,16 @@ export function OverviewPage({ go }: PageProps) {
   /** A report counted again with the refresh button (newer than the one loaded with the page). */
   const [counted, setCounted] = useState<RevenueOverview | null>(null)
   const { data, error, loading, reload } = useAsync(async () => {
-    const [health, overview, stats] = await Promise.all([
+    const [health, overview, stats, alerts, checks] = await Promise.all([
       route<{ version?: string } | null>("/healthz"),
       proc<Overview>("admin_overview"),
       revenueOverviewIfOn(),
+      // An admin without access to these sees the rest of the page.
+      select<OpenAlert>({ table: "alert_state" }).catch(() => [] as OpenAlert[]),
+      select<SetupCheck>({ table: "app_check", columns: ["app_id", "summary", "checked_at_micros"] }).catch(() => [] as SetupCheck[]),
     ])
     const byStatus = STATUSES.map((s) => ({ status: s, n: Number(overview.by_status[s] || 0) }))
-    return { health, overview, byStatus, stats }
+    return { health, overview, byStatus, stats, alerts, checks }
   })
 
   if (error) return <ErrorBox error={error} hint="Make sure the token belongs to the database owner or an admin." />
@@ -55,7 +60,7 @@ export function OverviewPage({ go }: PageProps) {
         <Stat label="Apps / builds" value={`${ov.apps} / ${ov.builds}`} onClick={() => go("apps")} />
         <Stat label="Purchases" value={Number(ov.total).toLocaleString()} hint={`${ov.pending_total} waiting (${ov.due_total} due) · ${ov.outbox} events queued`} onClick={() => go("purchases")} />
       </div>
-      <div className="grid gap-6 lg:grid-cols-[1fr_2fr]">
+      <div className="grid gap-6 lg:grid-cols-[minmax(14rem,1fr)_3fr]">
         <Section title="Purchases by status">
           <DataTable
             rows={data.byStatus.filter((s) => s.n > 0 || ALWAYS_LISTED.includes(s.status))}
@@ -74,12 +79,20 @@ export function OverviewPage({ go }: PageProps) {
             onRowClick={(r) => setOpen(r.id)}
             empty="All processed"
             columns={[
-              { title: "Purchase", cell: (r) => <Mono>{r.id}</Mono> },
+              {
+                title: "Purchase",
+                className: "max-w-80",
+                cell: (r) => (
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-xs" title={r.id}>{r.id}</div>
+                    {r.last_error && <div className="truncate text-xs text-destructive" title={r.last_error}>{r.last_error}</div>}
+                  </div>
+                ),
+              },
               { title: "Status", cell: (r) => <StatusBadge status={r.status} /> },
               { title: "Waiting", cell: (r) => <WaitingBadge waiting={r.waiting} /> },
               { title: "Attempts", cell: (r) => r.attempts, num: true },
               { title: "Next try", cell: (r) => <span className="whitespace-nowrap">{fmtTime(r.next_attempt_at_micros)}</span> },
-              { title: "Error", className: "whitespace-normal", cell: (r) => <Mono className="line-clamp-2 break-all">{r.last_error}</Mono> },
             ]}
           />
           {ov.pending_total > ov.pending.length && (
@@ -87,8 +100,56 @@ export function OverviewPage({ go }: PageProps) {
           )}
         </Section>
       </div>
+      <Attention alerts={data.alerts} checks={data.checks} go={go} />
       <PurchaseSheet id={open} onClose={(changed) => { setOpen(null); if (changed) reload() }} />
     </>
+  )
+}
+
+interface OpenAlert { key: string; rule: string; app_id: string; active: boolean; first_at_micros: number; detail: string }
+interface SetupCheck { app_id: string; summary: string; checked_at_micros: number }
+
+/** Open owner alerts and builds whose last setup check found problems: what to look at first. */
+function Attention({ alerts, checks, go }: { alerts: OpenAlert[]; checks: SetupCheck[]; go: PageProps["go"] }) {
+  const { groupOf } = useAppIndex()
+  const rows = [
+    ...alerts
+      .filter((a) => a.active)
+      .sort((a, b) => Number(b.first_at_micros) - Number(a.first_at_micros))
+      .map((a) => ({ key: `a/${a.key}`, kind: "alert" as const, app: a.app_id, title: ruleTitle(a.rule), detail: a.detail, at: Number(a.first_at_micros) })),
+    ...checks
+      .filter((c) => c.summary === "fail" || c.summary === "warn")
+      .sort((a, b) => (a.summary === b.summary ? 0 : a.summary === "fail" ? -1 : 1))
+      .map((c) => ({
+        key: `c/${c.app_id}`,
+        kind: c.summary as "fail" | "warn",
+        app: c.app_id,
+        title: c.summary === "fail" ? "Setup check fails" : "Setup check warns",
+        detail: "open the build's Setup tab for the checks",
+        at: Number(c.checked_at_micros),
+      })),
+  ]
+  const open = (r: (typeof rows)[number]) => {
+    if (r.kind === "alert") return go("alerts")
+    const g = groupOf.get(r.app)
+    if (g) location.hash = appRoute(g.key, "setup")
+  }
+  return (
+    <Section title="Needs attention" description="Open owner alerts and builds whose last setup check found problems. Click a row to open it.">
+      <DataTable
+        rows={rows.slice(0, 12)}
+        onRowClick={open}
+        empty="Nothing: no open alerts, every setup check passes."
+        columns={[
+          { title: "", cell: (r) => <Tone tone={r.kind === "warn" ? "warn" : "bad"}>{r.kind === "alert" ? "alert" : r.kind}</Tone> },
+          { title: "What", cell: (r) => <span className="font-medium">{r.title}</span> },
+          { title: "Build", cell: (r) => <Mono>{r.app || "server"}</Mono> },
+          { title: "Details", cell: (r) => <span className="block max-w-96 truncate text-xs text-muted-foreground" title={r.detail}>{r.detail}</span> },
+          { title: "Since", cell: (r) => <span className="whitespace-nowrap">{fmtTime(r.at)}</span> },
+        ]}
+      />
+      {rows.length > 12 && <p className="mt-3 text-xs text-muted-foreground">12 of {rows.length}.</p>}
+    </Section>
   )
 }
 

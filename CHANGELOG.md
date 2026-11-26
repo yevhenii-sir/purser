@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0 - 2026-11-26
+
 ### Breaking
 
 - Publish with `--delete-data` (keep the data with `backup.py`): `purchase` gains `price_change` and `price_change_micros`, `placement` gains `audiences_json`, `product` gains `wallet`, `revenue_report_job` gains `subs_next_ms` and `subs_json` (not backed up: reports are counted again). The new `running_subscription` is derived from the ledger: the restore's reindex fills it.
@@ -29,6 +31,11 @@
 - Unity: Google Play subscription offers chosen by the game (`GetGoogleOffersAsync`, `PurchaseOptions.GoogleOfferToken`)
   through an Android plugin of the package, next to Unity IAP 5, which buys only the first offer of a product. The
   purchase reaches `/verify/google` like any other, with its `offer_id`; the server acknowledges it. No server change.
+
+### Changed
+
+- Overview: a **Needs attention** list of open owner alerts and builds whose setup check warns or fails (a click opens the Alerts page or the build's Setup tab); a waiting purchase's error is a line under its id, the whole text on hover, instead of a column cut off at the table's edge.
+- The purchase panel is twice as wide (it stayed at the side sheet's narrow default), so its details and history read without breaking every id.
 
 ## 0.11.0 - 2026-11-26
 
