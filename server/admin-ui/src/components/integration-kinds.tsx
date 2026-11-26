@@ -1,5 +1,8 @@
 import type { ComponentType, ReactNode } from "react"
-import { ActivityIcon, ChartColumnIcon, ChartLineIcon, ChartSplineIcon, CloudUploadIcon, CrosshairIcon, InfinityIcon, TargetIcon, TrendingUpIcon, WebhookIcon } from "lucide-react"
+import {
+  ActivityIcon, BellIcon, ChartColumnIcon, ChartLineIcon, ChartSplineIcon, CloudUploadIcon, CompassIcon, CrosshairIcon, DatabaseIcon,
+  GitBranchIcon, InfinityIcon, MegaphoneIcon, RadarIcon, TargetIcon, TrendingUpIcon, WebhookIcon,
+} from "lucide-react"
 
 export interface Integration {
   key: string
@@ -9,7 +12,9 @@ export interface Integration {
   settings_json: string
 }
 
-export type Kind = "ga4" | "appsflyer" | "adjust" | "tenjin" | "appmetrica" | "amplitude" | "mixpanel" | "meta" | "webhook" | "gcs"
+export type Kind =
+  | "ga4" | "appsflyer" | "adjust" | "tenjin" | "appmetrica" | "amplitude" | "mixpanel" | "meta"
+  | "singular" | "branch" | "kochava" | "braze" | "onesignal" | "webhook" | "gcs" | "s3"
 /** `settings_json` of an integration, as each kind's form edits it. */
 export type Settings = Record<string, any>
 
@@ -107,6 +112,56 @@ export const KINDS: Record<Kind, KindDef> = {
     client: <>Required: <code>meta_anon_id</code> (the Facebook SDK's anonymous id) or an advertising id: <code>advertising_id</code> on Android, <code>idfa</code> with <code>att</code> = true on iOS. Recommended: <code>os_version</code> (Meta requires it in extinfo), <code>app_version</code>.</>,
     summary: (s) => [s.dataset_id, s.test_event_code && "test code"].filter(Boolean).join(", "),
   },
+  singular: {
+    name: "Singular",
+    icon: RadarIcon,
+    description: "Purchases, renewals and refunds as Singular S2S events with revenue, attributed to the install.",
+    secret: "singular_sdk_key",
+    secretLabel: "SDK key (Developer Tools → SDK Integration → SDK keys)",
+    secretScope: "account",
+    client: <>Required: <code>os_version</code> and <code>singular_device_id</code> (the Singular SDK's SDID), or the device ids: <code>idfv</code> on iOS (with <code>idfa</code>, <code>att</code>), <code>app_set_id</code> / <code>advertising_id</code> on Android. Recommended: <code>app_version</code>. Events need the billing country the store reports.</>,
+    summary: (s) => s.app_id || "",
+  },
+  branch: {
+    name: "Branch",
+    icon: GitBranchIcon,
+    description: "Purchases and renewals as Branch PURCHASE commerce events with revenue (v2 Event API); refunds and expirations as custom events.",
+    secret: "branch_key",
+    secretLabel: "Branch key (key_live_…, Account settings)",
+    secretScope: "app",
+    client: <>Required: a device id: <code>advertising_id</code> or <code>oaid</code> on Android, <code>idfv</code> / <code>idfa</code> on iOS. Recommended: <code>os_version</code>, <code>app_version</code>, <code>att</code>. The billing user id goes as <code>developer_identity</code>.</>,
+    summary: () => "",
+  },
+  kochava: {
+    name: "Kochava",
+    icon: CompassIcon,
+    description: "Purchases, renewals and refunds as Kochava server-to-server post-install events with revenue.",
+    secret: "kochava_app_guid",
+    secretLabel: "App GUID (kochava_app_id, the app's settings)",
+    secretScope: "app",
+    client: <>Required: <code>kochava_device_id</code> (the Kochava SDK's device id) or a device id: <code>advertising_id</code> on Android, <code>idfa</code> / <code>idfv</code> on iOS. Recommended: <code>os_version</code>, <code>app_version</code>, <code>att</code>.</>,
+    summary: () => "",
+  },
+  braze: {
+    name: "Braze",
+    icon: MegaphoneIcon,
+    description: "Purchases (refunds with a negative price) and purser_* custom events for cancellations, billing issues, expirations, for the player's external_id (/users/track).",
+    secret: "braze_rest_api_key",
+    secretLabel: "REST API key with users.track (Settings → APIs and Identifiers)",
+    secretScope: "app",
+    client: <>Nothing: events go to the billing user id as <code>external_id</code> (call <code>changeUser</code> with it in the game).</>,
+    summary: (s) => (s.endpoint || "").replace(/^https:\/\//, ""),
+  },
+  onesignal: {
+    name: "OneSignal",
+    icon: BellIcon,
+    description: "Every purchase and subscription event as a purser_* custom event for the player's external_id, for journeys and segments (Custom Events API).",
+    secret: "onesignal_api_key",
+    secretLabel: "App API key (Settings → Keys & IDs)",
+    secretScope: "app",
+    client: <>Nothing: events go to the billing user id as <code>external_id</code> (call <code>OneSignal.login</code> with it in the game).</>,
+    summary: (s) => s.app_id || "",
+  },
   webhook: {
     name: "Webhook",
     icon: WebhookIcon,
@@ -126,6 +181,16 @@ export const KINDS: Record<Kind, KindDef> = {
     secretScope: "app",
     client: <>Nothing: the event carries whatever the client sent.</>,
     summary: (s) => (s.bucket ? `gs://${s.bucket}/${s.folder || ""}` : ""),
+  },
+  s3: {
+    name: "S3-compatible storage",
+    icon: DatabaseIcon,
+    description: "Every event as a JSON file in an AWS S3, Cloudflare R2, MinIO or other S3-compatible bucket, one folder per day: load it into a data warehouse.",
+    secret: "s3_access_key",
+    secretLabel: "Access key as ACCESS_KEY_ID:SECRET_ACCESS_KEY (allowed to put objects into the bucket)",
+    secretScope: "app",
+    client: <>Nothing: the event carries whatever the client sent.</>,
+    summary: (s) => (s.bucket ? `${s.bucket}/${s.prefix || ""}` : ""),
   },
 }
 export const KIND_LIST = Object.keys(KINDS) as Kind[]

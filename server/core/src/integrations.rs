@@ -38,7 +38,8 @@ pub mod event_kind {
     /// Sent from `admin_test_integration`; carries no revenue.
     pub const TEST: &str = "test";
 
-    /// Subscription changes without money: only the webhook and the Cloud Storage export get them.
+    /// Subscription changes without money: the webhook, the storage exports (Cloud Storage, S3) and
+    /// the messaging integrations (Braze, OneSignal) get them; Singular gets `cancel`.
     pub const LIFECYCLE: &[&str] = &[CANCEL, UNCANCEL, BILLING_ISSUE, BILLING_RECOVERED, PRODUCT_CHANGE, PAUSE, RESUME];
 
     /// Every kind an integration can be sent (`test` is not filtered).
@@ -74,8 +75,22 @@ pub mod integration_kind {
     pub const MIXPANEL: &str = "mixpanel";
     /// Meta (Facebook) Conversions API for app events: purchases for ads optimization.
     pub const META: &str = "meta";
+    /// Every event as a JSON file in an S3-compatible bucket (AWS S3, Cloudflare R2, MinIO, ...).
+    pub const S3: &str = "s3";
+    /// Singular S2S EVENT endpoint: attribution with revenue.
+    pub const SINGULAR: &str = "singular";
+    /// Branch v2 Event API: commerce events for attribution.
+    pub const BRANCH: &str = "branch";
+    /// Kochava server-to-server post-install events.
+    pub const KOCHAVA: &str = "kochava";
+    /// Braze `/users/track`: purchases and custom events of the player (`external_id`).
+    pub const BRAZE: &str = "braze";
+    /// OneSignal Custom Events API: events of the player (`external_id`) for journeys and segments.
+    pub const ONESIGNAL: &str = "onesignal";
 
-    pub const ALL: &[&str] = &[GA4, APPSFLYER, TENJIN, ADJUST, APPMETRICA, AMPLITUDE, MIXPANEL, META, WEBHOOK, GCS];
+    pub const ALL: &[&str] = &[
+        GA4, APPSFLYER, TENJIN, ADJUST, APPMETRICA, AMPLITUDE, MIXPANEL, META, SINGULAR, BRANCH, KOCHAVA, BRAZE, ONESIGNAL, WEBHOOK, GCS, S3,
+    ];
 
     pub fn is_known(k: &str) -> bool {
         ALL.contains(&k)
@@ -115,6 +130,12 @@ pub mod attribution_key {
     pub const AMPLITUDE_DEVICE_ID: &str = "amplitude_device_id";
     /// Facebook SDK anonymous install id (`AppEventsLogger.getAnonymousAppDeviceGUID`), Meta's `anon_id`.
     pub const META_ANON_ID: &str = "meta_anon_id";
+    /// Singular Device ID the Singular SDK reports (`sdid` of Singular's V2 S2S endpoint).
+    pub const SINGULAR_DEVICE_ID: &str = "singular_device_id";
+    /// Android App Set ID (`AppSet.getClient(context).getAppSetIdInfo()`): Singular's `asid`.
+    pub const APP_SET_ID: &str = "app_set_id";
+    /// Kochava SDK device id (`Tracker.getDeviceId()`).
+    pub const KOCHAVA_DEVICE_ID: &str = "kochava_device_id";
 
     /// Advertising identifiers and ad attribution: dropped for child-directed apps.
     pub const ADVERTISING: &[&str] =
@@ -141,6 +162,9 @@ pub mod attribution_key {
         REFUND_DATA_CONSENT,
         AMPLITUDE_DEVICE_ID,
         META_ANON_ID,
+        SINGULAR_DEVICE_ID,
+        APP_SET_ID,
+        KOCHAVA_DEVICE_ID,
     ];
 }
 
@@ -1501,6 +1525,782 @@ pub mod meta {
     }
 }
 
+/// `name=override` of an integration's `event_names`: `Some(None)` disables the kind, `None` keeps
+/// the default.
+fn renamed(names: &BTreeMap<String, String>, kind: &str) -> Option<Option<String>> {
+    names.get(kind).map(|n| if n.is_empty() { None } else { Some(n.clone()) })
+}
+
+/// `event_names` of an integration: known kinds only, names of at most `max` printable ASCII
+/// characters (an empty name disables the kind).
+fn check_event_names(integration: &str, names: &BTreeMap<String, String>, kinds: &[&str], max: usize) -> Result<(), String> {
+    for (k, v) in names {
+        if !kinds.contains(&k.as_str()) {
+            return Err(format!("{integration} settings: event_names: '{k}' is not one of {}", kinds.join(", ")));
+        }
+        if v.len() > max || !v.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+            return Err(format!("{integration} settings: event name for '{k}' must be at most {max} ASCII characters"));
+        }
+    }
+    Ok(())
+}
+
+/// A UUID (version 4 layout) derived from `seed`: the same seed gives the same id, for APIs that
+/// deduplicate by a UUID.
+fn uuid_of(seed: &str) -> String {
+    let mut h: Vec<char> = sha256_hex(seed)[..32].chars().collect();
+    h[12] = '4';
+    h[16] = ['8', '9', 'a', 'b'][h[16].to_digit(16).unwrap_or(0) as usize % 4];
+    let h: String = h.into_iter().collect();
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+}
+
+/// Event properties every messaging / analytics integration gets (strings and numbers only).
+fn event_properties(ev: &OutEvent) -> Map<String, Value> {
+    let mut p = Map::new();
+    p.insert("product_id".into(), json!(ev.product_id));
+    p.insert("product_kind".into(), json!(ev.product_kind));
+    p.insert("store".into(), json!(ev.store));
+    p.insert("environment".into(), json!(ev.environment));
+    p.insert("transaction_id".into(), json!(ev.transaction_id));
+    p.insert("platform".into(), json!(ev.platform));
+    if !ev.previous_product_id.is_empty() {
+        p.insert("previous_product_id".into(), json!(ev.previous_product_id));
+    }
+    p
+}
+
+// ---------------------------------------------------------------------
+// S3-compatible object storage (AWS S3, Cloudflare R2, MinIO, ...)
+// ---------------------------------------------------------------------
+
+pub mod s3 {
+    use super::*;
+    use crate::sigv4;
+
+    pub const DEFAULT_REGION: &str = "us-east-1";
+
+    /// Non-secret settings. The access key is a credential (`s3_access_key`,
+    /// `ACCESS_KEY_ID:SECRET_ACCESS_KEY`); it needs permission to put objects into the bucket.
+    #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+    pub struct Settings {
+        /// `https://host[:port]` of the S3 API: `https://s3.us-east-1.amazonaws.com`,
+        /// `https://<account id>.r2.cloudflarestorage.com`, `https://minio.example.com`.
+        pub endpoint: String,
+        /// Signing region: the bucket's AWS region, `auto` for R2, what MinIO is set to
+        /// (default `us-east-1`).
+        #[serde(default)]
+        pub region: String,
+        pub bucket: String,
+        /// Key prefix inside the bucket, e.g. `billing/events`.
+        #[serde(default)]
+        pub prefix: String,
+        /// Also export sandbox / license-tester purchases (default: no).
+        #[serde(default)]
+        pub send_sandbox: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            let mut s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid S3 settings: {e}"))?;
+            s.endpoint = s.endpoint.trim().trim_end_matches('/').to_string();
+            crate::encoding::check_public_https_url("S3 settings: endpoint", &s.endpoint)?;
+            if s.endpoint["https://".len()..].contains(['/', '?', '#']) {
+                return Err("S3 settings: endpoint is the scheme and host only (https://host[:port]); the bucket is its own field".into());
+            }
+            if s.region.trim().is_empty() {
+                s.region = DEFAULT_REGION.into();
+            }
+            s.region = s.region.trim().to_string();
+            if s.region.len() > 32 || !s.region.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                return Err("S3 settings: region must look like us-east-1 (auto for Cloudflare R2)".into());
+            }
+            let b = &s.bucket;
+            if b.len() < 3
+                || b.len() > 63
+                || !b.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.'))
+                || !b.starts_with(|c: char| c.is_ascii_alphanumeric())
+                || !b.ends_with(|c: char| c.is_ascii_alphanumeric())
+            {
+                return Err("S3 settings: bucket must be a bucket name (3-63 lowercase letters, digits, - .)".into());
+            }
+            s.prefix = s.prefix.trim().trim_matches('/').to_string();
+            if s.prefix.split('/').any(|p| p == ".." || p == ".")
+                || !s.prefix.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '='))
+                || s.prefix.contains("//")
+            {
+                return Err("S3 settings: prefix may contain letters, digits and - _ . = /".into());
+            }
+            Ok(s)
+        }
+
+        /// `host[:port]` of the endpoint as the request sends it (`:443` is left out).
+        pub fn host(&self) -> String {
+            let authority = self.endpoint.trim_start_matches("https://").to_ascii_lowercase();
+            authority.strip_suffix(":443").map(str::to_string).unwrap_or(authority)
+        }
+    }
+
+    /// `ACCESS_KEY_ID:SECRET_ACCESS_KEY` of the credential (the secret key may contain `/` and `+`).
+    pub fn credentials(secret: &str) -> Result<(&str, &str), String> {
+        match secret.trim().split_once(':') {
+            Some((id, key)) if !id.is_empty() && !key.is_empty() => Ok((id, key)),
+            _ => Err("S3 access key must be ACCESS_KEY_ID:SECRET_ACCESS_KEY".into()),
+        }
+    }
+
+    /// The object is the event as one line of JSON, at the same key as the Cloud Storage export
+    /// (`{prefix}/dt=YYYY-MM-DD/{at_ms}-{kind}-{transaction}.json`), uploaded with a path-style
+    /// `PUT {endpoint}/{bucket}/{key}` signed with Signature V4 at `now_ms`. A retry overwrites the
+    /// same object.
+    pub fn build(ev: &OutEvent, settings: &Settings, secret: &str, now_ms: i64) -> Result<Built, String> {
+        if secret.is_empty() {
+            return Err("S3 access key is not configured".into());
+        }
+        let (access_key_id, secret_access_key) = credentials(secret)?;
+        if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
+            return Ok(Built::Skip("sandbox purchase".into()));
+        }
+        let body = ev.payload()? + "\n";
+        let path = format!("/{}/{}", settings.bucket, gcs::object_name(ev, &settings.prefix));
+        let hash = sigv4::payload_hash(body.as_bytes());
+        let date = sigv4::amz_date(now_ms);
+        let host = settings.host();
+        let content_type = "application/json";
+        let signed_headers = [("content-type", content_type), ("x-amz-content-sha256", hash.as_str())];
+        let signer = sigv4::Signer { access_key_id, secret_access_key, region: &settings.region, service: "s3" };
+        let req = sigv4::Request { method: "PUT", host: &host, path: &path, query: &[], headers: &signed_headers, payload_hash: &hash };
+        let signed = sigv4::sign(&signer, &req, &date);
+        Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
+            method: "PUT",
+            url: format!("{}{}", settings.endpoint, sigv4::canonical_uri(&path)),
+            headers: vec![
+                ("Content-Type", content_type.into()),
+                ("x-amz-content-sha256", hash),
+                ("x-amz-date", date),
+                ("Authorization", signed.authorization),
+            ],
+            body,
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------
+// Singular S2S EVENT endpoint
+// ---------------------------------------------------------------------
+
+pub mod singular {
+    use super::*;
+
+    /// With device ids (`aifa` / `asid` / `idfv` ...).
+    pub const API_V1: &str = "https://s2s.singular.net/api/v1/evt";
+    /// With the Singular Device ID (`sdid`) the Singular SDK reports.
+    pub const API_V2: &str = "https://s2s.singular.net/api/v2/evt";
+    /// Kinds whose event name `event_names` may change.
+    pub const NAMED_KINDS: &[&str] = &[
+        event_kind::PURCHASE,
+        event_kind::SUBSCRIPTION_START,
+        event_kind::RENEWAL,
+        event_kind::REFUND,
+        event_kind::EXPIRE,
+        event_kind::CANCEL,
+        event_kind::TEST,
+    ];
+    /// Singular takes event names of at most 32 ASCII characters.
+    pub const MAX_NAME: usize = 32;
+
+    /// Non-secret settings. The SDK key is a credential (`singular_sdk_key`).
+    #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+    pub struct Settings {
+        /// App identifier as Singular knows it (package name / bundle id); empty: the build's app id.
+        #[serde(default)]
+        pub app_id: String,
+        /// Overrides of event names per kind; an empty string disables that kind.
+        #[serde(default)]
+        pub event_names: BTreeMap<String, String>,
+        /// Also report sandbox / license-tester purchases (default: no).
+        #[serde(default)]
+        pub send_sandbox: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            let s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid Singular settings: {e}"))?;
+            if !s.app_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) || s.app_id.len() > 255 {
+                return Err("Singular settings: app_id must be the package name or bundle id".into());
+            }
+            check_event_names("Singular", &s.event_names, NAMED_KINDS, MAX_NAME)?;
+            Ok(s)
+        }
+
+        /// The event name of `ev`; `None`: not sent.
+        pub fn event_name(&self, ev: &OutEvent) -> Option<String> {
+            if let Some(name) = renamed(&self.event_names, &ev.kind) {
+                return name;
+            }
+            // Subscription names of Singular's subscription event guide; `__iap__` is its in-app
+            // purchase revenue event.
+            let name = match ev.kind.as_str() {
+                event_kind::PURCHASE => "__iap__",
+                event_kind::SUBSCRIPTION_START if ev.price_micros > 0 => "sng_subscribe",
+                event_kind::SUBSCRIPTION_START => "sng_start_trial",
+                event_kind::RENEWAL => "subscription_renewed",
+                event_kind::REFUND if ev.product_kind == crate::model::kind::SUBSCRIPTION => "subscription_refunded",
+                event_kind::REFUND => "refund",
+                event_kind::CANCEL => "subscription_cancelled",
+                event_kind::TEST => "purser_test",
+                _ => return None, // expire and the other subscription changes: off by default
+            };
+            Some(name.to_string())
+        }
+    }
+
+    /// One form-encoded event. With `singular_device_id` it goes to the V2 endpoint as `sdid`;
+    /// otherwise to V1 with the device ids (`idfv` and `idfa` on iOS; `asid`, `aifa`, `oaid` on
+    /// Android, `amid` on Amazon). Singular geolocates by the billing country (`use_ip` +
+    /// `country`): the server does not know the device's IP.
+    pub fn build(ev: &OutEvent, settings: &Settings, sdk_key: &str) -> Result<Built, String> {
+        if sdk_key.is_empty() {
+            return Err("Singular SDK key is not configured".into());
+        }
+        if let Some(skip) = ev.skip_unless_mobile("Singular") {
+            return Ok(skip);
+        }
+        if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
+            return Ok(Built::Skip("sandbox purchase".into()));
+        }
+        let Some(name) = settings.event_name(ev) else {
+            return Ok(Built::Skip(format!("Singular event for '{}' is disabled", ev.kind)));
+        };
+        let ios = ev.os() == Some("ios");
+        let attr = |k: &str| ev.attribution.get(k).cloned();
+        let mut ids: Vec<(&str, String)> = Vec::new();
+        let url = if let Some(sdid) = attr(attribution_key::SINGULAR_DEVICE_ID) {
+            ids.push(("sdid", sdid));
+            API_V2
+        } else {
+            let keys: &[(&str, &str)] = if ios {
+                &[("idfv", attribution_key::IDFV), ("idfa", attribution_key::IDFA)]
+            } else if ev.platform == crate::registry::platform::AMAZON {
+                &[("amid", attribution_key::ADVERTISING_ID)]
+            } else {
+                &[("asid", attribution_key::APP_SET_ID), ("aifa", attribution_key::ADVERTISING_ID), ("oaid", attribution_key::OAID)]
+            };
+            ids.extend(keys.iter().filter_map(|(param, key)| attr(key).map(|v| (*param, v))));
+            // iOS needs the IDFV on every request.
+            if ids.is_empty() || (ios && attr(attribution_key::IDFV).is_none()) {
+                let needed = if ios { "idfv" } else { "app_set_id or advertising_id" };
+                return Ok(Built::Skip(format!("{MISSING_CLIENT_ID} singular_device_id or {needed}")));
+            }
+            API_V1
+        };
+        let Some(os_version) = attr(attribution_key::OS_VERSION) else {
+            return Ok(Built::Skip(format!("{MISSING_CLIENT_ID} os_version (Singular requires it)")));
+        };
+        if ev.country.is_empty() {
+            return Ok(Built::Skip("no billing country: Singular needs it to place an event without the device's IP".into()));
+        }
+        let app_id = if settings.app_id.is_empty() { ev.app_id.clone() } else { settings.app_id.clone() };
+        let mut params: Vec<(&str, String)> = vec![
+            ("a", sdk_key.to_string()),
+            ("p", if ios { "iOS" } else { "Android" }.into()),
+            ("i", app_id),
+        ];
+        params.extend(ids);
+        params.push(("use_ip", "true".into()));
+        params.push(("country", ev.country.clone()));
+        params.push(("ve", os_version));
+        if let Some(v) = attr(attribution_key::APP_VERSION) {
+            params.push(("app_v", v));
+        }
+        if ios {
+            // 3 authorized, 2 denied, 0 not determined (or no prompt).
+            let att = match ev.attribution.get(attribution_key::ATT).map(String::as_str) {
+                Some("true") => "3",
+                Some(_) => "2",
+                None => "0",
+            };
+            params.push(("att_authorization_status", att.into()));
+        }
+        params.push(("n", name));
+        params.push(("utime", (ev.at_ms / 1000).to_string()));
+        if !ev.user_id.is_empty() {
+            params.push(("custom_user_id", ev.user_id.clone()));
+        }
+        // Refunds carry the refunded amount negated.
+        let revenue = ev.revenue();
+        if revenue != 0.0 {
+            params.push(("is_revenue_event", "true".into()));
+            params.push(("amt", format!("{revenue}")));
+            params.push(("cur", ev.currency_or_usd().to_string()));
+            params.push(("purchase_product_id", ev.product_id.clone()));
+            params.push(("purchase_transaction_id", ev.transaction_id.clone()));
+        }
+        let mut attributes = event_properties(ev);
+        attributes.insert("billing_event".into(), json!(ev.kind));
+        params.push(("e", Value::Object(attributes).to_string()));
+        Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
+            method: "POST",
+            url: url.to_string(),
+            headers: vec![("Content-Type", "application/x-www-form-urlencoded".into())],
+            body: form_urlencode(&params),
+        }))
+    }
+
+    /// Singular answers HTTP 200 with `{"status": "error", "reason": ...}` for a refused event:
+    /// `Some((retryable, text))`. Reasons with "invalid", "missing" or "should have" are final.
+    pub fn response_error(body: &str) -> Option<(bool, String)> {
+        let v: Value = serde_json::from_str(body).ok()?;
+        if v.get("status").and_then(Value::as_str) != Some("error") {
+            return None;
+        }
+        let reason: String = v.get("reason").and_then(Value::as_str).unwrap_or("").chars().take(200).collect();
+        let final_ = ["invalid", "missing", "should have", "no device"].iter().any(|w| reason.to_ascii_lowercase().contains(w));
+        Some((!final_, format!("Singular refused the event: {reason}")))
+    }
+}
+
+// ---------------------------------------------------------------------
+// Branch v2 Event API
+// ---------------------------------------------------------------------
+
+pub mod branch {
+    use super::*;
+
+    pub const STANDARD_API: &str = "https://api2.branch.io/v2/event/standard";
+    pub const CUSTOM_API: &str = "https://api2.branch.io/v2/event/custom";
+
+    /// Non-secret settings. The Branch key (`key_live_...`) is a credential (`branch_key`).
+    #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+    pub struct Settings {
+        /// Also report sandbox / license-tester purchases (default: no).
+        #[serde(default)]
+        pub send_sandbox: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            serde_json::from_str(if json.trim().is_empty() { "{}" } else { json }).map_err(|e| format!("invalid Branch settings: {e}"))
+        }
+    }
+
+    /// The standard event of a billing event (`PURCHASE` counts revenue in Branch's reports), or
+    /// the name of a custom event; `None`: not sent.
+    pub fn event(ev: &OutEvent) -> Option<(bool, &'static str)> {
+        Some(match ev.kind.as_str() {
+            event_kind::PURCHASE | event_kind::RENEWAL => (true, "PURCHASE"),
+            event_kind::SUBSCRIPTION_START if ev.price_micros > 0 => (true, "PURCHASE"),
+            event_kind::SUBSCRIPTION_START => (true, "START_TRIAL"),
+            // Branch has no refund event and takes no negative revenue.
+            event_kind::REFUND => (false, "purser_refund"),
+            event_kind::EXPIRE => (false, "purser_expire"),
+            event_kind::TEST => (false, "purser_test"),
+            _ => return None,
+        })
+    }
+
+    /// `user_data` carries the OS, the device ids and `developer_identity` = the billing user id;
+    /// purchases, renewals and paid subscription starts are `PURCHASE` with revenue (the kind in
+    /// `customer_event_alias`), free trials `START_TRIAL`, refunds and expirations custom events.
+    pub fn build(ev: &OutEvent, settings: &Settings, branch_key: &str) -> Result<Built, String> {
+        if branch_key.is_empty() {
+            return Err("Branch key is not configured".into());
+        }
+        if let Some(skip) = ev.skip_unless_mobile("Branch") {
+            return Ok(skip);
+        }
+        if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
+            return Ok(Built::Skip("sandbox purchase".into()));
+        }
+        let Some((standard, name)) = event(ev) else {
+            return Ok(Built::Skip(format!("Branch does not take '{}'", ev.kind)));
+        };
+        let ios = ev.os() == Some("ios");
+        let attr = |k: &str| ev.attribution.get(k);
+        let mut user = json!({ "os": if ios { "iOS" } else { "Android" }, "environment": "FULL_APP" });
+        if !ev.user_id.is_empty() {
+            user["developer_identity"] = json!(ev.user_id);
+        }
+        let ids: &[(&str, &str)] =
+            if ios { &[("idfa", attribution_key::IDFA), ("idfv", attribution_key::IDFV)] } else { &[("aaid", attribution_key::ADVERTISING_ID)] };
+        let mut device = false;
+        for (field, key) in ids {
+            if let Some(v) = attr(key) {
+                user[*field] = json!(v);
+                device = true;
+            }
+        }
+        if !ios {
+            if let Some(oaid) = attr(attribution_key::OAID) {
+                user["advertising_ids"] = json!({ "oaid": oaid });
+                device = true;
+            }
+        }
+        if !device {
+            let needed = if ios { "idfv or idfa" } else { "advertising_id or oaid" };
+            return Ok(Built::Skip(format!("{MISSING_CLIENT_ID} {needed} (Branch attributes by device id)")));
+        }
+        if ios {
+            if let Some(att) = attr(attribution_key::ATT) {
+                user["limit_ad_tracking"] = json!(att != "true");
+            }
+        }
+        if let Some(v) = attr(attribution_key::OS_VERSION) {
+            user["os_version"] = json!(v);
+        }
+        if let Some(v) = attr(attribution_key::APP_VERSION) {
+            user["app_version"] = json!(v);
+        }
+        let mut custom: Map<String, Value> =
+            event_properties(ev).into_iter().map(|(k, v)| (k, json!(v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))).collect();
+        custom.insert("billing_event".into(), json!(ev.kind));
+        let mut body = json!({ "branch_key": branch_key, "name": name, "user_data": user });
+        let revenue = ev.revenue();
+        if standard {
+            body["customer_event_alias"] = json!(ev.kind);
+            let mut data = json!({ "transaction_id": ev.transaction_id, "currency": ev.currency_or_usd(), "description": ev.kind });
+            if revenue > 0.0 {
+                data["revenue"] = json!(revenue);
+            }
+            body["event_data"] = data;
+            body["content_items"] = json!([{
+                "$content_schema": "COMMERCE_PRODUCT",
+                "$sku": ev.product_id,
+                "$product_name": ev.product_id,
+                "$price": revenue.max(0.0) / ev.units() as f64,
+                "$quantity": ev.units(),
+            }]);
+        } else {
+            body["event_data"] = json!({ "transaction_id": ev.transaction_id, "description": ev.kind });
+            if revenue < 0.0 {
+                custom.insert("refund_amount".into(), json!(crate::money::to_decimal(ev.price_micros)));
+                custom.insert("refund_currency".into(), json!(ev.currency_or_usd()));
+            }
+        }
+        body["custom_data"] = Value::Object(custom);
+        Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
+            method: "POST",
+            url: if standard { STANDARD_API } else { CUSTOM_API }.to_string(),
+            headers: vec![("Content-Type", "application/json".into()), ("Accept", "application/json".into())],
+            body: body.to_string(),
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------
+// Kochava server-to-server post-install events
+// ---------------------------------------------------------------------
+
+pub mod kochava {
+    use super::*;
+
+    pub const API: &str = "https://control.kochava.com/track/json";
+    pub const NAMED_KINDS: &[&str] =
+        &[event_kind::PURCHASE, event_kind::SUBSCRIPTION_START, event_kind::RENEWAL, event_kind::REFUND, event_kind::EXPIRE, event_kind::TEST];
+
+    /// Non-secret settings. The App GUID is a credential (`kochava_app_guid`): it is what lets a
+    /// caller post events to the app.
+    #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+    pub struct Settings {
+        /// Overrides of event names per kind; an empty string disables that kind.
+        #[serde(default)]
+        pub event_names: BTreeMap<String, String>,
+        /// Also report sandbox / license-tester purchases (default: no).
+        #[serde(default)]
+        pub send_sandbox: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            let s: Settings = serde_json::from_str(if json.trim().is_empty() { "{}" } else { json })
+                .map_err(|e| format!("invalid Kochava settings: {e}"))?;
+            check_event_names("Kochava", &s.event_names, NAMED_KINDS, 100)?;
+            Ok(s)
+        }
+
+        pub fn event_name(&self, ev: &OutEvent) -> Option<String> {
+            if let Some(name) = renamed(&self.event_names, &ev.kind) {
+                return name;
+            }
+            let name = match ev.kind.as_str() {
+                event_kind::PURCHASE => "Purchase",
+                event_kind::SUBSCRIPTION_START if ev.price_micros > 0 => "Subscribe",
+                event_kind::SUBSCRIPTION_START => "Start Trial",
+                event_kind::RENEWAL => "Renewal",
+                event_kind::REFUND => "Refund",
+                event_kind::TEST => "purser_test",
+                _ => return None, // expire: off by default
+            };
+            Some(name.to_string())
+        }
+    }
+
+    /// One `action: event` post. The device is `kochava_device_id` (the Kochava SDK's id) and the
+    /// ids in `device_ids` (`idfa`, `idfv` / `adid`); revenue goes in `event_data.sum` with
+    /// `data.currency`. The server knows neither the device's user agent nor its model: it sends an
+    /// empty `device_ua` with `User-Agent: Unknown` and `device_ver` `unknown-<OS>-<version>`.
+    pub fn build(ev: &OutEvent, settings: &Settings, app_guid: &str) -> Result<Built, String> {
+        if app_guid.is_empty() {
+            return Err("Kochava App GUID is not configured".into());
+        }
+        if let Some(skip) = ev.skip_unless_mobile("Kochava") {
+            return Ok(skip);
+        }
+        if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
+            return Ok(Built::Skip("sandbox purchase".into()));
+        }
+        let Some(name) = settings.event_name(ev) else {
+            return Ok(Built::Skip(format!("Kochava event for '{}' is disabled", ev.kind)));
+        };
+        let ios = ev.os() == Some("ios");
+        let attr = |k: &str| ev.attribution.get(k);
+        let keys: &[(&str, &str)] =
+            if ios { &[("idfa", attribution_key::IDFA), ("idfv", attribution_key::IDFV)] } else { &[("adid", attribution_key::ADVERTISING_ID)] };
+        let device_ids: Map<String, Value> = keys.iter().filter_map(|(field, key)| attr(key).map(|v| (field.to_string(), json!(v)))).collect();
+        let kochava_device_id = attr(attribution_key::KOCHAVA_DEVICE_ID).cloned().unwrap_or_default();
+        if kochava_device_id.is_empty() && device_ids.is_empty() {
+            let needed = if ios { "idfa / idfv" } else { "advertising_id" };
+            return Ok(Built::Skip(format!("{MISSING_CLIENT_ID} kochava_device_id or {needed}")));
+        }
+        let os = if ios { "iOS" } else { "Android" };
+        let mut event_data = event_properties(ev);
+        event_data.insert("id".into(), json!(ev.transaction_id));
+        event_data.insert("name".into(), json!(ev.product_id));
+        event_data.insert("quantity".into(), json!(ev.units()));
+        let revenue = ev.revenue();
+        if revenue > 0.0 {
+            event_data.insert("sum".into(), json!(revenue));
+        } else if revenue < 0.0 {
+            // Negative sums are not documented: the refunded amount goes on its own.
+            event_data.insert("refund_amount".into(), json!(-revenue));
+        }
+        let mut data = json!({
+            "usertime": ev.at_ms / 1000,
+            "device_ids": device_ids,
+            "device_ua": "",
+            "device_ver": attr(attribution_key::OS_VERSION).map(|v| format!("unknown-{os}-{v}")).unwrap_or_default(),
+            "event_name": name,
+            "currency": ev.currency_or_usd(),
+            "event_data": event_data,
+        });
+        if let Some(v) = attr(attribution_key::APP_VERSION) {
+            data["app_version"] = json!(v);
+        }
+        if ios {
+            if let Some(att) = attr(attribution_key::ATT) {
+                data["app_tracking_transparency"] = json!({ "att": att == "true" });
+            }
+        }
+        let body = json!({
+            "action": "event",
+            "kochava_app_id": app_guid,
+            "kochava_device_id": kochava_device_id,
+            "data": data,
+        });
+        Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
+            method: "POST",
+            url: API.to_string(),
+            headers: vec![("Content-Type", "application/json".into()), ("User-Agent", "Unknown".into())],
+            body: body.to_string(),
+        }))
+    }
+}
+
+// ---------------------------------------------------------------------
+// Braze /users/track
+// ---------------------------------------------------------------------
+
+pub mod braze {
+    use super::*;
+
+    /// Braze counts at most this many units in one purchase object.
+    pub const MAX_QUANTITY: u32 = 100;
+
+    /// Non-secret settings. The REST API key (with the `users.track` permission) is a credential
+    /// (`braze_rest_api_key`).
+    #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+    pub struct Settings {
+        /// REST endpoint of the workspace's instance, e.g. `https://rest.iad-01.braze.com`.
+        pub endpoint: String,
+        /// Optional App Identifier (Settings → APIs and Identifiers) the purchases belong to.
+        #[serde(default)]
+        pub app_id: String,
+        /// Also report sandbox / license-tester purchases (default: no).
+        #[serde(default)]
+        pub send_sandbox: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            let mut s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid Braze settings: {e}"))?;
+            s.endpoint = s.endpoint.trim().trim_end_matches('/').to_string();
+            let host = s.endpoint.strip_prefix("https://").unwrap_or("");
+            let valid_host = host.starts_with("rest.")
+                && (host.ends_with(".braze.com") || host.ends_with(".braze.eu"))
+                && host.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-'));
+            if !valid_host {
+                return Err("Braze settings: endpoint must be the REST endpoint of your instance, e.g. https://rest.iad-01.braze.com".into());
+            }
+            s.app_id = s.app_id.trim().to_string();
+            if s.app_id.len() > 64 || !s.app_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return Err("Braze settings: app_id must be an App Identifier (letters, digits, -)".into());
+            }
+            Ok(s)
+        }
+
+        pub fn url(&self) -> String {
+            format!("{}/users/track", self.endpoint)
+        }
+    }
+
+    /// Money events with a price (purchases, subscription payments, refunds with a negative price)
+    /// are `purchases` of the billing user (`external_id`); everything else (free trials,
+    /// expirations, subscription changes, the test) is a custom event `purser_<kind>`.
+    pub fn build(ev: &OutEvent, settings: &Settings, api_key: &str) -> Result<Built, String> {
+        if api_key.is_empty() {
+            return Err("Braze REST API key is not configured".into());
+        }
+        if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
+            return Ok(Built::Skip("sandbox purchase".into()));
+        }
+        if ev.user_id.is_empty() {
+            return Ok(Built::Skip("the event has no user id (Braze external_id)".into()));
+        }
+        let time = crate::time::format_rfc3339(ev.at_ms);
+        let mut properties = event_properties(ev);
+        properties.insert("billing_event".into(), json!(ev.kind));
+        let revenue = ev.revenue();
+        let mut item = json!({ "external_id": ev.user_id, "time": time, "properties": properties });
+        if !settings.app_id.is_empty() {
+            item["app_id"] = json!(settings.app_id);
+        }
+        let body = if is_money_kind(&ev.kind) && revenue != 0.0 {
+            // Braze multiplies the price by the quantity (at most 100).
+            let (price, quantity) =
+                if ev.units() <= MAX_QUANTITY { (revenue / ev.units() as f64, ev.units()) } else { (revenue, 1) };
+            item["product_id"] = json!(ev.product_id);
+            item["currency"] = json!(ev.currency_or_usd());
+            item["price"] = json!(price);
+            item["quantity"] = json!(quantity);
+            json!({ "purchases": [item] })
+        } else {
+            item["name"] = json!(format!("purser_{}", ev.kind));
+            json!({ "events": [item] })
+        };
+        Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
+            method: "POST",
+            url: settings.url(),
+            headers: vec![("Authorization", format!("Bearer {api_key}")), ("Content-Type", "application/json".into())],
+            body: body.to_string(),
+        }))
+    }
+
+    /// Braze answers 201 with `errors` for objects it refused (the rest of the request is taken).
+    pub fn response_error(body: &str) -> Option<(bool, String)> {
+        let v: Value = serde_json::from_str(body).ok()?;
+        let errors = v.get("errors")?.as_array().filter(|e| !e.is_empty())?;
+        let first = errors[0].get("type").and_then(Value::as_str).unwrap_or("").chars().take(200).collect::<String>();
+        Some((false, format!("Braze refused the event: {first}")))
+    }
+}
+
+// ---------------------------------------------------------------------
+// OneSignal Custom Events API
+// ---------------------------------------------------------------------
+
+pub mod onesignal {
+    use super::*;
+
+    pub const API: &str = "https://api.onesignal.com/apps";
+
+    /// Non-secret settings. The App API key is a credential (`onesignal_api_key`).
+    #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
+    pub struct Settings {
+        /// OneSignal App ID (Settings → Keys & IDs), a UUID.
+        pub app_id: String,
+        /// Also report sandbox / license-tester purchases (default: no).
+        #[serde(default)]
+        pub send_sandbox: bool,
+    }
+
+    impl Settings {
+        pub fn parse(json: &str) -> Result<Self, String> {
+            let mut s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid OneSignal settings: {e}"))?;
+            s.app_id = s.app_id.trim().to_ascii_lowercase();
+            let parts: Vec<&str> = s.app_id.split('-').collect();
+            let uuid = parts.iter().map(|p| p.len()).eq([8, 4, 4, 4, 12]) && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_hexdigit()));
+            if !uuid {
+                return Err("OneSignal settings: app_id must be the App ID (a UUID) from Settings → Keys & IDs".into());
+            }
+            Ok(s)
+        }
+
+        pub fn url(&self) -> String {
+            format!("{API}/{}/custom_events", self.app_id)
+        }
+    }
+
+    /// One custom event `purser_<kind>` for `external_id` = the billing user id, with the product,
+    /// the signed revenue and its currency in `properties` and an `idempotency_key` that is the same
+    /// on every retry.
+    pub fn build(ev: &OutEvent, settings: &Settings, api_key: &str) -> Result<Built, String> {
+        if api_key.is_empty() {
+            return Err("OneSignal API key is not configured".into());
+        }
+        if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
+            return Ok(Built::Skip("sandbox purchase".into()));
+        }
+        if ev.user_id.is_empty() {
+            return Ok(Built::Skip("the event has no user id (OneSignal external_id)".into()));
+        }
+        let mut properties = event_properties(ev);
+        if is_money_kind(&ev.kind) {
+            properties.insert("revenue".into(), json!(ev.revenue()));
+            properties.insert("currency".into(), json!(ev.currency_or_usd()));
+            properties.insert("quantity".into(), json!(ev.units()));
+        }
+        let event = json!({
+            "name": format!("purser_{}", ev.kind),
+            "external_id": ev.user_id,
+            "timestamp": crate::time::format_rfc3339(ev.at_ms),
+            "idempotency_key": uuid_of(&dedup_id(ev)),
+            "properties": properties,
+        });
+        Ok(Built::Send(HttpCall {
+            sign_with: String::new(),
+            method: "POST",
+            url: settings.url(),
+            headers: vec![("Authorization", format!("Key {api_key}")), ("Content-Type", "application/json".into())],
+            body: json!({ "events": [event] }).to_string(),
+        }))
+    }
+
+    /// OneSignal answers 202 with `errors` listing the events it refused.
+    pub fn response_error(body: &str) -> Option<(bool, String)> {
+        let v: Value = serde_json::from_str(body).ok()?;
+        let errors = v.get("errors")?.as_array().filter(|e| !e.is_empty())?;
+        let e = &errors[0]["error"];
+        let text = [e["code"].as_str(), e["title"].as_str()].into_iter().flatten().collect::<Vec<_>>().join(": ");
+        Some((false, format!("OneSignal refused the event: {}", text.chars().take(200).collect::<String>())))
+    }
+}
+
+/// An error a 2xx answer of an integration reports in its body (Singular, Braze, OneSignal):
+/// `Some((retryable, text))`.
+pub fn response_error(kind: &str, body: &str) -> Option<(bool, String)> {
+    match kind {
+        integration_kind::SINGULAR => singular::response_error(body),
+        integration_kind::BRAZE => braze::response_error(body),
+        integration_kind::ONESIGNAL => onesignal::response_error(body),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1662,7 +2462,9 @@ mod tests {
         assert!(webhook::Settings::parse(r#"{"url":"http://x.example"}"#).is_err());
         assert!(webhook::Settings::parse(r#"{"url":"https://x.example/hook"}"#).is_ok());
         assert!(integration_kind::is_known("tenjin") && !integration_kind::is_known("segment"));
-        assert!(["adjust", "appmetrica", "gcs", "amplitude", "mixpanel", "meta"].iter().all(|k| integration_kind::is_known(k)));
+        assert!(["adjust", "appmetrica", "gcs", "amplitude", "mixpanel", "meta", "s3", "singular", "branch", "kochava", "braze", "onesignal"]
+            .iter()
+            .all(|k| integration_kind::is_known(k)));
     }
 
     #[test]
@@ -2159,6 +2961,363 @@ mod tests {
         assert!(meta::Settings::parse(r#"{"dataset_id":"1","graph_version":"v23"}"#).is_err());
         assert!(meta::Settings::parse(r#"{"dataset_id":"1","test_event_code":"a b"}"#).is_err());
         assert_eq!(meta::Settings::parse(r#"{"dataset_id":"1","graph_version":""}"#).unwrap().graph_version, "v23.0");
+    }
+
+    fn s3_settings() -> s3::Settings {
+        s3::Settings::parse(r#"{"endpoint":"https://s3.eu-west-1.amazonaws.com/","region":"eu-west-1","bucket":"my-billing-events","prefix":"/billing/events/"}"#).unwrap()
+    }
+
+    const S3_KEY: &str = "AKIDEXAMPLE:wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+
+    #[test]
+    fn s3_puts_one_signed_object_per_event() {
+        let s = s3_settings();
+        assert_eq!((s.endpoint.as_str(), s.prefix.as_str(), s.host()), ("https://s3.eu-west-1.amazonaws.com", "billing/events", "s3.eu-west-1.amazonaws.com".into()));
+        let ev = event("purchase", "android");
+        let call = send(s3::build(&ev, &s, S3_KEY, NOW_MS).unwrap());
+        assert_eq!(call.method, "PUT");
+        assert_eq!(
+            call.url,
+            "https://s3.eu-west-1.amazonaws.com/my-billing-events/billing/events/dt%3D2026-10-05/1791198123123-purchase-GPA.1.json",
+            "path style, the same key as the Cloud Storage export"
+        );
+        assert!(call.body.ends_with('\n') && call.body.matches('\n').count() == 1, "one NDJSON line");
+        assert_eq!(serde_json::from_str::<Value>(call.body.trim()).unwrap()["gross_micros"], 4_990_000);
+        let header = |name: &str| call.headers.iter().find(|(k, _)| *k == name).map(|(_, v)| v.clone()).unwrap();
+        let hash = header("x-amz-content-sha256");
+        assert_eq!(hash, crate::sigv4::payload_hash(call.body.as_bytes()));
+        assert_eq!(header("x-amz-date"), "20261005T110320Z");
+        let auth = header("Authorization");
+        assert!(
+            auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261005/eu-west-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature="),
+            "{auth}"
+        );
+        assert!(!auth.contains("wJalrXUtnFEMI") && !call.url.contains("wJalrXUtnFEMI"), "the secret key only signs");
+        // The signature is the one the signer computes for the same request.
+        let path = "/my-billing-events/billing/events/dt=2026-10-05/1791198123123-purchase-GPA.1.json";
+        let headers = [("content-type", "application/json"), ("x-amz-content-sha256", hash.as_str())];
+        let signer = crate::sigv4::Signer {
+            access_key_id: "AKIDEXAMPLE",
+            secret_access_key: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+            region: "eu-west-1",
+            service: "s3",
+        };
+        let req = crate::sigv4::Request { method: "PUT", host: "s3.eu-west-1.amazonaws.com", path, query: &[], headers: &headers, payload_hash: &hash };
+        assert_eq!(auth, crate::sigv4::sign(&signer, &req, "20261005T110320Z").authorization);
+    }
+
+    #[test]
+    fn s3_settings_and_skips() {
+        let r2 = s3::Settings::parse(r#"{"endpoint":"https://0123abcd.r2.cloudflarestorage.com","region":"auto","bucket":"events"}"#).unwrap();
+        assert!(send(s3::build(&event("refund", "web"), &r2, "id:key", NOW_MS).unwrap()).url.starts_with("https://0123abcd.r2.cloudflarestorage.com/events/dt%3D"));
+        let minio = s3::Settings::parse(r#"{"endpoint":"https://minio.example.com:9000","bucket":"events"}"#).unwrap();
+        assert_eq!((minio.region.as_str(), minio.host()), ("us-east-1", "minio.example.com:9000".to_string()));
+        assert_eq!(s3::Settings::parse(r#"{"endpoint":"https://s3.example.com:443","bucket":"events"}"#).unwrap().host(), "s3.example.com");
+        for bad in [
+            r#"{"endpoint":"http://s3.example.com","bucket":"events"}"#,
+            r#"{"endpoint":"https://s3.example.com/events","bucket":"events"}"#,
+            r#"{"endpoint":"https://127.0.0.1","bucket":"events"}"#,
+            r#"{"endpoint":"https://s3.example.com","bucket":"Bad_Bucket"}"#,
+            r#"{"endpoint":"https://s3.example.com","bucket":"events","prefix":"../x"}"#,
+            r#"{"endpoint":"https://s3.example.com","bucket":"events","region":"EU West"}"#,
+        ] {
+            assert!(s3::Settings::parse(bad).is_err(), "{bad}");
+        }
+        let s = s3_settings();
+        assert!(matches!(s3::build(&sandbox(event("purchase", "ios")), &s, S3_KEY, NOW_MS).unwrap(), Built::Skip(_)));
+        assert!(matches!(s3::build(&sandbox(event("test", "ios")), &s, S3_KEY, NOW_MS).unwrap(), Built::Send(_)));
+        assert!(matches!(s3::build(&event("billing_issue", "ios"), &s, S3_KEY, NOW_MS).unwrap(), Built::Send(_)), "the export takes every event");
+        assert!(s3::build(&event("purchase", "ios"), &s, "", NOW_MS).is_err());
+        let err = s3::build(&event("purchase", "ios"), &s, "only-a-secret", NOW_MS).unwrap_err();
+        assert!(err.contains("ACCESS_KEY_ID:SECRET_ACCESS_KEY") && !err.contains("only-a-secret"), "{err}");
+    }
+
+    fn singular_event(kind: &str, platform: &str) -> OutEvent {
+        let mut ev = event(kind, platform);
+        ev.attribution.insert(attribution_key::OS_VERSION.into(), "14".into());
+        ev.attribution.insert(attribution_key::APP_SET_ID.into(), "edee92a2-7b2f-45f4-a509-840f170fc6d9".into());
+        ev.country = "DE".into();
+        ev
+    }
+
+    #[test]
+    fn singular_v1_revenue_event() {
+        let s = singular::Settings::parse("{}").unwrap();
+        let call = send(singular::build(&singular_event("purchase", "android"), &s, "SDKKEY").unwrap());
+        assert_eq!(call.url, singular::API_V1);
+        let p: BTreeMap<String, String> = call.body.split('&').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.into(), percent_decode(v))).collect();
+        assert_eq!((p["a"].as_str(), p["p"].as_str(), p["i"].as_str()), ("SDKKEY", "Android", "com.test.game"));
+        assert_eq!((p["asid"].as_str(), p["aifa"].as_str()), ("edee92a2-7b2f-45f4-a509-840f170fc6d9", "9c9a82fb-d5de-4cd1-90c3-527441c11828"));
+        assert_eq!((p["use_ip"].as_str(), p["country"].as_str(), p["ve"].as_str()), ("true", "DE", "14"));
+        assert!(!p.contains_key("ip"), "use_ip and ip are never sent together");
+        assert_eq!((p["n"].as_str(), p["utime"].as_str()), ("__iap__", "1791198123"));
+        assert_eq!((p["is_revenue_event"].as_str(), p["amt"].as_str(), p["cur"].as_str()), ("true", "4.99", "EUR"));
+        assert_eq!((p["purchase_product_id"].as_str(), p["purchase_transaction_id"].as_str()), ("diamonds_150", "GPA.1"));
+        assert_eq!(p["custom_user_id"].len(), 64);
+        let e: Value = serde_json::from_str(&p["e"]).unwrap();
+        assert_eq!((e["store"].as_str(), e["billing_event"].as_str()), (Some("google"), Some("purchase")));
+
+        let mut sub = singular_event("refund", "ios");
+        sub.product_kind = "subscription".into();
+        let p = form(&send(singular::build(&sub, &s, "K").unwrap()).body);
+        assert_eq!((p["p"].as_str(), p["n"].as_str(), p["amt"].as_str()), ("iOS", "subscription_refunded", "-4.99"));
+        assert_eq!((p["idfv"].as_str(), p["att_authorization_status"].as_str()), ("A1B2C3D4-0000-1111-2222-333344445555", "3"));
+        assert!(!p.contains_key("asid"), "Android ids are not sent for iOS");
+    }
+
+    #[test]
+    fn singular_v2_names_and_skips() {
+        let s = singular::Settings::parse(r#"{"app_id":"com.test.game","event_names":{"renewal":"sub_renew","purchase":""}}"#).unwrap();
+        let mut ev = singular_event("renewal", "android");
+        ev.attribution.insert(attribution_key::SINGULAR_DEVICE_ID.into(), "3d2d9a5c-1f1e-4c4b-9b8d-0a1b2c3d4e5f".into());
+        let call = send(singular::build(&ev, &s, "K").unwrap());
+        assert_eq!(call.url, singular::API_V2);
+        let p = form(&call.body);
+        assert_eq!((p["sdid"].as_str(), p["n"].as_str()), ("3d2d9a5c-1f1e-4c4b-9b8d-0a1b2c3d4e5f", "sub_renew"));
+        assert!(!p.contains_key("aifa") && !p.contains_key("asid"), "the SDID replaces the device ids");
+        assert!(matches!(singular::build(&singular_event("purchase", "android"), &s, "K").unwrap(), Built::Skip(_)), "disabled");
+
+        let d = singular::Settings::default();
+        let name = |ev: &OutEvent| match singular::build(ev, &d, "K").unwrap() {
+            Built::Send(c) => form(&c.body)["n"].clone(),
+            Built::Skip(r) => format!("skip: {r}"),
+        };
+        assert_eq!(name(&singular_event("subscription_start", "android")), "sng_subscribe");
+        let mut trial = singular_event("subscription_start", "android");
+        trial.price_micros = 0;
+        assert_eq!(name(&trial), "sng_start_trial");
+        assert_eq!(name(&singular_event("cancel", "android")), "subscription_cancelled");
+        assert!(!send(singular::build(&singular_event("cancel", "android"), &d, "K").unwrap()).body.contains("amt="), "no revenue");
+        assert!(name(&singular_event("expire", "android")).starts_with("skip"));
+        assert!(name(&singular_event("billing_issue", "android")).starts_with("skip"));
+        assert!(name(&singular_event("purchase", "web")).contains("mobile"));
+        assert!(name(&sandbox(singular_event("purchase", "android"))).contains("sandbox"));
+        let mut no_os = singular_event("purchase", "android");
+        no_os.attribution.remove(attribution_key::OS_VERSION);
+        assert!(matches!(singular::build(&no_os, &d, "K").unwrap(), Built::Skip(r) if is_missing_client_id(&r)));
+        let mut no_ids = singular_event("purchase", "android");
+        no_ids.attribution.clear();
+        no_ids.attribution.insert(attribution_key::OS_VERSION.into(), "14".into());
+        assert!(matches!(singular::build(&no_ids, &d, "K").unwrap(), Built::Skip(r) if is_missing_client_id(&r)));
+        let mut ios_without_idfv = singular_event("purchase", "ios");
+        ios_without_idfv.attribution.remove(attribution_key::IDFV);
+        assert!(matches!(singular::build(&ios_without_idfv, &d, "K").unwrap(), Built::Skip(r) if r.contains("idfv")));
+        let mut no_country = singular_event("purchase", "android");
+        no_country.country.clear();
+        assert!(name(&no_country).contains("country"));
+        let mut amazon = singular_event("purchase", "amazon");
+        amazon.attribution.remove(attribution_key::APP_SET_ID);
+        assert_eq!(form(&send(singular::build(&amazon, &d, "K").unwrap()).body)["amid"], "9c9a82fb-d5de-4cd1-90c3-527441c11828");
+
+        assert!(singular::build(&singular_event("purchase", "android"), &d, "").is_err());
+        assert!(singular::Settings::parse(r#"{"event_names":{"pause":"x"}}"#).unwrap_err().contains("pause"));
+        assert!(singular::Settings::parse(r#"{"event_names":{"purchase":"a_name_that_is_longer_than_32_chars"}}"#).is_err());
+        assert!(singular::Settings::parse(r#"{"app_id":"bad/id"}"#).is_err());
+    }
+
+    #[test]
+    fn singular_reports_errors_in_a_200_answer() {
+        assert_eq!(singular::response_error(r#"{"status":"ok"}"#), None);
+        assert_eq!(response_error("singular", "not json"), None);
+        let (retry, text) = singular::response_error(r#"{"status":"error","reason":"missing argument: ve"}"#).unwrap();
+        assert!(!retry && text.contains("missing argument: ve"));
+        assert!(singular::response_error(r#"{"status":"error","reason":"temporarily unavailable"}"#).unwrap().0);
+        assert_eq!(response_error("mixpanel", r#"{"status":"error"}"#), None, "only for integrations that answer 2xx with errors");
+    }
+
+    #[test]
+    fn branch_purchase_is_a_standard_event_with_revenue() {
+        let s = branch::Settings::parse("").unwrap();
+        let mut ev = event("renewal", "android");
+        ev.attribution.insert(attribution_key::OS_VERSION.into(), "14".into());
+        ev.attribution.insert(attribution_key::OAID.into(), "oaid-1".into());
+        let call = send(branch::build(&ev, &s, "key_live_abc").unwrap());
+        assert_eq!(call.url, branch::STANDARD_API);
+        let body = json_body(&call);
+        assert_eq!((body["branch_key"].as_str(), body["name"].as_str(), body["customer_event_alias"].as_str()), (Some("key_live_abc"), Some("PURCHASE"), Some("renewal")));
+        let u = &body["user_data"];
+        assert_eq!((u["os"].as_str(), u["os_version"].as_str(), u["environment"].as_str()), (Some("Android"), Some("14"), Some("FULL_APP")));
+        assert_eq!((u["aaid"].as_str(), u["advertising_ids"]["oaid"].as_str()), (Some("9c9a82fb-d5de-4cd1-90c3-527441c11828"), Some("oaid-1")));
+        assert_eq!(u["developer_identity"].as_str().map(str::len), Some(64));
+        assert!(u.get("idfv").is_none());
+        let d = &body["event_data"];
+        assert_eq!((d["revenue"].as_f64(), d["currency"].as_str(), d["transaction_id"].as_str()), (Some(4.99), Some("EUR"), Some("GPA.1")));
+        let item = &body["content_items"][0];
+        assert_eq!((item["$sku"].as_str(), item["$price"].as_f64(), item["$quantity"].as_u64()), (Some("diamonds_150"), Some(4.99), Some(1)));
+        assert_eq!(body["custom_data"]["store"], "google");
+
+        let ios = json_body(&send(branch::build(&event("subscription_start", "ios"), &s, "K").unwrap()));
+        assert_eq!((ios["user_data"]["os"].as_str(), ios["user_data"]["idfv"].as_str()), (Some("iOS"), Some("A1B2C3D4-0000-1111-2222-333344445555")));
+        assert_eq!(ios["user_data"]["limit_ad_tracking"], false);
+        let mut trial = event("subscription_start", "ios");
+        trial.price_micros = 0;
+        let trial = json_body(&send(branch::build(&trial, &s, "K").unwrap()));
+        assert_eq!(trial["name"], "START_TRIAL");
+        assert!(trial["event_data"].get("revenue").is_none());
+    }
+
+    #[test]
+    fn branch_refunds_are_custom_events_and_skips() {
+        let s = branch::Settings::default();
+        let call = send(branch::build(&event("refund", "android"), &s, "K").unwrap());
+        assert_eq!(call.url, branch::CUSTOM_API);
+        let body = json_body(&call);
+        assert_eq!(body["name"], "purser_refund");
+        assert!(body.get("content_items").is_none() && body["event_data"].get("revenue").is_none(), "no negative revenue");
+        assert_eq!((body["custom_data"]["refund_amount"].as_str(), body["custom_data"]["refund_currency"].as_str()), (Some("4.99"), Some("EUR")));
+        assert_eq!(json_body(&send(branch::build(&event("test", "ios"), &s, "K").unwrap()))["name"], "purser_test");
+        assert!(matches!(branch::build(&event("cancel", "android"), &s, "K").unwrap(), Built::Skip(_)));
+        assert!(matches!(branch::build(&event("purchase", "steam"), &s, "K").unwrap(), Built::Skip(_)));
+        assert!(matches!(branch::build(&sandbox(event("purchase", "android")), &s, "K").unwrap(), Built::Skip(_)));
+        let mut no_ids = event("purchase", "android");
+        no_ids.attribution.clear();
+        assert!(matches!(branch::build(&no_ids, &s, "K").unwrap(), Built::Skip(r) if is_missing_client_id(&r)));
+        assert!(branch::build(&event("purchase", "android"), &s, "").is_err());
+    }
+
+    #[test]
+    fn kochava_event_with_revenue() {
+        let s = kochava::Settings::parse("{}").unwrap();
+        let mut ev = event("purchase", "ios");
+        ev.attribution.insert(attribution_key::KOCHAVA_DEVICE_ID.into(), "KA1111111702155tdbf56cde8d854c018f96e52cd8ababab".into());
+        ev.attribution.insert(attribution_key::IDFA.into(), "AAAA-BBBB".into());
+        ev.attribution.insert(attribution_key::OS_VERSION.into(), "17.4".into());
+        let call = send(kochava::build(&ev, &s, "koexample-app-1234").unwrap());
+        assert_eq!(call.url, kochava::API);
+        assert!(call.headers.contains(&("User-Agent", "Unknown".to_string())));
+        let body = json_body(&call);
+        assert_eq!((body["action"].as_str(), body["kochava_app_id"].as_str()), (Some("event"), Some("koexample-app-1234")));
+        assert_eq!(body["kochava_device_id"], "KA1111111702155tdbf56cde8d854c018f96e52cd8ababab");
+        let d = &body["data"];
+        assert_eq!((d["event_name"].as_str(), d["currency"].as_str(), d["usertime"].as_i64()), (Some("Purchase"), Some("EUR"), Some(1_791_198_123)));
+        assert_eq!(d["device_ids"], json!({ "idfa": "AAAA-BBBB", "idfv": "A1B2C3D4-0000-1111-2222-333344445555" }));
+        assert_eq!((d["device_ua"].as_str(), d["device_ver"].as_str()), (Some(""), Some("unknown-iOS-17.4")));
+        assert_eq!(d["app_tracking_transparency"]["att"], true);
+        assert_eq!((d["event_data"]["sum"].as_f64(), d["event_data"]["id"].as_str()), (Some(4.99), Some("GPA.1")));
+
+        let refund = json_body(&send(kochava::build(&event("refund", "android"), &s, "G").unwrap()));
+        assert_eq!(refund["data"]["event_name"], "Refund");
+        assert_eq!(refund["kochava_device_id"], "", "device ids alone are enough");
+        assert_eq!(refund["data"]["device_ids"]["adid"], "9c9a82fb-d5de-4cd1-90c3-527441c11828");
+        assert!(refund["data"]["event_data"].get("sum").is_none());
+        assert_eq!(refund["data"]["event_data"]["refund_amount"], 4.99);
+    }
+
+    #[test]
+    fn kochava_names_and_skips() {
+        let s = kochava::Settings::default();
+        assert!(matches!(kochava::build(&event("expire", "android"), &s, "G").unwrap(), Built::Skip(_)), "off by default");
+        let named = kochava::Settings::parse(r#"{"event_names":{"expire":"Subscription Expired","renewal":""}}"#).unwrap();
+        assert_eq!(json_body(&send(kochava::build(&event("expire", "android"), &named, "G").unwrap()))["data"]["event_name"], "Subscription Expired");
+        assert!(matches!(kochava::build(&event("renewal", "android"), &named, "G").unwrap(), Built::Skip(_)));
+        let mut trial = event("subscription_start", "android");
+        trial.price_micros = 0;
+        assert_eq!(json_body(&send(kochava::build(&trial, &s, "G").unwrap()))["data"]["event_name"], "Start Trial");
+        assert!(matches!(kochava::build(&event("purchase", "web"), &s, "G").unwrap(), Built::Skip(_)));
+        assert!(matches!(kochava::build(&sandbox(event("purchase", "android")), &s, "G").unwrap(), Built::Skip(_)));
+        let mut no_ids = event("purchase", "android");
+        no_ids.attribution.clear();
+        assert!(matches!(kochava::build(&no_ids, &s, "G").unwrap(), Built::Skip(r) if is_missing_client_id(&r)));
+        assert!(kochava::build(&event("purchase", "android"), &s, "").is_err());
+        assert!(kochava::Settings::parse(r#"{"event_names":{"resume":"x"}}"#).is_err());
+    }
+
+    fn braze_settings() -> braze::Settings {
+        braze::Settings::parse(r#"{"endpoint":"https://rest.fra-01.braze.eu/"}"#).unwrap()
+    }
+
+    #[test]
+    fn braze_purchases_and_custom_events() {
+        let s = braze_settings();
+        let call = send(braze::build(&event("purchase", "web"), &s, "BRAZEKEY").unwrap());
+        assert_eq!(call.url, "https://rest.fra-01.braze.eu/users/track");
+        assert!(call.headers.contains(&("Authorization", "Bearer BRAZEKEY".to_string())));
+        let body = json_body(&call);
+        assert!(body.get("events").is_none());
+        let p = &body["purchases"][0];
+        assert_eq!((p["external_id"].as_str().map(str::len), p["product_id"].as_str()), (Some(64), Some("diamonds_150")));
+        assert_eq!((p["price"].as_f64(), p["quantity"].as_u64(), p["currency"].as_str()), (Some(4.99), Some(1), Some("EUR")));
+        assert_eq!((p["time"].as_str(), p["properties"]["transaction_id"].as_str()), (Some("2026-10-05T11:02:03Z"), Some("GPA.1")));
+        assert!(p.get("app_id").is_none());
+
+        let refund = json_body(&send(braze::build(&OutEvent { quantity: 2, ..event("refund", "ios") }, &s, "K").unwrap()));
+        assert_eq!((refund["purchases"][0]["price"].as_f64(), refund["purchases"][0]["quantity"].as_u64()), (Some(-2.495), Some(2)));
+        let many = json_body(&send(braze::build(&OutEvent { quantity: 500, ..event("purchase", "ios") }, &s, "K").unwrap()));
+        assert_eq!((many["purchases"][0]["price"].as_f64(), many["purchases"][0]["quantity"].as_u64()), (Some(4.99), Some(1)));
+
+        let with_app = braze::Settings::parse(r#"{"endpoint":"https://rest.iad-01.braze.com","app_id":"a1b2c3d4-0000-1111-2222-333344445555"}"#).unwrap();
+        let mut change = event("product_change", "android");
+        change.previous_product_id = "vip_month".into();
+        let body = json_body(&send(braze::build(&change, &with_app, "K").unwrap()));
+        let e = &body["events"][0];
+        assert_eq!((e["name"].as_str(), e["app_id"].as_str()), (Some("purser_product_change"), Some("a1b2c3d4-0000-1111-2222-333344445555")));
+        assert_eq!(e["properties"]["previous_product_id"], "vip_month");
+        let mut trial = event("subscription_start", "android");
+        trial.price_micros = 0;
+        assert_eq!(json_body(&send(braze::build(&trial, &s, "K").unwrap()))["events"][0]["name"], "purser_subscription_start", "no zero-price purchase");
+    }
+
+    #[test]
+    fn braze_settings_skips_and_errors() {
+        let s = braze_settings();
+        assert!(matches!(braze::build(&sandbox(event("purchase", "android")), &s, "K").unwrap(), Built::Skip(_)));
+        let mut anonymous = event("purchase", "android");
+        anonymous.user_id.clear();
+        assert!(matches!(braze::build(&anonymous, &s, "K").unwrap(), Built::Skip(_)));
+        assert!(braze::build(&event("purchase", "android"), &s, "").is_err());
+        for bad in [r#"{"endpoint":"https://sdk.iad-01.braze.com"}"#, r#"{"endpoint":"https://rest.iad-01.braze.com.evil.example"}"#, r#"{"endpoint":"http://rest.iad-01.braze.com"}"#, r#"{"endpoint":"https://rest.iad-01.braze.com/users/track"}"#] {
+            assert!(braze::Settings::parse(bad).is_err(), "{bad}");
+        }
+        assert_eq!(braze::response_error(r#"{"message":"success","purchases_processed":1}"#), None);
+        assert_eq!(braze::response_error(r#"{"message":"success","errors":[]}"#), None);
+        let (retry, text) = response_error("braze", r#"{"message":"success","errors":[{"type":"'price' must be a number","input_array":"purchases","index":0}]}"#).unwrap();
+        assert!(!retry && text.contains("'price' must be a number"));
+    }
+
+    fn onesignal_settings() -> onesignal::Settings {
+        onesignal::Settings::parse(r#"{"app_id":"8250EAF6-1A4B-4DE3-9E5A-2B4D63D1E7AB"}"#).unwrap()
+    }
+
+    #[test]
+    fn onesignal_custom_event_for_the_external_id() {
+        let s = onesignal_settings();
+        assert_eq!(s.app_id, "8250eaf6-1a4b-4de3-9e5a-2b4d63d1e7ab");
+        let call = send(onesignal::build(&event("renewal", "ios"), &s, "os_v2_app_key").unwrap());
+        assert_eq!(call.url, "https://api.onesignal.com/apps/8250eaf6-1a4b-4de3-9e5a-2b4d63d1e7ab/custom_events");
+        assert!(call.headers.contains(&("Authorization", "Key os_v2_app_key".to_string())));
+        let body = json_body(&call);
+        let e = &body["events"][0];
+        assert_eq!((e["name"].as_str(), e["timestamp"].as_str()), (Some("purser_renewal"), Some("2026-10-05T11:02:03Z")));
+        assert_eq!(e["external_id"].as_str().map(str::len), Some(64));
+        let key = e["idempotency_key"].as_str().unwrap();
+        assert_eq!(key.len(), 36);
+        assert_eq!(&key[14..15], "4", "a version 4 UUID layout");
+        assert_eq!(key, uuid_of(&dedup_id(&event("renewal", "ios"))), "the same on retries");
+        assert_ne!(key, uuid_of(&dedup_id(&event("purchase", "ios"))));
+        let p = &e["properties"];
+        assert_eq!((p["revenue"].as_f64(), p["currency"].as_str(), p["product_id"].as_str()), (Some(4.99), Some("EUR"), Some("diamonds_150")));
+
+        let issue = json_body(&send(onesignal::build(&event("billing_issue", "web"), &s, "K").unwrap()));
+        assert_eq!(issue["events"][0]["name"], "purser_billing_issue");
+        assert!(issue["events"][0]["properties"].get("revenue").is_none(), "no money on lifecycle events");
+        let refund = json_body(&send(onesignal::build(&event("refund", "android"), &s, "K").unwrap()));
+        assert_eq!(refund["events"][0]["properties"]["revenue"], -4.99);
+    }
+
+    #[test]
+    fn onesignal_skips_and_errors() {
+        let s = onesignal_settings();
+        assert!(matches!(onesignal::build(&sandbox(event("purchase", "android")), &s, "K").unwrap(), Built::Skip(_)));
+        let mut anonymous = event("purchase", "android");
+        anonymous.user_id.clear();
+        assert!(matches!(onesignal::build(&anonymous, &s, "K").unwrap(), Built::Skip(_)));
+        assert!(onesignal::build(&event("purchase", "android"), &s, "").is_err());
+        assert!(onesignal::Settings::parse(r#"{"app_id":"not-a-uuid"}"#).is_err());
+        assert_eq!(onesignal::response_error(""), None);
+        assert_eq!(onesignal::response_error(r#"{"errors":[]}"#), None);
+        let (retry, text) =
+            response_error("onesignal", r#"{"errors":[{"event_user_id":"u","event_id":"e","error":{"code":"not found","title":"user not found"}}]}"#).unwrap();
+        assert!(!retry && text.contains("not found: user not found"), "{text}");
     }
 
     #[test]

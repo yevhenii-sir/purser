@@ -8,6 +8,8 @@
   `wallet` on the admin page credit it when bought; `SpendAsync` spends it once per reference
   (`WalletStatus.InsufficientFunds` when the balance is short) and needs player tokens. New error codes
   `ErrorCodes.InsufficientFunds`, `ReferenceUsed`, `SignedOnly`.
+- `AttributionKeys.SingularDeviceId`, `AppSetId` and `KochavaDeviceId` for the server's new Singular and Kochava
+  integrations (Branch, Braze and OneSignal need no new key).
 
 ## [0.11.0] - 2026-11-26
 

@@ -68,7 +68,16 @@ impl Fake {
             // Reducer calls (and Xsolla / Stripe API calls, store catalog writes, Apple consumption answers, Adjust
             // events) are recorded with their bodies.
             call = format!("{call} {}", req.into_body().into_string_lossy());
-        } else if call.contains("amplitude.com") || call.contains("mixpanel.com") || call.contains("graph.facebook.com") {
+        } else if call.contains("amplitude.com")
+            || call.contains("mixpanel.com")
+            || call.contains("graph.facebook.com")
+            || call.contains("s2s.singular.net")
+            || call.contains("api2.branch.io")
+            || call.contains("control.kochava.com")
+            || call.contains("braze.")
+            || call.contains("api.onesignal.com")
+            || req.headers().contains_key("x-amz-date")
+        {
             // Analytics events with the Authorization header and the JSON body.
             let auth = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
             call = format!("{call} [auth={auth}] {}", req.into_body().into_string_lossy());
@@ -1683,6 +1692,14 @@ fn integration_settings_are_validated() {
     assert!(upsert(json!({ "app_id": APP, "kind": "mixpanel", "settings": {} })).unwrap_err().contains("project_id"));
     assert!(upsert(json!({ "app_id": APP, "kind": "meta", "settings": { "dataset_id": "1", "graph_version": "latest" } })).unwrap_err().contains("graph_version"));
     assert!(upsert(json!({ "app_id": APP, "kind": "amplitude", "settings": { "region": "mars" } })).unwrap_err().contains("region"));
+    assert!(upsert(json!({ "app_id": APP, "kind": "s3", "settings": { "endpoint": "http://s3.example.com", "bucket": "events" } }))
+        .unwrap_err()
+        .contains("https"));
+    assert!(upsert(json!({ "app_id": APP, "kind": "braze", "settings": { "endpoint": "https://braze.example.com" } })).unwrap_err().contains("REST endpoint"));
+    assert!(upsert(json!({ "app_id": APP, "kind": "onesignal", "settings": { "app_id": "x" } })).unwrap_err().contains("UUID"));
+    assert!(upsert(json!({ "app_id": APP, "kind": "singular", "settings": { "event_names": { "pause": "p" } } })).unwrap_err().contains("pause"));
+    assert_eq!(upsert(json!({ "app_id": APP, "kind": "branch", "settings": {} })), Ok(()));
+    assert_eq!(upsert(json!({ "app_id": APP, "kind": "kochava", "settings": {} })), Ok(()));
     assert_eq!(upsert(json!({ "app_id": APP, "kind": "tenjin", "settings": {} })), Ok(()));
     assert_eq!(upsert(json!({ "app_id": APP, "kind": "ga4", "settings": { "firebase_app_id": "1:1:android:x" } })), Ok(()));
     assert!(upsert(json!({ "app_id": APP, "kind": "tenjin", "settings": { "revenue": "profit" } })).unwrap_err().contains("gross, proceeds or net"));
@@ -1869,6 +1886,13 @@ fn purchases_are_sent_to_adjust_with_the_event_token_of_their_kind() {
 /// A verified purchase of `gems` (0.99 USD) by `player-1`, with the device ids its client sent; the
 /// one integration connected gets it in the outbox and sends it. Returns (url, auth header, body).
 fn send_gems_purchase(w: &World, kind: &str, host: &str, attribution: Value) -> (String, String, Value) {
+    let (method, url, auth, body) = send_gems_purchase_as(w, kind, host, attribution, "{}");
+    assert_eq!(method, "POST");
+    (url, auth, serde_json::from_str(&body).unwrap())
+}
+
+/// [`send_gems_purchase`] with the integration answering `answer`: (method, url, auth header, raw body).
+fn send_gems_purchase_as(w: &World, kind: &str, host: &str, attribution: Value, answer: &str) -> (String, String, String, String) {
     w.write(|tx| {
         let mut p = tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap();
         p.price_micros = 990_000;
@@ -1882,13 +1906,78 @@ fn send_gems_purchase(w: &World, kind: &str, host: &str, attribution: Value) -> 
     assert_eq!(verify(&mut w.ctx(), store::GOOGLE, &r).body["status"], "success");
     let rows = outbox(w);
     assert_eq!(rows.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), [kind]);
-    w.script(host, 200, "{}");
+    w.script(host, 200, answer);
     crate::integrations::send_integration_event(&mut w.ctx(), rows.into_iter().next().unwrap());
     let call = w.fake.borrow().calls.iter().find(|c| c.contains(host)).cloned().unwrap_or_else(|| panic!("{kind} call"));
     let (head, body) = call.split_once("] ").expect("auth and body recorded");
     let (request, auth) = head.split_once(" [auth=").unwrap();
-    let url = request.strip_prefix("POST ").unwrap_or_else(|| panic!("a POST: {call}"));
-    (url.to_string(), auth.to_string(), serde_json::from_str(body).unwrap())
+    let (method, url) = request.split_once(' ').unwrap();
+    (method.to_string(), url.to_string(), auth.to_string(), body.to_string())
+}
+
+#[test]
+fn purchases_are_exported_to_an_s3_bucket_with_a_signed_put() {
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "s3", json!({ "endpoint": "https://s3.example.com", "region": "eu-west-1", "bucket": "billing-events", "prefix": "billing" }));
+    w.set_secret(secret_name::S3_ACCESS_KEY, "AKIDEXAMPLE:s3-secret/key+1");
+    let (method, url, auth, body) = send_gems_purchase_as(&w, "s3", "s3.example.com", json!({ "advertising_id": "gaid-1" }), "");
+    assert_eq!(method, "PUT");
+    assert!(url.starts_with("https://s3.example.com/billing-events/billing/dt%3D"), "path style: {url}");
+    assert!(url.ends_with(&format!("-purchase-{ORDER}.json")), "{url}");
+    let date = purser_core::sigv4::amz_date(NOW_MICROS / 1000);
+    assert!(
+        auth.starts_with(&format!("AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/{}/eu-west-1/s3/aws4_request, ", &date[..8])),
+        "{auth}"
+    );
+    assert!(!auth.contains("s3-secret") && !url.contains("s3-secret") && !body.contains("s3-secret"));
+    let ev: Value = serde_json::from_str(body.trim_end()).unwrap();
+    assert!(body.ends_with('\n'), "one NDJSON line");
+    assert_eq!((ev["gross_micros"].as_i64(), ev["transaction_id"].as_str()), (Some(990_000), Some(ORDER)));
+    assert_eq!(ev["attribution"]["advertising_id"], "gaid-1");
+    assert_eq!(w.doctor(false).unwrap()["integration:s3"].0, "ok");
+
+    // A key without its secret half is refused before anything is sent.
+    w.set_secret(secret_name::S3_ACCESS_KEY, "AKIDEXAMPLE");
+    let doctor = w.doctor(false).unwrap();
+    assert_eq!(doctor["integration:s3"].0, "fail");
+    assert!(!doctor["integration:s3"].1.contains("AKIDEXAMPLE"));
+}
+
+#[test]
+fn purchases_are_sent_to_braze_for_the_external_id() {
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "braze", json!({ "endpoint": "https://rest.iad-01.braze.com" }));
+    w.set_secret(secret_name::BRAZE_REST_API_KEY, "braze-key-1");
+    let (url, auth, body) = send_gems_purchase(&w, "braze", "braze.com", json!({}));
+    assert_eq!(url, "https://rest.iad-01.braze.com/users/track");
+    assert_eq!(auth, "Bearer braze-key-1");
+    let p = &body["purchases"][0];
+    assert_eq!((p["external_id"].as_str(), p["product_id"].as_str()), (Some("player-1"), Some("gems")));
+    assert_eq!((p["price"].as_f64(), p["currency"].as_str(), p["quantity"].as_u64()), (Some(0.99), Some("USD"), Some(1)));
+    assert_eq!(p["properties"]["transaction_id"], ORDER);
+    assert_eq!(w.doctor(false).unwrap()["integration:braze"].0, "ok");
+}
+
+#[test]
+fn events_onesignal_refuses_in_a_202_answer_are_dropped() {
+    use crate::integrations::integration_dead;
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "onesignal", json!({ "app_id": "8250eaf6-1a4b-4de3-9e5a-2b4d63d1e7ab" }));
+    w.set_secret(secret_name::ONESIGNAL_API_KEY, "os-key-1");
+    let refused = r#"{"errors":[{"event_user_id":"player-1","event_id":"x","error":{"code":"too many event names","title":"limit reached"}}]}"#;
+    let (_, url, auth, body) = send_gems_purchase_as(&w, "onesignal", "api.onesignal.com", json!({}), refused);
+    assert_eq!(url, "https://api.onesignal.com/apps/8250eaf6-1a4b-4de3-9e5a-2b4d63d1e7ab/custom_events");
+    assert_eq!(auth, "Key os-key-1");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!((body["events"][0]["name"].as_str(), body["events"][0]["external_id"].as_str()), (Some("purser_purchase"), Some("player-1")));
+    let dead: Vec<(String, String)> = w.read(|tx| tx.db.integration_dead().iter().map(|d| (d.kind, d.last_error)).collect());
+    assert_eq!(dead.len(), 1, "a 202 that names the event as refused is a failure, not a delivery");
+    assert!(dead[0].1.contains("too many event names"), "{dead:?}");
+    // The test leaves the attempt's own row in place (the host deletes it before the call): no second attempt was queued.
+    assert!(outbox(&w).iter().all(|r| r.attempts == 0), "not retried");
 }
 
 #[test]
