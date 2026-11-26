@@ -504,17 +504,18 @@ def main():
     srv.call("admin_set_app_name", "galaxy-miner", "Galaxy Miner")
     srv.call("admin_set_app_name", "word-garden", "Word Garden")
 
-    def coworker(name, role):
+    def coworker(name, role, game_keys=()):
         s2 = Server(a.server, srv.db)
         _, out2 = s2.req("POST", "/v1/identity", auth=False)
         ident = json.loads(out2)
         s2.token = ident["token"]
-        srv.call("admin_upsert_admin", json.dumps({"identity": ident["identity"], "name": name, "role": role}))
+        srv.call("admin_upsert_admin", json.dumps({"identity": ident["identity"], "name": name, "role": role, "game_keys": list(game_keys)}))
         return s2
 
     anna = coworker("Anna Petrova", "editor")
     max_ = coworker("Max Keller", "support")
-    coworker("Lena Hoffmann", "viewer")
+    # Limited to one app: the Admins page shows how.
+    coworker("Lena Hoffmann", "viewer", ["word-garden"])
     anna.call("admin_upsert_paywall", json.dumps({"game_key": "galaxy-miner", "paywall_id": "shop_vip_first", "name": "VIP first",
                                                    "product_ids": ["vip_monthly", "vip_yearly", "gems_medium"],
                                                    "remote_config": {"title": "Become a VIP", "highlight": "vip_yearly", "badge": "Best value"}}))

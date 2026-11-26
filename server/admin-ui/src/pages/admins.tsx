@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { CopyIcon, GlobeIcon, KeyRoundIcon, MailIcon, PencilIcon, Trash2Icon, UserPlusIcon } from "lucide-react"
+import { ChevronDownIcon, CopyIcon, GlobeIcon, KeyRoundIcon, MailIcon, PencilIcon, Trash2Icon, UserPlusIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -194,12 +194,15 @@ export function AdminsPage({ me }: PageProps) {
                 size: 220,
                 sort: (a) => (a.protected || !keysOf(a).length ? "" : keysOf(a).map(appName).join(", ").toLowerCase()),
                 cell: (a) => {
-                  const keys = keysOf(a)
-                  const text = a.protected || !keys.length ? "Every app" : keys.map(appName).join(", ")
-                  if (a.protected || !manageable(roleOf(a)) || hex(a.identity) === me) return <span className="text-sm text-muted-foreground">{text}</span>
+                  const names = a.protected ? [] : keysOf(a).map(appName)
+                  // One line however many apps: the first and how many more; all of them in the tooltip.
+                  const text = !names.length ? "Every app" : names.length === 1 ? names[0] : `${names[0]} +${names.length - 1}`
+                  const all = names.length ? `Limited to ${names.join(", ")}` : "Every app and the server settings"
+                  if (a.protected || !manageable(roleOf(a)) || hex(a.identity) === me) return <span className="text-sm text-muted-foreground" title={all}>{text}</span>
                   return (
-                    <Button variant="ghost" size="xs" className="h-auto max-w-64 justify-start text-left whitespace-normal" title="Change the apps" onClick={() => setEditingApps(a)}>
-                      {text}
+                    <Button variant="outline" size="sm" className="h-8 w-44 justify-between font-normal" title={`${all}. Click to change.`} onClick={() => setEditingApps(a)}>
+                      <span className="truncate">{text}</span>
+                      <ChevronDownIcon className="opacity-50" />
                     </Button>
                   )
                 },
