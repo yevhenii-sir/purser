@@ -109,6 +109,10 @@ GAMES = {
 STAR_USD = 0.013
 
 
+# Virtual currency the gem products give (docs/wallet.md).
+WALLET = {"gems_small": "gems:100", "gems_medium": "gems:550", "gems_large": "gems:2500"}
+
+
 def stars_micros(usd):
     return int(round(usd / STAR_USD)) * 1_000_000
 
@@ -315,6 +319,53 @@ def promo_codes(srv):
                                                     "note": "Support: apology for a lost purchase"}))
 
 
+def sql_text(v):
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+def wallets_and_installs(srv, rows, now_ms, rnd):
+    """What the live server records but an import does not: the gems of gem purchases (and what
+    the players spent), and when each player was first seen (install cohorts)."""
+    gk = {"com.example.galaxyminer": "galaxy-miner", "com.example.galaxyminer.ios": "galaxy-miner", "com.example.galaxyminer.amazon": "galaxy-miner",
+          "com.example.galaxyminer.huawei": "galaxy-miner"}
+    first, balances, txs = {}, {}, []
+    for r in sorted(rows, key=lambda r: r["created_at_micros"]):
+        key = (r["app_id"], r["user_id"])
+        first[key] = min(first.get(key, r["created_at_micros"]), r["created_at_micros"])
+        game = gk.get(r["app_id"])
+        grant = WALLET.get(r["product_id"]) if game else None
+        if not grant or r["status"] != "completed" or r["environment"] != "production" or r["created_at_micros"] < (now_ms - 60 * DAY_MS) * 1000:
+            continue
+        amount = int(grant.split(":")[1])
+        b = balances.setdefault((game, r["user_id"]), 0) + amount
+        txs.append((game, r["user_id"], amount, b, "purchase", f"purchase:{r['id']}:gems", "purchase", r["id"], r["created_at_micros"]))
+        # Most of it is spent within days.
+        spent = int(b * rnd.uniform(0.5, 0.95))
+        b -= spent
+        txs.append((game, r["user_id"], -spent, b, "spend", f"spend:upgrade-{len(txs)}", "client", "drill upgrade", r["created_at_micros"] + rnd.randrange(1, 72) * 3_600_000_000))
+        balances[(game, r["user_id"])] = b
+    values = []
+    for i, (game, user, delta, after, why, ref, actor, note, at) in enumerate(txs):
+        values.append(f"({i + 1}, {sql_text(game + '|' + ref)}, {sql_text(user)}, {sql_text(game)}, 'gems', {delta}, {after}, {sql_text(why)}, {sql_text(ref)}, {sql_text(actor)}, {sql_text(note)}, {at})")
+    for i in range(0, len(values), 150):
+        srv.sql("INSERT INTO wallet_tx (id, key, user_id, game_key, currency, delta, balance_after, reason, reference, actor, note, at_micros) VALUES " + ", ".join(values[i:i + 150]))
+    values = [f"({sql_text(f'{g}/gems/{u}')}, {sql_text(u)}, {sql_text(g)}, 'gems', {b}, {now_ms * 1000})" for (g, u), b in balances.items()]
+    for i in range(0, len(values), 200):
+        srv.sql("INSERT INTO wallet_balance (key, user_id, game_key, currency, balance, updated_at_micros) VALUES " + ", ".join(values[i:i + 200]))
+    # Players were first seen up to two weeks before their first purchase; many more never paid.
+    installs, values = {}, []
+    for (app, user), at in first.items():
+        seen = at - rnd.randrange(0, 14 * DAY_MS) * 1000
+        installs[(app, seen // (DAY_MS * 1000))] = installs.get((app, seen // (DAY_MS * 1000)), 0) + 1
+        values.append(f"({sql_text(app + '/' + user)}, {sql_text(user)}, {sql_text(app)}, {seen}, {max(seen, at)}, '{{}}', '{{}}')")
+    for i in range(0, len(values), 200):
+        srv.sql("INSERT INTO player_profile (key, user_id, app_id, first_seen_micros, last_seen_micros, client_json, attributes_json) VALUES " + ", ".join(values[i:i + 200]))
+    values = [f"({sql_text(f'{d}|{app}')}, {d}, {sql_text(app)}, {n * rnd.randint(12, 25)})" for (app, d), n in installs.items()]
+    for i in range(0, len(values), 200):
+        srv.sql("INSERT INTO install_daily (key, day, app_id, installs) VALUES " + ", ".join(values[i:i + 200]))
+    print("wallets of", len(balances), "players; profiles of", len(first))
+
+
 def attribute_paywalls(rows, now_ms, rnd):
     """Purchases of the last 30 days in Galaxy Miner partly come from the shop paywall test."""
     for r in rows:
@@ -408,7 +459,7 @@ def main():
             srv.call("admin_upsert_products", json.dumps([
                 {"app_id": app, "product_id": store_pid(st, p), "catalog_id": p, "kind": k,
                  **({"price_micros": stars_micros(usd), "currency": "XTR"} if st == "telegram" else {"price_micros": int(usd * 1e6), "currency": "USD"}),
-                 **LISTING.get(p, {})}
+                 **LISTING.get(p, {}), **({"wallet": WALLET[p]} if p in WALLET else {})}
                 for p, k, usd, _ in d["products"]]))
     for app in ("com.example.galaxyminer", "com.example.galaxyminer.ios"):
         srv.call("admin_upsert_integration", json.dumps({"app_id": app, "kind": "ga4", "enabled": True,
@@ -432,16 +483,22 @@ def main():
     for app in ("com.example.wordgarden", "com.example.wordgarden.ios"):
         integrate(app, "ga4", {"firebase_app_id": "1:210987654321:%s:9f8e7d6c5b4a3f2e" % ("ios" if "ios" in app else "android")}, "ga4_api_secret")
     integrate("com.example.wordgarden.web", "amplitude", {"region": "eu"}, "amplitude_api_key")
+    integrate("com.example.wordgarden.web", "braze", {"endpoint": "https://rest.fra-02.braze.eu"}, "braze_rest_api_key")
     # A server key of the game's backend (only its hash is stored; the key itself is thrown away).
     key_id = "%012x" % rnd.getrandbits(48)
     key = "psk_%s_%s" % (key_id, "%064x" % rnd.getrandbits(256))
-    srv.call("admin_add_server_key", json.dumps({"game_key": "word-garden", "name": "Game backend", "scopes": "read,grant",
+    srv.call("admin_add_server_key", json.dumps({"game_key": "word-garden", "name": "Game backend", "scopes": "read,grant,wallet",
                                                  "key_id": key_id, "key_hash": hashlib.sha256(key.encode()).hexdigest()}))
     srv.call("admin_upsert_paywall", json.dumps({"game_key": "galaxy-miner", "paywall_id": "shop_gems", "name": "Gems first", "product_ids": ["gems_small", "gems_medium", "gems_large", "vip_monthly"]}))
     srv.call("admin_upsert_paywall", json.dumps({"game_key": "galaxy-miner", "paywall_id": "shop_vip_first", "name": "VIP first",
                                                   "product_ids": ["vip_monthly", "vip_yearly", "gems_medium"], "remote_config": {"title": "Become a VIP", "highlight": "vip_yearly"}}))
     srv.call("admin_upsert_placement", json.dumps({"game_key": "galaxy-miner", "placement_id": "shop", "enabled": True,
-                                                    "variants": [{"variant_id": "a", "paywall_id": "shop_gems", "weight": 1}, {"variant_id": "b", "paywall_id": "shop_vip_first", "weight": 1}]}))
+                                                    "variants": [{"variant_id": "a", "paywall_id": "shop_gems", "weight": 1}, {"variant_id": "b", "paywall_id": "shop_vip_first", "weight": 1}],
+                                                    "audiences": [
+                                                        {"audience_id": "vip", "name": "VIP subscribers", "paywall_id": "shop_gems", "rules": {"subscriber": "active"}},
+                                                        {"audience_id": "whales", "name": "Big spenders", "paywall_id": "shop_vip_first",
+                                                         "rules": {"attributes": {"segment": ["whale"]}, "min_app_version": "2.0"}},
+                                                    ]}))
     srv.call("admin_start_paywall_test", "galaxy-miner", "shop", "shop-ab-1")
 
     srv.call("admin_set_app_name", "galaxy-miner", "Galaxy Miner")
@@ -493,6 +550,7 @@ def main():
                 "last_failure_final, last_skipped_at_micros, last_skip_reason) VALUES "
                 f"('{app}/{kind}', '{app}', '{kind}', {sent}, 0, '', false, {skipped}, '{reason}')")
     promo_codes(srv)
+    wallets_and_installs(srv, rows, now_ms, rnd)
     # Start the revenue rebuild now instead of 5 minutes after the import.
     srv.sql("UPDATE server_state SET value = '0' WHERE key = 'last_import_micros'")
     srv.call("admin_ensure_worker")
