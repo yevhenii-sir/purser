@@ -513,7 +513,9 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                     )}
                   </div>
                 ))}
-                {!w.products.length && <p className="py-4 text-center text-sm text-muted-foreground">No products yet.</p>}
+                {!w.products.length && (
+                  <p className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">No products yet: add them by hand or import them from a store.</p>
+                )}
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Button variant="outline" size="sm" onClick={() => set("products", [...w.products, { product_id: "", kind: "consumable", price_micros: 0, currency: "USD" }])}>
@@ -522,14 +524,20 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                 {importers.map((b) => (
                   <Button key={b.app_id} variant="outline" size="sm" onClick={() => loadCatalog(b)}><DownloadIcon /> Import from {storeOfBuild(b).name}</Button>
                 ))}
-                <span className="flex-1" />
-                {apps().length > 1 && w.builds.map((b, i) => b.app_id && (
-                  <div key={b.app_id} className="flex items-center gap-2">
-                    <Checkbox id={`to-${i}`} checked={b.products} onCheckedChange={(v) => setBuild(i, { products: v === true })} />
-                    <Label htmlFor={`to-${i}`} className="font-normal">{buildLabel(b)}</Label>
-                  </div>
-                ))}
               </div>
+              {apps().length > 1 && (
+                <div className="space-y-2 rounded-md border bg-muted/30 p-3">
+                  <p className="text-xs text-muted-foreground">Save these products for the builds</p>
+                  <div className="flex flex-wrap gap-x-6 gap-y-2">
+                    {w.builds.map((b, i) => b.app_id && (
+                      <div key={b.app_id} className="flex items-center gap-2">
+                        <Checkbox id={`to-${i}`} checked={b.products} onCheckedChange={(v) => setBuild(i, { products: v === true })} />
+                        <Label htmlFor={`to-${i}`} className="font-normal">{buildLabel(b)}</Label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {catalog && (
                 <div className="space-y-3 rounded-lg border p-3">
                   {catalog.length ? <CatalogPicker rows={catalog} onChange={onCatalogPick} /> : <Loading rows={3} />}
