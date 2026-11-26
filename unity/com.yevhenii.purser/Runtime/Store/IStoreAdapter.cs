@@ -40,8 +40,9 @@ namespace Purser
         /// <summary>
         /// Subscriptions: the offers the store reports, with their pricing phases (free trial, introductory price, the
         /// regular price). Google Play through Unity IAP 5: the one offer Unity IAP buys (the first offer of the
-        /// product), without its id and token, which Unity IAP keeps internal. App Store: the introductory offer
-        /// (whether the player can still get it is <see cref="IntroEligible"/>). Empty elsewhere.
+        /// product), without its id and token, which Unity IAP keeps internal; every offer of the product, with the
+        /// token to buy it, comes from <see cref="IBillingService.GetGoogleOffersAsync"/>. App Store: the introductory
+        /// offer (whether the player can still get it is <see cref="IntroEligible"/>). Empty elsewhere.
         /// </summary>
         public IReadOnlyList<StoreOffer> Offers { get; }
 
@@ -92,15 +93,29 @@ namespace Purser
         public string FormatPrice(decimal amount) => PriceFormat.Format(LocalizedPrice, Price, amount, Currency);
     }
 
-    /// <summary>A subscription offer of a store product (<see cref="StoreProduct.Offers"/>).</summary>
+    /// <summary>A subscription offer of a store product (<see cref="StoreProduct.Offers"/>,
+    /// <see cref="IBillingService.GetGoogleOffersAsync"/>).</summary>
     public sealed class StoreOffer
     {
-        /// <summary>The store's offer id (App Store offer id, Google offer id); null when the store does not give it.</summary>
+        /// <summary>The store's offer id (App Store offer id, Google offer id); null when the store does not give it,
+        /// and for a Google Play base plan without an offer.</summary>
         public string Id { get; }
 
-        /// <summary>Google Play offer token; null when the store or Unity IAP does not give it (Unity IAP 5 keeps it
-        /// internal).</summary>
+        /// <summary>Google Play offer token, which buys this offer (<see cref="PurchaseOptions.GoogleOfferToken"/>); null
+        /// when the store or Unity IAP does not give it (Unity IAP 5 keeps it internal).</summary>
         public string Token { get; }
+
+        /// <summary>Google Play: the base plan of the offer (the offer is the base plan itself when <see cref="Id"/> is
+        /// null); null elsewhere.</summary>
+        public string BasePlanId { get; }
+
+        /// <summary>Google Play: the offer's tags from Play Console (its base plan's included), to pick the offer to
+        /// show (e.g. <c>intro</c>, <c>winback</c>); empty elsewhere.</summary>
+        public IReadOnlyList<string> Tags { get; }
+
+        /// <summary>What the server records as the purchase's <c>offer_id</c>: the offer id, else the base plan id;
+        /// null when neither is known.</summary>
+        public string RevenueId => Id ?? BasePlanId;
 
         /// <summary>The phases in order: free trial, introductory price, then the regular price.</summary>
         public IReadOnlyList<PricingPhase> PricingPhases { get; }
@@ -118,11 +133,14 @@ namespace Purser
         }
 
         /// <summary>Creates an offer (store adapters, tests).</summary>
-        public StoreOffer(string id, string token, IReadOnlyList<PricingPhase> pricingPhases)
+        public StoreOffer(string id, string token, IReadOnlyList<PricingPhase> pricingPhases, string basePlanId = null,
+            IReadOnlyList<string> tags = null)
         {
             Id = string.IsNullOrEmpty(id) ? null : id;
             Token = string.IsNullOrEmpty(token) ? null : token;
             PricingPhases = pricingPhases ?? new PricingPhase[0];
+            BasePlanId = string.IsNullOrEmpty(basePlanId) ? null : basePlanId;
+            Tags = tags ?? new string[0];
         }
     }
 

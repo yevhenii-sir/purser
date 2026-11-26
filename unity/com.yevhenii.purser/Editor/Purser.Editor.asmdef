@@ -13,6 +13,12 @@
     "precompiledReferences": [],
     "autoReferenced": true,
     "defineConstraints": [],
-    "versionDefines": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.purchasing",
+            "expression": "5.4.0",
+            "define": "PURSER_UNITY_IAP5"
+        }
+    ],
     "noEngineReferences": false
 }

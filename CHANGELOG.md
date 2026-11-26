@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Unity: Google Play subscription offers chosen by the game (`GetGoogleOffersAsync`, `PurchaseOptions.GoogleOfferToken`)
+  through an Android plugin of the package, next to Unity IAP 5, which buys only the first offer of a product. The
+  purchase reaches `/verify/google` like any other, with its `offer_id`; the server acknowledges it. No server change.
+
 ## 0.11.0 - 2026-11-26
 
 ### Breaking

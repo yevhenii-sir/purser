@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+Not yet checked in a Unity editor or on an Android device: the EditMode tests were run outside Unity (dotnet with
+stand-ins for the Unity APIs) and the Android plugin compiled against stubs of the Billing Library 9 API.
+
+### Added
+
+- Google Play subscription offers chosen by the game: `GetGoogleOffersAsync(productId)` lists a subscription's base
+  plans and the offers the player is eligible for (`StoreOffer.Id`, new `BasePlanId`, `Tags`, `PricingPhases`, `Token`),
+  and `PurchaseAsync(productId, new PurchaseOptions { GoogleOfferToken = offer.Token })` buys exactly that offer (an
+  introductory price for new players, a win-back offer), also replacing a subscription (`ReplacesProductId`,
+  `ReplacementMode`). Unity IAP 5 buys only the first offer of a product, so the package ships an Android plugin
+  (`Runtime/Plugins/Android/PurserGoogleBilling.java`) on the Billing Library Unity IAP 5.4+ adds to the build, with a
+  `BillingClient` of its own; it never acknowledges: the purchase is verified on `/verify/google` with its token and the
+  offer id (`offer_id`), and the server acknowledges it. `GoogleOffersSupported` is false in the Editor, on other stores
+  and without Unity IAP 5.4+ (the editor code then leaves the plugin out of the build); with R8 minification keep
+  `com.yevhenii.purser.**`. Store adapters support it with `IGoogleOfferStore` (`GooglePlayOfferClient`,
+  `IGooglePlayBillingBridge`).
+
 ## [0.11.0] - 2026-11-26
 
 Checked in Unity 2022.3 and 6.6: the package compiles without warnings and the EditMode tests pass (320 of 320); the core
