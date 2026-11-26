@@ -10712,3 +10712,16 @@ fn an_admin_changed_by_hand_no_longer_depends_on_the_rule() {
     admin_call(&w, |ctx| crate::sign_in::admin_delete_domain_rule(ctx, "studio.com".into())).unwrap();
     assert_eq!(w.read(|tx| tx.db.admin().identity().find(ann)).map(|a| a.role), Some("editor".into()));
 }
+
+#[test]
+fn the_public_address_may_be_a_stable_domain_in_front_of_the_server() {
+    let w = World::new();
+    w.as_admin(true);
+    let set = |v: &str| admin_call(&w, |ctx| crate::settings::admin_set_setting(ctx, "public_base_url".into(), v.into()));
+    set("https://stdb.example.com/v1/database/billing/route/").unwrap();
+    assert_eq!(w.read(|tx| crate::settings::get(tx, "public_base_url")).as_deref(), Some("https://stdb.example.com/v1/database/billing/route"));
+    set("https://billing.example.com").unwrap();
+    for bad in ["http://billing.example.com", "https://localhost/route", "https://billing.example.com/?db=1", "https://10.0.0.1/route"] {
+        assert!(set(bad).unwrap_err().contains("ERR_BAD_SETTING"), "{bad}");
+    }
+}

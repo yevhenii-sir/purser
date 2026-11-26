@@ -75,7 +75,8 @@ nav:
   - Revenue analytics: analytics.md
   - Owner alerts: alerts.md
   - Self-hosting: self-hosting.md
-  - Moving servers and from Adapty: migrating-from-adapty.md
+  - Moving to another server: moving-servers.md
+  - Migrating from Adapty: migrating-from-adapty.md
   - Migrating from RevenueCat: migrating-from-revenuecat.md
   - Troubleshooting: troubleshooting.md
   - MCP server: mcp.md

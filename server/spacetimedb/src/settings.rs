@@ -14,8 +14,9 @@ pub struct ServerState {
 }
 
 pub mod key {
-    /// Public `https://<host>/v1/database/<db>/route` base for store notification URLs and clients.
-    /// Needed when the admin page is opened through an SSH tunnel (its own origin is localhost).
+    /// Public route base for store notification URLs and clients: `https://<host>/v1/database/<db>/route`,
+    /// or a stable address of your own that proxies to it (`https://billing.example.com`). Needed when
+    /// the admin page is opened through an SSH tunnel (its own origin is localhost) or clients use such an address.
     pub const PUBLIC_BASE_URL: &str = "public_base_url";
     /// Last FX refresh attempt (micros), to retry hourly at most.
     pub const FX_LAST_ATTEMPT: &str = "fx_last_attempt_micros";
@@ -128,8 +129,13 @@ pub fn admin_set_setting(ctx: &ReducerContext, key: String, value: String) -> Re
         ctx.db.server_state().key().delete(&key);
         return Ok(());
     }
-    if key == key::PUBLIC_BASE_URL && !(value.starts_with("https://") && value.ends_with("/route")) {
-        return Err("[ERR_BAD_SETTING] public_base_url must look like https://<host>/v1/database/<db>/route".into());
+    // The database's route base (`https://<host>/v1/database/<db>/route`) or a stable address of
+    // your own in front of it (`https://billing.example.com`, docs/moving-servers.md).
+    if key == key::PUBLIC_BASE_URL {
+        purser_core::encoding::check_public_https_url("public_base_url", &value).map_err(|e| format!("[ERR_BAD_SETTING] {e}"))?;
+        if value.contains(['?', '#']) {
+            return Err("[ERR_BAD_SETTING] public_base_url is the route base without query or fragment, like https://<host>/v1/database/<db>/route or https://billing.example.com".into());
+        }
     }
     let value = match key.as_str() {
         key::STORE_COMMISSION_PERCENT | key::STORE_COMMISSION_AFTER_YEAR_PERCENT => {

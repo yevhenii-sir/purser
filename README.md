@@ -100,7 +100,8 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | [docs/bulk-setup.md](docs/bulk-setup.md) | Hundreds of apps at once from CSV (`server/bulk_setup.py`) |
 | [docs/openapi.yaml](docs/openapi.yaml) | OpenAPI 3.1 description of the public HTTP API |
 | [docs/mcp.md](docs/mcp.md) | MCP server: ask Claude about revenue, players, purchases and the setup (`server/mcp_server.py`) |
-| [docs/migrating-from-adapty.md](docs/migrating-from-adapty.md) | Running next to Adapty, moving the ledger between servers |
+| [docs/moving-servers.md](docs/moving-servers.md) | Moving to another server: a stable address of your own, what knows the server's address, copying the database |
+| [docs/migrating-from-adapty.md](docs/migrating-from-adapty.md) | Running next to Adapty |
 | [docs/migrating-from-revenuecat.md](docs/migrating-from-revenuecat.md) | Importing RevenueCat's transactions export, switching clients |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Every error code, and what to do |
 | [server/README.md](server/README.md) | Server reference: tables, secrets, HTTP API, admin calls, `seed.py` |

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Docs: *Moving to another server* (`docs/moving-servers.md`): a stable address of your own in front of the server (Caddy and Cloudflare Worker recipes) so a move needs no new game build and no store console changes, everything that knows the server's address, and copying the database. The public address setting accepts such an address (`https://billing.example.com`), not only the route base.
+
 ## 0.13.0 - 2026-11-26
 
 Publishes over 0.12.0 in place (new tables only): no `--delete-data`, no backup needed.

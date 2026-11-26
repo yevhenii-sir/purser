@@ -90,7 +90,7 @@ spacetime logs -s myserver <db>
 ```
 
 - **Admin panel:** `http://localhost:3001/v1/database/<db>/route/admin`. The page calls `/sql`, `/logs` and `/call` of its own database, so it works fully through the tunnel. At the public address it opens, but data does not load (`/sql` is closed).
-- **Public address:** set it in Settings → Server → Public address (`https://stdb.example.com/v1/database/<db>/route`), so the setup check and the Add an app wizard show the right URLs for the stores and for the Unity config while you are on `localhost`.
+- **Public address:** set it in Settings → Server → Public address (`https://stdb.example.com/v1/database/<db>/route`, or a stable address of your own in front of it: [moving to another server](moving-servers.md#a-stable-address-of-your-own)), so the setup check and the Add an app wizard show the right URLs for the stores and for the Unity config while you are on `localhost`.
 
 ## Giving a coworker access
 
