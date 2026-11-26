@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `MetaQuestStoreAdapter` (Meta Horizon Store, Meta Quest) over an `IMetaQuestIap` bridge to the Meta XR Platform SDK
+  (sample "Meta Quest"): verifies on `/verify/meta` with the Meta user id and a new user proof (`Users.GetUserProof`)
+  for every attempt, consumes consumables after the server's answer, verifies unconsumed ones again at launch.
+  `BillingPlatform.MetaQuest`, `BillingStores.Meta`, and `IStoreUserProof`, the capability that gives `/verify` and
+  `/restore` requests a fresh proof (`VerifyRequest.StoreUserProof`, `RestoreRequest.StoreUserProof`). Needs a server
+  with the `meta` store.
+
 ## [0.11.0] - 2026-11-26
 
 Checked in Unity 2022.3 and 6.6: the package compiles without warnings and the EditMode tests pass (320 of 320); the core

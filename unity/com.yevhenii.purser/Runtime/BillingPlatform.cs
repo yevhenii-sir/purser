@@ -27,6 +27,9 @@ namespace Purser
         Web,
         /// <summary>Huawei AppGallery (HMS devices). Use <see cref="HuaweiStoreAdapter"/>.</summary>
         Huawei,
+        /// <summary>Meta Horizon Store (Meta Quest; an Android build with store <c>meta</c> on the server). Use
+        /// <see cref="MetaQuestStoreAdapter"/>.</summary>
+        MetaQuest,
     }
 
     /// <summary>Which store an Android build talks to.</summary>
@@ -57,9 +60,11 @@ namespace Purser
         public const string Huawei = "huawei";
         /// <summary>Telegram Stars (Telegram Mini Apps).</summary>
         public const string Telegram = "telegram";
+        /// <summary>Meta Horizon Store (Meta Quest).</summary>
+        public const string Meta = "meta";
 
         /// <summary>Stores the server knows, in the order the inspector lists them.</summary>
-        public static readonly IReadOnlyList<string> All = new[] { Google, Apple, Amazon, Steam, Stripe, Xsolla, Huawei, Telegram };
+        public static readonly IReadOnlyList<string> All = new[] { Google, Apple, Amazon, Steam, Stripe, Xsolla, Huawei, Telegram, Meta };
 
         /// <summary>The store a platform implies; null for <see cref="BillingPlatform.Web"/> (Stripe, Xsolla or Telegram:
         /// the adapter names it) and <see cref="BillingPlatform.Unsupported"/>.</summary>
@@ -72,6 +77,7 @@ namespace Purser
                 case BillingPlatform.Amazon: return Amazon;
                 case BillingPlatform.Steam: return Steam;
                 case BillingPlatform.Huawei: return Huawei;
+                case BillingPlatform.MetaQuest: return Meta;
                 default: return null;
             }
         }

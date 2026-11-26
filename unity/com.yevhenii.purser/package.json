@@ -42,6 +42,11 @@
       "path": "Samples~/HuaweiAppGallery"
     },
     {
+      "displayName": "Meta Quest",
+      "description": "Bridge from MetaQuestStoreAdapter to the Meta XR Platform SDK's in-app purchases and user proof (Unity IAP has no Meta store).",
+      "path": "Samples~/MetaQuest"
+    },
+    {
       "displayName": "Telegram Mini App",
       "description": "Opens Telegram Stars invoices of TelegramStoreAdapter with Telegram.WebApp.openInvoice (WebGL jslib).",
       "path": "Samples~/TelegramMiniApp"
