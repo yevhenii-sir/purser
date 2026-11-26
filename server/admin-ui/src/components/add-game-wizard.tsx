@@ -525,6 +525,10 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                   <Button key={b.app_id} variant="outline" size="sm" onClick={() => loadCatalog(b)}><DownloadIcon /> Import from {storeOfBuild(b).name}</Button>
                 ))}
               </div>
+              <p className="text-xs text-muted-foreground">
+                Later, the app's <span className="font-medium text-foreground">Products</span> tab also syncs with the stores, exports the catalog and creates
+                products in Google Play and the App Store.
+              </p>
               {apps().length > 1 && (
                 <div className="space-y-2 rounded-md border bg-muted/30 p-3">
                   <p className="text-xs text-muted-foreground">Save these products for the builds</p>
