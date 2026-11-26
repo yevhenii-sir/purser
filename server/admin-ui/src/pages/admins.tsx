@@ -11,12 +11,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
 import { RichTable } from "@/components/rich-table"
 import { RoleAccess, RoleMatrix } from "@/components/role-matrix"
-import { AppsPicker } from "@/components/apps-picker"
+import { AppsPicker, AppsSummary } from "@/components/apps-picker"
 import { call, createIdentity, proc, select } from "@/lib/api"
 import { providerName, redirectUri, signInConfig, SPACETIMEAUTH_ISSUER, type SignInConfig } from "@/lib/sso"
 import { ago, errorText } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
-import { useApps } from "@/lib/apps"
+import { appsText, useApps } from "@/lib/apps"
 import { ROLES, roleLabel, useRole, type Role } from "@/lib/roles"
 import type { PageProps } from "@/routes"
 
@@ -196,7 +196,7 @@ export function AdminsPage({ me }: PageProps) {
                 cell: (a) => {
                   const names = a.protected ? [] : keysOf(a).map(appName)
                   // One line however many apps: the first and how many more; all of them in the tooltip.
-                  const text = !names.length ? "Every app" : names.length === 1 ? names[0] : `${names[0]} +${names.length - 1}`
+                  const text = appsText(names)
                   const all = names.length ? `Limited to ${names.join(", ")}` : "Every app and the server settings"
                   if (a.protected || !manageable(roleOf(a)) || hex(a.identity) === me) return <span className="text-sm text-muted-foreground" title={all}>{text}</span>
                   return (
@@ -241,7 +241,7 @@ export function AdminsPage({ me }: PageProps) {
             columns={[
               { title: "Email", cell: (i) => <div className="min-w-0"><div className="font-medium">{i.email}</div>{i.name && <div className="text-xs text-muted-foreground">{i.name}</div>}</div> },
               { title: "Role", cell: (i) => <Tone tone="muted">{roleLabel(inviteRole(i))}</Tone> },
-              { title: "Apps", className: "whitespace-normal", cell: (i) => <span className="text-sm text-muted-foreground">{keysOf(i).length ? keysOf(i).map(appName).join(", ") : "Every app"}</span> },
+              { title: "Apps", cell: (i) => <AppsSummary keys={keysOf(i)} /> },
               {
                 title: "Expires",
                 cell: (i) => Number(i.expires_at_micros) / 1000 < Date.now()
@@ -277,7 +277,7 @@ export function AdminsPage({ me }: PageProps) {
               columns={[
                 { title: "Domain", cell: (r) => <Mono>@{r.domain}</Mono> },
                 { title: "Role", cell: (r) => <Tone tone="muted">{roleLabel(r.role as Role)}</Tone> },
-                { title: "Apps", className: "whitespace-normal", cell: (r) => <span className="text-sm text-muted-foreground">{keysOf(r).length ? keysOf(r).map(appName).join(", ") : "Every app"}</span> },
+                { title: "Apps", cell: (r) => <AppsSummary keys={keysOf(r)} /> },
                 { title: "Organization check", cell: (r) => (r.require_hosted_domain ? <Tone tone="ok">hd claim</Tone> : <span className="text-xs text-muted-foreground">email only</span>) },
                 {
                   title: "Joined",

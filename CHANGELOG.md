@@ -10,7 +10,7 @@
 
 ### Changed
 
-- Admins page: the admin list is a sortable grid with a search (name, email, identity, apps) and a role filter (one of them: the admins of domain rules); an admin's apps show as a control like the role (the first app and how many more, all of them in its tooltip); changing the role or apps of an admin who joined through a domain rule asks first, since it detaches them from the rule.
+- Admins page: the admin list is a sortable grid with a search (name, email, identity, apps) and a role filter (one of them: the admins of domain rules); an admin's apps show as a control like the role (the first app and how many more, all of them in its tooltip); picking apps (admins, invitations, domain rules, alert channels) names the chosen ones above the list, lists them first and ticks everything a filter matches at once; lists of apps in tables take one line; *Needs attention* on the Overview pages through every problem with a filter instead of showing 12; changing the role or apps of an admin who joined through a domain rule asks first, since it detaches them from the rule.
 
 ## 0.12.0 - 2026-11-26
 

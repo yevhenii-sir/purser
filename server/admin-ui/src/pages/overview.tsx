@@ -2,6 +2,8 @@ import { useState } from "react"
 import { TriangleAlertIcon } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { RichTable } from "@/components/rich-table"
 import { DataTable, ErrorBox, Loading, Mono, PageHeader, Section, Stat, StatusBadge, Tone } from "@/components/common"
 import { PurchaseSheet } from "@/components/purchase-sheet"
 import { call, proc, route, select } from "@/lib/api"
@@ -112,6 +114,7 @@ interface SetupCheck { app_id: string; summary: string; checked_at_micros: numbe
 /** Open owner alerts and builds whose last setup check found problems: what to look at first. */
 function Attention({ alerts, checks, go }: { alerts: OpenAlert[]; checks: SetupCheck[]; go: PageProps["go"] }) {
   const { groupOf } = useAppIndex()
+  const [query, setQuery] = useState("")
   const rows = [
     ...alerts
       .filter((a) => a.active)
@@ -129,6 +132,9 @@ function Attention({ alerts, checks, go }: { alerts: OpenAlert[]; checks: SetupC
         at: Number(c.checked_at_micros),
       })),
   ]
+  // With hundreds of builds the list is long: a filter by build, app, problem or detail.
+  const q = query.trim().toLowerCase()
+  const shown = q ? rows.filter((r) => `${r.title} ${r.app} ${groupOf.get(r.app)?.name || ""} ${r.detail}`.toLowerCase().includes(q)) : rows
   const open = (r: (typeof rows)[number]) => {
     if (r.kind === "alert") return go("alerts")
     const g = groupOf.get(r.app)
@@ -136,19 +142,22 @@ function Attention({ alerts, checks, go }: { alerts: OpenAlert[]; checks: SetupC
   }
   return (
     <Section title="Needs attention" description="Open owner alerts and builds whose last setup check found problems. Click a row to open it.">
-      <DataTable
-        rows={rows.slice(0, 12)}
+      <RichTable
+        rows={shown}
+        rowKey={(r) => r.key}
         onRowClick={open}
-        empty="Nothing: no open alerts, every setup check passes."
+        noun="problems"
+        pageSize={10}
+        empty={rows.length ? "No problem matches." : "Nothing: no open alerts, every setup check passes."}
+        toolbar={rows.length > 10 && <Input className="h-8 w-64" placeholder="Filter by build, app or problem" value={query} onChange={(e) => setQuery(e.target.value)} />}
         columns={[
-          { title: "", cell: (r) => <Tone tone={r.kind === "warn" ? "warn" : "bad"}>{r.kind === "alert" ? "alert" : r.kind}</Tone> },
-          { title: "What", cell: (r) => <span className="font-medium">{r.title}</span> },
-          { title: "Build", cell: (r) => <Mono>{r.app || "server"}</Mono> },
+          { title: "", id: "kind", size: 70, sort: (r) => ["alert", "fail", "warn"].indexOf(r.kind), cell: (r) => <Tone tone={r.kind === "warn" ? "warn" : "bad"}>{r.kind === "alert" ? "alert" : r.kind}</Tone> },
+          { title: "What", sort: (r) => r.title, cell: (r) => <span className="font-medium">{r.title}</span> },
+          { title: "Build", sort: (r) => r.app, cell: (r) => <Mono>{r.app || "server"}</Mono> },
           { title: "Details", cell: (r) => <span className="block max-w-96 truncate text-xs text-muted-foreground" title={r.detail}>{r.detail}</span> },
-          { title: "Since", cell: (r) => <span className="whitespace-nowrap">{fmtTime(r.at)}</span> },
+          { title: "Since", sort: (r) => r.at, cell: (r) => <span className="whitespace-nowrap">{fmtTime(r.at)}</span> },
         ]}
       />
-      {rows.length > 12 && <p className="mt-3 text-xs text-muted-foreground">12 of {rows.length}.</p>}
     </Section>
   )
 }

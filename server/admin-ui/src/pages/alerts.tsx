@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Section, Tone } from "@/components/common"
-import { AppsPicker } from "@/components/apps-picker"
+import { AppsPicker, AppsSummary } from "@/components/apps-picker"
 import { RichTable } from "@/components/rich-table"
 import { SecretField } from "@/components/secret-field"
 import { call, getSetting, proc, select } from "@/lib/api"
@@ -374,8 +374,6 @@ function ChannelList({ channels, hasSecret, onEdit, reload }: {
   onEdit: (c: Channel) => void
   reload: () => void
 }) {
-  const { groups } = useApps()
-  const appNames = useMemo(() => new Map((groups || []).map((g) => [g.key, g.name])), [groups])
   const test = async (c: Channel) => {
     try {
       await proc("admin_test_alert", c.id)
@@ -412,9 +410,7 @@ function ChannelList({ channels, hasSecret, onEdit, reload }: {
         {
           title: "Apps",
           className: "max-w-64 whitespace-normal",
-          cell: (c) => (c.gameKeys.length
-            ? <span className="text-sm break-words">{c.gameKeys.map((k) => appNames.get(k) || k).join(", ")}</span>
-            : <span className="text-sm text-muted-foreground">Every app and server-wide</span>),
+          cell: (c) => <AppsSummary keys={c.gameKeys} none="Every app and server-wide" className={c.gameKeys.length ? "text-sm" : undefined} />,
         },
         {
           title: "Rules",

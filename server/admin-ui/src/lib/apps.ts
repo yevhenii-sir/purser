@@ -151,3 +151,8 @@ export function useAppIndex() {
     return { builds, groupOf, byKey }
   }, [apps, groups])
 }
+
+/** One line for a list of apps however long: the first one and how many more. */
+export function appsText(names: string[], none = "Every app"): string {
+  return !names.length ? none : names.length === 1 ? names[0] : `${names[0]} +${names.length - 1}`
+}
