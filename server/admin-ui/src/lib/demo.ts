@@ -195,7 +195,12 @@ const PROCS: Record<string, (...args: never[]) => unknown> = {
   whoami: () => "0x" + S.identity,
   admin_response_public_key: () => ({ public_key: null }),
   admin_transfer_policy: () => ({ mode: "always", cooldown_days: 0, max_transfers: 0 }),
-  admin_me: () => ({ identity: S.identity, name: S.tables.admin?.find((a: Row) => a.protected)?.name || "", role: "owner", owner: true, game_keys: [] }),
+  // `?role=viewer` (editor, support, admin) shows the demo as that role sees it.
+  admin_me: () => {
+    const asked = new URLSearchParams(location.search).get("role") || ""
+    const role = ["admin", "editor", "support", "viewer"].includes(asked) ? asked : "owner"
+    return { identity: S.identity, name: S.tables.admin?.find((a: Row) => a.protected)?.name || "", role, owner: role === "owner", game_keys: [] }
+  },
   admin_overview: () => S.procs.admin_overview,
   admin_select: (json: string) => {
     const q = JSON.parse(json)

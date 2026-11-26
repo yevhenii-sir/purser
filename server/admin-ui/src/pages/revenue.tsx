@@ -18,6 +18,7 @@ import { call, proc } from "@/lib/api"
 import { useAppIndex, type AppGroup } from "@/lib/apps"
 import { money, pct, shortDay, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
+import { useAllowed } from "@/lib/roles"
 import { isAnalyticsOff, revenueStats } from "@/lib/revenue"
 import { buildLabel } from "@/lib/stores"
 import type { Cohort, InstallCohort, Money, Stats } from "@/lib/types"
@@ -147,6 +148,8 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
   const [sandbox, setSandbox] = useState(false)
   const [fxDialog, setFxDialog] = useState<string | null>(null)
   const [feeDialog, setFeeDialog] = useState(false)
+  /** Rates, the store fee and rebuilds are server-wide settings. */
+  const edit = useAllowed("configure", true)
   /** Manual refreshes so far: the revenue tree counts its kept reports again on each. */
   const [refreshes, setRefreshes] = useState(0)
 
@@ -196,9 +199,9 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
         <div className="ms-auto flex flex-wrap items-center gap-2">
           <RevenueUpdated stats={r} onRefresh={() => { setRefreshes((n) => n + 1); reload() }} className="text-xs text-muted-foreground" />
           <CsvButton onClick={exportCsv} disabled={!r} />
-          <Button variant="outline" size="sm" onClick={() => setFeeDialog(true)} disabled={!r}><PercentIcon /> Store fee</Button>
-          <Button variant="outline" size="sm" onClick={() => tryAct(() => proc("admin_refresh_fx"), "Rates updated").then(reload)}><RefreshCwIcon /> Rates</Button>
-          <Button
+          {edit && <Button variant="outline" size="sm" onClick={() => setFeeDialog(true)} disabled={!r}><PercentIcon /> Store fee</Button>}
+          {edit && <Button variant="outline" size="sm" onClick={() => tryAct(() => proc("admin_refresh_fx"), "Rates updated").then(reload)}><RefreshCwIcon /> Rates</Button>}
+          {edit && <Button
             variant="outline"
             size="sm"
             onClick={() => {
@@ -209,7 +212,7 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
             }}
           >
             <RotateCcwIcon /> Rebuild
-          </Button>
+          </Button>}
         </div>
       </div>
 
@@ -241,8 +244,8 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
               <TriangleAlertIcon />
               <AlertTitle>No exchange rate for {r.fx.missing.join(", ")}</AlertTitle>
               <AlertDescription>
-                These sales are left out of the USD totals until you set a rate.
-                <Button size="sm" variant="outline" className="mt-2" onClick={() => setFxDialog(r.fx.missing[0])}>Set rate</Button>
+                These sales are left out of the USD totals until {edit ? "you set a rate" : "an admin sets a rate"}.
+                {edit && <Button size="sm" variant="outline" className="mt-2" onClick={() => setFxDialog(r.fx.missing[0])}>Set rate</Button>}
               </AlertDescription>
             </Alert>
           )}
@@ -388,7 +391,7 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
           <Section
             title="By currency"
             description={`ECB rates as of ${r.fx.as_of || "—"}.`}
-            actions={<Button size="sm" variant="outline" onClick={() => setFxDialog("")}><PlusIcon /> Manual rate</Button>}
+            actions={edit && <Button size="sm" variant="outline" onClick={() => setFxDialog("")}><PlusIcon /> Manual rate</Button>}
           >
             <DataTable
               rows={r.by_currency}
@@ -400,7 +403,7 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
                 {
                   title: "Gross, USD",
                   num: true,
-                  cell: (x) => (x.converted ? usd(x.gross_usd_micros) : <Button size="xs" variant="outline" onClick={() => setFxDialog(x.currency)}>Set rate</Button>),
+                  cell: (x) => (x.converted ? usd(x.gross_usd_micros) : edit ? <Button size="xs" variant="outline" onClick={() => setFxDialog(x.currency)}>Set rate</Button> : <span className="text-muted-foreground">no rate</span>),
                 },
               ]}
             />
@@ -410,10 +413,12 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
                 {Object.entries(r.fx.overrides).map(([c, v]) => (
                   <span key={c} className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-mono text-xs">
                     1 USD = {v} {c}
-                    <button className="text-muted-foreground hover:text-foreground" aria-label={`Remove ${c}`}
-                      onClick={() => tryAct(() => call("admin_delete_fx_override", c), "Removed").then(reload)}>
-                      <XIcon className="size-3" />
-                    </button>
+                    {edit && (
+                      <button className="text-muted-foreground hover:text-foreground" aria-label={`Remove ${c}`}
+                        onClick={() => tryAct(() => call("admin_delete_fx_override", c), "Removed").then(reload)}>
+                        <XIcon className="size-3" />
+                      </button>
+                    )}
                   </span>
                 ))}
               </div>

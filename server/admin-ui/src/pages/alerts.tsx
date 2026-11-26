@@ -17,6 +17,7 @@ import { useAppIndex, useApps } from "@/lib/apps"
 import { buildLabel } from "@/lib/stores"
 import { errorText, fmtTime } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
+import { useAllowed } from "@/lib/roles"
 import { parseJsonOr } from "@/lib/utils"
 
 type ChannelKind = "telegram" | "slack" | "discord" | "webhook"
@@ -265,6 +266,7 @@ const RULES: { key: keyof Rules; title: string; description: string; thresholds?
 export const ruleTitle = (id: string) => RULES.find((r) => r.key === id)?.title || id
 
 export function AlertsPage() {
+  const edit = useAllowed("configure")
   const { data, error, loading, reload } = useAsync(async () => {
     const [channels, creds, rules, states, log] = await Promise.all([
       select<ChannelRow>({ table: "alert_channel" }),
@@ -299,7 +301,7 @@ export function AlertsPage() {
             most {FLOOD_CAP} messages per {FLOOD_MINUTES} minutes; the rest is summed up in one message when the {FLOOD_MINUTES} minutes end.
           </>
         }
-        actions={data && <Button onClick={() => setEditing("new")}><PlusIcon /> Add channel</Button>}
+        actions={data && edit && <Button onClick={() => setEditing("new")}><PlusIcon /> Add channel</Button>}
       />
       {error ? <ErrorBox error={error} /> : loading || !data ? <Loading rows={6} /> : (
         <>
@@ -374,6 +376,7 @@ function ChannelList({ channels, hasSecret, onEdit, reload }: {
   onEdit: (c: Channel) => void
   reload: () => void
 }) {
+  const edit = useAllowed("configure")
   const test = async (c: Channel) => {
     try {
       await proc("admin_test_alert", c.id)
@@ -428,7 +431,7 @@ function ChannelList({ channels, hasSecret, onEdit, reload }: {
         {
           title: "",
           className: "text-right",
-          cell: (c) => (
+          cell: (c) => edit && (
             <div className="flex justify-end gap-1">
               <Button variant="outline" size="sm" onClick={() => test(c)}><SendIcon /> Test</Button>
               <Button variant="ghost" size="icon-sm" aria-label="Edit" onClick={() => onEdit(c)}><PencilIcon /></Button>
@@ -557,6 +560,7 @@ function ChannelForm({ channel, hasSecret, taken, onClose, onSaved }: {
 }
 
 function RulesSection({ initial, reload }: { initial: Rules; reload: () => void }) {
+  const edit = useAllowed("configure")
   const [rules, setRules] = useState<Rules>(initial)
   const set = <K extends keyof Rules>(k: K, v: Rules[K]) => setRules((r) => ({ ...r, [k]: v }))
   const num = (t: Threshold, v: string) => set(t.key, Math.max(0, Math.floor(Number(v) || 0)) as never)
@@ -578,9 +582,10 @@ function RulesSection({ initial, reload }: { initial: Rules; reload: () => void 
     <Section
       title="Rules"
       description="What to alert about, for every channel. Problems are per app, rejected store keys per developer account, exchange rates server-wide."
-      actions={<Button onClick={save}>Save rules</Button>}
+      actions={edit && <Button onClick={save}>Save rules</Button>}
     >
-      <div className="grid gap-4">
+      {/* Read-only for roles that cannot change the rules. */}
+      <fieldset disabled={!edit} className="grid gap-4">
         {RULES.map((r) => (
           <div key={r.key} className="flex flex-wrap items-start justify-between gap-3 border-b pb-4 last:border-b-0 last:pb-0">
             <div className="flex min-w-0 flex-1 basis-64 items-start gap-3">
@@ -621,7 +626,7 @@ function RulesSection({ initial, reload }: { initial: Rules; reload: () => void 
             <Label htmlFor="send-resolved" className="text-sm">Also tell when a problem is resolved</Label>
           </div>
         </div>
-      </div>
+      </fieldset>
     </Section>
   )
 }
@@ -630,6 +635,7 @@ type OpenProblem = { key: string; rule: string; app_id: string; first_at_micros:
 
 /** Open problems of every app: searchable by app or problem, dismissable one by one or all shown at once. */
 function OpenProblems({ active, reload }: { active: OpenProblem[]; reload: () => void }) {
+  const edit = useAllowed("configure")
   const { builds, groupOf } = useAppIndex()
   const [query, setQuery] = useState("")
   const appOf = (id: string) => {
@@ -662,7 +668,7 @@ function OpenProblems({ active, reload }: { active: OpenProblem[]; reload: () =>
         toolbar={
           <div className="flex flex-wrap items-center gap-2">
             <Input className="h-8 w-64" placeholder="Filter by app or problem" value={query} onChange={(e) => setQuery(e.target.value)} />
-            {shown.length > 1 && <Button variant="outline" size="sm" onClick={dismissAll}>Dismiss all {shown.length}</Button>}
+            {edit && shown.length > 1 && <Button variant="outline" size="sm" onClick={dismissAll}>Dismiss all {shown.length}</Button>}
           </div>
         }
         columns={[
@@ -675,7 +681,7 @@ function OpenProblems({ active, reload }: { active: OpenProblem[]; reload: () =>
           {
             title: "",
             size: 90,
-            cell: (s) => (
+            cell: (s) => edit && (
               <Button variant="ghost" size="xs" onClick={async () => { if (await tryAct(() => call("admin_dismiss_alert", s.key), "Dismissed") !== undefined) reload() }}>
                 Dismiss
               </Button>

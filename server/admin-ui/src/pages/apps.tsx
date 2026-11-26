@@ -18,6 +18,7 @@ import { RevenueUpdated } from "@/components/revenue-updated"
 import type { Level, RevenueOverview } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { appRoute, type PageProps } from "@/routes"
+import { useAllowed } from "@/lib/roles"
 
 const RANK: Record<Level, number> = { skip: 0, info: 1, ok: 2, warn: 3, fail: 4 }
 
@@ -46,7 +47,8 @@ function loadView(): View {
 }
 
 export function AppsPage({ go }: PageProps) {
-  const [wizard, setWizard] = useState(() => location.hash.endsWith("?new"))
+  const addApps = useAllowed("configure")
+  const [wizard, setWizard] = useState(() => addApps && location.hash.endsWith("?new"))
   const [query, setQuery] = useState("")
   const [shown, setShown] = useState(CARDS_PAGE)
   const [sort, setSort] = useState<Sort>("name")
@@ -101,13 +103,15 @@ export function AppsPage({ go }: PageProps) {
       <PageHeader
         title="Apps"
         description="An app is one product with an Android and/or iOS build. Its products, delivery, integrations and keys are on its page."
-        actions={<Button onClick={() => setWizard(true)}><PlusIcon /> Add an app</Button>}
+        actions={addApps && <Button onClick={() => setWizard(true)}><PlusIcon /> Add an app</Button>}
       />
       {error ? <ErrorBox error={error} /> : loading || !data ? <Loading rows={4} /> : !data.groups.length ? (
         <Card className="items-center py-12 text-center">
           <CardContent className="space-y-3">
-            <p className="text-sm text-muted-foreground">No apps yet. The wizard sets up the store apps, reward delivery, keys and products, then checks everything.</p>
-            <Button onClick={() => setWizard(true)}><PlusIcon /> Add an app</Button>
+            <p className="text-sm text-muted-foreground">
+              {addApps ? "No apps yet. The wizard sets up the store apps, reward delivery, keys and products, then checks everything." : "No apps yet."}
+            </p>
+            {addApps && <Button onClick={() => setWizard(true)}><PlusIcon /> Add an app</Button>}
           </CardContent>
         </Card>
       ) : (

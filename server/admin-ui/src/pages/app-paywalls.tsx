@@ -18,6 +18,7 @@ import { buildLabel } from "@/lib/stores"
 import { catalogIdOf, type Product } from "@/lib/types"
 import { parseJsonOr } from "@/lib/utils"
 import type { TabProps } from "@/pages/app"
+import { useAllowed } from "@/lib/roles"
 
 interface PaywallRow {
   key: string
@@ -117,6 +118,7 @@ const shares = (vs: Variant[]) => {
 }
 
 export function AppPaywallsTab({ data }: TabProps) {
+  const edit = useAllowed("configure")
   const g = data.group
   const ids = g.apps.map((a) => a.app_id)
   const loaded = useAsync(async () => {
@@ -164,11 +166,11 @@ export function AppPaywallsTab({ data }: TabProps) {
       <Section
         title="Placements"
         description="Where the game shows a paywall (the id it passes to GetPaywallAsync). Without a running test every player gets the first variant; during a test players are split by the weights, always into the same variant."
-        actions={<Button size="sm" onClick={() => setPlacement("new")} disabled={!d.paywalls.length}><PlusIcon /> Add placement</Button>}
+        actions={edit && <Button size="sm" onClick={() => setPlacement("new")} disabled={!d.paywalls.length}><PlusIcon /> Add placement</Button>}
       >
         <DataTable
           rows={d.placements}
-          onRowClick={setPlacement}
+          onRowClick={edit ? setPlacement : undefined}
           rowKey={(p) => p.key}
           empty={d.paywalls.length ? "No placements yet." : "Create a paywall first, then a placement that shows it."}
           columns={[
@@ -205,10 +207,10 @@ export function AppPaywallsTab({ data }: TabProps) {
               cell: (p) => (
                 <span className="inline-flex gap-1">
                   <Button size="xs" variant="outline" onClick={() => setPreview(p)}><EyeIcon /> Preview</Button>
-                  {running(p)
+                  {edit && (running(p)
                     ? <Button size="xs" variant="outline" onClick={() => setTestDialog({ p, mode: "stop" })}><SquareIcon /> Stop test</Button>
-                    : <Button size="xs" variant="outline" onClick={() => setTestDialog({ p, mode: "start" })} disabled={parseList<Variant>(p.variants_json).length < 2}><FlaskConicalIcon /> Start test</Button>}
-                  <Button size="icon-sm" variant="ghost" className="text-destructive" aria-label="Delete placement" onClick={() => removePlacement(p)}><Trash2Icon /></Button>
+                    : <Button size="xs" variant="outline" onClick={() => setTestDialog({ p, mode: "start" })} disabled={parseList<Variant>(p.variants_json).length < 2}><FlaskConicalIcon /> Start test</Button>)}
+                  {edit && <Button size="icon-sm" variant="ghost" className="text-destructive" aria-label="Delete placement" onClick={() => removePlacement(p)}><Trash2Icon /></Button>}
                 </span>
               ),
             },
@@ -219,11 +221,11 @@ export function AppPaywallsTab({ data }: TabProps) {
       <Section
         title="Paywalls"
         description="Products in display order and a remote config (any JSON) the game reads, changed without an app update. Each build gets the products configured for it."
-        actions={<Button size="sm" onClick={() => setPaywall("new")} disabled={!catalog.length}><PlusIcon /> Add paywall</Button>}
+        actions={edit && <Button size="sm" onClick={() => setPaywall("new")} disabled={!catalog.length}><PlusIcon /> Add paywall</Button>}
       >
         <DataTable
           rows={d.paywalls}
-          onRowClick={setPaywall}
+          onRowClick={edit ? setPaywall : undefined}
           rowKey={(p) => p.key}
           empty={catalog.length ? "No paywalls yet." : "Add products first (Products tab)."}
           columns={[
@@ -238,7 +240,7 @@ export function AppPaywallsTab({ data }: TabProps) {
             { title: "Remote config", cell: (p) => <Mono className="block max-w-64 truncate text-muted-foreground">{p.remote_config_json}</Mono> },
             { title: "Used by", cell: (p) => usedBy(p.paywall_id).join(", ") || <span className="text-muted-foreground">—</span> },
             { title: "Updated", cell: (p) => <span className="text-xs text-muted-foreground">{fmtTime(p.updated_at_micros)}</span> },
-            { title: "", className: "text-right", cell: (p) => <Button size="icon-sm" variant="ghost" className="text-destructive" aria-label="Delete paywall" onClick={() => removePaywall(p)}><Trash2Icon /></Button> },
+            { title: "", className: "text-right", cell: (p) => edit && <Button size="icon-sm" variant="ghost" className="text-destructive" aria-label="Delete paywall" onClick={() => removePaywall(p)}><Trash2Icon /></Button> },
           ]}
         />
       </Section>

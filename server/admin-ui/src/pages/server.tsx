@@ -10,6 +10,7 @@ import { SecretField } from "@/components/secret-field"
 import { call, DEMO, getSetting, publicRoute, ROUTE, select } from "@/lib/api"
 import { BUILTIN_SPACETIME_HOST } from "@/lib/delivery"
 import { tryAct, useAsync } from "@/lib/hooks"
+import { useAllowed } from "@/lib/roles"
 import { useAppIndex, useApps } from "@/lib/apps"
 import { forgetRevenue } from "@/lib/revenue"
 import { isFileSecret } from "@/lib/secrets"
@@ -34,6 +35,7 @@ export function ServerPage() {
 
 /** Delivery host allowlist: an app's spacetime_token is only ever sent to these hosts (https). */
 function HostsSection() {
+  const owner = useAllowed("owner")
   const [host, setHost] = useState("")
   const { data, error, reload } = useAsync(() => select<{ host: string }>({ table: "spacetime_host" }))
   const rows = [{ host: BUILTIN_SPACETIME_HOST, builtin: true }, ...(data || []).map((h) => ({ host: h.host, builtin: false })).sort((a, b) => a.host.localeCompare(b.host))]
@@ -50,7 +52,7 @@ function HostsSection() {
           {
             title: "",
             className: "text-right",
-            cell: (r) => !r.builtin && (
+            cell: (r) => owner && !r.builtin && (
               <Button variant="ghost" size="xs" className="text-destructive" onClick={async () => {
                 if (!confirm(`Stop deliveries to ${r.host}? Apps on this host fail delivery until moved.`)) return
                 if (await tryAct(() => call("admin_remove_spacetime_host", r.host), "Removed") !== undefined) reload()
@@ -59,19 +61,22 @@ function HostsSection() {
           },
         ]}
       />
-      <div className="mt-4 flex gap-2">
-        <Input placeholder="stdb.example.com" className="font-mono text-xs" value={host} onChange={(e) => setHost(e.target.value)} />
-        <Button disabled={!host.trim()} onClick={async () => {
-          if (await tryAct(() => call("admin_add_spacetime_host", host.trim()), "Allowed") === undefined) return
-          setHost("")
-          reload()
-        }}>Allow</Button>
-      </div>
+      {owner && (
+        <div className="mt-4 flex gap-2">
+          <Input placeholder="stdb.example.com" className="font-mono text-xs" value={host} onChange={(e) => setHost(e.target.value)} />
+          <Button disabled={!host.trim()} onClick={async () => {
+            if (await tryAct(() => call("admin_add_spacetime_host", host.trim()), "Allowed") === undefined) return
+            setHost("")
+            reload()
+          }}>Allow</Button>
+        </div>
+      )}
     </Section>
   )
 }
 
 function PublicAddressSection() {
+  const edit = useAllowed("secrets", true)
   const { data, error, loading } = useAsync(() => getSetting("public_base_url"))
   const [value, setValue] = useState<string | null>(null)
   const current = value ?? data ?? ""
@@ -82,9 +87,9 @@ function PublicAddressSection() {
     >
       {error && <ErrorBox error={error} />}
       <div className="flex gap-2">
-        <Input aria-label="Public address" className="font-mono text-xs" placeholder={location.origin + ROUTE} value={current} disabled={loading || !!error} onChange={(e) => setValue(e.target.value)} />
+        <Input aria-label="Public address" className="font-mono text-xs" placeholder={location.origin + ROUTE} value={current} disabled={loading || !!error || !edit} onChange={(e) => setValue(e.target.value)} />
         {/* Not before the stored value loaded: saving the empty field would clear it. */}
-        <Button disabled={loading || !!error} onClick={() => tryAct(() => call("admin_set_setting", "public_base_url", current.trim()), "Saved")}>Save</Button>
+        {edit && <Button disabled={loading || !!error} onClick={() => tryAct(() => call("admin_set_setting", "public_base_url", current.trim()), "Saved")}>Save</Button>}
       </div>
     </Section>
   )
@@ -92,6 +97,7 @@ function PublicAddressSection() {
 
 /** Queue drainers and how long player data is kept (`worker_lanes`, `retention_days`). */
 function WorkerSection() {
+  const edit = useAllowed("configure", true)
   const { data, error, loading, reload } = useAsync(async () => ({ lanes: await getSetting("worker_lanes"), retention: await getSetting("retention_days") }))
   const [lanes, setLanes] = useState<string | null>(null)
   const [retention, setRetention] = useState<string | null>(null)
@@ -109,14 +115,14 @@ function WorkerSection() {
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Queue drainers (1-8, default 2)">
           <div className="flex gap-2">
-            <Input inputMode="numeric" placeholder="2" value={lanesValue} disabled={loading || !!error} onChange={(e) => setLanes(e.target.value)} />
-            <Button variant="outline" disabled={loading || !!error} onClick={() => save("worker_lanes", lanesValue)}>Save</Button>
+            <Input inputMode="numeric" placeholder="2" value={lanesValue} disabled={loading || !!error || !edit} onChange={(e) => setLanes(e.target.value)} />
+            {edit && <Button variant="outline" disabled={loading || !!error} onClick={() => save("worker_lanes", lanesValue)}>Save</Button>}
           </div>
         </Field>
         <Field label="Keep player data (days)">
           <div className="flex gap-2">
-            <Input inputMode="numeric" placeholder="730" value={retentionValue} disabled={loading || !!error} onChange={(e) => setRetention(e.target.value)} />
-            <Button variant="outline" disabled={loading || !!error} onClick={() => save("retention_days", retentionValue)}>Save</Button>
+            <Input inputMode="numeric" placeholder="730" value={retentionValue} disabled={loading || !!error || !edit} onChange={(e) => setRetention(e.target.value)} />
+            {edit && <Button variant="outline" disabled={loading || !!error} onClick={() => save("retention_days", retentionValue)}>Save</Button>}
           </div>
         </Field>
       </div>
@@ -132,6 +138,7 @@ const ANALYTICS_MODES = [
 
 /** How much revenue analytics the server keeps (`analytics`). */
 function AnalyticsSection() {
+  const edit = useAllowed("configure", true)
   const { data, error, loading, reload } = useAsync(() => getSetting("analytics"))
   const current = data || "full"
   const set = async (value: string) => {
@@ -145,7 +152,7 @@ function AnalyticsSection() {
   return (
     <Section title="Analytics" description={ANALYTICS_MODES.find((m) => m.value === current)?.hint}>
       {error && <ErrorBox error={error} />}
-      <Select value={current} disabled={loading || !!error} onValueChange={set}>
+      <Select value={current} disabled={loading || !!error || !edit} onValueChange={set}>
         <SelectTrigger className="w-48" aria-label="Analytics"><SelectValue /></SelectTrigger>
         <SelectContent>{ANALYTICS_MODES.map((m) => <SelectItem key={m.value} value={m.value}>{m.label}</SelectItem>)}</SelectContent>
       </Select>
@@ -155,6 +162,7 @@ function AnalyticsSection() {
 
 /** `GET /metrics` for Prometheus: on while the `metrics_token` secret is set. */
 function MetricsSection() {
+  const edit = useAllowed("secrets", true)
   const { data, error, loading, reload } = useAsync(async () => {
     const rows = await select<{ key: string }>({ table: "credential", columns: ["key"] })
     return rows.some((r) => r.key === "default/metrics_token")
@@ -188,8 +196,8 @@ function MetricsSection() {
       {error && <ErrorBox error={error} />}
       <div className="flex flex-wrap items-center gap-2">
         <Tone tone={data ? "ok" : "muted"}>{loading ? "…" : data ? "on" : "off"}</Tone>
-        <Button variant="outline" disabled={loading || !!error} onClick={create}>{data ? "New token" : "Create token"}</Button>
-        {data && <Button variant="ghost" className="text-destructive" onClick={turnOff}>Turn off</Button>}
+        {edit && <Button variant="outline" disabled={loading || !!error} onClick={create}>{data ? "New token" : "Create token"}</Button>}
+        {edit && data && <Button variant="ghost" className="text-destructive" onClick={turnOff}>Turn off</Button>}
       </div>
       {shown && (
         <p className="mt-3 text-xs text-muted-foreground">
@@ -212,6 +220,7 @@ function RawSecrets() {
 }
 
 function RawSecretsBody() {
+  const edit = useAllowed("secrets", true)
   const [scope, setScope] = useState("default")
   const [name, setName] = useState(SECRET_NAMES[0][0])
   const [value, setValue] = useState("")
@@ -270,7 +279,7 @@ function RawSecretsBody() {
       title: "",
       size: 52,
       className: "text-right",
-      cell: (r) => (
+      cell: (r) => edit && (
         <Button variant="ghost" size="icon-sm" className="text-destructive" aria-label="Delete" onClick={async (e) => {
           e.stopPropagation()
           if (!confirm(`Delete secret ${r.scope}/${r.name}?`)) return
@@ -285,7 +294,7 @@ function RawSecretsBody() {
     if (ok !== undefined) { setValue(""); reload() }
   }
   return (
-    <div className="mt-4 grid gap-6 lg:grid-cols-[3fr_2fr]">
+    <div className={edit ? "mt-4 grid gap-6 lg:grid-cols-[3fr_2fr]" : "mt-4"}>
       <Section title="Stored secrets" description={<>Lookup order: store app → developer account → <code>default</code>. Values are never shown.</>}>
         {error ? <ErrorBox error={error} /> : loading || !data ? <Loading /> : (
           <div className="space-y-3">
@@ -307,7 +316,7 @@ function RawSecretsBody() {
           </div>
         )}
       </Section>
-      <Section title="Set or replace a secret">
+      {edit && <Section title="Set or replace a secret">
         <div className="grid gap-4">
           <Field label="Scope (store app id, account or default)">
             <Input list="scopes" value={scope} onChange={(e) => setScope(e.target.value)} />
@@ -324,7 +333,7 @@ function RawSecretsBody() {
           </Field>
           <Button onClick={save}>Save secret</Button>
         </div>
-      </Section>
+      </Section>}
     </div>
   )
 }

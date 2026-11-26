@@ -10,6 +10,7 @@
 
 ### Changed
 
+- Admin page: every role sees only what it can do. Viewers get no buttons that change anything and read settings as disabled fields; support sees the player actions and manual grants; editors no keys, store setup or account keys; server-wide actions (rates, store fee, revenue rebuild, worker, metrics, delivery hosts) are hidden from admins limited to some apps or, for the hosts, from everyone but the owner. The demo takes `?role=viewer` (or `support`, `editor`, `admin`) to show it.
 - Admins page: the admin list is a sortable grid with a search (name, email, identity, apps) and a role filter (one of them: the admins of domain rules); an admin's apps show as a control like the role (the first app and how many more, all of them in its tooltip); picking apps (admins, invitations, domain rules, alert channels) names the chosen ones above the list, lists them first and ticks everything a filter matches at once; lists of apps in tables take one line; *Needs attention* on the Overview pages through every problem with a filter instead of showing 12; changing the role or apps of an admin who joined through a domain rule asks first, since it detaches them from the rule.
 
 ## 0.12.0 - 2026-11-26

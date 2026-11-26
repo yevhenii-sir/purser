@@ -9,6 +9,7 @@ import { groupApps, useApps, type AppGroup } from "@/lib/apps"
 import { useAsync } from "@/lib/hooks"
 import { storeOf, storeOfSecret, STORE_SECRETS } from "@/lib/stores"
 import { appRoute, type PageProps } from "@/routes"
+import { useAllowed } from "@/lib/roles"
 
 /** Keys a developer account usually shares between its apps: every store's account-wide keys
  * (from the store registry), then delivery and integration keys. */
@@ -54,6 +55,8 @@ function UsedBy({ groups, go }: { groups: AppGroup[]; go: (route: string) => voi
 
 export function AccountsPage({ go }: PageProps) {
   const [target, setTarget] = useState<SecretTarget | null>(null)
+  /** Account and default keys: admins with the secrets capability who see every app. */
+  const edit = useAllowed("secrets", true)
   const { apps, names, error: appsError } = useApps()
   const creds = useAsync(async () => new Set((await select<{ key: string }>({ table: "credential", columns: ["key"] })).map((c) => c.key)))
   const accounts = [...new Set([...(apps || []).map((a) => a.account || "default"), "default"])].sort((a, b) => (a === "default" ? 1 : b === "default" ? -1 : a.localeCompare(b)))
@@ -115,7 +118,7 @@ export function AccountsPage({ go }: PageProps) {
                 {
                   title: "",
                   className: "text-right",
-                  cell: (s) => (
+                  cell: (s) => edit && (
                     <Button size="xs" variant="outline" onClick={() => setTarget({ name: s.name, scopes: [{ value: acc, label: acc }] })}>
                       {data.creds.has(`${acc}/${s.name}`) ? "Replace" : "Set"}
                     </Button>

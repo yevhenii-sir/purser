@@ -120,16 +120,18 @@ export function AppIntegrationsTab({ data, reload }: TabProps) {
                       <div className="truncate text-sm" title={app.app_id}>{buildLabel(app)}</div>
                       {act && <div className={`truncate text-xs ${TONE[act.tone]}`} title={act.title}>{act.text}</div>}
                     </div>
-                    {droppedOf(app.app_id, kind) > 0 && (
-                      <Button size="xs" variant="outline" disabled={!canResend} title="Events this integration did not take: send them again once the cause is fixed"
+                    {canResend && droppedOf(app.app_id, kind) > 0 && (
+                      <Button size="xs" variant="outline" title="Events this integration did not take: send them again once the cause is fixed"
                         onClick={() => resend(app.app_id, kind)}>
                         Resend {droppedOf(app.app_id, kind)} dropped
                       </Button>
                     )}
                     <StatusBadge state={state} />
-                    <Button size="xs" variant={row ? "ghost" : "outline"} onClick={() => setEditing({ kind, row: row || null, appId: app.app_id })}>
-                      {row ? "Edit" : "Connect"}
-                    </Button>
+                    {canResend && (
+                      <Button size="xs" variant={row ? "ghost" : "outline"} onClick={() => setEditing({ kind, row: row || null, appId: app.app_id })}>
+                        {row ? "Edit" : "Connect"}
+                      </Button>
+                    )}
                   </div>
                   )
                 })}
@@ -164,7 +166,7 @@ export function AppIntegrationsTab({ data, reload }: TabProps) {
           </CardContent>
         </Card>
       )}
-      <TestEvent apps={g.apps} />
+      {canResend && <TestEvent apps={g.apps} />}
       <IntegrationDialog
         editing={editing && { kind: editing.kind, row: editing.row }}
         apps={editing ? g.apps.filter((a) => a.app_id === editing.appId) : g.apps}

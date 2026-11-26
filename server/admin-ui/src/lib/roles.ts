@@ -62,6 +62,16 @@ export const useScoped = () => useContext(ScopeContext).length > 0
 
 export const useRole = () => useContext(RoleContext)
 
+/**
+ * The signed-in admin's role has `cap` (and, for a server-wide action, `everyApp`, they are not limited
+ * to some apps): controls of actions they lack are not shown. The server refuses them anyway.
+ */
+export function useAllowed(cap: Cap, everyApp = false): boolean {
+  const role = useContext(RoleContext)
+  const limited = useContext(ScopeContext).length > 0
+  return can(role, cap) && !(everyApp && limited)
+}
+
 /** `can(cap)` for the signed-in admin. */
 export function useCan() {
   const role = useContext(RoleContext)

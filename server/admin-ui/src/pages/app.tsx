@@ -32,7 +32,7 @@ import { AppProductsTab } from "@/pages/app-products"
 import { PurchasesPage } from "@/pages/purchases"
 import { RevenuePage } from "@/pages/revenue"
 import { APP_TABS, appRoute, type AppTab, type PageProps } from "@/routes"
-import { useCan } from "@/lib/roles"
+import { useAllowed, useCan } from "@/lib/roles"
 
 const TAB_TITLES: Record<AppTab, string> = {
   setup: "Setup", products: "Products", paywalls: "Paywalls", promo: "Promo codes", delivery: "Delivery", integrations: "Integrations", keys: "Keys", purchases: "Purchases", revenue: "Revenue",
@@ -181,6 +181,7 @@ function RenameButton({ group }: { group: AppGroup }) {
 }
 
 export function AppPage({ appKey, tab, go, me }: PageProps & { appKey: string; tab: AppTab }) {
+  const renames = useAllowed("configure")
   const { apps, groups, error: appsError } = useApps()
   // Apps without a game_key are listed under their app id.
   const group = groups?.find((g) => g.key === appKey)
@@ -202,7 +203,7 @@ export function AppPage({ appKey, tab, go, me }: PageProps & { appKey: string; t
         <div className="min-w-0 space-y-1">
           <div className="flex min-w-0 items-center gap-1">
             <h1 className="truncate text-xl font-semibold tracking-tight">{g.name}</h1>
-            <RenameButton group={g} />
+            {renames && <RenameButton group={g} />}
             {g.name !== g.key && <span className="ms-1 truncate font-mono text-xs text-muted-foreground" title="App key">{g.key}</span>}
           </div>
           <div className="flex flex-wrap gap-2 pt-1">
@@ -243,7 +244,9 @@ function SetupTab({ data, reload }: TabProps) {
   const base = useAsync(() => publicRoute())
   const can = useCan()
   const appleBuilds = g.apps.filter((a) => storeOf(a).id === "apple")
-  const canSetUp = (a: GameApp) => can(storeOf(a).id === "apple" ? "configure" : "secrets")
+  // Store setup writes keys (the server checks Secrets for every store); checks and the wizard need Configure.
+  const canSetUp = (_: GameApp) => can("secrets")
+  const configure = can("configure")
   const recheck = async (appId: string) => {
     await checkBuilds([appId])
     reload()
@@ -266,7 +269,7 @@ function SetupTab({ data, reload }: TabProps) {
   }
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2">
+      {configure && <div className="flex flex-wrap items-center gap-2">
         <Button onClick={() => check(false)} disabled={!!checking}><RefreshCwIcon className={checking === "all" ? "animate-spin" : ""} /> {checking === "all" ? "Checking…" : "Check now"}</Button>
         {appleBuilds.length > 0 && (
           <Button variant="outline" onClick={() => check(true)} disabled={!!checking}
@@ -275,7 +278,7 @@ function SetupTab({ data, reload }: TabProps) {
           </Button>
         )}
         <Button variant="outline" onClick={() => setWizard(true)}><SparklesIcon /> Add a build or run the setup wizard</Button>
-      </div>
+      </div>}
       {g.apps.map((a) => {
         const rep = data.reports[a.app_id]
         const urls = rep && base.data ? reportUrls(rep, base.data, secrets) : null
@@ -288,14 +291,14 @@ function SetupTab({ data, reload }: TabProps) {
               </div>
             }>
             {!rep ? (
-              <p className="text-sm text-muted-foreground">Not checked yet: press Check now.</p>
+              <p className="text-sm text-muted-foreground">{configure ? "Not checked yet: press Check now." : "Not checked yet."}</p>
             ) : (
               <div className="space-y-5">
                 <ReportView report={rep} />
                 {urls && (
                   <div className="space-y-3">
                     {urls.notify && <CopyField label={urls.notifyLabel} value={urls.notify} />}
-                    {urls.rtdn.includes("<google_rtdn_secret>") && (
+                    {urls.rtdn.includes("<google_rtdn_secret>") && can("secrets") && (
                       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                         The stored secret is never shown. Generate a new one to get the full URL, then update the Pub/Sub push subscription.
                         <Button size="xs" variant="outline" onClick={() => newRtdn(a.app_id)}><KeyRoundIcon /> New RTDN secret</Button>
@@ -327,6 +330,7 @@ const REFUND_MODES = [
 ]
 
 function DeliveryTab({ data, reload, go }: TabProps) {
+  const edit = useAllowed("configure")
   const g = data.group
   const first = g.apps[0]
   const [common, setCommon] = useState<DeliverySettings>({
@@ -366,8 +370,10 @@ function DeliveryTab({ data, reload, go }: TabProps) {
 
   return (
     <>
+      {/* Read-only for roles that cannot change builds. */}
+      <fieldset disabled={!edit} className="contents">
       <Section title="Reward delivery" description="How purchases reach the app. Shared by all its builds."
-        actions={<Button onClick={save}>Save</Button>}>
+        actions={edit && <Button onClick={save}>Save</Button>}>
         {differs && <p className="mb-4 text-sm text-amber-700 dark:text-amber-400">The builds have different settings now; saving applies these to all of them.</p>}
         <DeliveryFields value={common} onChange={(patch) => setCommon((c) => ({ ...c, ...patch }))} />
       </Section>
@@ -425,7 +431,7 @@ function DeliveryTab({ data, reload, go }: TabProps) {
             {
               title: "",
               className: "text-right",
-              cell: (a) => (
+              cell: (a) => edit && (
                 <span className="inline-flex gap-1">
                   {first.delivery === "webhook" && <Button size="xs" variant="outline" onClick={() => ping(a.app_id)}><WebhookIcon /> Ping</Button>}
                   <Button size="icon-sm" variant="ghost" className="text-destructive" aria-label="Delete build" onClick={() => remove(a)}><Trash2Icon /></Button>
@@ -439,9 +445,10 @@ function DeliveryTab({ data, reload, go }: TabProps) {
           Client consumes: the Android client consumes purchases itself (e.g. still through Adapty); otherwise consumed purchases unknown to the ledger are rejected as granted elsewhere.
           SNS topic: Amazon notifications are accepted only from this topic (the setup check shows the topic they come from).
           Refund requests: when an App Store player asks for a refund, Apple asks the server whether the purchase was delivered and used; the answer is sent only for players who consented in the game (<Mono>SetRefundDataConsent</Mono> in the Unity package).
-          Press Save above to apply.
+          {edit && "Press Save above to apply."}
         </p>
       </Section>
+      </fieldset>
       <ClientSecuritySection apps={g.apps} reload={reload} />
       {g.apps.filter((a) => storeOf(a).id === "steam").map((a) => <SteamBuildSection key={a.app_id} app={a} />)}
       <TransferPolicySection gameKey={g.key} />

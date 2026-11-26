@@ -115,9 +115,11 @@ export function Shell({ route, go, me, onSignOut, children }: {
           </SidebarGroup>
           <SidebarGroup>
             <SidebarGroupLabel>Apps</SidebarGroupLabel>
-            <SidebarGroupAction title="Add an app" onClick={() => go("apps?new")}>
-              <PlusIcon /> <span className="sr-only">Add an app</span>
-            </SidebarGroupAction>
+            {can(role, "configure") && (
+              <SidebarGroupAction title="Add an app" onClick={() => go("apps?new")}>
+                <PlusIcon /> <span className="sr-only">Add an app</span>
+              </SidebarGroupAction>
+            )}
             <SidebarGroupContent>
               {all.length > SIDEBAR_APPS && (
                 <div className="px-2 pb-1 group-data-[collapsible=icon]:hidden">

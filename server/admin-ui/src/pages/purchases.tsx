@@ -18,6 +18,7 @@ import { STORES } from "@/lib/stores"
 import { catalogIdOf, KINDS, STATUSES, type GameApp, type Product, type Purchase } from "@/lib/types"
 import { downloadBlob } from "@/lib/utils"
 import { playerRoute, type PageProps } from "@/routes"
+import { useAllowed } from "@/lib/roles"
 
 const ANY = "__any__"
 /** Rows per page of the list; `admin_list_purchases` says when more match and where they start. */
@@ -131,10 +132,11 @@ export function PurchasesPage({ go, appIds, embedded }: PageProps & { appIds?: s
     }
   }
 
+  const support = useAllowed("support")
   const actions = (
     <>
       <Button variant="outline" onClick={() => setDialog("entitlements")}><UserCheckIcon /> Entitlements</Button>
-      <Button onClick={() => setDialog("grant")}><GiftIcon /> Manual grant</Button>
+      {support && <Button onClick={() => setDialog("grant")}><GiftIcon /> Manual grant</Button>}
     </>
   )
   return (
