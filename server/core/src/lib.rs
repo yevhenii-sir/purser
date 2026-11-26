@@ -37,6 +37,7 @@ pub mod support;
 pub mod tax;
 pub mod telegram;
 pub mod time;
+pub mod wallet;
 pub mod x509;
 pub mod xsolla;
 

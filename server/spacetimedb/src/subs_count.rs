@@ -3,15 +3,16 @@
 //! of `report_job`). A game with millions of subscriptions cannot count them in one call: the
 //! database computes one call at a time, so that call would hold every purchase and request.
 //!
-//! The walk reads the owned subscriptions in windows of `owned_purchase.sub_until_ms` (when their
-//! access ends), from now on (`scan::first_rows`), [`batch`] per step. A renewal recorded while a
+//! The walk reads the paid subscriptions players own (`running_subscription`, kept in step with
+//! the ledger and holding what is counted) in windows of `until_ms` (when their access ends), from
+//! now on (`scan::first_rows`), [`batch`] per step, without reading the ledger. A renewal recorded while a
 //! walk runs may be counted in both of its rows' windows or in neither: the counts are of the
 //! minute the walk ran, not of one instant.
 
-use crate::ledger_index::{self, OwnedPurchase};
+use crate::ledger_index::{self, RunningSubscription};
+use crate::product;
 use crate::settings::{self, key};
-use crate::{product, purchase, Purchase};
-use purser_core::model::{environment, kind};
+use purser_core::model::environment;
 use purser_core::revenue as rv;
 use serde::{Deserialize, Serialize};
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
@@ -19,9 +20,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 /// Subscriptions read per step, at least: a step reads whole windows, up to about three times as
-/// many (a window twice as wide as all before it), and each one looks its ledger row up.
+/// many (a window twice as wide as all before it).
 pub fn batch() -> usize {
-    crate::ctx::batch(2, 1_000)
+    crate::ctx::batch(2, 2_000)
 }
 /// The first window of a walk (subscriptions whose access ends in the next ten minutes), and how far
 /// ahead access normally ends (a yearly subscription with its grace period); later rows are read
@@ -101,29 +102,24 @@ pub fn count_all(tx: &ReducerContext, apps: &BTreeSet<String>, include_sandbox: 
     acc
 }
 
-fn count(tx: &ReducerContext, acc: &mut SubsAcc, o: &OwnedPurchase, now: i64, include_sandbox: bool, periods: &mut BTreeMap<(String, String), u32>) {
+fn count(tx: &ReducerContext, acc: &mut SubsAcc, p: &RunningSubscription, now: i64, include_sandbox: bool, periods: &mut BTreeMap<(String, String), u32>) {
     // One per subscription: its row whose access ends last (a renewal the ledger has not replaced
     // the older row with yet is the same subscription).
-    if ledger_index::same_subscription(tx, o).iter().any(|r| (r.sub_until_ms, &r.purchase_id) > (o.sub_until_ms, &o.purchase_id)) {
-        return;
-    }
-    let Some(p) = tx.db.purchase().id().find(&o.purchase_id) else { return };
-    if p.kind != kind::SUBSCRIPTION || !ledger_index::is_owned_row(&p) || crate::revenue::not_a_sale(&p) {
+    if ledger_index::same_subscription(tx, p).iter().any(|r| (r.until_ms, &r.purchase_id) > (p.until_ms, &p.purchase_id)) {
         return;
     }
     if p.expires_at_ms > now {
-        add_running(tx, acc, &p, periods);
+        add_running(tx, acc, p, periods);
     }
-    let gives_access = p.access_until_ms() == 0 || p.access_until_ms() > now;
-    if gives_access && (include_sandbox || p.environment != environment::SANDBOX) {
+    if p.until_ms > now && (include_sandbox || p.environment != environment::SANDBOX) {
         acc.auto_renew_off += u32::from(p.auto_renew_off);
         acc.in_grace += u32::from(p.grace_until_ms > now && p.expires_at_ms <= now);
         acc.billing_issue += u32::from(p.billing_issue);
-        acc.price_consent_needed += u32::from(p.price_change == purser_core::model::price_change::CONSENT_NEEDED);
+        acc.price_consent_needed += u32::from(p.price_consent_needed);
     }
 }
 
-fn add_running(tx: &ReducerContext, acc: &mut SubsAcc, p: &Purchase, periods: &mut BTreeMap<(String, String), u32>) {
+fn add_running(tx: &ReducerContext, acc: &mut SubsAcc, p: &RunningSubscription, periods: &mut BTreeMap<(String, String), u32>) {
     // The catalog's billing period; guessed from the row's span only when the product has none (a
     // row recorded late, by a restore or an import, spans less than its period).
     let catalog = *periods.entry((p.app_id.clone(), p.product_id.clone())).or_insert_with(|| {

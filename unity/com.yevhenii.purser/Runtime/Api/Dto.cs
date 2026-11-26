@@ -264,6 +264,12 @@ namespace Purser
         public const string CodeUsedUp = "ERR_CODE_USED_UP";
         /// <summary>409 from <c>/redeem</c>: this player redeemed it before.</summary>
         public const string CodeAlreadyRedeemed = "ERR_CODE_ALREADY_REDEEMED";
+        /// <summary>409 from <c>/wallet/spend</c>: the balance is less than the amount.</summary>
+        public const string InsufficientFunds = "ERR_INSUFFICIENT_FUNDS";
+        /// <summary>409 from <c>/wallet/spend</c>: the reference was used for another spend.</summary>
+        public const string ReferenceUsed = "ERR_REFERENCE_USED";
+        /// <summary>403 from <c>/wallet/spend</c>: the build has no player tokens (spend from your backend instead).</summary>
+        public const string SignedOnly = "ERR_SIGNED_ONLY";
     }
 
     /// <summary>Generic <c>{status, code, message}</c> answer.</summary>

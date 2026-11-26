@@ -170,6 +170,15 @@ const PROFILE_PURCHASES: usize = 500;
 
 /// Everything support needs about one `user_id`, across every app of the database.
 /// `only`: the builds an admin limited to some apps may see (`None` = all).
+/// The player's balances and latest wallet changes, of the apps the admin may see.
+fn wallet_of(tx: &TxContext, user_id: &str, only: Option<&BTreeSet<String>>) -> Value {
+    let games: Option<BTreeSet<String>> = only.map(|apps| apps.iter().filter_map(|a| tx.db.game_app().app_id().find(a)).map(|a| a.game_key).collect());
+    let visible = |v: &Value| games.as_ref().is_none_or(|g| v["game_key"].as_str().is_some_and(|k| g.contains(k)));
+    let balances: Vec<Value> = crate::wallet::all_balances(tx, user_id).into_iter().filter(|v| visible(v)).collect();
+    let history: Vec<Value> = crate::wallet::history(tx, None, user_id, 200).into_iter().filter(|v| visible(v)).take(50).collect();
+    json!({ "balances": balances, "transactions": history })
+}
+
 pub fn profile(tx: &TxContext, user_id: &str, only: Option<&BTreeSet<String>>) -> Value {
     let visible = |app_id: &str| only.is_none_or(|o| o.contains(app_id));
     let mut rows: Vec<Purchase> = tx.db.purchase().user_id().filter(user_id).filter(|p| visible(&p.app_id)).collect();
@@ -232,6 +241,8 @@ pub fn profile(tx: &TxContext, user_id: &str, only: Option<&BTreeSet<String>>) -
         "entitlements": entitlements,
         "attribution": attribution,
         "players": players,
+        // Virtual currency, per app: the balances and the latest changes.
+        "wallet": wallet_of(tx, user_id, only),
         // Billing country of the newest purchase that has one.
         "store_country": rows.iter().find(|p| !p.country.is_empty()).map(|p| p.country.clone()).unwrap_or_default(),
         // The newest ones, and every older one that backs an entitlement or needs attention.

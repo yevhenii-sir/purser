@@ -598,6 +598,9 @@ pub fn reinstate(tx: &TxContext, mut p: Purchase, details: &str) -> Option<Strin
         return None;
     }
     crate::revenue::on_reinstate(tx, &p);
+    if p.was_granted {
+        crate::wallet::on_reinstate(tx, &p);
+    }
     // The refund is undone: a later one says again how much it returns.
     p.refund_share_milli = 0;
     let now = tx_now_micros(tx);
@@ -669,6 +672,10 @@ fn set_inactive(tx: &TxContext, mut p: Purchase, new_status: &str, expires_at_ms
     }
     if from_store {
         crate::revenue::on_inactive(tx, &p, new_status);
+    }
+    // Refunded or revoked: the currency it gave is taken back.
+    if new_status == status::REVOKE_PENDING && p.was_granted {
+        crate::wallet::on_revoke(tx, &p);
     }
     let now = tx_now_micros(tx);
     let mut details = details.to_string();
@@ -895,6 +902,7 @@ fn transition(tx: &TxContext, id: &str, from: &str, to: &str, integration_event:
         }
         if first_grant && !p.was_granted {
             crate::revenue::on_first_grant(tx, &p);
+            crate::wallet::on_grant(tx, &p);
         }
         if first_grant {
             p.was_granted = true;

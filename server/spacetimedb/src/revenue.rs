@@ -1222,7 +1222,15 @@ impl<'a> LedgerPass<'a> {
             by_payer.entry(rv::payer_key(&row)).or_default().push(row);
         }
         for rows in by_payer.values() {
-            acc.add_payer(rows, &self.ctx());
+            // The install day of the payer: the first time the server heard from them in a build of
+            // the app they paid in.
+            let game_apps: BTreeSet<String> = match rows.first() {
+                Some(r) if !r.game_key.is_empty() => self.tx.db.game_app().game_key().filter(r.game_key.as_str()).map(|a| a.app_id).collect(),
+                Some(r) => BTreeSet::from([r.app_id.clone()]),
+                None => continue,
+            };
+            let installed = crate::players::installed_day(self.tx, user, &game_apps);
+            acc.add_payer_installed(rows, &self.ctx(), installed);
         }
     }
 
@@ -1547,6 +1555,9 @@ pub(crate) fn report_in(
     report["subscriptions"]["billing_issue_now"] = json!(running.billing_issue);
     report["subscriptions"]["price_consent_needed_now"] = json!(running.price_consent_needed);
 
+    // Whole months: the install cohorts are months, like the payer cohorts.
+    let first_day = (window(from, to).0 / MICROS_PER_DAY) as i32;
+    report["install_cohorts"] = ledger.install_cohorts(&crate::players::installs_by_month(tx, &apps, first_day, to));
     let ledger = ledger.finish();
     if let (Some(r), Some(l)) = (report.as_object_mut(), ledger.as_object()) {
         r.extend(l.clone());

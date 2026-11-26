@@ -205,6 +205,28 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void Wallet_ReadsBalancesAndSpendsOncePerReference()
+        {
+            CreateService();
+            m_Api.WalletResult = new ApiResult<WalletResponse>(200, new WalletResponse { Status = "ok", Balances = new Dictionary<string, long> { ["gems"] = 120 } }, null);
+            var wallet = Sync.Run(m_Service.GetWalletAsync());
+            Assert.AreEqual((WalletStatus.Success, 120L, 0L), (wallet.Status, wallet.Of("gems"), wallet.Of("coins")));
+
+            m_Api.SpendResult = new ApiResult<SpendResponse>(200, new SpendResponse { Status = "ok", Balance = 90 }, null);
+            var spent = Sync.Run(m_Service.SpendAsync("gems", 30, " sword-1 "));
+            Assert.AreEqual((WalletStatus.Success, 90L), (spent.Status, spent.Balance));
+            Assert.AreEqual(("gems", 30L, "sword-1", User), (m_Api.SpendRequests[0].Currency, m_Api.SpendRequests[0].Amount, m_Api.SpendRequests[0].Reference, m_Api.SpendRequests[0].UserId));
+
+            m_Api.SpendResult = new ApiResult<SpendResponse>(409, new SpendResponse { Status = "error", Code = ErrorCodes.InsufficientFunds, Message = "the balance is 90" },
+                "HTTP 409", ErrorCodes.InsufficientFunds);
+            Assert.AreEqual(WalletStatus.InsufficientFunds, Sync.Run(m_Service.SpendAsync("gems", 500, "castle-1")).Status);
+            m_Api.SpendResult = new ApiResult<SpendResponse>(0, null, "timeout");
+            Assert.AreEqual(WalletStatus.Failed, Sync.Run(m_Service.SpendAsync("gems", 5, "potion-1")).Status, "retry it with the same reference");
+            Assert.AreEqual(WalletStatus.Rejected, Sync.Run(m_Service.SpendAsync("gems", 0, "x")).Status, "nothing to spend: not sent");
+            Assert.AreEqual(3, m_Api.SpendRequests.Count);
+        }
+
+        [Test]
         public void Purchase_OfSeveralUnits_SaysHowManyToGrant()
         {
             CreateService();

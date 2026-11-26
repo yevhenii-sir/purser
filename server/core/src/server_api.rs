@@ -19,7 +19,9 @@ pub mod scope {
     pub const GRANT: &str = "grant";
     /// `/server/revoke`: take a purchase back (not a refund).
     pub const REVOKE: &str = "revoke";
-    pub const ALL: &[&str] = &[READ, GRANT, REVOKE];
+    /// `/server/wallet/*`: read, give and spend players' virtual currency.
+    pub const WALLET: &str = "wallet";
+    pub const ALL: &[&str] = &[READ, GRANT, REVOKE, WALLET];
 }
 
 /// Error codes of the `/server/*` routes.

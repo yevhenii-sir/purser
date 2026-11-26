@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- `GetWalletAsync` and `SpendAsync`: the player's virtual currency on the server (docs/wallet.md). Products with a
+  `wallet` on the admin page credit it when bought; `SpendAsync` spends it once per reference
+  (`WalletStatus.InsufficientFunds` when the balance is short) and needs player tokens. New error codes
+  `ErrorCodes.InsufficientFunds`, `ReferenceUsed`, `SignedOnly`.
+
 ## [0.11.0] - 2026-11-26
 
 Checked in Unity 2022.3 and 6.6: the package compiles without warnings and the EditMode tests pass (320 of 320); the core

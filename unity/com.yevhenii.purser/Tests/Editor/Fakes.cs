@@ -383,6 +383,22 @@ namespace Purser.Tests
         }
     }
 
+    internal sealed partial class FakeApi : IWalletApi
+    {
+        public readonly List<SpendRequest> SpendRequests = new List<SpendRequest>();
+        public ApiResult<WalletResponse> WalletResult;
+        public ApiResult<SpendResponse> SpendResult;
+
+        public Task<ApiResult<WalletResponse>> GetWalletAsync(WalletRequest request, CancellationToken ct = default) =>
+            Task.FromResult(WalletResult ?? new ApiResult<WalletResponse>(500, null, "not configured"));
+
+        public Task<ApiResult<SpendResponse>> SpendAsync(SpendRequest request, CancellationToken ct = default)
+        {
+            SpendRequests.Add(request);
+            return Task.FromResult(SpendResult ?? new ApiResult<SpendResponse>(500, null, "not configured"));
+        }
+    }
+
     internal sealed partial class FakeApi : IPromoCodeApi
     {
         public readonly List<RedeemRequest> RedeemRequests = new List<RedeemRequest>();

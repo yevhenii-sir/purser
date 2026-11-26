@@ -462,6 +462,23 @@ if (r.IsSuccess) ShowToast($"You got {r.ProductId}!");        // PurchaseSucceed
 else if (r.Status == PurchaseStatus.Rejected) ShowToast("This code is not valid");  // r.Message: ERR_CODE_EXPIRED: ...
 ```
 
+## Virtual currency
+
+Products with a `wallet` on the admin page (`gems:100`) credit the player's balance on the server when bought and take
+it back when refunded; the game reads and spends it there (docs/wallet.md):
+
+```csharp
+var wallet = await billing.GetWalletAsync();
+gemsLabel.text = wallet.Of("gems").ToString();
+
+var spent = await billing.SpendAsync("gems", 30, $"sword-{purchaseCounter}");   // needs player tokens
+if (spent.IsSuccess) GiveSword();
+else if (spent.Status == WalletStatus.InsufficientFunds) ShowShop();
+else if (spent.Status == WalletStatus.Failed) RetryLater();                     // with the same reference
+```
+
+Without player tokens, spend from your backend (`/server/wallet/spend` with a server key).
+
 ## Player profile
 
 Every request carries the device (`SystemInfo.deviceModel`, `SystemInfo.operatingSystem`), `Application.version` and

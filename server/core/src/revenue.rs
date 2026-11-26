@@ -926,6 +926,10 @@ pub struct LedgerAcc {
     campaigns: BTreeMap<String, Campaign>,
     /// Trials started in the range: (started, converted, pending).
     trials: (u32, u32, u32),
+    /// Install month (in the range) → (payers, net USD by month since the install, up to now): the
+    /// payers whose install day is known ([`LedgerAcc::add_payer_installed`]).
+    #[serde(default)]
+    installs: BTreeMap<i32, (u32, Vec<i64>)>,
 }
 
 /// The payer of a row: a player of one app (the same id in two apps is two payers).
@@ -938,6 +942,12 @@ impl LedgerAcc {
     /// environments decide their cohort (the first one), the cohort's revenue, ARPPU and the
     /// payments of Apple Ads campaigns. Other rows are left out.
     pub fn add_payer(&mut self, rows: &[LedgerRow], c: &LedgerCtx) {
+        self.add_payer_installed(rows, c, None);
+    }
+
+    /// [`LedgerAcc::add_payer`] for a payer whose install day is known (the day the server first
+    /// heard from the player): their revenue also goes to the install cohort of that month.
+    pub fn add_payer_installed(&mut self, rows: &[LedgerRow], c: &LedgerCtx, installed: Option<i32>) {
         let rows: Vec<&LedgerRow> = rows.iter().filter(|r| r.granted && !r.trial && c.q.wants(&r.environment)).collect();
         let Some(first) = rows.iter().map(|r| day_of_micros(r.created_at_micros)).min() else { return };
         let mut usd = Usd { fx: c.fx, missing: BTreeSet::new(), stale: BTreeSet::new() };
@@ -981,6 +991,46 @@ impl LedgerAcc {
         if paid_in_range {
             self.paying += 1;
         }
+        let Some(m) = installed.map(month_index).filter(|m| (month_index(c.q.from)..=month_index(c.q.to)).contains(m)) else { return };
+        let (payers, by_month) = self.installs.entry(m).or_insert_with(|| (0, vec![0; (m_now - m + 1).max(1) as usize]));
+        *payers += 1;
+        for r in &rows {
+            let net = if r.refunded { 0 } else { gross(r) };
+            let offset = (month_index(day_of_micros(r.created_at_micros)) - m).clamp(0, by_month.len() as i32 - 1) as usize;
+            by_month[offset] += net;
+        }
+    }
+
+    /// Install cohorts of the range: per install month, the players installed (`installs`, counted
+    /// by the caller), how many of them paid, and their cumulative net revenue by month since the
+    /// install, in total and per installed player.
+    pub fn install_cohorts(&self, installs: &BTreeMap<i32, u32>) -> Value {
+        let months: BTreeSet<i32> = installs.iter().filter(|(_, n)| **n > 0).map(|(m, _)| *m).chain(self.installs.keys().copied()).collect();
+        let skip = months.len().saturating_sub(MAX_COHORTS);
+        let rows: Vec<Value> = months
+            .iter()
+            .skip(skip)
+            .map(|m| {
+                let installed = installs.get(m).copied().unwrap_or(0);
+                let (payers, by_month) = self.installs.get(m).cloned().unwrap_or_default();
+                let cumulative: Vec<i64> = by_month
+                    .iter()
+                    .scan(0i64, |acc, v| {
+                        *acc += v;
+                        Some(*acc)
+                    })
+                    .collect();
+                json!({
+                    "cohort": format_month(*m),
+                    "installs": installed,
+                    "payers": payers,
+                    "payer_rate": if installed == 0 { Value::Null } else { json!(payers as f64 / installed as f64) },
+                    "revenue_usd_micros": cumulative,
+                    "per_install_usd_micros": if installed == 0 { Value::Null } else { json!(cumulative.iter().map(|v| v / installed as i64).collect::<Vec<_>>()) },
+                })
+            })
+            .collect();
+        json!(rows)
     }
 
     /// Every period of one subscription (one build's `chain`): its trials started in the range
@@ -1453,6 +1503,43 @@ mod tests {
             json = serde_json::to_string(&acc).unwrap();
         }
         assert_eq!(serde_json::from_str::<LedgerAcc>(&json).unwrap().finish(), m);
+    }
+
+    #[test]
+    fn install_cohorts_count_payers_and_revenue_per_installed_player() {
+        let d = |s: &str| parse_day(s).unwrap();
+        let at = |s: &str| d(s) as i64 * MICROS_PER_DAY;
+        let mut fx = FxTable::default();
+        fx.add_day(d("2026-09-15"), Rates::from([("USD".to_string(), 1.0)]));
+        let q = Query { from: d("2026-09-01"), to: d("2026-10-31"), include_sandbox: false };
+        let c = LedgerCtx { fx: &fx, q: &q, now_micros: at("2026-11-10") };
+        let pay = |user: &str, day: &str, micros: i64| LedgerRow {
+            app_id: "a".into(), user_id: user.into(), environment: "production".into(), currency: "USD".into(),
+            created_at_micros: at(day), price_micros: micros, granted: true, ..Default::default()
+        };
+        let mut acc = LedgerAcc::default();
+        // Installed in September: pays in September and November; installed in October: pays once.
+        acc.add_payer_installed(&[pay("u1", "2026-09-20", 1_000_000), pay("u1", "2026-11-02", 3_000_000)], &c, Some(d("2026-09-10")));
+        acc.add_payer_installed(&[pay("u2", "2026-10-03", 2_000_000)], &c, Some(d("2026-10-01")));
+        // Unknown or outside the range: no install cohort.
+        acc.add_payer_installed(&[pay("u3", "2026-09-05", 5_000_000)], &c, None);
+        acc.add_payer_installed(&[pay("u4", "2026-09-05", 5_000_000)], &c, Some(d("2026-08-30")));
+        let sep = rv_month(d("2026-09-01"));
+        let installs = BTreeMap::from([(sep, 4), (sep + 1, 2)]);
+        let json = serde_json::to_string(&acc).unwrap();
+        let cohorts = serde_json::from_str::<LedgerAcc>(&json).unwrap().install_cohorts(&installs);
+        assert_eq!(cohorts[0]["cohort"], "2026-09");
+        assert_eq!((cohorts[0]["installs"].as_u64(), cohorts[0]["payers"].as_u64(), cohorts[0]["payer_rate"].as_f64()), (Some(4), Some(1), Some(0.25)));
+        assert_eq!(cohorts[0]["revenue_usd_micros"], json!([1_000_000, 1_000_000, 4_000_000]));
+        assert_eq!(cohorts[0]["per_install_usd_micros"], json!([250_000, 250_000, 1_000_000]));
+        assert_eq!((cohorts[1]["installs"].as_u64(), cohorts[1]["payers"].as_u64()), (Some(2), Some(1)));
+        assert_eq!(cohorts[1]["revenue_usd_micros"], json!([2_000_000, 2_000_000]));
+        // The payer cohorts are counted as before.
+        assert_eq!(acc.finish()["arppu"]["payers"], 4);
+    }
+
+    fn rv_month(day: i32) -> i32 {
+        month_index(day)
     }
 
     #[test]

@@ -33,8 +33,7 @@ pub struct PendingPurchase {
 
 /// A purchase a player owns now (not consumable, in an owned status) or a subscription they
 /// paused. `/entitlements` reads the few ledger rows these point to instead of everything the
-/// player ever bought; the counts of running subscriptions walk the subscriptions by
-/// `sub_until_ms` (`subs_count`).
+/// player ever bought.
 #[spacetimedb::table(accessor = owned_purchase, cache_policy = required_in_memory)]
 #[derive(PartialEq)]
 pub struct OwnedPurchase {
@@ -44,34 +43,63 @@ pub struct OwnedPurchase {
     pub user_id: String,
     #[index(btree)]
     pub app_id: String,
-    /// A subscription: when its access ends (`Purchase::access_until_ms`, `i64::MAX` when it has
-    /// no end); 0 for anything else.
-    #[index(btree)]
-    pub sub_until_ms: i64,
-    /// A subscription: its `original_transaction_id` (the renewals of one subscription); empty for
-    /// anything else (never looked up).
-    #[index(btree)]
-    pub chain: String,
 }
 
-impl OwnedPurchase {
+/// A paid subscription players own now, with what the counts of running subscriptions read
+/// (`subs_count`): they walk it by `until_ms` and never read the ledger, so a step costs the same
+/// with a million subscriptions as with a thousand.
+#[spacetimedb::table(accessor = running_subscription, cache_policy = required_in_memory)]
+#[derive(PartialEq, Clone)]
+pub struct RunningSubscription {
+    #[primary_key]
+    pub purchase_id: String,
+    pub app_id: String,
+    pub product_id: String,
+    pub environment: String,
+    pub currency: String,
+    /// `original_transaction_id`: the renewals of one subscription.
+    #[index(btree)]
+    pub chain: String,
+    /// When its access ends (`Purchase::access_until_ms`; `i64::MAX` when it has no end).
+    #[index(btree)]
+    pub until_ms: i64,
+    pub expires_at_ms: i64,
+    pub grace_until_ms: i64,
+    pub created_at_micros: i64,
+    pub price_micros: i64,
+    pub trial: bool,
+    pub auto_renew_off: bool,
+    pub billing_issue: bool,
+    /// A price increase the player has not accepted yet.
+    pub price_consent_needed: bool,
+}
+
+impl RunningSubscription {
     fn of(p: &Purchase) -> Self {
-        let sub = p.kind == kind::SUBSCRIPTION;
         let until = p.access_until_ms();
-        OwnedPurchase {
+        RunningSubscription {
             purchase_id: p.id.clone(),
-            user_id: p.user_id.clone(),
             app_id: p.app_id.clone(),
-            sub_until_ms: if !sub {
-                0
-            } else if until == 0 {
-                i64::MAX
-            } else {
-                until
-            },
-            chain: if sub { p.original_transaction_id.clone() } else { String::new() },
+            product_id: p.product_id.clone(),
+            environment: p.environment.clone(),
+            currency: p.currency.clone(),
+            chain: p.original_transaction_id.clone(),
+            until_ms: if until == 0 { i64::MAX } else { until },
+            expires_at_ms: p.expires_at_ms,
+            grace_until_ms: p.grace_until_ms,
+            created_at_micros: p.created_at_micros,
+            price_micros: p.price_micros,
+            trial: p.trial,
+            auto_renew_off: p.auto_renew_off,
+            billing_issue: p.billing_issue,
+            price_consent_needed: p.price_change == purser_core::model::price_change::CONSENT_NEEDED,
         }
     }
+}
+
+/// Rows [`RunningSubscription`] lists: owned paid subscriptions (no manual grants, family sharing).
+fn is_running_subscription(p: &Purchase) -> bool {
+    p.kind == kind::SUBSCRIPTION && is_owned_row(p) && !crate::revenue::not_a_sale(p)
 }
 
 pub(crate) fn is_owned_row(p: &Purchase) -> bool {
@@ -121,7 +149,7 @@ pub fn sync(tx: &ReducerContext, p: &Purchase) {
 
     let owned = tx.db.owned_purchase().purchase_id().find(&p.id);
     if is_listed(p) {
-        let row = OwnedPurchase::of(p);
+        let row = OwnedPurchase { purchase_id: p.id.clone(), user_id: p.user_id.clone(), app_id: p.app_id.clone() };
         match owned {
             Some(old) if old == row => {}
             Some(_) => {
@@ -133,6 +161,24 @@ pub fn sync(tx: &ReducerContext, p: &Purchase) {
         }
     } else if owned.is_some() {
         tx.db.owned_purchase().purchase_id().delete(&p.id);
+    }
+
+    if p.kind == kind::SUBSCRIPTION {
+        let running = tx.db.running_subscription().purchase_id().find(&p.id);
+        if is_running_subscription(p) {
+            let row = RunningSubscription::of(p);
+            match running {
+                Some(old) if old == row => {}
+                Some(_) => {
+                    tx.db.running_subscription().purchase_id().update(row);
+                }
+                None => {
+                    tx.db.running_subscription().insert(row);
+                }
+            }
+        } else if running.is_some() {
+            tx.db.running_subscription().purchase_id().delete(&p.id);
+        }
     }
 }
 
@@ -156,18 +202,18 @@ pub fn owned_or_paused_by(tx: &ReducerContext, user_id: &str) -> Vec<Purchase> {
         .collect()
 }
 
-/// The subscriptions owned now in these builds (empty: every build) whose access ends in
+/// The paid subscriptions owned now in these builds (empty: every build) whose access ends in
 /// `lo..=hi` (ms): one window of a walk over them (`subs_count`).
-pub fn subscriptions_until(tx: &ReducerContext, lo: i64, hi: i64, apps: &BTreeSet<String>) -> Vec<OwnedPurchase> {
-    tx.db.owned_purchase().sub_until_ms().filter(lo..=hi).filter(|o| apps.is_empty() || apps.contains(&o.app_id)).collect()
+pub fn subscriptions_until(tx: &ReducerContext, lo: i64, hi: i64, apps: &BTreeSet<String>) -> Vec<RunningSubscription> {
+    tx.db.running_subscription().until_ms().filter(lo..=hi).filter(|o| apps.is_empty() || apps.contains(&o.app_id)).collect()
 }
 
-/// The other owned rows of the subscription of `o` (renewals not replaced yet: normally none).
-pub fn same_subscription(tx: &ReducerContext, o: &OwnedPurchase) -> Vec<OwnedPurchase> {
-    if o.chain.is_empty() {
+/// The other rows of the subscription of `s` (renewals not replaced yet: normally none).
+pub fn same_subscription(tx: &ReducerContext, s: &RunningSubscription) -> Vec<RunningSubscription> {
+    if s.chain.is_empty() {
         return Vec::new();
     }
-    tx.db.owned_purchase().chain().filter(o.chain.as_str()).filter(|r| r.app_id == o.app_id && r.purchase_id != o.purchase_id).collect()
+    tx.db.running_subscription().chain().filter(s.chain.as_str()).filter(|r| r.app_id == s.app_id && r.purchase_id != s.purchase_id).collect()
 }
 
 /// Rows a queue drainer takes next: due rows, oldest first within a build, `batch` at most. Builds
@@ -309,12 +355,16 @@ pub fn reindex_step(tx: &ReducerContext) -> bool {
         // deleting a batch of their rows.
         let pending: Vec<String> = tx.db.pending_purchase().iter().take(REINDEX_BATCH).map(|r| r.purchase_id).collect();
         let owned: Vec<String> = tx.db.owned_purchase().iter().take(REINDEX_BATCH).map(|r| r.purchase_id).collect();
-        let cleared = pending.len() < REINDEX_BATCH && owned.len() < REINDEX_BATCH;
+        let running: Vec<String> = tx.db.running_subscription().iter().take(REINDEX_BATCH).map(|r| r.purchase_id).collect();
+        let cleared = pending.len() < REINDEX_BATCH && owned.len() < REINDEX_BATCH && running.len() < REINDEX_BATCH;
         for id in pending {
             tx.db.pending_purchase().purchase_id().delete(id);
         }
         for id in owned {
             tx.db.owned_purchase().purchase_id().delete(id);
+        }
+        for id in running {
+            tx.db.running_subscription().purchase_id().delete(id);
         }
         if cleared {
             settings::set(tx, key::LEDGER_REINDEX, &i64::MIN.to_string());

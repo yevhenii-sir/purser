@@ -58,6 +58,7 @@ type Listing = { title: string; description: string; period: string; apple_group
 
 /** The access levels of a product (the same on every build; the first build that has them). */
 const accessOfRow = (r: Row) => Object.values(r.by).map((p) => p?.access || "").find(Boolean) || ""
+const walletOfRow = (r: Row) => Object.values(r.by).map((p) => p?.wallet || "").find(Boolean) || ""
 
 /** The store listing of a product: each field from the first build that has it set. */
 function listingOfRow(r: Row): Listing {
@@ -181,6 +182,7 @@ export function AppProductsTab({ data, go }: TabProps) {
               { title: "Product", cell: (r) => <Mono>{r.product_id}</Mono> },
               { title: "Type", cell: (r) => r.kind },
               { title: "Access", cell: (r) => accessOfRow(r) ? <span className="text-xs">{accessOfRow(r).split(",").join(", ")}</span> : <span className="text-muted-foreground">—</span> },
+              { title: "Gives", cell: (r) => walletOfRow(r) ? <span className="text-xs">{walletOfRow(r).split(",").map((g) => g.replace(":", " ")).join(", ")}</span> : <span className="text-muted-foreground">—</span> },
               ...g.apps.map((a) => ({
                 title: buildLabel(a),
                 cell: (r: Row) => {
@@ -268,6 +270,7 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
   const [listing, setListing] = useState<Listing>(() => (row ? listingOfRow(row) : { title: "", description: "", period: "", apple_group: "" }))
   const setL = (patch: Partial<Listing>) => setListing((l) => ({ ...l, ...patch }))
   const [access, setAccess] = useState(() => (row ? accessOfRow(row).split(",").join(", ") : ""))
+  const [wallet, setWallet] = useState(() => (row ? walletOfRow(row).split(",").join(", ") : ""))
   const [on, setOn] = useState<Record<string, boolean>>(() => Object.fromEntries(apps.map((a) => [a.app_id, row ? !!row.by[a.app_id] : true])))
   /** Store id per build where it differs from the product id (Stripe Price ids, reverse-domain App Store ids). */
   const [storeIds, setStoreIds] = useState<Record<string, string>>(() =>
@@ -290,7 +293,7 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
       return { price_micros: Math.round(Number(p || 0) * 1e6), currency: ((o?.price.trim() && o.currency.trim()) || currency).trim().toUpperCase() }
     }
     const items = apps.filter((a) => on[a.app_id]).map((a) => ({
-      app_id: a.app_id, product_id: storeIdOf(a), catalog_id: id, kind, ...priceOf(a), access: kind === "consumable" ? "" : access,
+      app_id: a.app_id, product_id: storeIdOf(a), catalog_id: id, kind, ...priceOf(a), access: kind === "consumable" ? "" : access, wallet,
       // Sent even when empty: clearing a field here clears it on every build.
       title: listing.title.trim(), description: listing.description.trim(),
       ...(kind === "subscription" ? { period: listing.period, apple_group: listing.apple_group.trim() } : {}),
@@ -327,6 +330,9 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
               <Input className="font-mono text-xs" value={access} onChange={(e) => setAccess(e.target.value)} placeholder="e.g. premium" />
             </Field>
           )}
+          <Field label="Virtual currency" className="sm:col-span-2" hint="Currency the player's wallet gets per unit bought, e.g. gems:100 or gems:100, coins:5000. Taken back when the purchase is refunded. Empty: none.">
+            <Input className="font-mono text-xs" value={wallet} onChange={(e) => setWallet(e.target.value)} placeholder="e.g. gems:100" />
+          </Field>
           <Field label="Price" hint="For every build without its own price below."><Input type="number" step="0.01" min="0" value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
           <Field label="Currency (ISO)" hint="USD, EUR, …"><Input value={currency} maxLength={3} onChange={(e) => setCurrency(e.target.value)} /></Field>
           <div className="space-y-2 border-t pt-4 sm:col-span-2">

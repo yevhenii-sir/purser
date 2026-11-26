@@ -46,6 +46,8 @@ export interface Product {
   catalog_id: string
   /** Access levels the product unlocks, comma-separated (`premium,no_ads`). */
   access: string
+  /** Virtual currency per unit bought (`gems:100,coins:5000`); empty: none. */
+  wallet?: string
 }
 
 /** The app's own id of a product (paywalls and entitlements use it): its catalog id, else its store id. */
@@ -171,6 +173,17 @@ export interface Cohort {
   per_payer_usd_micros: number[]
 }
 
+/** Players by the month the server first heard from them (their install). */
+export interface InstallCohort {
+  cohort: string
+  installs: number
+  payers: number
+  payer_rate: number | null
+  /** Cumulative net revenue of the cohort's players by month since the install (index 0 = that month). */
+  revenue_usd_micros: number[]
+  per_install_usd_micros: number[] | null
+}
+
 export interface AsaCampaign {
   campaign_id: string
   payers: number
@@ -206,6 +219,7 @@ export interface Stats extends Partial<Kept> {
   by_country: (Money & { country: string })[]
   proceeds: { estimated: boolean; percent: number; after_year_percent: number; by_app: Record<string, number> }
   cohorts: Cohort[]
+  install_cohorts?: InstallCohort[]
   /** Net revenue per payer after 1, 3, 6 and 12 months, over the cohorts old enough (null: none yet). */
   ltv: { months: number; cohorts: number; payers: number; per_payer_usd_micros: number | null }[]
   /** Net revenue of the period's paid purchases per paying user. */

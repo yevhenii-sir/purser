@@ -20,7 +20,7 @@ import { money, pct, shortDay, usd } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { isAnalyticsOff, revenueStats } from "@/lib/revenue"
 import { buildLabel } from "@/lib/stores"
-import type { Cohort, Money, Stats } from "@/lib/types"
+import type { Cohort, InstallCohort, Money, Stats } from "@/lib/types"
 import { downloadBlob } from "@/lib/utils"
 import type { PageProps } from "@/routes"
 
@@ -459,6 +459,7 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
             </div>
           )}
           <CohortSection cohorts={r.cohorts} from={r.from} to={r.to} />
+          {r.install_cohorts && <InstallCohortSection cohorts={r.install_cohorts} from={r.from} to={r.to} />}
 
           <Section
             title="By Apple Ads campaign"
@@ -605,6 +606,68 @@ function CohortSection({ cohorts, from, to }: { cohorts: Cohort[]; from: string;
                         title={`${c.cohort} · M${i}: ${usd(c.revenue_usd_micros[i])} total from ${c.payers} payers`}
                       >
                         <span className="absolute inset-0 rounded-sm bg-[var(--chart-2)]" style={{ opacity: 0.08 + 0.5 * (v / max) }} aria-hidden />
+                        <span className="relative">{usd(v)}</span>
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Section>
+  )
+}
+
+/** Install cohorts: cumulative net revenue per installed player by month since the install. */
+function InstallCohortSection({ cohorts, from, to }: { cohorts: InstallCohort[]; from: string; to: string }) {
+  const months = Math.max(0, ...cohorts.map((c) => c.revenue_usd_micros.length))
+  const max = Math.max(1, ...cohorts.flatMap((c) => c.per_install_usd_micros || []))
+  return (
+    <Section
+      title="Install cohorts"
+      description="Players grouped by the month the server first heard from them (their install, as far as the server knows); each cell is the cohort's cumulative net revenue per installed player by month since then (M0 = the install month)."
+      actions={
+        cohorts.length > 0 && (
+          <CsvButton
+            onClick={() =>
+              downloadCsv(`install_cohorts_${from}_${to}.csv`, [
+                ["cohort", "installs", "payers", ...Array.from({ length: months }, (_, i) => `m${i}_per_install_usd_micros`)],
+                ...cohorts.map((c) => [c.cohort, c.installs, c.payers, ...Array.from({ length: months }, (_, i) => c.per_install_usd_micros?.[i] ?? null)]),
+              ])
+            }
+          />
+        )
+      }
+    >
+      {cohorts.length === 0 ? (
+        <div className="py-8 text-center text-sm text-muted-foreground">No installs recorded in this period.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full border-separate border-spacing-0.5 text-xs tabular-nums">
+            <thead>
+              <tr className="text-muted-foreground">
+                <th className="px-2 py-1 text-left font-medium">Cohort</th>
+                <th className="px-2 py-1 text-right font-medium">Installs</th>
+                <th className="px-2 py-1 text-right font-medium">Paid</th>
+                {Array.from({ length: months }, (_, i) => (
+                  <th key={i} className="px-2 py-1 text-right font-medium">M{i}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {cohorts.map((c) => (
+                <tr key={c.cohort}>
+                  <td className="px-2 py-1 font-medium whitespace-nowrap">{c.cohort}</td>
+                  <td className="px-2 py-1 text-right">{c.installs}</td>
+                  <td className="px-2 py-1 text-right whitespace-nowrap" title={`${c.payers} of ${c.installs} players paid`}>{c.payer_rate === null ? c.payers : pct(c.payer_rate, 1)}</td>
+                  {Array.from({ length: months }, (_, i) => {
+                    const v = c.per_install_usd_micros?.[i]
+                    if (v === undefined) return <td key={i} />
+                    return (
+                      <td key={i} className="relative rounded-sm px-2 py-1 text-right whitespace-nowrap" title={`${c.cohort} · M${i}: ${usd(c.revenue_usd_micros[i])} total from ${c.installs} installs`}>
+                        <span className="absolute inset-0 rounded-sm bg-[var(--chart-3)]" style={{ opacity: 0.08 + 0.5 * (v / max) }} aria-hidden />
                         <span className="relative">{usd(v)}</span>
                       </td>
                     )

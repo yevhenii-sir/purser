@@ -10,7 +10,7 @@ the server counts:
 | Mode | What runs | What you get |
 |---|---|---|
 | `full` (default) | Every purchase change adds to the daily totals (a few row writes). The full report is counted **in the background**, a batch of purchases per scheduled call, when the Revenue page asks for it. | Everything on this page. |
-| `light` | The daily totals only; no report reads the purchase ledger. | Totals, the daily series, products, countries, subscription snapshots, the revenue tree, business alerts, `/metrics`. Payer cohorts, LTV, ARPPU, Apple Ads campaigns, trials and the subscriptions running now stay empty. |
+| `light` | The daily totals only; no report reads the purchase ledger. | Totals, the daily series, products, countries, subscription snapshots, the revenue tree, business alerts, `/metrics`. Payer cohorts, LTV, ARPPU, Apple Ads campaigns, trials and the subscriptions running now stay empty; install cohorts have their installs only. |
 | `off` (large games) | Only what purchases need: no revenue aggregates, no subscription snapshots, no reports. The ledger still logs what each change would count, and each build's daily sales (a few rows per build and day, kept two months) are still counted for alerts. | No revenue pages; the reports answer `ERR_ANALYTICS_OFF`. Business alerts and `/metrics` keep working. Count revenue in your attribution or analytics tools (Tenjin, AppsFlyer, Adjust, ... get every purchase, renewal and refund as an [integration](../server/README.md#integrations-ga4-appsflyer-adjust-tenjin-appmetrica-amplitude-mixpanel-meta-webhook-cloud-storage) event) or from the Cloud Storage export to BigQuery. Turned on again, the totals are rebuilt from the ledger, the time it was off included. |
 
 Why the background: SpacetimeDB computes one call of a database at a time, so a report that reads the ledger for
@@ -81,6 +81,17 @@ Active subscriptions and MRR are those of the last daily snapshot of the period.
 ## Payer cohorts
 
 Payers (players of one app with a granted, non-trial store purchase; the same id in two apps is two payers; Family Sharing purchases are not payments) are grouped by the month of their first payment, for cohorts that start in the selected period. Each cell is the cohort's cumulative net revenue per payer by month since the first payment (M0 = that month), up to today; refunded purchases count as 0. Computed from the ledger when the report is opened.
+
+## Install cohorts
+
+Players grouped by the month the server first heard from them in a build (any client call: `/entitlements`
+at start-up, `/paywall`, `/verify`; the profile's `first_seen`, kept in `install_daily` per build and day).
+Per cohort: the installs, how many of those players paid (`payer_rate`) and their cumulative net revenue
+by month since the install, in total and per installed player (`install_cohorts` in the full report): the
+revenue per install to compare with what a campaign paid per install. A payer's install is the first time
+they were seen in a build of the app they paid in. Installs count from the version that added them on, a
+player whose profile was erased (retention, a deletion request) counts as new when they come back, and a
+purchase of a player the server never heard from (an import) belongs to no install cohort.
 
 ## ARPPU and LTV
 

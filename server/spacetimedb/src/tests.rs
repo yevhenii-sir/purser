@@ -3126,6 +3126,24 @@ fn set_setting(w: &World, key: &str, value: &str) -> Result<(), String> {
 }
 
 #[test]
+fn install_cohorts_count_the_players_first_seen_and_what_they_paid() {
+    let w = World::new();
+    price_products(&w, "USD");
+    // Three players open the game; one of them buys.
+    for user in ["player-1", "player-2", "player-3"] {
+        w.entitlements(user);
+    }
+    w.script("GET https://androidpublisher", 200, &json!({ "orderId": ORDER, "purchaseState": 0, "acknowledgementState": 0 }).to_string());
+    assert_eq!(w.verify("player-2", "no_ads").body["status"], "success");
+    w.as_admin(false);
+    let r = stats(&w, json!({}));
+    let c = &r["install_cohorts"][0];
+    assert_eq!((c["installs"].as_u64(), c["payers"].as_u64(), c["payer_rate"].as_f64()), (Some(3), Some(1), Some(1.0 / 3.0)), "{r}");
+    assert_eq!(c["revenue_usd_micros"][0], 990_000);
+    assert_eq!(c["per_install_usd_micros"][0], 330_000);
+}
+
+#[test]
 fn purchases_are_counted_by_billing_country() {
     let w = World::new();
     price_products(&w, "USD");
@@ -6881,6 +6899,8 @@ fn parse_sdk_request(route: &str, body: &Value) -> Result<(), String> {
         "/paywall/event" => p::<PaywallEventRequest>(body),
         "/attributes" => p::<AttributesRequest>(body),
         "/redeem" => p::<RedeemRequest>(body),
+        "/wallet" => p::<WalletRequest>(body),
+        "/wallet/spend" => p::<SpendRequest>(body),
         "/offers/apple/sign" => p::<crate::offers::AppleOfferRequest>(body),
         "/checkout/steam" => p::<crate::steam::CheckoutRequest>(body),
         "/checkout/stripe" => p::<crate::stripe::CheckoutRequest>(body),
@@ -9105,6 +9125,62 @@ fn add_server_key(w: &World, key: &str, scopes: &str) {
 
 fn bearer(key: &str) -> String {
     format!("Bearer {key}")
+}
+
+#[test]
+fn a_wallet_is_credited_by_purchases_spent_by_the_game_and_debited_by_refunds() {
+    use crate::server_api::{wallet, wallet_grant, wallet_spend, WalletChangeRequest, WalletQuery};
+    let w = World::new();
+    price_products(&w, "USD");
+    w.as_admin(false);
+    let upsert = |wallet: &str| {
+        admin_call(&w, |ctx| {
+            crate::admin_upsert_products(ctx, json!({ "app_id": APP, "product_id": "gems", "kind": "consumable", "price_micros": 990_000, "currency": "USD", "wallet": wallet }).to_string())
+        })
+    };
+    assert!(upsert("gems:0").unwrap_err().contains("ERR_BAD_PRODUCT"));
+    upsert(" gems:100 ").unwrap();
+    assert_eq!(w.read(|tx| tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap().wallet), "gems:100");
+    add_server_key(&w, SERVER_KEY, "read,wallet");
+    let key = bearer(SERVER_KEY);
+    let balance = |w: &World| (wallet(&mut w.ctx(), &key, &WalletQuery { app_id: APP.into(), user_id: "player-1".into() }).0).1["balances"]["gems"].clone();
+
+    // A purchase of gems credits them once, however often it is verified.
+    assert_eq!(w.verify("player-1", "gems").body["status"], "success");
+    w.verify("player-1", "gems");
+    assert_eq!(balance(&w), 100);
+
+    // The game's backend spends and gives, once per reference.
+    let change = |amount: i64, reference: &str| WalletChangeRequest {
+        app_id: APP.into(), user_id: "player-1".into(), currency: "gems".into(), amount, reference: reference.into(), note: String::new(),
+    };
+    let ((http, body), _) = wallet_spend(&mut w.ctx(), &key, &change(30, "sword-1"));
+    assert_eq!((http, body["balance"].as_i64(), body["repeated"].as_bool()), (200, Some(70), Some(false)));
+    let ((_, again), _) = wallet_spend(&mut w.ctx(), &key, &change(30, "sword-1"));
+    assert_eq!((again["balance"].as_i64(), again["repeated"].as_bool()), (Some(70), Some(true)));
+    let ((http, body), _) = wallet_spend(&mut w.ctx(), &key, &change(50, "sword-1"));
+    assert_eq!((http, body["code"].as_str()), (409, Some("ERR_REFERENCE_USED")));
+    let ((http, body), _) = wallet_spend(&mut w.ctx(), &key, &change(500, "castle-1"));
+    assert_eq!((http, body["code"].as_str()), (409, Some("ERR_INSUFFICIENT_FUNDS")));
+    assert_eq!((wallet_grant(&mut w.ctx(), &key, &change(5, "daily-1")).0).0, 200);
+    assert_eq!(balance(&w), 75);
+
+    // Spending from the client needs player tokens.
+    let r: SpendRequest = serde_json::from_value(json!({ "app_id": APP, "user_id": "player-1", "currency": "gems", "amount": 1, "reference": "x" })).unwrap();
+    let o = w.ctx().tx(|tx| spend_tx(tx, &r)).unwrap_or_else(|o| o);
+    assert_eq!((o.http, o.body["code"].as_str()), (403, Some("ERR_SIGNED_ONLY")));
+
+    // The purchase is revoked: its 100 gems are taken back, below zero (70 were spent).
+    let id = w.purchase().id;
+    assert_eq!(admin_revoke(&w, &id)["error"], Value::Null);
+    assert_eq!(balance(&w), -25);
+    // An admin forgives the debt; the player page shows the history.
+    admin_call(&w, |ctx| crate::wallet::admin_wallet_adjust(ctx, "game".into(), "player-1".into(), "gems".into(), 25, "goodwill".into())).unwrap();
+    assert_eq!(balance(&w), 0);
+    let p = profile(&w, "player-1");
+    assert_eq!(p["wallet"]["balances"][0]["balance"], 0);
+    let reasons: Vec<&str> = p["wallet"]["transactions"].as_array().unwrap().iter().map(|t| t["reason"].as_str().unwrap()).collect();
+    assert_eq!(reasons, ["admin", "refund", "grant", "spend", "purchase"]);
 }
 
 #[test]

@@ -274,6 +274,85 @@ pub fn revoke(ctx: &mut impl Ctx, authorization: &str, r: &RevokeRequest) -> (we
     }
 }
 
+#[derive(Deserialize)]
+pub struct WalletQuery {
+    pub app_id: String,
+    pub user_id: String,
+}
+
+/// `POST /server/wallet` (`wallet`): a player's balances and latest transactions.
+pub fn wallet(ctx: &mut impl Ctx, authorization: &str, q: &WalletQuery) -> (web::Answer, Option<u64>) {
+    if !crate::handlers::valid_user_id(&q.user_id) {
+        return (refused(400, "ERR_BAD_USER", "invalid user_id"), None);
+    }
+    ctx.tx(|tx| match check(tx, authorization, scope::WALLET, &q.app_id) {
+        Ok((caller, _)) => {
+            let body = json!({
+                "status": "ok",
+                "balances": crate::wallet::balances(tx, &caller.game_key, &q.user_id),
+                "transactions": crate::wallet::history(tx, Some(&caller.game_key), &q.user_id, 50),
+            });
+            ((200, body), None)
+        }
+        Err(e) => e,
+    })
+}
+
+#[derive(Deserialize)]
+pub struct WalletChangeRequest {
+    pub app_id: String,
+    pub user_id: String,
+    pub currency: String,
+    pub amount: i64,
+    /// Your id of this change: a repeated request with it changes nothing more.
+    pub reference: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+fn wallet_change(ctx: &mut impl Ctx, authorization: &str, r: &WalletChangeRequest, spend: bool) -> (web::Answer, Option<u64>) {
+    if !crate::handlers::valid_user_id(&r.user_id) {
+        return (refused(400, "ERR_BAD_USER", "invalid user_id"), None);
+    }
+    if r.amount <= 0 {
+        return (refused(400, "ERR_BAD_AMOUNT", "amount must be positive"), None);
+    }
+    ctx.tx(|tx| {
+        let (caller, _) = match check(tx, authorization, scope::WALLET, &r.app_id) {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
+        let (why, delta, prefix) = if spend {
+            (purser_core::wallet::reason::SPEND, -r.amount, "spend")
+        } else {
+            (purser_core::wallet::reason::GRANT, r.amount, "grant")
+        };
+        let change = crate::wallet::Change {
+            game_key: &caller.game_key,
+            user_id: &r.user_id,
+            currency: &r.currency,
+            delta,
+            reason: why,
+            reference: &format!("{prefix}:{}", r.reference),
+            actor: &caller.actor(),
+            note: &r.note,
+            may_go_negative: false,
+        };
+        (crate::handlers::wallet_answer(crate::wallet::change(tx, &change)), None)
+    })
+}
+
+/// `POST /server/wallet/grant` (`wallet`): gives a player currency (a reward). Idempotent by `reference`.
+pub fn wallet_grant(ctx: &mut impl Ctx, authorization: &str, r: &WalletChangeRequest) -> (web::Answer, Option<u64>) {
+    wallet_change(ctx, authorization, r, false)
+}
+
+/// `POST /server/wallet/spend` (`wallet`): spends a player's currency; `409 ERR_INSUFFICIENT_FUNDS`
+/// when the balance is short. Idempotent by `reference`.
+pub fn wallet_spend(ctx: &mut impl Ctx, authorization: &str, r: &WalletChangeRequest) -> (web::Answer, Option<u64>) {
+    wallet_change(ctx, authorization, r, true)
+}
+
 fn route<T: serde::de::DeserializeOwned>(
     ctx: &mut HandlerContext,
     req: Request,
@@ -297,6 +376,21 @@ pub fn server_entitlements(ctx: &mut HandlerContext, req: Request) -> Response {
 #[handler]
 pub fn server_grant(ctx: &mut HandlerContext, req: Request) -> Response {
     route(ctx, req, grant)
+}
+
+#[handler]
+pub fn server_wallet(ctx: &mut HandlerContext, req: Request) -> Response {
+    route(ctx, req, wallet)
+}
+
+#[handler]
+pub fn server_wallet_grant(ctx: &mut HandlerContext, req: Request) -> Response {
+    route(ctx, req, wallet_grant)
+}
+
+#[handler]
+pub fn server_wallet_spend(ctx: &mut HandlerContext, req: Request) -> Response {
+    route(ctx, req, wallet_spend)
 }
 
 #[handler]

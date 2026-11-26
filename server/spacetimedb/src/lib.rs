@@ -47,6 +47,7 @@ mod report_job;
 mod revenue;
 mod scan;
 mod subs_count;
+mod wallet;
 mod server_api;
 mod settings;
 mod steam;
@@ -160,6 +161,9 @@ pub struct Product {
     /// Access levels the product unlocks, comma-separated (`premium,no_ads`); the same on every
     /// build of the catalog product. See `purser_core::customer`.
     pub access: String,
+    /// Virtual currency the product gives per unit bought (`gems:100,coins:5000`, see
+    /// `purser_core::wallet`); empty: none.
+    pub wallet: String,
 }
 
 impl Product {
@@ -178,6 +182,7 @@ impl Product {
             apple_group: String::new(),
             catalog_id: String::new(),
             access: String::new(),
+            wallet: String::new(),
         }
     }
 
@@ -824,6 +829,9 @@ struct ProductInput {
     /// Access levels, comma-separated; missing keeps the stored ones.
     #[serde(default)]
     access: Option<String>,
+    /// Virtual currency per unit (`gems:100`); missing keeps the stored one, empty: none.
+    #[serde(default)]
+    wallet: Option<String>,
 }
 
 pub fn product_key(app_id: &str, product_id: &str) -> String {
@@ -897,9 +905,16 @@ pub fn admin_upsert_products(ctx: &ReducerContext, json: String) -> Result<(), S
         if !access.is_empty() && i.kind == kind::CONSUMABLE {
             return Err(format!("[ERR_BAD_PRODUCT] {}: a consumable unlocks no access level", i.product_id));
         }
+        let wallet = match i.wallet {
+            Some(text) => purser_core::wallet::parse_grants(&text)
+                .map(|g| purser_core::wallet::format_grants(&g))
+                .map_err(|e| format!("[ERR_BAD_PRODUCT] {}: wallet {e}", i.product_id))?,
+            None => old.as_ref().map(|o| o.wallet.clone()).unwrap_or_default(),
+        };
         let p = Product {
             catalog_id,
             access,
+            wallet,
             title: keep(i.title, old.as_ref().map(|o| &o.title)),
             description: keep(i.description, old.as_ref().map(|o| &o.description)),
             period: if subscription { keep(i.period, old.as_ref().map(|o| &o.period)).to_ascii_uppercase() } else { String::new() },

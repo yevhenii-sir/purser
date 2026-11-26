@@ -138,7 +138,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 - Write ledger rows only through `ledger::insert_purchase` / `ledger::save_purchase`: they keep the
   `purchase_count` table (the Overview counters) and the derived tables of `ledger_index.rs` in step:
   `pending_purchase` (the worker's queue: rows with `next_attempt_at_micros > 0`) and
-  `owned_purchase` (what players own now). Hot paths read those, never ledger history by
+  `owned_purchase` (what players own now) and `running_subscription` (the paid subscriptions among them, with what the counts of running subscriptions read). Hot paths read those, never ledger history by
   `user_id` or by due time. Rows written with SQL need `admin_reindex_ledger`.
 - Admin reads must not scan big tables per request: read through an index (`app_id`, the
   `(app_id, created_at)` / `(app_id, updated_at)` ledger indexes, `(app_id, day)` of the daily

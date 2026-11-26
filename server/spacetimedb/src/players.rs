@@ -5,7 +5,7 @@
 use purser_core::player::{self as rules, ClientInfo};
 use serde_json::{json, Value};
 use spacetimedb::{ReducerContext, Table};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// `key` = `{app_id}/{user_id}`.
 #[spacetimedb::table(accessor = player_profile, cache_policy = required_on_disk)]
@@ -26,8 +26,63 @@ pub struct PlayerProfile {
     pub attributes_json: String,
 }
 
+/// New players per build and day: the players the server heard from for the first time (their
+/// profile was created), the installs of the revenue report's install cohorts. A player whose
+/// profile was erased (retention, a deletion request) counts again when they come back.
+#[spacetimedb::table(accessor = install_daily, cache_policy = no_requirement, index(accessor = app_day, btree(columns = [app_id, day])))]
+pub struct InstallDaily {
+    /// `{day}|{app_id}`
+    #[primary_key]
+    pub key: String,
+    #[index(btree)]
+    pub day: i32,
+    pub app_id: String,
+    pub installs: u32,
+}
+
 fn key(app_id: &str, user_id: &str) -> String {
     format!("{app_id}/{user_id}")
+}
+
+/// A new profile: one more install of the build that day.
+fn installed(tx: &ReducerContext, app_id: &str, now_micros: i64) {
+    let day = purser_core::time::day_of_micros(now_micros);
+    let k = format!("{day}|{app_id}");
+    match tx.db.install_daily().key().find(&k) {
+        Some(mut r) => {
+            r.installs = r.installs.saturating_add(1);
+            tx.db.install_daily().key().update(r);
+        }
+        None => {
+            tx.db.install_daily().insert(InstallDaily { key: k, day, app_id: app_id.to_string(), installs: 1 });
+        }
+    }
+}
+
+/// When the player was first seen in any of `apps`: their install day, for install cohorts.
+pub fn installed_day(tx: &ReducerContext, user_id: &str, apps: &BTreeSet<String>) -> Option<i32> {
+    tx.db
+        .player_profile()
+        .user_id()
+        .filter(user_id)
+        .filter(|p| apps.contains(&p.app_id))
+        .map(|p| purser_core::time::day_of_micros(p.first_seen_micros))
+        .min()
+}
+
+/// Installs per month (`purser_core::revenue::month_index`) of `apps` (empty: every build) from
+/// `from` to `to` (days).
+pub fn installs_by_month(tx: &ReducerContext, apps: &BTreeSet<String>, from: i32, to: i32) -> BTreeMap<i32, u32> {
+    let rows: Vec<InstallDaily> = if apps.is_empty() {
+        tx.db.install_daily().day().filter(from..=to).collect()
+    } else {
+        apps.iter().flat_map(|a| tx.db.install_daily().app_day().filter((a.as_str(), from..=to)).collect::<Vec<_>>()).collect()
+    };
+    let mut out = BTreeMap::new();
+    for r in rows {
+        *out.entry(purser_core::revenue::month_index(r.day)).or_insert(0u32) += r.installs;
+    }
+    out
 }
 
 /// Records that the player's client called the server, with the device info it sent. Writes only
@@ -61,6 +116,7 @@ pub fn touch(tx: &ReducerContext, app_id: &str, user_id: &str, client: &ClientIn
                 client_json,
                 attributes_json: "{}".into(),
             });
+            installed(tx, app_id, now);
         }
     }
 }
@@ -107,6 +163,7 @@ pub fn set_attributes(
                 client_json,
                 attributes_json,
             });
+            installed(tx, app_id, now);
         }
     }
     Ok(merged)

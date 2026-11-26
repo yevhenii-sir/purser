@@ -63,10 +63,11 @@ SKIP = {
     # Derived from the ledger: rebuilt after a restore (`admin_reindex_ledger`).
     "pending_purchase",
     "owned_purchase",
+    "running_subscription",
 }
 # Auto-increment primary keys that nothing refers to: inserted as 0, so the new database's sequence
 # gives them ids (inserting the old ids would collide with ids it gives later).
-FRESH_IDS = {"purchase_log": "id", "admin_audit": "id", "alert_log": "id", "store_create_job": "id", "integration_dead": "id"}
+FRESH_IDS = {"purchase_log": "id", "admin_audit": "id", "alert_log": "id", "store_create_job": "id", "integration_dead": "id", "wallet_tx": "id"}
 # Tables paged by a column that changes while the backup runs (a player's last request): a row
 # touched after its page was read shows up again in a later page. Kept once per key (the last
 # copy read), or the restore would fail on a duplicate key.

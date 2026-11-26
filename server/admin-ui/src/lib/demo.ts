@@ -82,6 +82,7 @@ function light(r: Row): Row {
     ...r,
     analytics: "light",
     cohorts: [],
+    install_cohorts: (r.install_cohorts || []).map((c: Row) => ({ ...c, payers: 0, payer_rate: 0, revenue_usd_micros: [], per_install_usd_micros: [] })),
     ltv: (r.ltv || []).map((l: Row) => ({ ...l, cohorts: 0, payers: 0, per_payer_usd_micros: null })),
     arppu: { payers: 0, net_usd_micros: 0, arppu_usd_micros: null },
     by_asa_campaign: [],

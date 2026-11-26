@@ -47,6 +47,9 @@ interface Entitlements {
   server_time_ms: number
 }
 
+interface WalletBalance { game_key: string; currency: string; balance: number; updated_at_micros: number }
+interface WalletTx { game_key: string; currency: string; delta: number; balance_after: number; reason: string; reference: string; actor: string; note: string; at_micros: number }
+
 interface Profile {
   user_id: string
   server_time_ms: number
@@ -66,6 +69,8 @@ interface Profile {
   }
   entitlements: Entitlements[]
   attribution: { app_id: string; ids: Record<string, string>; updated_at_micros: number }[]
+  /** Virtual currency per app (`wallet` of products, `/server/wallet`). */
+  wallet?: { balances: WalletBalance[]; transactions: WalletTx[] }
   /** Per build: when the server heard from the player, the device and the game's custom attributes. */
   players: PlayerRow[]
   /** Billing country of the newest purchase that has one ("" if none). */
@@ -248,6 +253,7 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
   const [grant, setGrant] = useState(false)
   const [revoke, setRevoke] = useState<{ title: string; purchases: ProfilePurchase[] } | null>(null)
   const [moving, setMoving] = useState<ProfilePurchase | null>(null)
+  const [adjust, setAdjust] = useState<{ game_key: string; currency: string } | null>(null)
   const { data, error, loading, reload } = useAsync(() => proc<Profile>("admin_user_profile", userId), [userId])
   const apps = useApps().apps
   const appName = useAppName()
@@ -458,6 +464,36 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
         />
       </Section>
 
+      {data.wallet && (data.wallet.balances.length > 0 || data.wallet.transactions.length > 0) && (
+        <Section
+          title="Wallet"
+          description="Virtual currency: credited by purchases of products that give it, taken back by their refunds, spent and given by the game."
+          actions={support && games.length > 0 && (
+            <Button size="sm" variant="outline" onClick={() => setAdjust({ game_key: games[0], currency: data.wallet!.balances[0]?.currency || "" })}>Adjust</Button>
+          )}
+        >
+          <div className="mb-3 flex flex-wrap gap-3">
+            {data.wallet.balances.map((b) => (
+              <div key={`${b.game_key}/${b.currency}`} className="min-w-32 rounded-md border px-3 py-2">
+                <div className="text-xs text-muted-foreground">{b.currency}{games.length > 1 && ` · ${appName(b.game_key)}`}</div>
+                <div className={b.balance < 0 ? "text-lg font-semibold text-destructive tabular-nums" : "text-lg font-semibold tabular-nums"}>{b.balance.toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+          <DataTable
+            rows={data.wallet.transactions}
+            empty="No changes yet."
+            columns={[
+              { title: "Time", cell: (t) => <span className="whitespace-nowrap">{fmtTime(t.at_micros)}</span> },
+              { title: "Change", className: "text-right tabular-nums", cell: (t) => <span className={t.delta < 0 ? "text-destructive" : ""}>{t.delta > 0 ? "+" : ""}{t.delta.toLocaleString()} {t.currency}</span> },
+              { title: "Balance", className: "text-right tabular-nums", cell: (t) => t.balance_after.toLocaleString() },
+              { title: "Why", cell: (t) => <span>{t.reason}{t.note && <span className="text-muted-foreground"> · {t.note}</span>}</span> },
+              { title: "Reference", className: "whitespace-normal", cell: (t) => <Mono className="break-all text-xs">{t.reference}</Mono> },
+            ]}
+          />
+        </Section>
+      )}
+
       <Section title="Attribution ids" description="Device ids the client sent last, per build; used for events without a client (renewals, refunds).">
         {data.attribution.length ? (
           <div className="grid gap-4 md:grid-cols-2">
@@ -487,6 +523,7 @@ export function PlayerPage({ userId, go }: PageProps & { userId: string }) {
       <GrantDialog open={grant} apps={grantApps} userId={data.user_id} onClose={() => setGrant(false)} onDone={reload} />
       <MoveDialog purchase={moving} onClose={() => setMoving(null)} onMove={move} />
       <RevokeDialog target={revoke} onClose={() => setRevoke(null)} onDone={reload} />
+      <WalletDialog target={adjust} games={games} userId={data.user_id} onClose={() => setAdjust(null)} onDone={reload} />
     </div>
   )
 }
@@ -505,6 +542,62 @@ function MoveDialog({ purchase, onClose, onMove }: { purchase: ProfilePurchase |
         </DialogHeader>
         <Field label="New user id"><Input className="font-mono text-xs" value={to} onChange={(e) => setTo(e.target.value)} placeholder="user id" /></Field>
         <DialogFooter><Button disabled={!to.trim() || !purchase} onClick={() => purchase && onMove(purchase, to)}><ArrowRightLeftIcon /> Move</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Changes a player's balance (Support): a positive or negative amount and a note for the history. */
+function WalletDialog({ target, games, userId, onClose, onDone }: {
+  target: { game_key: string; currency: string } | null
+  games: string[]
+  userId: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const appName = useAppName()
+  const [game, setGame] = useState("")
+  const [currency, setCurrency] = useState("")
+  const [amount, setAmount] = useState("")
+  const [note, setNote] = useState("")
+  const [shown, setShown] = useState<typeof target>(null)
+  if (target !== shown) {
+    setShown(target)
+    if (target) {
+      setGame(target.game_key)
+      setCurrency(target.currency)
+      setAmount("")
+      setNote("")
+    }
+  }
+  const save = async () => {
+    const delta = Math.round(Number(amount))
+    if (!currency.trim() || !delta) return toast.error("Enter the currency and a non-zero amount")
+    const ok = await tryAct(() => call("admin_wallet_adjust", game, userId, currency.trim(), delta, note.trim()), "Balance changed")
+    if (ok !== undefined) { onDone(); onClose() }
+  }
+  return (
+    <Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Adjust the wallet</DialogTitle>
+          <DialogDescription>Adds (or with a minus, takes) currency; a balance cannot go below zero this way. The note goes to the history and the audit log.</DialogDescription>
+        </DialogHeader>
+        <DialogBody className="space-y-3">
+          {games.length > 1 && (
+            <Field label="App">
+              <select className="h-9 w-full rounded-md border bg-transparent px-2 text-sm" value={game} onChange={(e) => setGame(e.target.value)}>
+                {games.map((g) => <option key={g} value={g}>{appName(g)}</option>)}
+              </select>
+            </Field>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Currency"><Input className="font-mono text-xs" value={currency} onChange={(e) => setCurrency(e.target.value)} placeholder="gems" /></Field>
+            <Field label="Amount"><Input type="number" step="1" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="100 or -50" /></Field>
+          </div>
+          <Field label="Note"><Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Compensation for ticket #123" /></Field>
+        </DialogBody>
+        <DialogFooter><Button onClick={save}>Save</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   )

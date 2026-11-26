@@ -146,6 +146,20 @@ namespace Purser
         /// </summary>
         Task<PurchaseResult> RedeemCodeAsync(string code, CancellationToken ct = default);
 
+        /// <summary>
+        /// The player's virtual currency balances (<see cref="WalletResult.Balances"/>, <see cref="WalletResult.Of"/>):
+        /// products with a <c>wallet</c> on the admin page credit it when bought and take it back when refunded.
+        /// </summary>
+        Task<WalletResult> GetWalletAsync(CancellationToken ct = default);
+
+        /// <summary>
+        /// Spends the player's currency on the server: <see cref="WalletStatus.InsufficientFunds"/> when the balance is
+        /// short. <paramref name="reference"/> is the game's id of this spend (an item id with a counter): retry a
+        /// <see cref="WalletStatus.Failed"/> spend with the same one, it is spent once. Needs player tokens
+        /// (<c>client_auth</c> = <c>signed</c>); without them spend from the game's backend (<c>/server/wallet/spend</c>).
+        /// </summary>
+        Task<WalletResult> SpendAsync(string currency, long amount, string reference, CancellationToken ct = default);
+
         /// <summary>"Restore purchases": re-verifies what the store reports and returns fresh customer info (purchases
         /// that are being verified at that moment included).</summary>
         Task<CustomerInfo> RestoreAsync(CancellationToken ct = default);

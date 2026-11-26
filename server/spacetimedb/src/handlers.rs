@@ -102,7 +102,7 @@ macro_rules! client_request {
         }
     )*};
 }
-client_request!(EntitlementsRequest, RestoreRequest, PaywallRequest, AttributesRequest, PaywallEventRequest, RedeemRequest);
+client_request!(EntitlementsRequest, RestoreRequest, PaywallRequest, AttributesRequest, PaywallEventRequest, RedeemRequest, WalletRequest, SpendRequest);
 
 pub(crate) fn valid_user_id(u: &str) -> bool {
     purser_core::is_valid_user_id(u)
@@ -527,6 +527,93 @@ fn entitlements_tx(tx: &TxContext, r: &EntitlementsRequest) -> Result<Outcome, O
 #[cfg(test)]
 fn get_entitlements(ctx: &mut impl Ctx, r: &EntitlementsRequest) -> Result<Outcome, Outcome> {
     ctx.tx(|tx| entitlements_tx(tx, r))
+}
+
+// ---------------------------------------------------------------------
+// Wallet
+// ---------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct WalletRequest {
+    app_id: String,
+    user_id: String,
+    #[serde(default)]
+    client: ClientInfo,
+}
+
+fn wallet_tx(tx: &TxContext, r: &WalletRequest) -> Result<Outcome, Outcome> {
+    if !valid_user_id(&r.user_id) {
+        return Err(Outcome::status(400, "error", "invalid user_id"));
+    }
+    let app = enabled_app(tx, &r.app_id)?;
+    players::touch(tx, &app.app_id, &r.user_id, &r.client);
+    Ok(Outcome::new(200, json!({ "status": "ok", "balances": crate::wallet::balances(tx, &app.game_key, &r.user_id) })))
+}
+
+/// `POST /wallet`: the player's virtual currency balances in the app.
+#[handler]
+fn wallet(ctx: &mut HandlerContext, req: Request) -> Response {
+    client_guard::run_tx(ctx, req, "wallet", true, |tx, r: &WalletRequest| wallet_tx(tx, r).unwrap_or_else(|o| o).into())
+}
+
+#[derive(Deserialize)]
+struct SpendRequest {
+    app_id: String,
+    user_id: String,
+    currency: String,
+    amount: i64,
+    /// The game's id of this spend: a repeated request with it spends nothing more.
+    reference: String,
+    #[serde(default)]
+    note: String,
+    #[serde(default)]
+    client: ClientInfo,
+}
+
+/// A wallet change as an answer: the balance, or the error with its code.
+pub(crate) fn wallet_answer(r: Result<crate::wallet::Applied, String>) -> (u16, Value) {
+    match r {
+        Ok(a) => (200, json!({ "status": "ok", "balance": a.balance, "repeated": a.repeated })),
+        Err(e) => {
+            let code = e.strip_prefix('[').and_then(|s| s.split_once(']')).map(|(c, _)| c.to_string()).unwrap_or_default();
+            let http = if code == purser_core::wallet::ERR_INSUFFICIENT_FUNDS || code == "ERR_REFERENCE_USED" { 409 } else { 400 };
+            (http, json!({ "status": "error", "code": code, "message": e }))
+        }
+    }
+}
+
+fn spend_tx(tx: &TxContext, r: &SpendRequest) -> Result<Outcome, Outcome> {
+    if !valid_user_id(&r.user_id) {
+        return Err(Outcome::status(400, "error", "invalid user_id"));
+    }
+    let app = enabled_app(tx, &r.app_id)?;
+    // Without player tokens anyone could spend another player's currency.
+    if app.client_auth != purser_core::client_api::mode::SIGNED {
+        return Err(Outcome::new(403, json!({ "status": "forbidden", "code": "ERR_SIGNED_ONLY", "message": "spending from the client needs player tokens (client_auth = signed); spend from your backend with /server/wallet/spend" })));
+    }
+    if r.amount <= 0 {
+        return Err(Outcome::new(400, json!({ "status": "error", "code": "ERR_BAD_AMOUNT", "message": "amount must be positive" })));
+    }
+    players::touch(tx, &app.app_id, &r.user_id, &r.client);
+    let change = crate::wallet::Change {
+        game_key: &app.game_key,
+        user_id: &r.user_id,
+        currency: &r.currency,
+        delta: -r.amount,
+        reason: purser_core::wallet::reason::SPEND,
+        reference: &format!("spend:{}", r.reference),
+        actor: "client",
+        note: &r.note,
+        may_go_negative: false,
+    };
+    let (http, body) = wallet_answer(crate::wallet::change(tx, &change));
+    Ok(Outcome::new(http, body))
+}
+
+/// `POST /wallet/spend`: spends the player's currency (builds with player tokens only).
+#[handler]
+fn wallet_spend(ctx: &mut HandlerContext, req: Request) -> Response {
+    client_guard::run_tx(ctx, req, "wallet_spend", false, |tx, r: &SpendRequest| spend_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 #[handler]
@@ -1498,6 +1585,8 @@ fn routes() -> Router {
         .post("/paywall/event", paywall_event)
         .post("/attributes", player_attributes)
         .post("/redeem", redeem)
+        .post("/wallet", wallet)
+        .post("/wallet/spend", wallet_spend)
         .post("/offers/apple/sign", offers_apple_sign)
         .post("/checkout/xsolla", crate::xsolla::checkout_route)
         .post("/checkout/xsolla/status", crate::xsolla::checkout_status_route)
@@ -1505,7 +1594,10 @@ fn routes() -> Router {
         .post("/checkout/steam", checkout_steam)
         .post("/server/entitlements", crate::server_api::server_entitlements)
         .post("/server/grant", crate::server_api::server_grant)
-        .post("/server/revoke", crate::server_api::server_revoke);
+        .post("/server/revoke", crate::server_api::server_revoke)
+        .post("/server/wallet", crate::server_api::server_wallet)
+        .post("/server/wallet/grant", crate::server_api::server_wallet_grant)
+        .post("/server/wallet/spend", crate::server_api::server_wallet_spend);
     for s in registry::STORES {
         if let Some(route) = s.verify_route() {
             router = router.post(route, verify_store);

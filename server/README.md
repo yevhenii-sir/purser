@@ -318,10 +318,18 @@ ledger like a manual grant (store `manual`, no revenue; a subscription code last
 again answers that grant. Rate limit: 10 a minute per player, 600 per build (codes are guessed by trying: generate
 long random codes, the admin page does, and use player tokens).
 
-### `POST /server/entitlements`, `/server/grant`, `/server/revoke`
+### `POST /wallet`, `/wallet/spend`
+
+A player's virtual currency (docs/wallet.md): `{"app_id", "user_id"}` → `{"status": "ok", "balances": {"gems": 120}}`;
+`/wallet/spend` `{"app_id", "user_id", "currency", "amount", "reference", "note"}` → `{"status": "ok", "balance",
+"repeated"}`, `409` `ERR_INSUFFICIENT_FUNDS` / `ERR_REFERENCE_USED`, `403 ERR_SIGNED_ONLY` for builds without player
+tokens. Products with `wallet` (`gems:100`) credit it when granted and take it back when refunded
+(`wallet_balance`, `wallet_tx`; `admin_wallet_adjust(game_key, user_id, currency, delta, note)` for support).
+
+### `POST /server/entitlements`, `/server/grant`, `/server/revoke`, `/server/wallet`, `/server/wallet/grant`, `/server/wallet/spend`
 
 For the game's backend, with `Authorization: Bearer psk_…` (a server key of the app, table `server_key`: only the
-SHA-256 of the key, its scopes `read` / `grant` / `revoke` and its app). See docs/game-integration.md, "Your backend:
+SHA-256 of the key, its scopes `read` / `grant` / `revoke` / `wallet` and its app). See docs/game-integration.md, "Your backend:
 server keys". `admin_add_server_key` (`{"game_key", "name", "scopes", "key_id", "key_hash"}`, Secrets capability) and
 `admin_revoke_server_key(key_id)` manage them; the admin page makes the key in the browser, `seed.py --server-key`
 in the terminal.

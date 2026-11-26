@@ -625,6 +625,7 @@ const SERVER_SCOPES = [
   ["read", "Read a player's purchases (/server/entitlements)"],
   ["grant", "Give products: rewards, compensation (/server/grant)"],
   ["revoke", "Take purchases back (/server/revoke)"],
+  ["wallet", "Read, give and spend virtual currency (/server/wallet)"],
 ] as const
 
 /** SHA-256 hex in the browser: the server only ever gets the hash of a key. */
