@@ -318,11 +318,12 @@ export function AlertsPage() {
               rowKey={(r) => String(r.id)}
               initialSort={{ id: "Time", desc: true }}
               columns={[
-                { title: "Time", sort: (r) => Number(r.at_micros), cell: (r) => <span className="text-xs whitespace-nowrap">{fmtTime(r.at_micros)}</span> },
-                { id: "State", title: "", sort: (r) => r.state, cell: (r) => <Tone tone={r.state === "resolved" ? "ok" : r.state === "test" || r.state === "digest" ? "muted" : "bad"}>{r.state}</Tone> },
+                { title: "Time", size: 160, sort: (r) => Number(r.at_micros), cell: (r) => <span className="text-xs whitespace-nowrap">{fmtTime(r.at_micros)}</span> },
+                { id: "State", title: "", size: 90, sort: (r) => r.state, cell: (r) => <Tone tone={r.state === "resolved" ? "ok" : r.state === "test" || r.state === "digest" ? "muted" : "bad"}>{r.state}</Tone> },
                 {
                   title: "Message",
-                  className: "max-w-xl whitespace-normal",
+                  size: 620,
+                  className: "whitespace-normal",
                   cell: (r) => (
                     <div className="min-w-0 space-y-1">
                       <div className="text-sm font-medium break-words">{r.title}</div>
@@ -331,7 +332,7 @@ export function AlertsPage() {
                     </div>
                   ),
                 },
-                { title: "Delivery", className: "whitespace-normal", cell: (r) => <Results json={r.results_json} /> },
+                { title: "Delivery", size: 260, className: "whitespace-normal", cell: (r) => <Results json={r.results_json} /> },
               ]}
             />
           </Section>
