@@ -28,6 +28,7 @@ pub mod registry;
 pub mod revenue;
 pub mod roles;
 pub mod server_api;
+pub mod sigv4;
 pub mod sns;
 pub mod stripe;
 pub mod steam;
