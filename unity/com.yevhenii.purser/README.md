@@ -633,7 +633,7 @@ up.
 
 The server sends purchase events to the connected integrations itself. The client only has to pass device identifiers:
 
-- **GA4:** implement `IAnalyticsIdProvider` (for example via `FirebaseAnalytics.GetAnalyticsInstanceIdAsync()`) so events are tied to the right `app_instance_id`.
+- **GA4:** implement `IAnalyticsIdProvider` (for example via `FirebaseAnalytics.GetAnalyticsInstanceIdAsync()`) so events are tied to the right `app_instance_id`, and send `AttributionKeys.GaSessionId` (`FirebaseAnalytics.GetSessionIdAsync()`) so a purchase counts in the session it was made in (the **Attribution ids** sample does both).
 - **AppsFlyer:** pass `appsflyer_id` via `IAttributionProvider`. AppsFlyer won't accept the event without it.
 - **Tenjin:** pass `tenjin_id` (the Tenjin SDK's analytics installation id) and `os_version`, plus `advertising_id` / `idfa` and `idfv` when the player consented.
 - **Adjust:** pass `adjust_id` (`Adjust.GetAdid()`), or at least `advertising_id` / `idfa` / `idfv`.

@@ -136,6 +136,22 @@ pub mod attribution_key {
     pub const APP_SET_ID: &str = "app_set_id";
     /// Kochava SDK device id (`Tracker.getDeviceId()`).
     pub const KOCHAVA_DEVICE_ID: &str = "kochava_device_id";
+    /// Firebase Analytics session id (`FirebaseAnalytics.GetSessionIdAsync()`): GA4 counts the
+    /// purchase in the session the player made it in.
+    pub const GA_SESSION_ID: &str = "ga_session_id";
+    /// Amplitude SDK session id (`Amplitude.getSessionId()`, the session's start in ms): Amplitude
+    /// counts the purchase in that session instead of out of any.
+    pub const AMPLITUDE_SESSION_ID: &str = "amplitude_session_id";
+    /// The Mixpanel SDK's `distinct_id` (`Mixpanel.GetDistinctId()`, `$device:...` before `Identify`):
+    /// events go to the player Mixpanel already knows instead of to the billing user id.
+    pub const MIXPANEL_DISTINCT_ID: &str = "mixpanel_distinct_id";
+
+    /// Ids of the session open on the device: kept only from the client's latest request, with the
+    /// time it was sent ([`SESSION_AT`]), and used only while the session can still be open
+    /// ([`super::session_window_ms`]).
+    pub const SESSIONS: &[&str] = &[GA_SESSION_ID, AMPLITUDE_SESSION_ID];
+    /// When the client last sent session ids (Unix ms). Set by the server, never taken from a client.
+    pub const SESSION_AT: &str = "session_at_ms";
 
     /// Advertising identifiers and ad attribution: dropped for child-directed apps.
     pub const ADVERTISING: &[&str] =
@@ -165,7 +181,34 @@ pub mod attribution_key {
         SINGULAR_DEVICE_ID,
         APP_SET_ID,
         KOCHAVA_DEVICE_ID,
+        GA_SESSION_ID,
+        AMPLITUDE_SESSION_ID,
+        MIXPANEL_DISTINCT_ID,
     ];
+}
+
+/// How long after the client sent the session id `key` an event may still be counted in that
+/// session: the time the service ends a session without events (GA4 30 minutes, the Amplitude
+/// mobile SDKs 5 minutes in the background).
+pub fn session_window_ms(key: &str) -> i64 {
+    if key == attribution_key::AMPLITUDE_SESSION_ID {
+        5 * 60 * 1000
+    } else {
+        30 * 60 * 1000
+    }
+}
+
+/// The ids to remember after a client request: `stored` updated with `incoming`. Device ids stay
+/// until the client sends new ones; session ids are those of this request or none (an old session
+/// is not carried over), stamped with `now_ms` ([`attribution_key::SESSION_AT`]).
+pub fn merge_attribution(stored: &BTreeMap<String, String>, incoming: &BTreeMap<String, String>, now_ms: i64) -> BTreeMap<String, String> {
+    let is_session = |k: &str| attribution_key::SESSIONS.contains(&k) || k == attribution_key::SESSION_AT;
+    let mut merged: BTreeMap<String, String> = stored.iter().filter(|(k, _)| !is_session(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
+    merged.extend(incoming.iter().filter(|(k, _)| k.as_str() != attribution_key::SESSION_AT).map(|(k, v)| (k.clone(), v.clone())));
+    if incoming.keys().any(|k| attribution_key::SESSIONS.contains(&k.as_str())) {
+        merged.insert(attribution_key::SESSION_AT.into(), now_ms.to_string());
+    }
+    merged
 }
 
 /// Keeps only known attribution keys with short, plain values (strings or booleans).
@@ -180,9 +223,11 @@ pub fn sanitize_attribution(raw: &Map<String, Value>) -> BTreeMap<String, String
             Value::Bool(b) => b.to_string(),
             _ => continue,
         };
+        // Mixpanel's anonymous ids start with `$device:`.
+        let dollar = k == attribution_key::MIXPANEL_DISTINCT_ID;
         if !s.is_empty()
             && s.len() <= 128
-            && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':') || (dollar && c == '$'))
         {
             out.insert(k.clone(), s);
         }
@@ -233,6 +278,16 @@ pub struct OutEvent {
     /// The period is the first paid one after a free trial.
     #[serde(default)]
     pub trial_conversion: bool,
+}
+
+impl OutEvent {
+    /// The session id `key` ([`attribution_key::SESSIONS`]) when the client sent it less than
+    /// [`session_window_ms`] before this event.
+    pub fn session(&self, key: &str) -> Option<&str> {
+        let sent_at: i64 = self.attribution.get(attribution_key::SESSION_AT)?.parse().ok()?;
+        let fresh = self.at_ms >= sent_at && self.at_ms - sent_at <= session_window_ms(key);
+        self.attribution.get(key).map(String::as_str).filter(|_| fresh)
+    }
 }
 
 /// What an integration reports as revenue (`revenue` in its settings).
@@ -508,6 +563,10 @@ pub mod ga4 {
     pub struct Settings {
         /// Firebase app id of this platform, e.g. `1:1234567890:android:abc123`.
         pub firebase_app_id: String,
+        /// Send the billing user id as GA4's `user_id`: for games that give Firebase the same id
+        /// (`SetUserId`), or GA4 would see two users.
+        #[serde(default)]
+        pub send_user_id: bool,
         /// Also report sandbox / license-tester purchases (DebugView, no revenue).
         #[serde(default)]
         pub send_sandbox: bool,
@@ -520,6 +579,8 @@ pub mod ga4 {
 
     /// Prefixes GA4 reserves for its own event names.
     const RESERVED: &[&str] = &["firebase_", "google_", "ga_"];
+    /// GA4 takes a `user_id` of at most 256 characters.
+    const MAX_USER_ID_LEN: usize = 256;
 
     impl Settings {
         pub fn parse(json: &str) -> Result<Self, String> {
@@ -589,6 +650,10 @@ pub mod ga4 {
         if ev.is_sandbox() || ev.kind == event_kind::TEST {
             params["debug_mode"] = json!(1);
         }
+        // The session the player made the purchase in (a number, as the Firebase SDK reports it).
+        if let Some(session) = ev.session(attribution_key::GA_SESSION_ID) {
+            params["session_id"] = session.parse::<i64>().map(|n| json!(n)).unwrap_or_else(|_| json!(session));
+        }
         let app_instance_id = if is_valid_app_instance_id(&ev.app_instance_id) {
             ev.app_instance_id.clone()
         } else {
@@ -596,10 +661,14 @@ pub mod ga4 {
         };
         // No `timestamp_micros`: GA4 drops events dated more than 72 hours back, and an event
         // replayed days later (`admin_replay_integration_events`) would be lost; it is dated when sent.
-        let body = json!({
+        let mut body = json!({
             "app_instance_id": app_instance_id,
             "events": [{ "name": name, "params": params }],
         });
+        // GA4's User-ID: the same id the game gives `FirebaseAnalytics.SetUserId`, or GA4 splits the player.
+        if settings.send_user_id && !ev.user_id.is_empty() && ev.user_id.len() <= MAX_USER_ID_LEN {
+            body["user_id"] = json!(ev.user_id);
+        }
         Ok(Built::Send(HttpCall {
             sign_with: String::new(),
             method: "POST",
@@ -1353,6 +1422,10 @@ pub mod amplitude {
         if let Some(d) = device_id {
             event["device_id"] = json!(d);
         }
+        // The session the player made the purchase in; without one Amplitude counts the event out of any.
+        if let Some(session) = ev.session(attribution_key::AMPLITUDE_SESSION_ID).and_then(|s| s.parse::<i64>().ok()) {
+            event["session_id"] = json!(session);
+        }
         if !ev.country.is_empty() {
             event["country"] = json!(ev.country);
         }
@@ -1439,8 +1512,8 @@ pub mod mixpanel {
         sha256_hex(&dedup_id(ev))[..32].to_string()
     }
 
-    /// One event (`purser_<kind>` unless named) for `distinct_id` = the billing user id, with the
-    /// signed revenue.
+    /// One event (`purser_<kind>` unless named) for `distinct_id` = the Mixpanel SDK's id of the
+    /// player when the client sent it, else the billing user id, with the signed revenue.
     pub fn build(ev: &OutEvent, settings: &Settings, service_account: &str) -> Result<Built, String> {
         if service_account.is_empty() {
             return Err("Mixpanel service account is not configured".into());
@@ -1453,9 +1526,10 @@ pub mod mixpanel {
         if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
             return Ok(Built::Skip("sandbox purchase".into()));
         }
+        let sdk_id = ev.attribution.get(attribution_key::MIXPANEL_DISTINCT_ID);
         let mut properties = json!({
             "time": ev.at_ms,
-            "distinct_id": ev.user_id,
+            "distinct_id": sdk_id.unwrap_or(&ev.user_id),
             "$insert_id": insert_id(ev),
             // Without `ip` Mixpanel geolocates the request, i.e. this server: 0 turns that off.
             "ip": "0",
@@ -1470,6 +1544,10 @@ pub mod mixpanel {
         });
         if !ev.country.is_empty() {
             properties["mp_country_code"] = json!(ev.country);
+        }
+        if sdk_id.is_some() && !ev.user_id.is_empty() {
+            // The billing user id still travels, to find the player's purchases in the admin page.
+            properties["purser_user_id"] = json!(ev.user_id);
         }
         let body = json!([{ "event": name, "properties": properties }]);
         Ok(Built::Send(HttpCall {
@@ -2700,7 +2778,62 @@ mod tests {
         assert_eq!(body["events"][0]["name"], "purchase", "GA4 counts revenue only of its e-commerce events");
         assert_eq!(body["events"][0]["params"]["value"], 4.99);
         assert_eq!(body["app_instance_id"].as_str().unwrap().len(), 32);
+        assert!(body.get("user_id").is_none() && body["events"][0]["params"].get("session_id").is_none(), "{body}");
         assert!(ga4::build(&event("purchase", "android"), &ga4::Settings::default(), "x").is_err());
+    }
+
+    #[test]
+    fn ga4_sends_the_user_id_when_asked_and_the_session_while_it_can_be_open() {
+        let mut ev = event("purchase", "android");
+        ev.attribution.insert(attribution_key::GA_SESSION_ID.into(), "1795810339".into());
+        ev.attribution.insert(attribution_key::SESSION_AT.into(), (ev.at_ms - 1000).to_string());
+        let body_of = |ev: &OutEvent, s: &ga4::Settings| -> Value { serde_json::from_str(&send(ga4::build(ev, s, "S").unwrap()).body).unwrap() };
+        let body = body_of(&ev, &ga4::Settings { send_user_id: true, ..ga4s(false) });
+        assert_eq!(body["user_id"], ev.user_id.as_str());
+        assert_eq!(body["events"][0]["params"]["session_id"], 1795810339i64, "a number, as the Firebase SDK reports it");
+        // Half an hour after the client sent it, the session may be over: none.
+        ev.attribution.insert(attribution_key::SESSION_AT.into(), (ev.at_ms - session_window_ms(attribution_key::GA_SESSION_ID) - 1).to_string());
+        assert!(body_of(&ev, &ga4s(false))["events"][0]["params"].get("session_id").is_none());
+    }
+
+    #[test]
+    fn amplitude_gets_its_session_and_mixpanel_the_sdks_distinct_id() {
+        let mut ev = event("purchase", "android");
+        ev.attribution.insert(attribution_key::AMPLITUDE_SESSION_ID.into(), "1795810339000".into());
+        ev.attribution.insert(attribution_key::SESSION_AT.into(), (ev.at_ms - 60_000).to_string());
+        let amp = |ev: &OutEvent| -> Value {
+            let body: Value = serde_json::from_str(&send(amplitude::build(ev, &amplitude::Settings::default(), "k").unwrap()).body).unwrap();
+            body["events"][0].clone()
+        };
+        assert_eq!(amp(&ev)["session_id"], 1795810339000i64);
+        // Amplitude's mobile SDKs end a session after 5 minutes in the background.
+        ev.attribution.insert(attribution_key::SESSION_AT.into(), (ev.at_ms - 6 * 60_000).to_string());
+        assert!(amp(&ev).get("session_id").is_none());
+
+        let mp = |ev: &OutEvent| -> Value {
+            let call = send(mixpanel::build(ev, &mixpanel::Settings::parse(r#"{"project_id":"1"}"#).unwrap(), "user:secret").unwrap());
+            serde_json::from_str::<Value>(&call.body).unwrap()[0]["properties"].clone()
+        };
+        assert_eq!((mp(&ev)["distinct_id"].as_str(), mp(&ev).get("purser_user_id")), (Some(ev.user_id.as_str()), None));
+        let raw: Map<String, Value> = serde_json::from_str(r#"{"mixpanel_distinct_id":"$device:3F2A-11","appsflyer_id":"$x"}"#).unwrap();
+        let clean = sanitize_attribution(&raw);
+        assert_eq!(clean.len(), 1, "a $ only in Mixpanel's id: {clean:?}");
+        ev.attribution.extend(clean);
+        assert_eq!(mp(&ev)["distinct_id"], "$device:3F2A-11");
+        assert_eq!(mp(&ev)["purser_user_id"], ev.user_id.as_str());
+    }
+
+    #[test]
+    fn session_ids_are_kept_only_from_the_latest_request() {
+        let ids = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+        let first = merge_attribution(&BTreeMap::new(), &ids(&[("appsflyer_id", "af"), ("ga_session_id", "11")]), 1000);
+        assert_eq!(first, ids(&[("appsflyer_id", "af"), ("ga_session_id", "11"), ("session_at_ms", "1000")]));
+        // Without a session id: the device ids stay, the old session goes.
+        assert_eq!(merge_attribution(&first, &ids(&[("tenjin_id", "t")]), 2000), ids(&[("appsflyer_id", "af"), ("tenjin_id", "t")]));
+        assert_eq!(merge_attribution(&first, &ids(&[("ga_session_id", "12")]), 3000)["session_at_ms"], "3000");
+        // A client cannot date its own session: the key is not one it may send.
+        let raw: Map<String, Value> = serde_json::from_str(r#"{"ga_session_id":"12","session_at_ms":"99999999999999"}"#).unwrap();
+        assert_eq!(sanitize_attribution(&raw), ids(&[("ga_session_id", "12")]));
     }
 
     #[test]

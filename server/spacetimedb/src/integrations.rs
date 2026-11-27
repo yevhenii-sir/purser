@@ -168,8 +168,7 @@ pub fn save_attribution(tx: &ReducerContext, app_id: &str, user_id: &str, attrib
     let existing = tx.db.user_attribution().key().find(&key);
     let stored: BTreeMap<String, String> =
         existing.as_ref().and_then(|r| serde_json::from_str(&r.attribution_json).ok()).unwrap_or_default();
-    let mut merged = stored.clone();
-    merged.extend(attribution.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let merged = purser_core::integrations::merge_attribution(&stored, attribution, tx.timestamp.to_micros_since_unix_epoch() / 1000);
     if existing.is_some() && merged == stored {
         return; // the client sent the same ids again
     }

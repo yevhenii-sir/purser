@@ -126,6 +126,21 @@ namespace Purser
         public const string AppSetId = "app_set_id";
         /// <summary>The Kochava SDK's device id (the tracker's <c>GetDeviceId</c>) — for Kochava events (or send a device id).</summary>
         public const string KochavaDeviceId = "kochava_device_id";
+        /// <summary>
+        /// Firebase Analytics session id (<c>FirebaseAnalytics.GetSessionIdAsync()</c>) — GA4 counts the purchase in the
+        /// session the player made it in. The server keeps it only from the latest request, for 30 minutes.
+        /// </summary>
+        public const string GaSessionId = "ga_session_id";
+        /// <summary>
+        /// The Amplitude SDK's session id (the session's start in ms) — Amplitude counts the purchase in that session.
+        /// The server keeps it only from the latest request, for 5 minutes.
+        /// </summary>
+        public const string AmplitudeSessionId = "amplitude_session_id";
+        /// <summary>
+        /// The Mixpanel SDK's <c>distinct_id</c> of the player — Mixpanel events go to that player instead of to the
+        /// billing user id.
+        /// </summary>
+        public const string MixpanelDistinctId = "mixpanel_distinct_id";
         /// <summary>Apple Ads attribution, filled by <see cref="AppleAdsAttributionProvider"/>.</summary>
         public const string AppleAdsOrgId = "asa_org_id";
         public const string AppleAdsCampaignId = "asa_campaign_id";

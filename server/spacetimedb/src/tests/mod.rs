@@ -71,6 +71,7 @@ impl Fake {
             // Adjust events) are recorded with their bodies.
             call = format!("{call} {}", req.into_body().into_string_lossy());
         } else if call.contains("amplitude.com")
+            || call.contains("google-analytics.com")
             || call.contains("mixpanel.com")
             || call.contains("graph.facebook.com")
             || call.contains("s2s.singular.net")

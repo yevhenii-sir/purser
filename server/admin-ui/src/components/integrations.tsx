@@ -542,6 +542,14 @@ function IntegrationForm({ kind, row, apps, others, onClose, onSaved }: {
         <div className="flex flex-wrap gap-x-6 gap-y-3">
           {check("send_sandbox", "Send sandbox / test purchases")}
         </div>
+        {kind === "ga4" && (
+          <div className="space-y-1">
+            {check("send_user_id", "Send the player's user id as GA4 user_id")}
+            <p className="pl-6 text-xs text-muted-foreground">
+              Only when the game gives Firebase the same id (FirebaseAnalytics.SetUserId): otherwise GA4 sees one player as two users.
+            </p>
+          </div>
+        )}
       </div>
 
       {kind === "adjust" && (

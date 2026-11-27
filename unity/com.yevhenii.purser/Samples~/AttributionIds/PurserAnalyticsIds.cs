@@ -1,5 +1,5 @@
 // The ids Purser's server needs to send renewals, refunds and Xsolla purchases to the game's analytics:
-// Tenjin's analytics_installation_id (Tenjin integration) and Firebase's app_instance_id (GA4 integration).
+// Tenjin's analytics_installation_id (Tenjin integration), Firebase's app_instance_id and session id (GA4 integration).
 // 1. Add PURSER_TENJIN and/or PURSER_FIREBASE to Player Settings > Scripting Define Symbols when the game has the
 //    Tenjin Unity SDK / Firebase Analytics.
 // 2. Pass one instance as both providers:
@@ -22,7 +22,7 @@ namespace Purser.Samples
             m_TenjinKey = tenjinSdkKey;
         }
 
-        public Task<IDictionary<string, string>> GetAttributionAsync()
+        public async Task<IDictionary<string, string>> GetAttributionAsync()
         {
             IDictionary<string, string> ids = new Dictionary<string, string>
             {
@@ -45,7 +45,21 @@ namespace Purser.Samples
                 }
             }
 #endif
-            return Task.FromResult(ids);
+#if PURSER_FIREBASE
+            try
+            {
+                // The session open now: GA4 counts the purchase in it.
+                var session = await Firebase.Analytics.FirebaseAnalytics.GetSessionIdAsync();
+                if (session > 0)
+                    ids[AttributionKeys.GaSessionId] = session.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[Purser] Firebase session id unavailable: " + e.Message);
+            }
+#endif
+            await Task.CompletedTask;
+            return ids;
         }
 
         public async Task<string> GetAppInstanceIdAsync()

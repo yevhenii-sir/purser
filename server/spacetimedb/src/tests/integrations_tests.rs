@@ -301,6 +301,31 @@ fn events_onesignal_refuses_in_a_202_answer_are_dropped() {
 }
 
 #[test]
+fn purchases_reach_ga4_in_the_players_session_and_with_their_user_id() {
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "ga4", json!({ "firebase_app_id": "1:1:android:abc", "send_user_id": true }));
+    w.set_secret(secret_name::GA4_API_SECRET, "ga4-secret");
+    let (url, _, body) = send_gems_purchase(&w, "ga4", "google-analytics.com", json!({ "ga_session_id": "1795810339" }));
+    assert!(url.starts_with("https://www.google-analytics.com/mp/collect?"), "{url}");
+    assert_eq!(body["user_id"], "player-1");
+    assert_eq!(body["events"][0]["params"]["session_id"], 1795810339i64);
+
+    // An hour later (a refund, a renewal) the session is over: the event goes without it.
+    w.advance_clock(3600);
+    let p = w.purchase();
+    let ev = w
+        .test
+        .with_reducer_tx(TestAuth::internal(), |tx| {
+            let app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
+            Ok::<_, ()>(crate::integrations::out_event(tx, &app, &p, "refund"))
+        })
+        .unwrap();
+    assert_eq!(ev.attribution.get("ga_session_id").map(String::as_str), Some("1795810339"));
+    assert_eq!(ev.session("ga_session_id"), None);
+}
+
+#[test]
 fn purchases_are_sent_to_amplitude_with_the_key_in_the_body() {
     let w = World::new();
     w.as_admin(false);
@@ -331,6 +356,23 @@ fn purchases_are_sent_to_mixpanel_with_the_service_account() {
     assert_eq!((body[0]["event"].as_str(), p["distinct_id"].as_str()), (Some("purser_purchase"), Some("player-1")));
     assert_eq!((p["revenue"].as_f64(), p["currency"].as_str(), p["transaction_id"].as_str()), (Some(0.99), Some("USD"), Some(ORDER)));
     assert_eq!(p["$insert_id"].as_str().map(str::len), Some(32));
+}
+
+#[test]
+fn amplitude_and_mixpanel_get_the_ids_of_their_own_sdks() {
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "mixpanel", json!({ "project_id": "3456789" }));
+    w.set_secret(secret_name::MIXPANEL_SERVICE_ACCOUNT, "sa:secret");
+    let (_, _, body) = send_gems_purchase(&w, "mixpanel", "mixpanel.com", json!({ "mixpanel_distinct_id": "$device:3F2A-11", "amplitude_session_id": "1795810339000" }));
+    assert_eq!((body[0]["properties"]["distinct_id"].as_str(), body[0]["properties"]["purser_user_id"].as_str()), (Some("$device:3F2A-11"), Some("player-1")));
+
+    let w = World::new();
+    w.as_admin(false);
+    connect(&w, "amplitude", json!({}));
+    w.set_secret(secret_name::AMPLITUDE_API_KEY, "amp-key");
+    let (_, _, body) = send_gems_purchase(&w, "amplitude", "api2.amplitude.com", json!({ "amplitude_session_id": "1795810339000" }));
+    assert_eq!(body["events"][0]["session_id"], 1795810339000i64);
 }
 
 #[test]

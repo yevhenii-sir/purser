@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- `AttributionKeys.GaSessionId`: Firebase's session id (`FirebaseAnalytics.GetSessionIdAsync()`), so GA4 counts a purchase
+  in the session the player made it in. The **Attribution ids** sample sends it with `PURSER_FIREBASE`.
+- `AttributionKeys.AmplitudeSessionId` (the Amplitude SDK's session id) and `AttributionKeys.MixpanelDistinctId` (the
+  Mixpanel SDK's `distinct_id`): server events land in the player's Amplitude session and on the Mixpanel player.
+
 ### Changed
 
 - Requests to routes whose path names no store (`/entitlements`, `/restore`, `/paywall`, `/paywall/event`, `/attributes`,
