@@ -447,11 +447,13 @@ pub fn setup_google(ctx: &mut impl Ctx, input: &str) -> Result<Value, String> {
             service_account: account,
             audience: purser_core::google_oidc::audience(&app.app_id),
         };
+        // The push authenticates as the build key's account, possibly of another project: say which.
+        let as_account = |e: String| format!("{sub} as {}: {e}", push.service_account);
         let res = google(ctx, token, "GET", &gs::subscription_url(p, &sub), None)?;
         let action = if !exists(&res)? {
             if !dry {
                 let body = gs::create_subscription_body(&topic_path, &push);
-                google_ok(ctx, token, "PUT", &gs::subscription_url(p, &sub), Some(body))?;
+                google_ok(ctx, token, "PUT", &gs::subscription_url(p, &sub), Some(body)).map_err(as_account)?;
             }
             if dry { "would_create" } else { "created" }
         } else {
@@ -466,7 +468,7 @@ pub fn setup_google(ctx: &mut impl Ctx, input: &str) -> Result<Value, String> {
             } else if dry {
                 "would_update"
             } else {
-                google_ok(ctx, token, "POST", &gs::modify_push_url(p, &sub), Some(gs::modify_push_body(&push)))?;
+                google_ok(ctx, token, "POST", &gs::modify_push_url(p, &sub), Some(gs::modify_push_body(&push))).map_err(as_account)?;
                 "updated"
             }
         };

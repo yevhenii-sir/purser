@@ -242,11 +242,14 @@ pub fn error_message(status: u16, body: &str) -> String {
     } else if body.contains("allowedPolicyMemberDomains") || body.contains("Domain Restricted Sharing") {
         " (the organization policy iam.allowedPolicyMemberDomains blocks Google Play's notification account: an \
          organization admin can allow it for this project)"
+    } else if body.contains("iam.serviceAccounts.actAs") {
+        " (the push subscription authenticates as the service account: the token's account needs the Service Account \
+         User role (roles/iam.serviceAccountUser) on the project, or the Owner role; a new grant takes a minute or two)"
     } else if status == 401 {
         " (the access token expired: get a new one with `gcloud auth print-access-token`)"
     } else if status == 403 {
         " (the token's account needs the Owner role, or Service Usage Admin, Service Account Admin, Service Account \
-         Key Admin and Pub/Sub Admin, on the project)"
+         Key Admin, Service Account User and Pub/Sub Admin, on the project)"
     } else {
         ""
     };
@@ -332,6 +335,8 @@ mod tests {
         let blocked = r#"{"error":{"code":400,"message":"Key creation is not allowed","status":"FAILED_PRECONDITION","details":[{"violations":[{"type":"constraints/iam.disableServiceAccountKeyCreation"}]}]}}"#;
         assert!(error_message(400, blocked).contains("Organization policies"));
         assert!(error_message(401, r#"{"error":{"message":"bad"}}"#).contains("expired"));
+        let act_as = r#"{"error":{"message":"Principal initiating the request does not have iam.serviceAccounts.actAs permission on the requested push authentication service account."}}"#;
+        assert!(error_message(403, act_as).contains("roles/iam.serviceAccountUser"));
         let (topic, push) = parse_subscription(r#"{"topic":"projects/p/topics/t","pushConfig":{"pushEndpoint":"https://h/x"}}"#).unwrap();
         assert_eq!((topic.as_str(), push.endpoint.as_str(), push.service_account.as_str()), ("projects/p/topics/t", "https://h/x", ""));
         let want = Push { endpoint: "https://h/notify/google".into(), service_account: "sa@p.iam.gserviceaccount.com".into(), audience: "purser-rtdn:com.a".into() };

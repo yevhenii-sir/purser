@@ -41,7 +41,8 @@ pub struct RefundSweep {
 
 /// How often a build's refunds are read.
 pub const EVERY_MICROS: i64 = 6 * 3600 * 1_000_000;
-/// How far back the first sweep reads (Google keeps voided purchases for 30 days).
+/// How far back the first sweep reads (Google keeps voided purchases for 30 days and takes a day less:
+/// `google::voided_start`).
 const FIRST_MS: i64 = 30 * MICROS_PER_DAY / 1000;
 /// Each sweep reads again this much of what the last one covered: a refund the store lists late.
 const OVERLAP_MS: i64 = 2 * MICROS_PER_DAY / 1000;
@@ -156,6 +157,7 @@ fn refunded(tx: &ReducerContext, app_id: &str) -> u64 {
 fn sweep_google(ctx: &mut impl Ctx, app: &GameApp, start_ms: i64, end_ms: i64, budget: Budget) -> Result<(), String> {
     let mut auth = Auth::default();
     let token = auth.get(|| stores::google_access_token(ctx, app)).map_err(|e| e.message().to_string())?;
+    let start_ms = google::voided_start(start_ms, end_ms);
     let mut page = String::new();
     loop {
         let url = google::voided_purchases_page_url(&app.store_app_id, start_ms, end_ms, &page)?;

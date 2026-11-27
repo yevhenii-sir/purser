@@ -679,7 +679,8 @@ fn the_worker_revokes_a_google_refund_whose_notification_never_came() {
     assert_eq!((row.found_total, row.last_found, row.last_error.as_str()), (1, 1, ""));
     assert_eq!(row.covered_until_ms, NOW_MICROS / 1000);
     let first = w.fake.borrow().calls.iter().find(|c| c.contains("voidedpurchases?type=1")).cloned().unwrap();
-    assert!(first.contains(&format!("startTime={}", NOW_MICROS / 1000 - 30 * 86_400_000)), "{first}");
+    // Google refuses a start at the 30-day edge of its data: a day short of it.
+    assert!(first.contains(&format!("startTime={}", NOW_MICROS / 1000 - 29 * 86_400_000)), "{first}");
 
     // Not again for hours; then from where it stopped (with an overlap), finding nothing new.
     w.advance_clock(3600);

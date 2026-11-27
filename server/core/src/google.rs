@@ -100,6 +100,15 @@ pub struct Voided {
 }
 
 /// `voidedpurchases` answer: the voided purchases and the token of the next page (`None`: the last).
+/// How far back a voided-purchases read may start: Google keeps 30 days and refuses a start at
+/// that edge ("Start time must be within [30] days of data"), so a day short of it.
+pub const VOIDED_WINDOW_MS: i64 = 29 * 24 * 3600 * 1000;
+
+/// The start of a voided-purchases read ending at `end_ms`, no older than Google allows.
+pub fn voided_start(start_ms: i64, end_ms: i64) -> i64 {
+    start_ms.max(end_ms - VOIDED_WINDOW_MS)
+}
+
 pub fn parse_voided_purchases(body: &str) -> Result<(Vec<Voided>, Option<String>), String> {
     // No voided purchases in the window: Google may answer with an empty body.
     let v: Value = if body.trim().is_empty() {
@@ -522,6 +531,14 @@ pub fn is_already_done_error(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_voided_read_starts_within_googles_window() {
+        let end = 1_800_000_000_000;
+        let day = 24 * 3600 * 1000;
+        assert_eq!(voided_start(end - 30 * day, end), end - 29 * day, "the edge is refused");
+        assert_eq!(voided_start(end - 3 * day, end), end - 3 * day);
+    }
 
     #[test]
     fn no_voided_purchases_is_an_empty_list() {

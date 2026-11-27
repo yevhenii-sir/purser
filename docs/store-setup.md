@@ -28,7 +28,7 @@ Before you start:
 
 - **Builds**: the builds must exist already (wizard or `seed.py`).
 - **Public address**: the server must be reachable over https under a public host name. That is the `public_base_url` setting, else the address the admin page is opened at.
-- **Role**: the token's account needs the **Owner** role on the project, or Service Usage Admin, Service Account Admin, Service Account Key Admin and Pub/Sub Admin.
+- **Role**: the token's account needs the **Owner** role on the project, or Service Usage Admin, Service Account Admin, Service Account Key Admin, Service Account User and Pub/Sub Admin. Service Account User (`iam.serviceAccounts.actAs`) lets the push subscription authenticate as the service account.
 
 Run the setup from either place:
 
