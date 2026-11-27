@@ -593,7 +593,7 @@ function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
   const [missing, setMissing] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [picked, setPicked] = useState<PickedProduct[]>([])
-  const [alsoOthers, setAlsoOthers] = useState(true)
+  const [alsoOthers, setAlsoOthers] = useState(false)
   const onPick = useCallback((p: PickedProduct[]) => setPicked(p), [])
   const load = async () => {
     setLoading(true)
