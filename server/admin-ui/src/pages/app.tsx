@@ -238,11 +238,11 @@ export function AppPage({ appKey, tab, go, me }: PageProps & { appKey: string; t
 
 function SetupTab({ data, reload }: TabProps) {
   const g = data.group
-  const [checking, setChecking] = useState<"" | "all" | "apple">("")
+  /** What is being checked: every build (`all`), or the App Store build of this key asking Apple for a test notification. */
+  const [checking, setChecking] = useState("")
   const [wizard, setWizard] = useState(false)
   const base = useAsync(() => publicRoute())
   const can = useCan()
-  const appleBuilds = g.apps.filter((a) => storeOf(a).id === "apple")
   // Store setup writes keys (the server checks Secrets for every store); checks and the wizard need Configure.
   const canSetUp = (_: GameApp) => can("secrets")
   const configure = can("configure")
@@ -250,10 +250,10 @@ function SetupTab({ data, reload }: TabProps) {
     await checkBuilds([appId])
     reload()
   }
-  /** Checks the builds at once; `appleTest` re-checks the App Store builds with a test notification. */
-  const check = async (appleTest: boolean) => {
-    setChecking(appleTest ? "apple" : "all")
-    const reports = await checkBuilds((appleTest ? appleBuilds : g.apps).map((a) => a.app_id), appleTest)
+  /** Checks every build at once, or (`apple`) one App Store build with a test notification. */
+  const check = async (apple?: GameApp) => {
+    setChecking(apple ? apple.app_id : "all")
+    const reports = await checkBuilds(apple ? [apple.app_id] : g.apps.map((a) => a.app_id), !!apple)
     const failed = reports.find((r) => r.checks.length === 1 && r.checks[0].id === "error")
     if (failed) toast.error(failed.checks[0].detail)
     setChecking("")
@@ -262,13 +262,7 @@ function SetupTab({ data, reload }: TabProps) {
   return (
     <>
       {configure && <div className="flex flex-wrap items-center gap-2">
-        <Button onClick={() => check(false)} disabled={!!checking}><RefreshCwIcon className={checking === "all" ? "animate-spin" : ""} /> {checking === "all" ? "Checking…" : "Check now"}</Button>
-        {appleBuilds.length > 0 && (
-          <Button variant="outline" onClick={() => check(true)} disabled={!!checking}
-            title="Asks Apple to send a TEST notification to this server; the next check shows whether it arrived">
-            <BellRingIcon className={checking === "apple" ? "animate-pulse" : ""} /> {checking === "apple" ? "Asking Apple…" : "Apple test notification"}
-          </Button>
-        )}
+        <Button onClick={() => check()} disabled={!!checking}><RefreshCwIcon className={checking === "all" ? "animate-spin" : ""} /> {checking === "all" ? "Checking…" : "Check now"}</Button>
         <Button variant="outline" onClick={() => setWizard(true)}><SparklesIcon /> Add a build or run the setup wizard</Button>
       </div>}
       {g.apps.map((a) => {
@@ -277,7 +271,13 @@ function SetupTab({ data, reload }: TabProps) {
         return (
           <Section key={a.app_id} title={<span className="flex items-center gap-2">{buildLabel(a)} <Mono className="font-normal">{a.store_app_id}</Mono></span>}
             actions={
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {configure && storeOf(a).id === "apple" && (
+                  <Button variant="outline" size="xs" onClick={() => check(a)} disabled={!!checking}
+                    title="Asks Apple to send a TEST notification to this server and checks the key with Apple; the next check shows whether it arrived">
+                    <BellRingIcon className={checking === a.app_id ? "animate-pulse" : ""} /> {checking === a.app_id ? "Asking Apple…" : "Test notification"}
+                  </Button>
+                )}
                 {canSetUp(a) && <StoreSetupButton app={a} base={base.data ?? ""} onDone={() => recheck(a.app_id)} />}
                 {rep ? <LevelBadge level={rep.summary} /> : <Tone tone="muted">not checked</Tone>}
               </div>
