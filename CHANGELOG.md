@@ -18,6 +18,7 @@
 - SECURITY.md: what anyone who knows a player id can read without player tokens, and turning them on instead of relying on ids nobody can guess.
 
 - Docs: the README and the docs site's front page list every implemented store (Huawei AppGallery, Samsung Galaxy Store, Meta Quest and Telegram Stars were missing) and the SDKs for other engines.
+- The module's tests are split by area (`server/spacetimedb/src/tests/`: the harness in `mod.rs`, one `<area>_tests.rs` per area) instead of one file of 10,800 lines.
 
 ## 0.13.0 - 2026-11-26
 
