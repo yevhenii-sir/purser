@@ -12,13 +12,14 @@
 - CI runs the Godot addon's tests on Godot 4.2, the oldest supported version.
 - docs/releases.md, *Versions and upgrades*: Purser has not run a live game yet, how far each store has been tried (automated tests, sandbox and live purchases), what a release promises before and after 1.0, how often releases come out and how to upgrade. The README and the docs site's front page say the status.
 - GitHub releases carry their notes from the changelogs (`tools/release_notes.py`: the release's section of `CHANGELOG.md` and of the Unity package's), and a tag without a changelog section publishes nothing. Every released section starts with **In short** and **Upgrade** lines, added to the earlier releases too.
+- README: *Performance*, the measured answers per second and what limits them.
 
 ### Changed
 
 - SECURITY.md: what anyone who knows a player id can read without player tokens, and turning them on instead of relying on ids nobody can guess.
-
 - Docs: the README and the docs site's front page list every implemented store (Huawei AppGallery, Samsung Galaxy Store, Meta Quest and Telegram Stars were missing) and the SDKs for other engines.
 - The module's tests are split by area (`server/spacetimedb/src/tests/`: the harness in `mod.rs`, one `<area>_tests.rs` per area) instead of one file of 10,800 lines.
+- CONTRIBUTING.md: `main` stays linear; work from side branches and agents' worktrees lands as rebased or squashed commits.
 
 ## 0.13.0 - 2026-11-26
 

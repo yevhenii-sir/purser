@@ -86,6 +86,18 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | Integrations | GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Mixpanel, Meta, Singular, Branch, Kochava, Braze, OneSignal, webhook, Cloud Storage, S3 | Many analytics, attribution and marketing integrations |
 | Operations | You run and upgrade it | The vendor runs it |
 
+## Performance
+
+Measured on a local SpacetimeDB 2.16 server with the data on disk (`tools/loadtest.py`, the store replaced by a local proxy; conditions and more numbers: [Capacity](docs/self-hosting.md#capacity)):
+
+| Load | Concurrent requests | Answers per second | Latency (median / p99) |
+|---|---|---|---|
+| `/entitlements` (reads) | 16 / 64 | ~2,900 / ~4,700 | 5 / 36, 10 / 43 ms |
+| a purchase without outbound calls | 16 / 64 | ~800 / ~1,400 | 19 / 52, 43 / 78 ms |
+| a purchase whose store answers in 300 ms | 64 | ~105 | 650 ms |
+
+The store's latency sets the pace: a request that waits for a store keeps one of the server's module instances, so purchases per second ≈ instances ÷ the store's answer time. On your own server the pool can be raised; on maincloud it cannot. A store that hangs costs a request at most 3 s; the purchase is retried in the background.
+
 ## Documentation
 
 | | |

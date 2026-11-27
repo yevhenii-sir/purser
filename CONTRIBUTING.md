@@ -45,6 +45,10 @@ Unity: add the package to `"testables"` in a project's `manifest.json` and run t
 
 Purser has no production users yet, so until 1.0 ([docs/releases.md](docs/releases.md)) tables change the clean way: rename, reorder or remove columns instead of keeping legacy ones. A release whose schema SpacetimeDB cannot migrate in place says in both changelogs that it needs a publish with `--delete-data`. New tables and indexes migrate in place.
 
+## History
+
+`main` stays linear: work from a side branch (an AI agent's worktree included) lands as rebased or squashed commits with messages that say what changed, not as merge commits. Remove a worktree and its branch once its work is on `main` (`git worktree remove <path>`, `git branch -d <branch>`).
+
 ## Releases
 
 Bump the version in `server/core/Cargo.toml`, `server/spacetimedb/Cargo.toml`, `unity/.../package.json` and `PurserInfo.Version` (`unity/.../Runtime/Billing.cs`), keep `server/spacetimedb/sdk-requests/current.json` in step with what the Unity SDK sends, move "Unreleased" in both changelogs, then push a `vX.Y.Z` tag: the release workflow builds `purser.wasm` and attaches it to the GitHub release.

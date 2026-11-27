@@ -238,6 +238,8 @@ Run `spacetime` CLI commands from outside `server/` (or pass the database explic
 
 ## Conventions
 
+- **History**: `main` stays linear. Work done in a worktree or side branch lands as rebased or squashed
+  commits (`git rebase main`, then a fast-forward), never as a merge commit; remove the worktree and its branch afterwards.
 - **Logic goes to `core` as pure functions with tests**; the module does storage and HTTP only.
   Module tests (`tests/<area>_tests.rs`, the harness in `tests/mod.rs`) use `World` + `Fake` HTTP (`w.script(url_substring, status, body)`,
   `w.set_secret`, `w.as_admin`, `w.ctx()`); add one for every new behavior that touches tables.
