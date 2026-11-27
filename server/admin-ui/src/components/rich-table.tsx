@@ -5,6 +5,7 @@ import { useMemo, useState, type ReactNode } from "react"
 import { useTable, type ColumnDef, type PaginationState, type SortingState } from "@tanstack/react-table"
 import { Columns3Icon } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { DataGrid, DataGridContainer, dataGridFeatures, type DataGridFeatures } from "@/components/reui/data-grid/data-grid"
 import { DataGridColumnHeader } from "@/components/reui/data-grid/data-grid-column-header"
 import { DataGridColumnVisibility } from "@/components/reui/data-grid/data-grid-column-visibility"
@@ -36,6 +37,8 @@ export function RichTable<T extends object>({
   toolbar,
   noun = "rows",
   summary,
+  selected,
+  onSelectedChange,
 }: {
   rows: T[]
   columns: RichColumn<T>[]
@@ -51,10 +54,47 @@ export function RichTable<T extends object>({
   noun?: string
   /** Replaces the row count above the table. */
   summary?: ReactNode
+  /** Keys (`rowKey`) of the selected rows: with `onSelectedChange`, a checkbox column comes first and
+   * its header selects every row (all pages). */
+  selected?: ReadonlySet<string>
+  onSelectedChange?: (keys: Set<string>) => void
 }) {
+  const keyOf = (row: T, i: number) => (rowKey ? rowKey(row, i) : String(i))
+  const selectable = !!(selected && onSelectedChange)
   const defs = useMemo<ColumnDef<DataGridFeatures, T>[]>(
-    () =>
-      columns.map((c, i) => {
+    () => {
+      const select: ColumnDef<DataGridFeatures, T>[] = selectable ? [{
+        id: "__select",
+        accessorFn: () => null,
+        enableSorting: false,
+        enableHiding: false,
+        enableResizing: false,
+        size: 40,
+        header: () => {
+          const keys = rows.map(keyOf)
+          const n = keys.filter((k) => selected!.has(k)).length
+          return (
+            <Checkbox aria-label="Select all" checked={n > 0 && n === keys.length ? true : n > 0 ? "indeterminate" : false}
+              onCheckedChange={() => onSelectedChange!(n === keys.length ? new Set() : new Set(keys))} />
+          )
+        },
+        cell: ({ row }) => {
+          const key = keyOf(row.original, row.index)
+          return (
+            // The row may open on click: the checkbox only selects.
+            <div onClick={(e) => e.stopPropagation()} className="flex items-center">
+              <Checkbox aria-label="Select" checked={selected!.has(key)} onCheckedChange={(v) => {
+                const next = new Set(selected)
+                if (v === true) next.add(key)
+                else next.delete(key)
+                onSelectedChange!(next)
+              }} />
+            </div>
+          )
+        },
+        meta: { headerTitle: "", cellClassName: "w-10" },
+      } as ColumnDef<DataGridFeatures, T>] : []
+      return [...select, ...columns.map((c, i) => {
         // A column without a title (actions) still needs an id: the table refuses an empty one.
         const id = c.id || (typeof c.title === "string" && c.title ? c.title : `col${i}`)
         const label = typeof c.title === "string" ? c.title : id
@@ -72,8 +112,10 @@ export function RichTable<T extends object>({
           cell: ({ row }) => c.cell(row.original, row.index),
           meta: { headerTitle: label, headerClassName: cn(c.num && "text-right"), cellClassName: cellClass },
         } as ColumnDef<DataGridFeatures, T>
-      }),
-    [columns],
+      })]
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyOf follows rowKey
+    [columns, selectable, selected, rows],
   )
   const [sorting, setSorting] = useState<SortingState>(initialSort ? [{ id: initialSort.id, desc: !!initialSort.desc }] : [])
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize })
@@ -106,7 +148,7 @@ export function RichTable<T extends object>({
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <div className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-            {summary ?? `${rows.length.toLocaleString()} ${noun}`}
+            {summary ?? `${rows.length.toLocaleString()} ${noun}${selected?.size ? ` · ${selected.size.toLocaleString()} selected` : ""}`}
           </div>
           {toolbar}
           <DataGridColumnVisibility

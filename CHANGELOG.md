@@ -11,7 +11,7 @@
 
 ### Added
 
-- The product dialog has **Delete**: the product goes from every build (purchases of it stay in the ledger).
+- The Products tab is a sortable grid with hideable columns, a search (product id, store ids, title), type and "missing in <build>" filters, and bulk actions on the checked rows: change the type, add to or remove from a build, create in the store, delete. The product dialog has **Delete** too (the product goes from every build; purchases of it stay in the ledger). `RichTable` takes an optional row selection.
 - The Add an app wizard asks for the app's name first and derives the app key from it (`Magnet Rings` → `magnet-rings`) until the key is typed; the name is saved with the builds (`admin_set_app_name`). A name with no Latin letters leaves the key to the app id, as before.
 
 ### Fixed

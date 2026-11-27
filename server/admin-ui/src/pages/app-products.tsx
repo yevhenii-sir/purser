@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useState } from "react"
-import { ChevronDownIcon, ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon, RefreshCwIcon, StoreIcon, Trash2Icon, UploadIcon } from "lucide-react"
+import { Fragment, useCallback, useMemo, useState } from "react"
+import { ChevronDownIcon, ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon, RefreshCwIcon, SearchIcon, StoreIcon, Trash2Icon, UploadIcon, XIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
-import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
+import { DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
+import { RichTable, type RichColumn } from "@/components/rich-table"
 import { StoreCreateDialog, StoreJobs } from "@/components/store-create-dialog"
 import { call, proc, publicRoute, select } from "@/lib/api"
 import { buildLabel, creatorBuilds, storeById, storeOf } from "@/lib/stores"
@@ -76,10 +77,70 @@ export function AppProductsTab({ data, go }: TabProps) {
   /** Remounts the store job list after new jobs were queued. */
   const [jobsKey, setJobsKey] = useState(0)
   const products = useAsync(async () => groupByCatalogId(await select<Product>({ table: "product", where: { column: "app_id", equals: ids } })), [ids.join(",")])
-  const rows = products.data || []
+  const rows = useMemo(() => products.data || [], [products.data])
   const configure = useCan()("configure")
   /** Builds whose store catalog can be imported (Google Play, App Store). */
   const importers = g.apps.filter((a) => storeOf(a).product_import)
+  const [query, setQuery] = useState("")
+  const [kindFilter, setKindFilter] = useState<string>(ALL)
+  /** Only the products this build lacks (a build key), or every product. */
+  const [missingIn, setMissingIn] = useState<string>(ALL)
+  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return rows.filter((r) =>
+      (kindFilter === ALL || r.kind === kindFilter)
+      && (missingIn === ALL || !r.by[missingIn])
+      && (!q || [r.product_id, ...Object.values(r.by).flatMap((p) => (p ? [p.product_id, p.title] : []))].some((t) => t?.toLowerCase().includes(q))))
+  }, [rows, query, kindFilter, missingIn])
+  /** The picked rows that still exist (a reload may have removed some). */
+  const chosen = rows.filter((r) => picked.has(r.product_id))
+  const done = (ok: unknown, keep = true) => {
+    if (ok === undefined) return
+    if (!keep) setPicked(new Set())
+    products.reload()
+  }
+
+  // Bulk actions on the picked rows: one call each, the server applies all of it or nothing.
+  const setKind = async (kind: Kind) => {
+    const blocked = kind === "consumable" ? chosen.filter((r) => accessOfRow(r)) : []
+    const items = chosen.filter((r) => r.kind !== "subscription" && r.kind !== kind && !blocked.includes(r)).flatMap((r) => g.apps.flatMap((a) => {
+      const p = r.by[a.app_id]
+      // The price goes along: a missing one would clear it.
+      return p ? [{ app_id: a.app_id, product_id: p.product_id, kind, price_micros: Number(p.price_micros), currency: p.currency }] : []
+    }))
+    if (blocked.length) toast.warning(`${blocked.map((r) => r.product_id).join(", ")}: unlocks access levels, so it cannot be consumable`)
+    if (!items.length) return toast.info(`Nothing to change: subscriptions keep their type`)
+    done(await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `${new Set(items.map((i) => i.product_id)).size} product(s) are ${kind} now`))
+  }
+  const addTo = async (to: GameApp) => {
+    const items = chosen.filter((r) => !r.by[to.app_id]).flatMap((r) => {
+      const from = Object.values(r.by).find((p) => p && Number(p.price_micros) > 0) || Object.values(r.by).find(Boolean)
+      if (!from) return []
+      return [{
+        app_id: to.app_id, product_id: from.product_id, catalog_id: r.product_id, kind: r.kind, price_micros: Number(from.price_micros), currency: from.currency,
+        ...listingOf(from), ...(accessOfRow(r) ? { access: accessOfRow(r) } : {}), ...(walletOfRow(r) ? { wallet: walletOfRow(r) } : {}),
+      }]
+    })
+    if (!items.length) return toast.info(`${buildLabel(to)} has all of them`)
+    done(await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Added ${items.length} product(s) to ${buildLabel(to)}`))
+  }
+  const removeFrom = async (from: GameApp) => {
+    const hit = chosen.filter((r) => r.by[from.app_id])
+    if (!hit.length) return toast.info(`${buildLabel(from)} has none of them`)
+    if (!confirm(`Remove ${hit.length} product(s) from ${buildLabel(from)}? Purchases already made stay; new ones of them are refused as unknown there.`)) return
+    done(await tryAct(async () => {
+      for (const r of hit) await call("admin_delete_product", from.app_id, r.by[from.app_id]!.product_id)
+      return true
+    }, `Removed ${hit.length} product(s) from ${buildLabel(from)}`))
+  }
+  const deleteAll = async () => {
+    if (!confirm(`Delete ${chosen.length} product(s) from every build? Purchases already made stay in the ledger; new ones of them are refused as unknown.`)) return
+    done(await tryAct(async () => {
+      for (const r of chosen) for (const a of g.apps) if (r.by[a.app_id]) await call("admin_delete_product", a.app_id, r.by[a.app_id]!.product_id)
+      return true
+    }, `Deleted ${chosen.length} product(s)`), false)
+  }
 
   const copyToOther = async (from: GameApp, to: GameApp) => {
     const items = rows.filter((r) => r.by[from.app_id] && !r.by[to.app_id]).map((r) => {
@@ -174,17 +235,79 @@ export function AppProductsTab({ data, go }: TabProps) {
         }
       >
         {products.error ? <ErrorBox error={products.error} /> : products.loading && !products.data ? <Loading /> : (
-          <DataTable
-            rows={rows}
+          <div className="space-y-3">
+            {rows.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative w-full sm:w-64">
+                  <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by id or title" className="h-8 ps-8" />
+                </div>
+                <Select value={kindFilter} onValueChange={setKindFilter}>
+                  <SelectTrigger size="sm" className="w-44"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL}>Every type</SelectItem>
+                    {KINDS.map((k) => <SelectItem key={k} value={k}>{k}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                {g.apps.length > 1 && (
+                  <Select value={missingIn} onValueChange={setMissingIn}>
+                    <SelectTrigger size="sm" className="w-56"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ALL}>In any build</SelectItem>
+                      {g.apps.map((a) => <SelectItem key={a.app_id} value={a.app_id}>Missing in {buildLabel(a)}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            )}
+            {configure && chosen.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 px-3 py-2">
+                <span className="text-sm font-medium">{chosen.length} selected</span>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild><Button variant="outline" size="sm">Type <ChevronDownIcon /></Button></DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuItem onClick={() => setKind("consumable")}>consumable</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setKind("non_consumable")}>non_consumable</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                {g.apps.length > 1 && (
+                  <>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild><Button variant="outline" size="sm"><CopyIcon /> Add to <ChevronDownIcon /></Button></DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">{g.apps.map((a) => <DropdownMenuItem key={a.app_id} onClick={() => addTo(a)}>{buildLabel(a)}</DropdownMenuItem>)}</DropdownMenuContent>
+                    </DropdownMenu>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild><Button variant="outline" size="sm">Remove from <ChevronDownIcon /></Button></DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">{g.apps.map((a) => <DropdownMenuItem key={a.app_id} onClick={() => removeFrom(a)}>{buildLabel(a)}</DropdownMenuItem>)}</DropdownMenuContent>
+                    </DropdownMenu>
+                  </>
+                )}
+                {creatorBuilds(g.apps).length > 0 && (
+                  <Button variant="outline" size="sm" onClick={() => setDialog("create")}><StoreIcon /> Create in store</Button>
+                )}
+                <Button variant="ghost" size="sm" className="text-destructive" onClick={deleteAll}><Trash2Icon /> Delete</Button>
+                <Button variant="ghost" size="sm" className="ms-auto text-muted-foreground" onClick={() => setPicked(new Set())}><XIcon /> Clear</Button>
+              </div>
+            )}
+          <RichTable
+            rows={shown}
+            rowKey={(r) => r.product_id}
+            selected={configure ? picked : undefined}
+            onSelectedChange={configure ? setPicked : undefined}
             onRowClick={configure ? setEditing : undefined}
-            empty="No products yet."
+            noun="products"
+            pageSize={50}
+            empty={rows.length ? "No product matches." : "No products yet."}
             columns={[
-              { title: "Product", cell: (r) => <Mono>{r.product_id}</Mono> },
-              { title: "Type", cell: (r) => r.kind },
-              { title: "Access", cell: (r) => accessOfRow(r) ? <span className="text-xs">{accessOfRow(r).split(",").join(", ")}</span> : <span className="text-muted-foreground">—</span> },
-              { title: "Gives", cell: (r) => walletOfRow(r) ? <span className="text-xs">{walletOfRow(r).split(",").map((g) => g.replace(":", " ")).join(", ")}</span> : <span className="text-muted-foreground">—</span> },
-              ...g.apps.map((a) => ({
+              { title: "Product", sort: (r) => r.product_id, cell: (r) => <Mono>{r.product_id}</Mono> },
+              { title: "Type", sort: (r) => r.kind, cell: (r) => r.kind },
+              { title: "Access", sort: (r) => accessOfRow(r), cell: (r) => accessOfRow(r) ? <span className="text-xs">{accessOfRow(r).split(",").join(", ")}</span> : <span className="text-muted-foreground">—</span> },
+              { title: "Gives", sort: (r) => walletOfRow(r), cell: (r) => walletOfRow(r) ? <span className="text-xs">{walletOfRow(r).split(",").map((g) => g.replace(":", " ")).join(", ")}</span> : <span className="text-muted-foreground">—</span> },
+              ...g.apps.map((a): RichColumn<Row> => ({
+                id: a.app_id,
                 title: buildLabel(a),
+                num: true,
+                sort: (r: Row) => (r.by[a.app_id] ? Number(r.by[a.app_id]!.price_micros) : null),
                 cell: (r: Row) => {
                   const p = r.by[a.app_id]
                   if (!p) return <Tone tone="warn">missing</Tone>
@@ -202,11 +325,12 @@ export function AppProductsTab({ data, go }: TabProps) {
               })),
             ]}
           />
+          </div>
         )}
       </Section>
       {<StoreJobs key={jobsKey} apps={g.apps} onFinished={products.reload} />}
       <ProductDialog editing={editing} apps={g.apps} onClose={() => setEditing(null)} onSaved={products.reload} />
-      <StoreCreateDialog open={dialog === "create"} apps={g.apps} listed={(app, id) => !!rows.find((r) => r.product_id === id)?.by[app]} onClose={() => setDialog(null)} onStarted={() => { products.reload(); setJobsKey((k) => k + 1) }}
+      <StoreCreateDialog open={dialog === "create"} apps={g.apps} preselected={chosen.map((r) => r.product_id)} listed={(app, id) => !!rows.find((r) => r.product_id === id)?.by[app]} onClose={() => setDialog(null)} onStarted={() => { products.reload(); setJobsKey((k) => k + 1) }}
         products={rows.map((r) => {
           const common = commonPrice(r, g.apps)
           const prices = Object.fromEntries(g.apps.flatMap((a) => {
@@ -224,6 +348,9 @@ export function AppProductsTab({ data, go }: TabProps) {
     </>
   )
 }
+
+/** "Every" in the filters. */
+const ALL = "__all__"
 
 /** The price most builds of a product share (the first one on a tie); 0 when none is set. */
 function commonPrice(r: Row, apps: GameApp[]): { price_micros: number; currency: string } {

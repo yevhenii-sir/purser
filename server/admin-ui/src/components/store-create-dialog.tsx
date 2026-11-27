@@ -82,15 +82,17 @@ interface StoreCreateProps {
   products: CreateSource[]
   /** The build already lists this product id. */
   listed: (appId: string, productId: string) => boolean
+  /** Product ids ticked at first (the rows picked in the table). */
+  preselected?: string[]
   onClose: () => void
   onStarted: () => void
 }
 
-function StoreCreate({ apps, products, listed, onClose, onStarted }: StoreCreateProps) {
+function StoreCreate({ apps, products, listed, preselected = [], onClose, onStarted }: StoreCreateProps) {
   const builds = creatorBuilds(apps)
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() =>
     Object.fromEntries(products.map((p) => [p.product_id, {
-      on: false, title: p.title || titleOf(p.product_id), description: p.description,
+      on: preselected.includes(p.product_id), title: p.title || titleOf(p.product_id), description: p.description,
       price: p.price_micros > 0 ? String(p.price_micros / 1e6) : "", currency: p.currency || "USD", period: p.period || "P1M",
     }])))
   const [targets, setTargets] = useState<Record<string, boolean>>(() => Object.fromEntries(builds.map((a) => [a.app_id, true])))
