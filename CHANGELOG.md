@@ -13,6 +13,10 @@
 
 - The Add an app wizard asks for the app's name first and derives the app key from it (`Magnet Rings` → `magnet-rings`) until the key is typed; the name is saved with the builds (`admin_set_app_name`). A name with no Latin letters leaves the key to the app id, as before.
 
+### Fixed
+
+- Importing the catalog of a Google Play app without subscriptions (or one-time products) failed with `bad subscriptions response: EOF`: Google answers an empty list with an empty body. The refund sweep read an empty voided-purchases answer the same way.
+
 ## 0.14.0 - 2026-11-27
 
 **In short:** Google Play notifications are authenticated by Pub/Sub's push token instead of a secret in the URL; integrations take the game's own event names and name free trials and subscription refunds apart, and GA4 counts renewals as purchases; releases carry a signed build provenance, and every page of the docs is rewritten for reading.

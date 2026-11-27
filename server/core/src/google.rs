@@ -101,7 +101,12 @@ pub struct Voided {
 
 /// `voidedpurchases` answer: the voided purchases and the token of the next page (`None`: the last).
 pub fn parse_voided_purchases(body: &str) -> Result<(Vec<Voided>, Option<String>), String> {
-    let v: Value = serde_json::from_str(body).map_err(|e| format!("voided purchases: bad json: {e}"))?;
+    // No voided purchases in the window: Google may answer with an empty body.
+    let v: Value = if body.trim().is_empty() {
+        Value::Object(Default::default())
+    } else {
+        serde_json::from_str(body).map_err(|e| format!("voided purchases: bad json: {e}"))?
+    };
     let num = |x: &Value| x.as_i64().or_else(|| x.as_str().and_then(|s| s.parse().ok())).unwrap_or(0);
     let list = v["voidedPurchases"]
         .as_array()
@@ -517,6 +522,14 @@ pub fn is_already_done_error(body: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_voided_purchases_is_an_empty_list() {
+        for body in ["", "{}"] {
+            let (list, next) = parse_voided_purchases(body).unwrap();
+            assert!(list.is_empty() && next.is_none(), "{body:?}");
+        }
+    }
 
     #[test]
     fn refunds_and_deferrals() {

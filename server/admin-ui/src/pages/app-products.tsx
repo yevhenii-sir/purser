@@ -429,7 +429,7 @@ function StoreImportDialog({ open, app, others, onClose, onSaved }: { open: bool
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle>Import from {storeOf(app).name}</DialogTitle>
-          <DialogDescription>The catalog of {app.app_id}. {IMPORT_HELP[storeOf(app).id] || ""}</DialogDescription>
+          <DialogDescription>The catalog of {app.store_app_id}. {IMPORT_HELP[storeOf(app).id] || ""}</DialogDescription>
         </DialogHeader>
         <DialogBody>
           {!rows && !loading && <Button variant="outline" onClick={load}>Load catalog</Button>}

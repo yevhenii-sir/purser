@@ -136,13 +136,21 @@ fn reference_price<'a>(configs: impl Iterator<Item = &'a Value>, price_key: &str
         .unwrap_or((0, String::new()))
 }
 
+/// A Google Play list answer: an app with nothing to list gets an empty body, not `{}`.
+fn google_list(body: &str, what: &str) -> Result<Value, String> {
+    if body.trim().is_empty() {
+        return Ok(Value::Object(Default::default()));
+    }
+    serde_json::from_str(body).map_err(|e| format!("bad {what} response: {e}"))
+}
+
 fn next_page(v: &Value) -> Option<String> {
     v["nextPageToken"].as_str().filter(|t| !t.is_empty()).map(str::to_string)
 }
 
 /// `GET .../oneTimeProducts` → products and the next page token.
 pub fn parse_one_time_products(body: &str) -> Result<(Vec<RemoteProduct>, Option<String>), String> {
-    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad oneTimeProducts response: {e}"))?;
+    let v = google_list(body, "oneTimeProducts")?;
     let items = v["oneTimeProducts"].as_array().cloned().unwrap_or_default();
     let products = items
         .iter()
@@ -162,7 +170,7 @@ pub fn parse_one_time_products(body: &str) -> Result<(Vec<RemoteProduct>, Option
 
 /// `GET .../subscriptions` → subscriptions and the next page token.
 pub fn parse_subscriptions(body: &str) -> Result<(Vec<RemoteProduct>, Option<String>), String> {
-    let v: Value = serde_json::from_str(body).map_err(|e| format!("bad subscriptions response: {e}"))?;
+    let v = google_list(body, "subscriptions")?;
     let items = v["subscriptions"].as_array().cloned().unwrap_or_default();
     let products = items
         .iter()
@@ -534,6 +542,17 @@ mod tests {
         assert!(check_listing("Premium", "", "P2M", "").unwrap_err().contains("P1W"));
         assert!(check_listing(&"x".repeat(56), "", "", "").unwrap_err().contains("title"));
         assert!(check_listing("", &"x".repeat(201), "", "").unwrap_err().contains("description"));
+    }
+
+    #[test]
+    fn an_empty_google_list_is_no_products() {
+        // Google Play answers an app without subscriptions or one-time products with an empty body.
+        for body in ["", "  
+", "{}"] {
+            assert_eq!(parse_subscriptions(body).unwrap(), (vec![], None), "{body:?}");
+            assert_eq!(parse_one_time_products(body).unwrap(), (vec![], None), "{body:?}");
+        }
+        assert!(parse_subscriptions("<html>").unwrap_err().starts_with("bad subscriptions response"));
     }
 
     #[test]
