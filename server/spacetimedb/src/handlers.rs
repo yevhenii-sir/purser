@@ -5,7 +5,7 @@
 //! | GET    | `/healthz`         | monitoring                 |
 //! | GET    | `/metrics`         | Prometheus (`metrics_token`) |
 //! | GET    | `/admin`           | admin UI (an admin's token) |
-//! | POST   | `/verify/<store>`  | game client after purchase: `google`, `apple`, `amazon` (client-receipt stores of `purser_core::registry`) |
+//! | POST   | `/verify/<store>`  | game client after purchase: `google`, `apple`, `amazon`, `huawei`, `samsung`, `meta`, `steam` (client-receipt stores of `purser_core::registry`) |
 //! | POST   | `/checkout/steam`  | game client: start a Steam purchase (`InitTxn`), then `/verify/steam` |
 //! | POST   | `/restore`         | game client "restore"      |
 //! | POST   | `/entitlements`    | game client / game backend |
@@ -13,7 +13,7 @@
 //! | POST   | `/paywall`         | game client: what to show at a placement |
 //! | POST   | `/paywall/event`   | game client: paywall shown (A/B test views) |
 //! | POST   | `/attributes`      | game client: custom player attributes (shown on the admin page) |
-//! | POST   | `/notify/<store>`  | store notifications: `google` (RTDN Pub/Sub push, `?secret=`), `apple` (ASSN V2), `amazon` (RTN over SNS, `?app=`), `xsolla` and `stripe` (webhooks, `?app=`) |
+//! | POST   | `/notify/<store>`  | store notifications: `google` (RTDN Pub/Sub push, `?secret=`), `apple` (ASSN V2), `amazon` (RTN over SNS, `?app=`), `huawei` (`?app=&secret=`), `samsung` (`?app=`), `xsolla`, `stripe` and `telegram` (webhooks, `?app=`) |
 //! | POST   | `/checkout/xsolla`, `/checkout/xsolla/status` | game client / website: Xsolla payment token, order status (`xsolla.rs`) |
 //! | POST   | `/checkout/stripe` | web client: creates a Stripe Checkout Session (`stripe.rs`) |
 //! | POST   | `/verify/stripe`   | web client after the Checkout redirect: confirms the session |

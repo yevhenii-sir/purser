@@ -231,7 +231,7 @@ Client routes (`/verify/*`, `/restore`, `/entitlements`, `/attributes`, `/paywal
 - **Rate limits.** Token buckets per player of a build, and per build for what costs the build something: store look-ups (`client_api::STORE_CALLS`, 600 a minute per build, taken by `/verify` and each `/restore` item only after the request was checked, so junk requests cannot use them up), `/attributes` (1,200) and `/paywall/event` (6,000). Per player (`client_api::limits`): `/verify` 30 a minute, `/restore` 6, `/entitlements` and `/paywall` 60, .... In open builds the player id is the client's word: anyone who knows a player's id can use up that player's bucket, so use ids nobody can guess, or player tokens (`client_auth = signed`). Over a limit: `429 {"code": "ERR_RATE_LIMITED"}` with `Retry-After: <seconds>`. Buckets live in `rate_bucket`; the worker deletes idle ones.
 - **Signed answers.** With a `response_signing_key` (Ed25519 seed, 32 bytes base64; the Delivery tab creates one in the browser), `/entitlements` and `/restore` answers carry `X-Purser-Signature: <base64 signature of the exact body>`; `admin_response_public_key(app_id)` shows the public key games check it with.
 
-### `POST /verify/<store>`: `/verify/google`, `/verify/apple`, `/verify/amazon`, `/verify/steam`, `/verify/huawei`, `/verify/samsung`
+### `POST /verify/<store>`: `/verify/google`, `/verify/apple`, `/verify/amazon`, `/verify/steam`, `/verify/huawei`, `/verify/samsung`, `/verify/meta`
 
 One route per client-receipt store of the registry; a build's purchases go to its store's route. The body:
 

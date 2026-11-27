@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Docs: the README and the docs site's front page list every implemented store (Huawei AppGallery, Samsung Galaxy Store, Meta Quest and Telegram Stars were missing) and the SDKs for other engines.
+
 ## 0.13.0 - 2026-11-26
 
 Publishes over 0.12.0 in place (new tables only): no `--delete-data`, no backup needed.
