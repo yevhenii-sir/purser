@@ -50,9 +50,8 @@ pub const STORE: StoreInfo = StoreInfo {
     refunds: "GetReport polling by the worker (Refunded, Chargedback, fraud refunds)",
     reports_price: true,
     binding: Binding::None,
-    app_id_label: "Steam App ID",
-    app_id_placeholder: "480",
-    app_id_is_store_id: true,
+    store_app_id_label: "Steam App ID",
+    store_app_id_placeholder: "480",
     product_import: false,
     product_create: &[],
     // Billing agreements renew without telling us: the worker asks GetUserAgreementInfo.

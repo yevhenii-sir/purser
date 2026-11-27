@@ -73,13 +73,15 @@ class Server:
 
 # --- The made-up catalog ---------------------------------------------------------------------
 
+# Builds: (id in the store, platform, store column, store). A build's key is `{store}:{id in the store}`,
+# so every build of a game may use its package name.
 GAMES = {
     "galaxy-miner": {
         "builds": [
             ("com.example.galaxyminer", "android", "", "google"),
-            ("com.example.galaxyminer.ios", "ios", "", "apple"),
-            ("com.example.galaxyminer.amazon", "amazon", "", "amazon"),
-            ("com.example.galaxyminer.huawei", "huawei", "", "huawei"),
+            ("com.example.galaxyminer", "ios", "", "apple"),
+            ("com.example.galaxyminer", "amazon", "", "amazon"),
+            ("com.example.galaxyminer", "huawei", "", "huawei"),
         ],
         "products": [
             ("gems_small", "consumable", 0.99, 30),
@@ -93,9 +95,9 @@ GAMES = {
     "word-garden": {
         "builds": [
             ("com.example.wordgarden", "android", "", "google"),
-            ("com.example.wordgarden.ios", "ios", "", "apple"),
-            ("com.example.wordgarden.web", "web", "stripe", "stripe"),
-            ("com.example.wordgarden.tg", "web", "telegram", "telegram"),
+            ("com.example.wordgarden", "ios", "", "apple"),
+            ("com.example.wordgarden", "web", "stripe", "stripe"),
+            ("com.example.wordgarden", "web", "telegram", "telegram"),
         ],
         "products": [
             ("hints_10", "consumable", 1.99, 25),
@@ -105,6 +107,13 @@ GAMES = {
         ],
     },
 }
+
+
+def build_key(build):
+    """The key admin calls and tables name a build by: `{store}:{id in the store}`."""
+    return f"{build[3]}:{build[0]}"
+
+
 # Telegram Stars: a product's price in Stars (a Star is worth about $0.013).
 STAR_USD = 0.013
 
@@ -200,7 +209,8 @@ def make_purchases(now_ms, rnd):
         weekend = 1.25 if dt.datetime.fromtimestamp((now_ms - day * DAY_MS) / 1000, dt.timezone.utc).weekday() >= 5 else 1.0
         n = max(0, int(rnd.gauss(6.5 * growth * weekend, 1.8)))
         for _ in range(n):
-            (game, (app, platform, _, store)) = rnd.choices(builds, weights)[0]
+            game, build = rnd.choices(builds, weights)[0]
+            app, store = build_key(build), build[3]
             prods = GAMES[game]["products"]
             pid, kind, usd, _w = rnd.choices(prods, [p[3] for p in prods])[0]
             uid = user(game)
@@ -244,7 +254,7 @@ def make_purchases(now_ms, rnd):
                 chain[-1]["status"] = "revoked"
     # A few purchases still being delivered, for the Overview.
     for r in rows[-400:]:
-        if r["status"] == "completed" and r["app_id"] == "com.example.wordgarden" and len([x for x in rows if x.get("attempts")]) < 3 and rnd.random() < 0.05:
+        if r["status"] == "completed" and r["app_id"] == "google:com.example.wordgarden" and len([x for x in rows if x.get("attempts")]) < 3 and rnd.random() < 0.05:
             r.update(status="granted" if rnd.random() < 0.5 else "verified", attempts=3 + rnd.randrange(3),
                      next_attempt_at_micros=(now_ms + 4 * 60_000) * 1000,
                      last_error="delivery: webhook answered HTTP 503 (api.example.com)")
@@ -279,21 +289,21 @@ def alerts(srv, rnd, now_ms):
     hour = 3_600_000_000
     now = now_ms * 1000
     states = [
-        ("revenue_drop", "com.example.galaxyminer.amazon", True, now - 7 * hour,
+        ("revenue_drop", "amazon:com.example.galaxyminer", True, now - 7 * hour,
          "Yesterday $12.40 gross (3 paid purchases), 31% of the average day of the week before ($40.10)."),
-        ("refund_spike", "com.example.wordgarden.ios", False, now - 52 * hour,
+        ("refund_spike", "apple:com.example.wordgarden", False, now - 52 * hour,
          "Yesterday 4 refunds ($19.96) against 11 paid purchases."),
     ]
     for i, (rule, app, active, at, detail) in enumerate(states):
         srv.sql("INSERT INTO alert_state (key, rule, app_id, active, first_at_micros, last_at_micros, last_sent_at_micros, suppressed, total, detail) "
                 f"VALUES ('{rule}/{app}', '{rule}', '{app}', {str(active).lower()}, {at}, {at}, {at}, 0, 1, '{detail}')")
     log = [
-        (now - 52 * hour, "refund_spike", "alert", "com.example.wordgarden.ios", "[ALERT] Refunds spiked", states[1][4]),
-        (now - 28 * hour, "refund_spike", "resolved", "com.example.wordgarden.ios", "[RESOLVED] Refunds are back to normal", ""),
+        (now - 52 * hour, "refund_spike", "alert", "apple:com.example.wordgarden", "[ALERT] Refunds spiked", states[1][4]),
+        (now - 28 * hour, "refund_spike", "resolved", "apple:com.example.wordgarden", "[RESOLVED] Refunds are back to normal", ""),
         (now - 26 * hour, "digest", "digest", "", "[DAILY] Daily summary",
          "Galaxy Miner: $418.20 yesterday (+6% on the day before), 61 purchases, 9 new subscriptions, 1 refund. "
          "Word Garden: $187.35 (-3%), 34 purchases, 4 new subscriptions, 0 refunds."),
-        (now - 7 * hour, "revenue_drop", "alert", "com.example.galaxyminer.amazon", "[ALERT] Revenue dropped", states[0][4]),
+        (now - 7 * hour, "revenue_drop", "alert", "amazon:com.example.galaxyminer", "[ALERT] Revenue dropped", states[0][4]),
     ]
     for i, (at, rule, st, app, title, detail) in enumerate(log):
         srv.sql("INSERT INTO alert_log (id, at_micros, rule, state, app_id, title, detail, repeats, results_json) "
@@ -326,8 +336,7 @@ def sql_text(v):
 def wallets_and_installs(srv, rows, now_ms, rnd):
     """What the live server records but an import does not: the gems of gem purchases (and what
     the players spent), and when each player was first seen (install cohorts)."""
-    gk = {"com.example.galaxyminer": "galaxy-miner", "com.example.galaxyminer.ios": "galaxy-miner", "com.example.galaxyminer.amazon": "galaxy-miner",
-          "com.example.galaxyminer.huawei": "galaxy-miner"}
+    gk = {build_key(b): "galaxy-miner" for b in GAMES["galaxy-miner"]["builds"]}
     first, balances, txs = {}, {}, []
     for r in sorted(rows, key=lambda r: r["created_at_micros"]):
         key = (r["app_id"], r["user_id"])
@@ -369,7 +378,7 @@ def wallets_and_installs(srv, rows, now_ms, rnd):
 def attribute_paywalls(rows, now_ms, rnd):
     """Purchases of the last 30 days in Galaxy Miner partly come from the shop paywall test."""
     for r in rows:
-        if r["app_id"].startswith("com.example.galaxyminer") and r["created_at_micros"] > (now_ms - 30 * DAY_MS) * 1000 and r["reason"] == "purchase" and rnd.random() < 0.6:
+        if r["app_id"].endswith(":com.example.galaxyminer") and r["created_at_micros"] > (now_ms - 30 * DAY_MS) * 1000 and r["reason"] == "purchase" and rnd.random() < 0.6:
             v = rnd.choice(["a", "b"])
             r.update(paywall_placement="shop", paywall_variant_id=v, paywall_test_id="shop-ab-1", paywall_id="shop_gems" if v == "a" else "shop_vip_first")
 
@@ -391,7 +400,7 @@ OK_TEXT = {
     "telegram_bot": "Bot @wordgarden_game_bot answers getMe",
     "telegram_webhook": "The bot's webhook points here (secret_token set)",
 }
-PENDING_APP = "com.example.wordgarden"
+PENDING_APP = "google:com.example.wordgarden"
 
 
 def green(report):
@@ -440,11 +449,13 @@ def main():
                         ("default", "stripe_webhook_secret")]:
         srv.call("admin_set_credential", scope, name, "demo-%x" % rnd.getrandbits(64))
     for game, d in GAMES.items():
-        for app, platform, store, st in d["builds"]:
+        for build in d["builds"]:
+            store_app_id, platform, store, st = build
+            app = build_key(build)
             delivery = {"delivery": "spacetimedb", "spacetime_url": "https://stdb.example.com", "spacetime_db": game,
                         "grant_reducer": "grant_purchase", "revoke_reducer": "revoke_purchase"} if game == "galaxy-miner" \
                 else {"delivery": "webhook", "webhook_url": "https://api.example.com/billing/events"}
-            srv.call("admin_upsert_game_app", json.dumps({"app_id": app, "platform": platform, "store": store, "game_key": game,
+            srv.call("admin_upsert_game_app", json.dumps({"store_app_id": store_app_id, "platform": platform, "store": store, "game_key": game,
                                                           "account": "", "allow_sandbox": True, "enabled": True, **delivery}))
             srv.call("admin_set_credential", app, "spacetime_token" if game == "galaxy-miner" else "webhook_secret", "demo-%x" % rnd.getrandbits(64))
             if st == "huawei":
@@ -459,29 +470,30 @@ def main():
                  **({"price_micros": stars_micros(usd), "currency": "XTR"} if st == "telegram" else {"price_micros": int(usd * 1e6), "currency": "USD"}),
                  **LISTING.get(p, {}), **({"wallet": WALLET[p]} if p in WALLET else {})}
                 for p, k, usd, _ in d["products"]]))
-    for app in ("com.example.galaxyminer", "com.example.galaxyminer.ios"):
+    for app in ("google:com.example.galaxyminer", "apple:com.example.galaxyminer"):
+        ios = app.startswith("apple:")
         srv.call("admin_upsert_integration", json.dumps({"app_id": app, "kind": "ga4", "enabled": True,
-                                                          "settings": {"firebase_app_id": "1:123456789012:android:0a1b2c3d4e5f6a7b" if "ios" not in app else "1:123456789012:ios:0a1b2c3d4e5f6a7b"}}))
+                                                          "settings": {"firebase_app_id": "1:123456789012:ios:0a1b2c3d4e5f6a7b" if ios else "1:123456789012:android:0a1b2c3d4e5f6a7b"}}))
         srv.call("admin_set_credential", app, "ga4_api_secret", "demo-%x" % rnd.getrandbits(64))
         srv.call("admin_upsert_integration", json.dumps({"app_id": app, "kind": "appsflyer", "enabled": True,
-                                                          "settings": {"app_id": "com.example.galaxyminer" if "ios" not in app else "id1234567890"}}))
+                                                          "settings": {"app_id": "id1234567890" if ios else "com.example.galaxyminer"}}))
         srv.call("admin_set_credential", app, "appsflyer_s2s_key", "demo-%x" % rnd.getrandbits(64))
 
     def integrate(app, kind, settings, secret):
         srv.call("admin_upsert_integration", json.dumps({"app_id": app, "kind": kind, "enabled": True, "settings": settings}))
         srv.call("admin_set_credential", app, secret, "demo-%x" % rnd.getrandbits(64))
 
-    integrate("com.example.galaxyminer", "tenjin", {}, "tenjin_sdk_key")
-    integrate("com.example.galaxyminer.amazon", "adjust", {"app_token": "a1b2c3d4e5f6", "event_tokens": {"purchase": "x7y8z9"}}, "adjust_s2s_token")
-    for app in ("com.example.galaxyminer", "com.example.galaxyminer.ios", "com.example.galaxyminer.amazon",
-                "com.example.wordgarden", "com.example.wordgarden.ios", "com.example.wordgarden.web"):
+    integrate("google:com.example.galaxyminer", "tenjin", {}, "tenjin_sdk_key")
+    integrate("amazon:com.example.galaxyminer", "adjust", {"app_token": "a1b2c3d4e5f6", "event_tokens": {"purchase": "x7y8z9"}}, "adjust_s2s_token")
+    for app in ("google:com.example.galaxyminer", "apple:com.example.galaxyminer", "amazon:com.example.galaxyminer",
+                "google:com.example.wordgarden", "apple:com.example.wordgarden", "stripe:com.example.wordgarden"):
         integrate(app, "webhook", {"url": "https://api.example.com/billing/analytics"}, "integration_webhook_secret")
-    for app in ("com.example.galaxyminer", "com.example.galaxyminer.ios", "com.example.galaxyminer.amazon"):
+    for app in ("google:com.example.galaxyminer", "apple:com.example.galaxyminer", "amazon:com.example.galaxyminer"):
         integrate(app, "gcs", {"bucket": "galaxy-miner-events", "folder": "purchases"}, "gcs_service_account_json")
-    for app in ("com.example.wordgarden", "com.example.wordgarden.ios"):
-        integrate(app, "ga4", {"firebase_app_id": "1:210987654321:%s:9f8e7d6c5b4a3f2e" % ("ios" if "ios" in app else "android")}, "ga4_api_secret")
-    integrate("com.example.wordgarden.web", "amplitude", {"region": "eu"}, "amplitude_api_key")
-    integrate("com.example.wordgarden.web", "braze", {"endpoint": "https://rest.fra-02.braze.eu"}, "braze_rest_api_key")
+    for app in ("google:com.example.wordgarden", "apple:com.example.wordgarden"):
+        integrate(app, "ga4", {"firebase_app_id": "1:210987654321:%s:9f8e7d6c5b4a3f2e" % ("ios" if app.startswith("apple:") else "android")}, "ga4_api_secret")
+    integrate("stripe:com.example.wordgarden", "amplitude", {"region": "eu"}, "amplitude_api_key")
+    integrate("stripe:com.example.wordgarden", "braze", {"endpoint": "https://rest.fra-02.braze.eu"}, "braze_rest_api_key")
     # A server key of the game's backend (only its hash is stored; the key itself is thrown away).
     key_id = "%012x" % rnd.getrandbits(48)
     key = "psk_%s_%s" % (key_id, "%064x" % rnd.getrandbits(256))
@@ -526,7 +538,7 @@ def main():
     print("imported", len(rows), "purchases of", len({r["user_id"] for r in rows}), "players")
     store_facts(srv, rows, now_ms)
     player = rows[-1]["user_id"]
-    max_.call("admin_grant_manual", json.dumps({"app_id": "com.example.galaxyminer", "user_id": player, "product_id": "gems_medium",
+    max_.call("admin_grant_manual", json.dumps({"app_id": "google:com.example.galaxyminer", "user_id": player, "product_id": "gems_medium",
                                                  "note": "compensation: lost gems after a crash"}))
     today = now_ms // DAY_MS
     for d in range(today - 59, today + 1):
@@ -543,7 +555,7 @@ def main():
         app, kind = i["app_id"], i["kind"]
         sent = (now_ms - rnd.randrange(2, 40) * 60_000) * 1000
         skipped, reason = 0, ""
-        if (app, kind) == ("com.example.galaxyminer.amazon", "adjust"):
+        if (app, kind) == ("amazon:com.example.galaxyminer", "adjust"):
             sent, skipped, reason = (now_ms - 3 * DAY_MS) * 1000, (now_ms - 25 * 60_000) * 1000, "client did not send adjust_id or a device id"
         srv.sql("INSERT INTO integration_health (key, app_id, kind, last_sent_at_micros, last_failed_at_micros, last_error, "
                 "last_failure_final, last_skipped_at_micros, last_skip_reason) VALUES "

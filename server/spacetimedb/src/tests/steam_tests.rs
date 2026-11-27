@@ -2,7 +2,9 @@
 
 use super::*;
 
-pub(super) const STEAM_APP: &str = "480";
+/// The build's key and its id in the store.
+pub(super) const STEAM_APP: &str = "steam:480";
+pub(super) const STEAM_APP_ID: &str = "480";
 pub(super) const STEAM_ID: &str = "76561197960287930";
 pub(super) const STEAM_KEY: &str = "steam-publisher-key";
 pub(super) const STEAM_LEDGER_ID: &str = "steam:9001";
@@ -32,7 +34,7 @@ pub(super) fn steam_query(status: &str, amount: i64, currency: &str) -> String {
 pub(super) fn add_steam_build(w: &World, sandbox: bool) {
     w.as_admin(false);
     let app = json!({
-        "app_id": STEAM_APP, "platform": "steam", "game_key": "game", "delivery": "spacetimedb",
+        "store_app_id": STEAM_APP_ID, "platform": "steam", "game_key": "game", "delivery": "spacetimedb",
         "spacetime_url": "https://maincloud.spacetimedb.com", "spacetime_db": "game-db",
         "grant_reducer": "billing_grant", "revoke_reducer": "billing_revoke", "allow_sandbox": sandbox,
     });

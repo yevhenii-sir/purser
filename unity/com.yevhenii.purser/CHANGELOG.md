@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Requests to routes whose path names no store (`/entitlements`, `/restore`, `/paywall`, `/paywall/event`, `/attributes`,
+  `/redeem`, `/wallet`, `/wallet/spend`) carry the build's `store` next to `app_id` (`EntitlementsRequest.Store`, ...): the
+  server finds the build by both, so Google Play and App Store builds may share a package name / bundle id. A restore or
+  observed purchases of several stores send each store's own. Needs the server's next release.
+
 ## [0.14.0] - 2026-11-27
 
 No changes in the package: the version follows the server 0.14.0 (Google Play notifications by push token, the game's own event names in integrations).

@@ -1077,7 +1077,12 @@ pub fn run_within(ctx: &mut impl Ctx, lease: Lease, budget: Budget) -> Option<Pu
 /// One step of a leased purchase; `next_step`: lease it again for the next step if this budget allows.
 fn run_step(ctx: &mut impl Ctx, step: Step, next_step: Option<Budget>) -> Lease {
     let Step { app, row: p, delivery, revoked_by_admin, mut store_auth, catalog_id, reinstated } = step;
-    let billing_event = |p: &Purchase, event: &str, why: &str, now_ms: i64| BillingEvent { catalog_product_id: catalog_id.clone(), ..billing_event(p, event, why, now_ms) };
+    // The game gets the build as clients name it: its id in the store (`app_id`) and the store.
+    let billing_event = |p: &Purchase, event: &str, why: &str, now_ms: i64| BillingEvent {
+        app_id: app.store_app_id.clone(),
+        catalog_product_id: catalog_id.clone(),
+        ..billing_event(p, event, why, now_ms)
+    };
     let now_ms = ctx.now_ms();
     // The event the game gets in this step (none: nothing to deliver), the status after it and the
     // integration event.

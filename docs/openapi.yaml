@@ -504,7 +504,7 @@ paths:
       summary: Restore purchases
       description: |
         Runs the same verification as `/verify/*` for every purchase the store SDK returned on
-        "Restore purchases" (the store is chosen by the app's platform), then returns the entitlements.
+        "Restore purchases" in the build named by `store` and `app_id`, then returns the entitlements.
         Non-consumables and subscriptions restored on a new `user_id` move to it (the previous owner gets
         a `revoke` with `reason = transfer`). The call itself answers `200` even when single purchases fail:
         check `results[].http_status`.
@@ -516,6 +516,7 @@ paths:
               $ref: "#/components/schemas/RestoreRequest"
             example:
               app_id: com.example.mygame
+              store: google
               user_id: c2005b4c1622269bf51cddf038743f7f
               purchases:
                 - product_id: no_ads
@@ -547,8 +548,8 @@ paths:
       operationId: entitlements
       summary: Active subscriptions and non-consumables of a player
       description: |
-        Reads the ledger only (no store calls). Covers every app with the same `game_key` as `app_id`,
-        so the Android and iOS builds of a game share entitlements.
+        Reads the ledger only (no store calls). Covers every build with the same `game_key` as the build
+        named by `store` and `app_id`, so the Android and iOS builds of a game share entitlements.
       requestBody:
         required: true
         content:
@@ -557,6 +558,7 @@ paths:
               $ref: "#/components/schemas/EntitlementsRequest"
             example:
               app_id: com.example.mygame
+              store: google
               user_id: c2005b4c1622269bf51cddf038743f7f
       responses:
         "200":
@@ -895,9 +897,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [app_id, placement]
+              required: [app_id, store, placement]
               properties:
-                app_id: { type: string, description: Package / bundle id of the build. }
+                app_id: { type: string, description: "The app's id in its store (package / bundle id); with `store` it names the build." }
+                store: { $ref: "#/components/schemas/Store" }
                 placement: { type: string, description: }
                 user_id: { $ref: "#/components/schemas/UserId" }
                 client: { $ref: "#/components/schemas/ClientInfo" }
@@ -953,9 +956,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [app_id, placement, variant_id, event]
+              required: [app_id, store, placement, variant_id, event]
               properties:
-                app_id: { type: string }
+                app_id: { type: string, description: "The app's id in its store (package / bundle id); with `store` it names the build." }
+                store: { $ref: "#/components/schemas/Store" }
                 placement: { type: string }
                 variant_id: { type: string }
                 test_id: { type: string }
@@ -991,9 +995,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [app_id, user_id, code]
+              required: [app_id, store, user_id, code]
               properties:
-                app_id: { type: string, description: Package / bundle id of the build. }
+                app_id: { type: string, description: "The app's id in its store (package / bundle id); with `store` it names the build." }
+                store: { $ref: "#/components/schemas/Store" }
                 user_id: { $ref: "#/components/schemas/UserId" }
                 code: { type: string, description: "4-32 characters of A-Z, 0-9 and -, not case-sensitive." }
                 client: { $ref: "#/components/schemas/ClientInfo" }
@@ -1028,9 +1033,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [app_id, user_id, attributes]
+              required: [app_id, store, user_id, attributes]
               properties:
-                app_id: { type: string, description: Package / bundle id of the build. }
+                app_id: { type: string, description: "The app's id in its store (package / bundle id); with `store` it names the build." }
+                store: { $ref: "#/components/schemas/Store" }
                 user_id: { $ref: "#/components/schemas/UserId" }
                 attributes:
                   type: object
@@ -1205,6 +1211,15 @@ components:
         app_version: { type: string }
         sdk_version: { type: string, description: Version of the client SDK }
 
+    Store:
+      type: string
+      description: |
+        The store of the build the request is for. Builds in different stores may share an `app_id`
+        (`com.example.mygame` on Google Play and on the App Store): the server finds the build by `store`
+        and `app_id`. Routes whose path names the store (`/verify/<store>`, the checkouts) take `app_id` only.
+      enum: [google, apple, amazon, huawei, samsung, meta, steam, stripe, xsolla, telegram]
+      examples: [google]
+
     UserId:
       type: string
       description: |
@@ -1252,7 +1267,7 @@ components:
       properties:
         app_id:
           type: string
-          description: "The build's id (`game_app.app_id`): Android package, iOS bundle id, Steam AppID or the id of an Amazon / web build."
+          description: "The app's id in the store the path names: Android package, iOS bundle id, Steam AppID or the id of an Amazon / web build. With that store it names the build."
           examples: [com.example.mygame]
         user_id:
           $ref: "#/components/schemas/UserId"
@@ -1374,11 +1389,13 @@ components:
 
     EntitlementsRequest:
       type: object
-      required: [app_id, user_id]
+      required: [app_id, store, user_id]
       properties:
         app_id:
           type: string
-          description: Any build of the game.
+          description: "The app's id in its store; with `store` it names the build (any build of the game)."
+        store:
+          $ref: "#/components/schemas/Store"
         user_id:
           $ref: "#/components/schemas/UserId"
         client:
@@ -1465,11 +1482,13 @@ components:
 
     RestoreRequest:
       type: object
-      required: [app_id, user_id, purchases]
+      required: [app_id, store, user_id, purchases]
       properties:
         app_id:
           type: string
-          description: The build the purchases come from.
+          description: "The app's id in its store; with `store` it names the build the purchases come from."
+        store:
+          $ref: "#/components/schemas/Store"
         user_id:
           $ref: "#/components/schemas/UserId"
         app_instance_id:

@@ -74,7 +74,7 @@ namespace Purser
             var user = SyncUser();
             if (user == null || items.Count == 0 || SkipServer)
                 return CustomerInfo;
-            // /restore takes one store per call (the build's app id) and a limited number of purchases.
+            // /restore takes one store per call (the build's store and app id) and a limited number of purchases.
             foreach (var group in items.GroupBy(p => p.Store))
             {
                 foreach (var chunk in Chunks(group.ToList(), RestoreRequest.MaxItems))
@@ -82,6 +82,7 @@ namespace Purser
                     var request = new RestoreRequest
                     {
                         AppId = m_Config.AppIdFor(group.Key),
+                        Store = group.Key,
                         UserId = user,
                         AppInstanceId = await m_Context.AppInstanceIdAsync(),
                         Attribution = await m_Context.AttributionAsync(),

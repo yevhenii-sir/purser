@@ -8,6 +8,9 @@ Two flavours of every HTTP helper:
 The token is `PURSER_TOKEN` when set, otherwise the one of `spacetime login`. It is sent only over
 https, or over http to this machine (localhost, an SSH tunnel), and never follows a redirect to
 another origin.
+
+`build_store` / `build_key` name a build the way the server does: its key is `{store}:{store_app_id}`
+(`google:com.example.mygame`), the id every admin reducer and procedure takes as `app_id`.
 """
 import json
 import os
@@ -21,6 +24,41 @@ import urllib.request
 
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+# The stores of each platform, the default one first when the platform has one
+# (`purser_core::registry::PLATFORMS`; tests/test_stdb.py compares them with admin-ui/src/lib/registry.json).
+PLATFORM_STORES = {
+    "android": ("google", "xsolla", "samsung", "meta"),
+    "ios": ("apple", "xsolla"),
+    "amazon": ("amazon",),
+    "steam": ("steam",),
+    "huawei": ("huawei",),
+    "web": ("stripe", "xsolla", "telegram"),
+}
+# A build that names no store gets this one; a web build must name its store.
+DEFAULT_STORE = {"android": "google", "ios": "apple", "amazon": "amazon", "steam": "steam", "huawei": "huawei"}
+
+
+def build_store(platform, store=""):
+    """The store of a build as `registry::build_store` decides: `store`, or the platform's default when
+    it is empty. Raises ValueError with the server's wording."""
+    stores = PLATFORM_STORES.get(platform)
+    if stores is None:
+        raise ValueError(f"platform must be one of {', '.join(PLATFORM_STORES)}, not '{platform}'")
+    sid = store or DEFAULT_STORE.get(platform, "")
+    if not sid:
+        raise ValueError(f"a {platform} build needs a store: {' or '.join(stores)}")
+    if sid not in stores:
+        raise ValueError(f"store {sid} is not available on {platform} (use {' or '.join(stores)})")
+    return sid
+
+
+def build_key(platform, store_app_id, store=""):
+    """The key of a build, `{store}:{store_app_id}` (`google:com.example.mygame`): what admin reducers and
+    procedures take as `app_id`. Raises ValueError for a platform / store the server refuses."""
+    if not store_app_id:
+        raise ValueError("store_app_id is required")
+    return f"{build_store(platform, store)}:{store_app_id}"
 
 
 class StdbError(Exception):

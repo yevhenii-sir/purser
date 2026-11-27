@@ -50,6 +50,7 @@ function client(fetch: PurserOptions["fetch"], extra: Partial<PurserOptions> = {
   const c = new PurserClient({
     baseUrl: BASE + "/",
     appId: "com.studio.game",
+    store: "google",
     userId: "player-1",
     client: { device: "Chrome 131", os: "Windows", app_version: "1.2.1" },
     fetch,
@@ -91,6 +92,23 @@ test("verify sends the server's field names and the client info", async () => {
     paywall_id: "pw-1",
     client: { device: "Chrome 131", os: "Windows", app_version: "1.2.1", sdk_version: "typescript/0.14.0" },
   });
+});
+
+test("routes whose path names no store get the build's store next to app_id", async () => {
+  const { fetch, calls } = fakeFetch([{ status: 200, body: { status: "ok" } }]);
+  const { c } = client(fetch, { appId: "com.studio.game", store: "apple" });
+  await c.entitlements();
+  await c.restore([{ productId: "no_ads", orderId: "2000000001" }]);
+  await c.verify("apple", { productId: "gems", orderId: "2000000123" });
+  assert.deepEqual(
+    calls.map((call) => [call.path, call.body.app_id, call.body.store]),
+    [
+      ["/entitlements", "com.studio.game", "apple"],
+      ["/restore", "com.studio.game", "apple"],
+      ["/verify/apple", "com.studio.game", undefined],
+    ],
+  );
+  assert.throws(() => new PurserClient({ baseUrl: BASE, appId: "com.studio.game", store: "", fetch }), /store is empty/);
 });
 
 test("transport errors and 5xx are retried with backoff", async () => {

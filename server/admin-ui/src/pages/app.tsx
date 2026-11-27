@@ -103,7 +103,7 @@ function BuildChip({ app, level }: { app: GameApp; level?: Level }) {
           {buildLabel(app).includes("·") && <span className="font-normal text-muted-foreground">{storeOf(app).name}</span>}
           {!app.enabled && <span className="font-normal text-muted-foreground">· disabled</span>}
         </span>
-        <span className="truncate font-mono text-[11px] text-muted-foreground">{app.app_id}</span>
+        <span className="truncate font-mono text-[11px] text-muted-foreground">{app.store_app_id}</span>
       </span>
       <span className={cn("ms-1 size-2 shrink-0 rounded-full", dot)} />
     </button>
@@ -275,7 +275,7 @@ function SetupTab({ data, reload }: TabProps) {
         const rep = data.reports[a.app_id]
         const urls = rep && base.data ? reportUrls(rep, base.data) : null
         return (
-          <Section key={a.app_id} title={<span className="flex items-center gap-2">{buildLabel(a)} <Mono className="font-normal">{a.app_id}</Mono></span>}
+          <Section key={a.app_id} title={<span className="flex items-center gap-2">{buildLabel(a)} <Mono className="font-normal">{a.store_app_id}</Mono></span>}
             actions={
               <div className="flex items-center gap-2">
                 {canSetUp(a) && <StoreSetupButton app={a} base={base.data ?? ""} onDone={() => recheck(a.app_id)} />}
@@ -344,7 +344,7 @@ function DeliveryTab({ data, reload, go }: TabProps) {
     const ok = await tryAct(async () => {
       for (const a of g.apps) {
         await call("admin_upsert_game_app", JSON.stringify({
-          app_id: a.app_id, platform: a.platform, store: a.store, game_key: g.key, ...common,
+          store_app_id: a.store_app_id, platform: a.platform, store: a.store, game_key: g.key, ...common,
           spacetime_url: common.delivery === "spacetimedb" ? common.spacetime_url : "", ...flags[a.app_id],
         }))
       }
@@ -380,7 +380,7 @@ function DeliveryTab({ data, reload, go }: TabProps) {
           columns={[
             { title: "Platform", cell: (a) => buildLabel(a) },
             { title: "Store", cell: (a) => storeOf(a).name },
-            { title: "App id", cell: (a) => <Mono>{a.app_id}</Mono> },
+            { title: "App id", cell: (a) => <Mono>{a.store_app_id}</Mono> },
             {
               title: "Developer account",
               cell: (a) => (

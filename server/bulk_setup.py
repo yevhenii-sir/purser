@@ -9,16 +9,20 @@ role, or with PURSER_TOKEN set):
     python bulk_setup.py --from-stores --dry-run           # every Google Play / App Store build
 
 apps.csv (or a .json list of objects with the same keys), one build per line:
-    game_key,platform,store,app_id,account,delivery
+    game_key,platform,store,store_app_id,account,delivery
     my-game,android,,com.example.mygame,my-studio,none
-  Required: app_id, platform; a new build also needs delivery (none, spacetimedb, webhook). An
-  empty store is the platform's default (web builds name stripe, xsolla or telegram). Optional columns:
-  spacetime_url, spacetime_db, grant_reducer, revoke_reducer, webhook_url, allow_sandbox, enabled,
-  client_consumes, apple_refund_mode, client_auth, sns_topic_arn.
+    my-game,ios,,com.example.mygame,my-studio,none
+  Required: store_app_id (the build's id in its store: package name, bundle id; any unique id for
+  stores without one), platform; a new build also needs delivery (none, spacetimedb, webhook). An
+  empty store is the platform's default (web builds name stripe, xsolla or telegram); an empty
+  game_key is the store_app_id. The server keys the build `{store}:{store_app_id}`
+  (google:com.example.mygame), the app_id of products.csv. Optional columns: spacetime_url,
+  spacetime_db, grant_reducer, revoke_reducer, webhook_url, allow_sandbox, enabled, client_consumes,
+  apple_refund_mode, client_auth, sns_topic_arn.
 products.csv (or .json), one product of one build per line:
     app_id,product_id,kind,catalog_id
-    com.example.mygame,gems_100,consumable,gems_100
-  Required: app_id, product_id; a new product also needs kind (consumable, non_consumable,
+    google:com.example.mygame,gems_100,consumable,gems_100
+  Required: app_id (the build key), product_id; a new product also needs kind (consumable, non_consumable,
   subscription) unless --from-stores finds it in the store. Optional columns: price (0.99) or
   price_micros, currency, title, description, period (P1W P1M P3M P6M P1Y), apple_group, access.
 
@@ -45,7 +49,7 @@ import stdb
 ROOT = seed.ROOT
 
 # `GameAppInput` in spacetimedb/src/lib.rs.
-APP_FIELDS = ("game_key", "platform", "store", "app_id", "account", "delivery", "spacetime_url", "spacetime_db",
+APP_FIELDS = ("game_key", "platform", "store", "store_app_id", "account", "delivery", "spacetime_url", "spacetime_db",
               "grant_reducer", "revoke_reducer", "webhook_url", "allow_sandbox", "enabled", "client_consumes",
               "apple_refund_mode", "client_auth", "sns_topic_arn")
 APP_BOOLS = {"allow_sandbox", "enabled", "client_consumes"}
@@ -172,7 +176,7 @@ def store_of(platform, store, stores, platforms):
 
 
 def check_apps(rows, stores, platforms):
-    """Rows of apps.csv -> ({app_id: (where, row with the non-empty cells)}, errors)."""
+    """Rows of apps.csv -> ({build key: (where, row with the non-empty cells)}, errors)."""
     apps, errors, seen = {}, [], {}
     for where, raw in rows:
         errs = []
@@ -192,15 +196,12 @@ def check_apps(rows, stores, platforms):
                     row[k] = b
             else:
                 row[k] = v
-        app_id = row.get("app_id", "")
-        if not app_id:
-            errs.append("app_id is required")
-        elif any(c in app_id for c in "/:") or len(app_id) > 128 or any(c.isspace() for c in app_id):
-            errs.append(f"app_id '{app_id}' must be at most 128 characters without '/', ':' or spaces")
-        elif app_id in seen:
-            errs.append(f"app_id {app_id} is already on {seen[app_id]}")
-        else:
-            seen[app_id] = where
+        store_app_id, key = row.get("store_app_id", ""), ""
+        if not store_app_id:
+            errs.append("store_app_id is required")
+        elif any(c in store_app_id for c in "/:?&#") or len(store_app_id) > 128 or any(c.isspace() for c in store_app_id):
+            errs.append(f"store_app_id '{store_app_id}' must be at most 128 characters without '/', ':', '?', '&', '#' "
+                        "or spaces")
         if "platform" not in row:
             errs.append("platform is required")
         else:
@@ -209,6 +210,11 @@ def check_apps(rows, stores, platforms):
                 errs.append(err)
             else:
                 row["store"] = sid
+                key = stdb.build_key(row["platform"], store_app_id, sid) if store_app_id else ""
+        if key in seen:
+            errs.append(f"build {key} is already on {seen[key]}")
+        elif key:
+            seen[key] = where
         if row.get("delivery", "none") not in DELIVERIES:
             errs.append(f"delivery must be {', '.join(DELIVERIES)}, not '{row['delivery']}'")
         mode = row.get("apple_refund_mode", "")
@@ -227,8 +233,14 @@ def check_apps(rows, stores, platforms):
         if errs:
             errors.extend(f"{where}: {e}" for e in errs)
             continue
-        apps[app_id] = (where, row)
+        apps[key] = (where, row)
     return apps, errors
+
+
+def is_build_key(app_id):
+    """`{store}:{store_app_id}` of a known store (`google:com.example.mygame`)."""
+    store, _, store_app_id = app_id.partition(":")
+    return bool(store_app_id) and any(store in s for s in stdb.PLATFORM_STORES.values())
 
 
 def check_products(rows):
@@ -243,6 +255,8 @@ def check_products(rows):
         app_id, pid = row.get("app_id", ""), row.get("product_id", "")
         if not app_id:
             errs.append("app_id is required")
+        elif not is_build_key(app_id):
+            errs.append(f"app_id '{app_id}' is not a build key: {{store}}:{{store_app_id}}, e.g. google:com.example.mygame")
         if not pid:
             errs.append("product_id is required")
         elif not valid_product_id(pid):
@@ -318,8 +332,9 @@ def price_micros(text):
 # ---------------------------------------------------------------------------------------------
 
 def plan_apps(apps, server_apps):
-    """Each build of the file merged over the server's row. Returns (plan, errors); a plan entry is
-    {status: new | changed | same, app_id, where, row (what admin_upsert_game_app gets), changes}."""
+    """Each build of the file merged over the server's row (both by build key). Returns (plan, errors);
+    a plan entry is {status: new | changed | same, app_id (the key), where, row (what
+    admin_upsert_game_app gets), changes}."""
     plan, errors = [], []
     for app_id, (where, row) in apps.items():
         old = server_apps.get(app_id)
@@ -328,7 +343,7 @@ def plan_apps(apps, server_apps):
         if not want.get("account"):
             want["account"] = DEFAULT_ACCOUNT
         if not want.get("game_key"):
-            want["game_key"] = app_id
+            want["game_key"] = want["store_app_id"]
         if want.get("spacetime_url"):
             want["spacetime_url"] = want["spacetime_url"].rstrip("/")
         delivery = want.get("delivery", "")
@@ -467,7 +482,7 @@ def print_apps(plan, verbose):
     for e in plan:
         r = e["row"]
         if e["status"] == "new":
-            print(f"  new      {e['app_id']} ({r['platform']}/{r['store']}, app {r['game_key']}, "
+            print(f"  new      {e['app_id']} ({r['platform']}, app {r['game_key']}, "
                   f"account {r['account']}, delivery {r['delivery']})")
         elif e["status"] == "changed":
             print(f"  changed  {e['app_id']}: {describe_changes(e['changes'])}")

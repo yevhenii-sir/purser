@@ -50,7 +50,7 @@ mod cases {
         w.script(
             "/v1/apps?filter%5BbundleId%5D=com.studio.game.ios",
             200,
-            &json!({ "data": [{ "type": "apps", "id": "1234567890", "attributes": { "bundleId": IOS_APP } }] }).to_string(),
+            &json!({ "data": [{ "type": "apps", "id": "1234567890", "attributes": { "bundleId": IOS_ID } }] }).to_string(),
         );
         w
     }
@@ -119,7 +119,7 @@ mod cases {
     const CREATE: &str = "POST https://api.stripe.com/v1/webhook_endpoints url=";
 
     fn endpoints(events: &[&str]) -> String {
-        let url = format!("{ROUTE}/notify/stripe?app={WEB_APP}");
+        let url = format!("{ROUTE}/notify/stripe?app={WEB_ID}");
         json!({ "object": "list", "data": [{ "id": "we_old", "url": url, "enabled_events": events, "status": "enabled" }] }).to_string()
     }
 
@@ -218,7 +218,7 @@ mod cases {
         assert_eq!(v["ok"], true, "{v}");
         assert_eq!(
             actions(&v),
-            ["apis exists", "service_account created", "key created", "topic created", "publisher created", "subscription com.studio.game created"]
+            ["apis exists", "service_account created", "key created", "topic created", "publisher created", &format!("subscription {APP} created")]
         );
         assert!(!v.to_string().contains(GOOGLE_TOKEN));
         assert!(v["manual"][0].as_str().unwrap().contains("purser-billing@my-game.iam.gserviceaccount.com"));
@@ -271,9 +271,9 @@ mod cases {
         let unsigned = json!({ "topic": "projects/my-game/topics/play-billing", "pushConfig": { "pushEndpoint": format!("{ROUTE}/notify/google") } });
         w.fake.borrow_mut().overrides.insert(0, ("GET https://pubsub.googleapis.com/v1/projects/my-game/subscriptions/".into(), 200, unsigned.to_string()));
         let v = setup_google(&mut w.ctx(), &google_input(json!({}))).unwrap();
-        assert_eq!(actions(&v).last().unwrap(), "subscription com.studio.game updated", "{v}");
+        assert_eq!(actions(&v).last().unwrap(), &format!("subscription {APP} updated"), "{v}");
         let modified = last_call(&w, "POST https://pubsub.googleapis.com");
-        assert!(modified.contains(":modifyPushConfig") && modified.contains(&setup_account()) && modified.contains("purser-rtdn:com.studio.game"), "{modified}");
+        assert!(modified.contains(":modifyPushConfig") && modified.contains(&setup_account()) && modified.contains(&format!("purser-rtdn:{APP}")), "{modified}");
     }
 
     #[test]

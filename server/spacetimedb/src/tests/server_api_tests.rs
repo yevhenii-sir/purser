@@ -33,7 +33,7 @@ fn a_wallet_is_credited_by_purchases_spent_by_the_game_and_debited_by_refunds() 
     assert_eq!(w.read(|tx| tx.db.product().key().find(crate::product_key(APP, "gems")).unwrap().wallet), "gems:100");
     add_server_key(&w, SERVER_KEY, "read,wallet");
     let key = bearer(SERVER_KEY);
-    let balance = |w: &World| (wallet(&mut w.ctx(), &key, &WalletQuery { app_id: APP.into(), user_id: "player-1".into() }).0).1["balances"]["gems"].clone();
+    let balance = |w: &World| (wallet(&mut w.ctx(), &key, &WalletQuery { app_id: PACKAGE.into(), store: "google".into(), user_id: "player-1".into() }).0).1["balances"]["gems"].clone();
 
     // A purchase of gems credits them once, however often it is verified.
     assert_eq!(w.verify("player-1", "gems").body["status"], "success");
@@ -42,7 +42,7 @@ fn a_wallet_is_credited_by_purchases_spent_by_the_game_and_debited_by_refunds() 
 
     // The game's backend spends and gives, once per reference.
     let change = |amount: i64, reference: &str| WalletChangeRequest {
-        app_id: APP.into(), user_id: "player-1".into(), currency: "gems".into(), amount, reference: reference.into(), note: String::new(),
+        app_id: PACKAGE.into(), store: "google".into(), user_id: "player-1".into(), currency: "gems".into(), amount, reference: reference.into(), note: String::new(),
     };
     let ((http, body), _) = wallet_spend(&mut w.ctx(), &key, &change(30, "sword-1"));
     assert_eq!((http, body["balance"].as_i64(), body["repeated"].as_bool()), (200, Some(70), Some(false)));
@@ -78,19 +78,19 @@ fn server_keys_read_grant_and_revoke_for_their_app_only() {
     use crate::server_api::{entitlements, grant, revoke, EntitlementsQuery, GrantRequest, RevokeRequest};
     let w = World::new();
     add_server_key(&w, SERVER_KEY, "read,grant");
-    let q = |user: &str| EntitlementsQuery { app_id: APP.into(), user_id: user.into() };
+    let q = |user: &str| EntitlementsQuery { app_id: PACKAGE.into(), store: "google".into(), user_id: user.into() };
 
     // No key, a wrong key, a key without the scope.
     assert_eq!((entitlements(&mut w.ctx(), "", &q("player-1")).0).0, 401);
     let other = SERVER_KEY.replace("mnop", "mnoq");
     assert_eq!((entitlements(&mut w.ctx(), &bearer(&other), &q("player-1")).0).0, 401);
-    let revoke_req = RevokeRequest { app_id: APP.into(), purchase_id: "manual:game.reward-1".into(), reason: "abuse".into() };
+    let revoke_req = RevokeRequest { app_id: PACKAGE.into(), store: "google".into(), purchase_id: "manual:game.reward-1".into(), reason: "abuse".into() };
     let ((http, body), _) = revoke(&mut w.ctx(), &bearer(SERVER_KEY), &revoke_req);
     assert_eq!((http, body["code"].as_str()), (403, Some("ERR_SERVER_SCOPE")));
 
     // Grant: delivered like a purchase, idempotent by transaction_id.
     let g = GrantRequest {
-        app_id: APP.into(),
+        app_id: PACKAGE.into(), store: "google".into(),
         user_id: "player-1".into(),
         product_id: "no_ads".into(),
         transaction_id: "reward-1".into(),
@@ -113,11 +113,12 @@ fn server_keys_read_grant_and_revoke_for_their_app_only() {
     // A build of another app is not the key's.
     w.write(|tx| {
         let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
-        app.app_id = "com.studio.other".into();
+        app.app_id = "google:com.studio.other".into();
+        app.store_app_id = "com.studio.other".into();
         app.game_key = "other".into();
         tx.db.game_app().insert(app);
     });
-    let foreign = EntitlementsQuery { app_id: "com.studio.other".into(), user_id: "player-1".into() };
+    let foreign = EntitlementsQuery { app_id: "com.studio.other".into(), store: "google".into(), user_id: "player-1".into() };
     assert_eq!((entitlements(&mut w.ctx(), &bearer(SERVER_KEY), &foreign).0).0, 403);
 
     // Revoke with a key that has the scope.
@@ -150,7 +151,7 @@ fn server_keys_are_rate_limited_and_need_an_admin_with_the_secrets_capability() 
     let input = json!({ "game_key": "game", "name": "x", "scopes": "read", "key_id": "k1a2b3c4", "key_hash": purser_core::server_api::hash(SERVER_KEY) });
     assert!(w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::server_api::admin_add_server_key(ctx, input.to_string())).is_err());
     add_server_key(&w, SERVER_KEY, "read");
-    let q = EntitlementsQuery { app_id: APP.into(), user_id: "player-1".into() };
+    let q = EntitlementsQuery { app_id: PACKAGE.into(), store: "google".into(), user_id: "player-1".into() };
     let burst = purser_core::server_api::KEY_LIMIT.burst;
     for _ in 0..burst {
         assert_eq!((entitlements(&mut w.ctx(), &bearer(SERVER_KEY), &q).0).0, 200);
@@ -643,7 +644,7 @@ fn idc_builds_need_the_game_database_identity() {
         w.test.with_reducer_tx(TestAuth::internal(), |ctx| {
             crate::admin_upsert_game_app(
                 ctx,
-                json!({ "game_key": "game", "app_id": APP, "platform": "android", "delivery": "spacetimedb_idc", "spacetime_db": db }).to_string(),
+                json!({ "game_key": "game", "store_app_id": PACKAGE, "platform": "android", "delivery": "spacetimedb_idc", "spacetime_db": db }).to_string(),
             )
         })
     };
@@ -729,7 +730,7 @@ fn the_worker_applies_an_app_store_refund_from_the_notification_history() {
     let w = refund_world(None, "off");
     // Apple reports the transaction refunded now.
     let revoked = json!({
-        "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_APP,
+        "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_ID,
         "productId": "gems", "type": "Consumable", "environment": "Sandbox", "revocationDate": NOW_MICROS / 1000,
     });
     w.fake.borrow_mut().overrides.retain(|(needle, ..)| !needle.contains("/inApps/v1/transactions/2000000123"));
@@ -741,8 +742,8 @@ fn the_worker_applies_an_app_store_refund_from_the_notification_history() {
     let sign = |v: Value| purser_core::apple::testing::sign(&v.to_string());
     let notification = sign(json!({
         "notificationType": "REFUND", "notificationUUID": "n-refund",
-        "data": { "bundleId": IOS_APP, "environment": "Sandbox",
-                  "signedTransactionInfo": sign(json!({ "transactionId": "2000000123", "bundleId": IOS_APP })) },
+        "data": { "bundleId": IOS_ID, "environment": "Sandbox",
+                  "signedTransactionInfo": sign(json!({ "transactionId": "2000000123", "bundleId": IOS_ID })) },
     }));
     // Another app's notification in the same history is left alone.
     let other = sign(json!({ "notificationType": "REFUND", "notificationUUID": "n-other", "data": { "bundleId": "com.other.app", "environment": "Sandbox" } }));
@@ -807,7 +808,7 @@ fn support_refunds_a_google_order_and_the_purchase_is_revoked_as_a_store_refund(
     w.script(":refund?revoke=true", 204, "");
     let r = proc_json(crate::store_actions::admin_refund_purchase(&mut w.ctx(), LEDGER_ID.into(), "charged twice".into()));
     assert_eq!((r["ok"].as_bool(), r["status"].as_str()), (Some(true), Some(status::REVOKED)), "{r}");
-    assert_eq!(w.calls(&format!("POST https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{APP}/orders/{ORDER}:refund?revoke=true")), 2);
+    assert_eq!(w.calls(&format!("POST https://androidpublisher.googleapis.com/androidpublisher/v3/applications/{PACKAGE}/orders/{ORDER}:refund?revoke=true")), 2);
     assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_revoke player-1 refund"));
     let events = purchase_events(&w, LEDGER_ID);
     assert!(events.iter().any(|(_, d)| d.contains("refunded in Google Play by admin") && d.contains("charged twice")), "{events:?}");

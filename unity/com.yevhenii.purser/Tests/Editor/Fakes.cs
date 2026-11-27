@@ -149,6 +149,7 @@ namespace Purser.Tests
         public ApiResult<RestoreResponse> RestoreResult;
 
         public int EntitlementsCalls;
+        public readonly List<EntitlementsRequest> EntitlementsRequests = new List<EntitlementsRequest>();
         /// <summary>When set, the next entitlements call waits for this task (a slow server).</summary>
         public TaskCompletionSource<ApiResult<CustomerInfoDto>> HoldEntitlements;
         public ApiResult<CustomerInfoDto> EntitlementsResult = new ApiResult<CustomerInfoDto>(500, null, "not configured");
@@ -175,6 +176,7 @@ namespace Purser.Tests
         public Task<ApiResult<CustomerInfoDto>> EntitlementsAsync(EntitlementsRequest request, CancellationToken ct = default)
         {
             EntitlementsCalls++;
+            EntitlementsRequests.Add(request);
             if (HoldEntitlements != null)
             {
                 var hold = HoldEntitlements;

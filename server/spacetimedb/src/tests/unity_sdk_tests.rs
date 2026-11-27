@@ -128,10 +128,16 @@ pub(super) fn replay_sdk_requests(contract: &Value) {
     for req in contract["requests"].as_array().unwrap().iter().filter(|r| r["replay"] == true) {
         let route = req["route"].as_str().unwrap();
         let body = req["body"].clone();
+        // The body as the route reads it: its app id and store name the build (`client_guard::parse`).
+        fn named<T: serde::de::DeserializeOwned + ClientRequest>(body: &Value, store: StoreOf) -> T {
+            let mut r: T = serde_json::from_value(body.clone()).unwrap();
+            client_guard::name_build(&mut r, store).unwrap_or_else(|a| panic!("{}", a.1));
+            r
+        }
         let o = match route {
-            "/verify/google" => verify(&mut w.ctx(), store::GOOGLE, &serde_json::from_value(body).unwrap()),
-            "/entitlements" => get_entitlements(&mut w.ctx(), &serde_json::from_value(body).unwrap()).unwrap_or_else(|o| o),
-            "/attributes" => set_attributes(&mut w.ctx(), &serde_json::from_value(body).unwrap()).unwrap_or_else(|o| o),
+            "/verify/google" => verify(&mut w.ctx(), store::GOOGLE, &named(&body, StoreOf::Route(store::GOOGLE))),
+            "/entitlements" => get_entitlements(&mut w.ctx(), &named(&body, StoreOf::Body)).unwrap_or_else(|o| o),
+            "/attributes" => set_attributes(&mut w.ctx(), &named(&body, StoreOf::Body)).unwrap_or_else(|o| o),
             other => panic!("no replay for {other}"),
         };
         assert_eq!(o.http, 200, "{route}: {}", o.body);

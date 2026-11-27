@@ -21,7 +21,7 @@ import type { Kind, Platform } from "./types"
 export interface UnityBuild {
   store: string
   platform: Platform
-  app_id: string
+  store_app_id: string
 }
 
 export interface UnityProduct {
@@ -81,9 +81,9 @@ export function parseUnityConfig(text: string): ParsedUnityConfig {
       throw new Error(storeId ? `Unknown store "${storeId}" in build ${appId || i + 1}` : `Build ${appId} has no store`)
     }
     if (!appId) throw new Error(`The ${store.name} build has no app id`)
-    if (/[/:]/.test(appId)) throw new Error(`App id ${appId} must not contain '/' or ':'`)
-    if (builds.some((x) => x.store === store.id && x.app_id === appId)) continue
-    builds.push({ store: store.id, platform: store.platforms[0] as Platform, app_id: appId })
+    if (/[/:?&# ]/.test(appId)) throw new Error(`App id ${appId} must not contain '/', ':', '?', '&', '#' or spaces`)
+    if (builds.some((x) => x.store === store.id && x.store_app_id === appId)) continue
+    builds.push({ store: store.id, platform: store.platforms[0] as Platform, store_app_id: appId })
   }
 
   const products: UnityProduct[] = []
@@ -134,14 +134,14 @@ export function productIdIn(p: { product_id: string; store_ids?: Record<string, 
 /** The config for the Unity inspector: every build, every product with an id, and its per-store ids. */
 export function toUnityConfig(
   base: string,
-  builds: { store: string; app_id: string }[],
+  builds: { store: string; store_app_id: string }[],
   products: { product_id: string; kind: Kind; store_ids?: Record<string, string>; price_micros?: number; currency?: string; period?: string; access?: string[] }[],
 ): string {
   const stores = [...new Set(builds.map((b) => b.store))]
   return JSON.stringify(
     {
       serverBaseUrl: base,
-      builds: builds.filter((b) => b.app_id.trim()).map((b) => ({ store: b.store, appId: b.app_id.trim() })),
+      builds: builds.filter((b) => b.store_app_id.trim()).map((b) => ({ store: b.store, appId: b.store_app_id.trim() })),
       products: products
         .filter((p) => p.product_id.trim())
         .map((p) => {
@@ -159,6 +159,18 @@ export function toUnityConfig(
 }
 
 /** A game key from app ids: `com.example.mygame` → `mygame`. */
+/** An app key from a display name: "Magnet Rings" → `magnet-rings`; empty when nothing Latin is left. */
+export function gameKeyOf(name: string): string {
+  return name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64)
+    .replace(/-+$/, "")
+}
+
 export function suggestGameKey(appIds: string[]): string {
   const first = appIds.find(Boolean)
   if (!first) return ""

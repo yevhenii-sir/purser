@@ -5,7 +5,9 @@ use super::*;
 mod scope_tests {
     use super::*;
 
-    const OTHER_APP: &str = "com.other.game";
+    /// The other app's build: its key and its package.
+    const OTHER_APP: &str = "google:com.other.game";
+    const OTHER_ID: &str = "com.other.game";
 
     /// The world plus a second app (`other`) with one build and a product; the caller becomes an
     /// admin with `role` limited to the app `game`.
@@ -14,6 +16,7 @@ mod scope_tests {
         w.write(|tx| {
             let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
             app.app_id = OTHER_APP.into();
+            app.store_app_id = OTHER_ID.into();
             app.game_key = "other".into();
             tx.db.game_app().insert(app);
             tx.db.product().insert(Product::new(OTHER_APP, "gems", kind::CONSUMABLE));
@@ -49,9 +52,9 @@ mod scope_tests {
         assert!(admin_call(&w, |ctx| crate::admin_delete_game_app(ctx, OTHER_APP.into())).unwrap_err().contains("ERR_SCOPE"));
         assert!(admin_call(&w, |ctx| crate::admin_set_app_name(ctx, "other".into(), "Nope".into())).unwrap_err().contains("ERR_SCOPE"));
         // Moving a build into an app of theirs is changing that build too.
-        let mut moved: Value = json!({ "app_id": OTHER_APP, "platform": "android", "game_key": "game", "delivery": "none" });
+        let mut moved: Value = json!({ "store_app_id": OTHER_ID, "platform": "android", "game_key": "game", "delivery": "none" });
         assert!(admin_call(&w, |ctx| crate::admin_upsert_game_app(ctx, moved.to_string())).unwrap_err().contains("ERR_SCOPE"));
-        moved["app_id"] = json!("com.studio.game.new");
+        moved["store_app_id"] = json!("com.studio.game.new");
         admin_call(&w, |ctx| crate::admin_upsert_game_app(ctx, moved.to_string())).unwrap();
 
         // Secrets of their builds only; account and default secrets are server-wide.
@@ -185,7 +188,7 @@ fn a_google_grace_period_keeps_access_and_is_checked_daily() {
 
 pub(super) fn subscription_notification(w: &World, kind: i64) -> Outcome {
     w.google_notification(
-        json!({ "packageName": APP, "subscriptionNotification": { "notificationType": kind, "purchaseToken": TOKEN, "subscriptionId": "vip" } }),
+        json!({ "packageName": PACKAGE, "subscriptionNotification": { "notificationType": kind, "purchaseToken": TOKEN, "subscriptionId": "vip" } }),
     )
 }
 
@@ -220,7 +223,7 @@ pub(super) fn apple_jws(v: Value) -> String {
 /// `latest` (id, product, expiry) with `status` and renewal info.
 pub(super) fn apple_subscription(w: &World, id: &str, product: &str, latest: (&str, &str, i64), status: i64, renewal: Value) {
     let tx = |id: &str, product: &str, expires: i64| {
-        apple_jws(json!({ "transactionId": id, "originalTransactionId": "100", "bundleId": IOS_APP, "productId": product,
+        apple_jws(json!({ "transactionId": id, "originalTransactionId": "100", "bundleId": IOS_ID, "productId": product,
             "expiresDate": expires, "type": "Auto-Renewable Subscription", "environment": "Production" }))
     };
     w.fake.borrow_mut().overrides.retain(|(n, ..)| !n.contains("api.storekit.itunes.apple.com"));
@@ -268,7 +271,7 @@ fn apple_subscriptions_follow_the_latest_transaction_upgrades_and_grace() {
     assert_eq!(verify_apple_order(&w, "premium", "103").body["status"], "success");
     let p = find(&w, "apple:103").unwrap();
     assert_eq!((p.status.as_str(), p.billing_issue, p.grace_until_ms), (status::COMPLETED, true, grace_end));
-    let r = EntitlementsRequest { app_id: IOS_APP.into(), user_id: "player-1".into(), client: Default::default() };
+    let r = EntitlementsRequest { app_id: IOS_APP.into(), store: String::new(), user_id: "player-1".into(), client: Default::default() };
     let e = get_entitlements(&mut w.ctx(), &r).unwrap_or_else(|o| o).body;
     assert_eq!(e["subscriptions"]["premium"]["expires_at_ms"], grace_end);
     // The game got the new access end.
@@ -388,7 +391,7 @@ fn signed_builds_need_a_player_token() {
     // The admin reducer keeps the mode when the input leaves it out, and refuses unknown ones.
     w.as_admin(false);
     let upsert = |extra: Value| {
-        let mut app = json!({ "app_id": APP, "platform": "android", "game_key": "game", "delivery": "none" });
+        let mut app = json!({ "store_app_id": PACKAGE, "platform": "android", "game_key": "game", "delivery": "none" });
         app.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_game_app(ctx, app.to_string()))
     };
@@ -516,7 +519,7 @@ fn the_transfer_policy_limits_restores_on_other_players() {
 fn a_player_can_be_exported_and_erased() {
     let w = World::new();
     w.verify("player-1", "no_ads");
-    let r = AttributesRequest { app_id: APP.into(), user_id: "player-1".into(), attributes: json!({ "level": 3 }).as_object().unwrap().clone(), client: Default::default() };
+    let r = AttributesRequest { app_id: APP.into(), store: String::new(), user_id: "player-1".into(), attributes: json!({ "level": 3 }).as_object().unwrap().clone(), client: Default::default() };
     assert_eq!(set_attributes(&mut w.ctx(), &r).unwrap_or_else(|o| o).http, 200);
     w.as_admin(false);
 

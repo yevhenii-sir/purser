@@ -349,7 +349,7 @@ fn purchases_are_sent_to_meta_with_the_token_in_the_header() {
     assert_eq!((e["user_data"]["madid"].as_str(), e["user_data"]["anon_id"].as_str()), (Some("gaid-1"), Some("XZanon-1")));
     assert_eq!((e["custom_data"]["value"].as_f64(), e["custom_data"]["currency"].as_str()), (Some(0.99), Some("USD")));
     assert_eq!(e["app_data"]["extinfo"].as_array().map(|a| a.len()), Some(16));
-    assert_eq!(e["app_data"]["extinfo"][1], APP);
+    assert_eq!(e["app_data"]["extinfo"][1], PACKAGE, "the package, not the build key");
     assert_eq!(e["event_time"].as_i64(), Some(NOW_MICROS / 1_000_000));
     assert_eq!(w.doctor(false).unwrap()["integration:meta"].0, "ok");
 }

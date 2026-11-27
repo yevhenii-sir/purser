@@ -20,9 +20,9 @@ import { accountsOf, appsChanged, useApps, type AppGroup } from "@/lib/apps"
 import { checkBuilds, reportUrls } from "@/lib/checks"
 import { DELIVERY_DEFAULTS, type DeliverySettings } from "@/lib/delivery"
 import { ownSecretScope } from "@/lib/secrets"
-import { buildLabel, platformById, storeById, storeOf, storesFor, usablePlatforms, type StoreInfo } from "@/lib/stores"
+import { buildKey, buildLabel, platformById, storeById, storeOf, storesFor, usablePlatforms, type StoreInfo } from "@/lib/stores"
 import { errorText } from "@/lib/format"
-import { parseUnityConfig, productIdIn, suggestGameKey, toUnityConfig, type ParsedUnityConfig } from "@/lib/unity-config"
+import { gameKeyOf, type ParsedUnityConfig, parseUnityConfig, productIdIn, suggestGameKey, toUnityConfig } from "@/lib/unity-config"
 import type { CatalogRow, GameApp, Kind, Platform, Product, Report } from "@/lib/types"
 import { catalogIdOf, KINDS } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -45,7 +45,8 @@ pub fn billing_grant(ctx: &ReducerContext, ev: BillingEvent) -> Result<(), Strin
 
 /** One build of the app: an app id in one store, published from a developer account. */
 interface Build {
-  app_id: string
+  /** The build's id in its store; its key is `{store}:{store_app_id}` ([`keyOf`]). */
+  store_app_id: string
   platform: Platform
   /** Store id (registry); fixed by the platform unless it has several (web). */
   store: string
@@ -55,10 +56,12 @@ interface Build {
 }
 
 function newBuild(platform: string, account = "default"): Build {
-  return { app_id: "", platform: platform as Platform, store: storesFor(platform)[0]?.id || "", account, products: true }
+  return { store_app_id: "", platform: platform as Platform, store: storesFor(platform)[0]?.id || "", account, products: true }
 }
 
 interface WizardState extends DeliverySettings {
+  /** Display name (`app_profile`); the app key follows it until the key is edited. */
+  name: string
   game_key: string
   /** Rows without an app id are ignored. */
   builds: Build[]
@@ -67,7 +70,7 @@ interface WizardState extends DeliverySettings {
 }
 
 const INITIAL: WizardState = {
-  ...DELIVERY_DEFAULTS, game_key: "", builds: [newBuild("android"), newBuild("ios")], delivery: "spacetimedb",
+  ...DELIVERY_DEFAULTS, name: "", game_key: "", builds: [newBuild("android"), newBuild("ios")], delivery: "spacetimedb",
   spacetime_db: "", webhook_url: "", identity: "", products: [],
 }
 
@@ -113,11 +116,14 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
   const [w, setW] = useState<WizardState>(() =>
     existing
       ? {
-          ...INITIAL, game_key: existing.key,
-          builds: existing.apps.map((a) => ({ app_id: a.app_id, platform: a.platform, store: storeOf(a).id, account: a.account || "default", products: true })),
+          ...INITIAL, game_key: existing.key, name: existing.name === existing.key ? "" : existing.name,
+          builds: existing.apps.map((a) => ({ store_app_id: a.store_app_id, platform: a.platform, store: storeOf(a).id, account: a.account || "default", products: true })),
         }
       : INITIAL)
   const [busy, setBusy] = useState(false)
+  /** The key was typed (or the app exists): the name no longer changes it. */
+  const [keyTyped, setKeyTyped] = useState(!!existing)
+  const savedName = useRef(existing && existing.name !== existing.key ? existing.name : "")
   /** Keys need the secrets capability: an editor sets up the app, and an admin adds the keys later. */
   const canKeys = useAllowed("secrets")
   const [creds, setCreds] = useState<Set<string> | null>(null)
@@ -130,11 +136,13 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
   const [reports, setReports] = useState<{ reports: Report[]; base: string } | null>(null)
 
   const set = <K extends keyof WizardState>(k: K, v: WizardState[K]) => setW((s) => ({ ...s, [k]: v }))
-  const apps = (s = w) => s.builds.filter((b) => b.app_id.trim())
+  const apps = (s = w) => s.builds.filter((b) => b.store_app_id.trim())
+  /** A build's key: what its secrets, products and reports are filed under. */
+  const keyOf = (b: Build) => buildKey(b.store, b.store_app_id.trim())
   const known = useApps().apps
   const allAccounts = accountsOf(known || [])
   const storeOfBuild = (b: Build): StoreInfo => storeOf(b)
-  const has = (name: string, b: Build) => !!creds && [b.app_id, b.account || "default", "default"].some((s) => creds.has(`${s}/${name}`))
+  const has = (name: string, b: Build) => !!creds && [keyOf(b), b.account || "default", "default"].some((s) => creds.has(`${s}/${name}`))
   const setBuild = (i: number, patch: Partial<Build>) => setW((s) => ({ ...s, builds: s.builds.map((b, j) => (j === i ? { ...b, ...patch } : b)) }))
   /** Store keys to ask for: one group per store and developer account. */
   const keyGroups = () => {
@@ -160,7 +168,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
   const runChecks = async (s = w, appleTest = false) => {
     setReports(null)
     onChange()
-    const ids = apps(s).filter((b) => !appleTest || storeOfBuild(b).id === "apple").map((b) => b.app_id)
+    const ids = apps(s).filter((b) => !appleTest || storeOfBuild(b).id === "apple").map(keyOf)
     const [base, out] = await Promise.all([publicRoute(), checkBuilds(ids, appleTest)])
     // An Apple test only re-checks the App Store builds: keep the other reports.
     const merged = appleTest && reports ? reports.reports.map((r) => out.find((o) => o.app_id === r.app_id) || r) : out
@@ -174,13 +182,18 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
       if (step === 0) {
         const builds = apps()
         if (!builds.length) throw new Error("Enter the app id of at least one build")
-        const ids = builds.map((b) => b.app_id.trim())
-        const dup = ids.find((id, i) => ids.indexOf(id) !== i)
-        if (dup) throw new Error(`${dup} is used by two builds: give each build its own app id (e.g. ${dup}.amazon for the Amazon Appstore build)`)
-        if (ids.some((id) => /[/:]/.test(id))) throw new Error("App ids must not contain '/' or ':'")
         for (const b of builds) if (!b.store) throw new Error(`Pick a store for the ${platformById(b.platform)?.name || b.platform} build`)
-        const s = { ...w, builds: w.builds.map((b) => ({ ...b, app_id: b.app_id.trim(), account: b.account || "default" })), game_key: w.game_key || ids[0] }
-        const firstApp = apps(s)[0]?.app_id || ""
+        // Builds of different stores may share an id; two builds of one store may not.
+        const keys = builds.map(keyOf)
+        const dup = keys.find((k, i) => keys.indexOf(k) !== i)
+        if (dup) throw new Error(`Two ${storeById(dup.split(":")[0])?.name || ""} builds are ${dup.slice(dup.indexOf(":") + 1)}: a store has one build per id`)
+        if (builds.some((b) => /[/:?&# ]/.test(b.store_app_id.trim()))) throw new Error("App ids must not contain '/', ':', '?', '&', '#' or spaces")
+        const s = {
+          ...w,
+          builds: w.builds.map((b) => ({ ...b, store_app_id: b.store_app_id.trim(), account: b.account || "default" })),
+          game_key: w.game_key || suggestGameKey(builds.map((b) => b.store_app_id.trim())),
+        }
+        const firstApp = apps(s)[0] ? keyOf(apps(s)[0]) : ""
         const [products, credRows] = await Promise.all([
           s.products.length ? Promise.resolve([] as Product[]) : select<Product>({ table: "product", where: { column: "app_id", equals: firstApp } }),
           select<{ key: string }>({ table: "credential", columns: ["key"] }),
@@ -188,7 +201,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         const existing: GameApp[] = known || []
         setCreds(new Set(credRows.map((c) => c.key)))
         for (const a of apps(s)) {
-          const e = existing.find((x) => x.app_id === a.app_id)
+          const e = existing.find((x) => x.app_id === keyOf(a))
           if (e) Object.assign(s, { delivery: e.delivery, spacetime_url: e.spacetime_url || s.spacetime_url, spacetime_db: e.spacetime_db, grant_reducer: e.grant_reducer, revoke_reducer: e.revoke_reducer, webhook_url: e.webhook_url })
         }
         if (!s.products.length) {
@@ -204,15 +217,19 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         setW(s)
       } else if (step === 1) {
         // Every build needs the delivery key: saved where it replaces no key other apps use (`ownSecretScope`).
-        const scopes = (name: string, builds: Build[]) => [...new Set(builds.map((b) => ownSecretScope(name, b, creds || new Set())))]
+        const scopes = (name: string, builds: Build[]) => [...new Set(builds.map((b) => ownSecretScope(name, { app_id: keyOf(b), account: b.account }, creds || new Set())))]
         onChange()
         if (w.delivery === "spacetimedb") for (const scope of scopes("spacetime_token", apps())) await saveSecret(scope, "spacetime_token", token)
         for (const a of apps()) {
           await call("admin_upsert_game_app", JSON.stringify({
-            app_id: a.app_id, platform: a.platform, store: a.store, game_key: w.game_key, account: a.account || "default", delivery: w.delivery,
+            store_app_id: a.store_app_id, platform: a.platform, store: a.store, game_key: w.game_key, account: a.account || "default", delivery: w.delivery,
             spacetime_url: w.delivery === "spacetimedb" ? w.spacetime_url : "", spacetime_db: w.spacetime_db,
             grant_reducer: w.grant_reducer, revoke_reducer: w.revoke_reducer, webhook_url: w.webhook_url,
           }))
+        }
+        if (w.name.trim() !== savedName.current) {
+          await call("admin_set_app_name", w.game_key, w.name.trim())
+          savedName.current = w.name.trim()
         }
         appsChanged()
         const keyless = w.delivery === "webhook" && canKeys ? apps().filter((b) => !has("webhook_secret", b)) : []
@@ -230,7 +247,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
               try { JSON.parse(value) } catch { throw new Error(`${spec.label} is not JSON`) }
             }
             if (spec.account_wide) await saveSecret(g.account, spec.name, value)
-            else if (spec.name !== g.store.notify_secret) for (const b of g.builds) await saveSecret(b.app_id, spec.name, value)
+            else if (spec.name !== g.store.notify_secret) for (const b of g.builds) await saveSecret(keyOf(b), spec.name, value)
           }
         }
         // Notification URL secrets are generated per build and shown once on the last step.
@@ -239,7 +256,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
           const spec = store.secrets.find((x) => x.name === store.notify_secret)
           if (spec && spec.need !== "optional" && !has(spec.name, b)) {
             const secret = genSecret()
-            await saveSecret(b.app_id, spec.name, secret)
+            await saveSecret(keyOf(b), spec.name, secret)
             setGenerated((g) => ({ ...g, [spec.name]: secret }))
           }
         }
@@ -248,7 +265,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         const items = apps()
           .filter((a) => a.products)
           .flatMap((a) => valid.map((p) => ({
-            app_id: a.app_id, product_id: productIdIn(p, a.store).trim(), catalog_id: p.product_id.trim(), kind: p.kind, price_micros: p.price_micros || 0, currency: p.currency || "",
+            app_id: keyOf(a), product_id: productIdIn(p, a.store).trim(), catalog_id: p.product_id.trim(), kind: p.kind, price_micros: p.price_micros || 0, currency: p.currency || "",
             ...(p.period && p.kind === "subscription" ? { period: p.period } : {}),
           })))
         if (items.length) {
@@ -290,7 +307,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
   const loadCatalog = async (importer: Build) => {
     setCatalog([])
     try {
-      const r = await proc<{ products: CatalogRow[] }>("admin_list_store_products", importer.app_id)
+      const r = await proc<{ products: CatalogRow[] }>("admin_list_store_products", keyOf(importer))
       setCatalog(r.products)
     } catch (e) {
       setCatalog(null)
@@ -318,12 +335,12 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
     setW((s) => {
       let builds = [...s.builds]
       for (const u of c.builds) {
-        if (builds.some((b) => b.store === u.store && b.app_id === u.app_id)) continue
-        const empty = builds.findIndex((b) => !b.app_id.trim() && b.store === u.store)
-        if (empty >= 0) builds[empty] = { ...builds[empty], app_id: u.app_id }
-        else builds.push({ ...newBuild(u.platform), store: u.store, app_id: u.app_id })
+        if (builds.some((b) => b.store === u.store && b.store_app_id === u.store_app_id)) continue
+        const empty = builds.findIndex((b) => !b.store_app_id.trim() && b.store === u.store)
+        if (empty >= 0) builds[empty] = { ...builds[empty], store_app_id: u.store_app_id }
+        else builds.push({ ...newBuild(u.platform), store: u.store, store_app_id: u.store_app_id })
       }
-      if (c.builds.length) builds = builds.filter((b) => b.app_id.trim())
+      if (c.builds.length) builds = builds.filter((b) => b.store_app_id.trim())
       const products = [...s.products]
       for (const u of c.products) {
         const i = products.findIndex((p) => p.product_id === u.product_id)
@@ -333,7 +350,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         if (i >= 0) products[i] = priced({ ...period, ...products[i], kind: u.kind, store_ids: u.store_ids })
         else products.push({ product_id: u.product_id, kind: u.kind, store_ids: u.store_ids, price_micros: u.price_micros, currency: u.currency, ...period })
       }
-      const game_key = s.game_key || suggestGameKey(builds.map((b) => b.app_id))
+      const game_key = s.game_key || suggestGameKey(builds.map((b) => b.store_app_id))
       return { ...s, builds, products, game_key }
     })
     toast.success(`Pasted ${c.builds.length} build(s) and ${c.products.length} product(s)`)
@@ -361,9 +378,23 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
         <div className="space-y-4 pb-1">
           {step === 0 && (
             <>
-              <Field label="App key (shared by all its builds: entitlements are per app)">
-                <Input value={w.game_key} onChange={(e) => set("game_key", e.target.value)} placeholder="my-game" readOnly={!!existing} />
-              </Field>
+              <div className="grid items-start gap-4 sm:grid-cols-2">
+                <Field label="Name" hint="How the admin page shows the app.">
+                  <Input value={w.name} autoFocus={!existing} placeholder="My Game"
+                    onChange={(e) => {
+                      const name = e.target.value
+                      setW((s) => ({ ...s, name, game_key: keyTyped ? s.game_key : gameKeyOf(name) }))
+                    }} />
+                </Field>
+                <Field label="App key" hint={existing ? "Player tokens and server keys name it: it cannot change." : "Shared by all its builds (entitlements are per app); player tokens and server keys name it. Empty: from the app id."}>
+                  <Input value={w.game_key} placeholder="my-game" readOnly={!!existing} className="font-mono"
+                    onChange={(e) => {
+                      set("game_key", e.target.value)
+                      // Cleared: it follows the name again.
+                      setKeyTyped(e.target.value !== "")
+                    }} />
+                </Field>
+              </div>
               <div className="space-y-3">
                 {w.builds.map((b, i) => {
                   const choices = storesFor(b.platform)
@@ -382,13 +413,13 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                           </Select>
                         )}
                       </Field>
-                      <Field label={`${store.name}: ${store.app_id_label}`}>
-                        <Input value={b.app_id} onChange={(e) => setBuild(i, { app_id: e.target.value.trim() })} placeholder={store.app_id_placeholder} />
+                      <Field label={`${store.name}: ${store.store_app_id_label}`}>
+                        <Input value={b.store_app_id} onChange={(e) => setBuild(i, { store_app_id: e.target.value.trim() })} placeholder={store.store_app_id_placeholder} />
                       </Field>
                       <Field label="Developer account">
                         <AccountSelect value={b.account} accounts={allAccounts} onChange={(v) => setBuild(i, { account: v })} />
                       </Field>
-                      <Button variant="ghost" size="icon" aria-label="Remove build" disabled={!!existing?.apps.some((a) => a.app_id === b.app_id)}
+                      <Button variant="ghost" size="icon" aria-label="Remove build" disabled={!!existing?.apps.some((a) => a.app_id === keyOf(b))}
                         onClick={() => setW((s) => ({ ...s, builds: s.builds.filter((_, j) => j !== i) }))}>
                         <Trash2Icon />
                       </Button>
@@ -404,7 +435,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
               </div>
               <p className="text-sm text-muted-foreground">
                 Empty rows are skipped. Store keys are saved for the developer account, so the next app from the same account reuses them.
-                A game on Google Play and the Amazon Appstore is two builds; give the Amazon build its own app id when the package name is the same.
+                Builds of different stores may share an app id: a game on Google Play, the App Store and the Amazon Appstore is three builds of one package name.
               </p>
             </>
           )}
@@ -522,7 +553,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                   <PlusIcon /> Add product
                 </Button>
                 {importers.map((b) => (
-                  <Button key={b.app_id} variant="outline" size="sm" onClick={() => loadCatalog(b)}><DownloadIcon /> Import from {storeOfBuild(b).name}</Button>
+                  <Button key={keyOf(b)} variant="outline" size="sm" onClick={() => loadCatalog(b)}><DownloadIcon /> Import from {storeOfBuild(b).name}</Button>
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">
@@ -533,8 +564,8 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                 <div className="space-y-2 rounded-md border bg-muted/30 p-3">
                   <p className="text-xs text-muted-foreground">Save these products for the builds</p>
                   <div className="flex flex-wrap gap-x-6 gap-y-2">
-                    {w.builds.map((b, i) => b.app_id && (
-                      <div key={b.app_id} className="flex items-center gap-2">
+                    {w.builds.map((b, i) => b.store_app_id && (
+                      <div key={keyOf(b)} className="flex items-center gap-2">
                         <Checkbox id={`to-${i}`} checked={b.products} onCheckedChange={(v) => setBuild(i, { products: v === true })} />
                         <Label htmlFor={`to-${i}`} className="font-normal">{buildLabel(b)}</Label>
                       </div>
@@ -562,7 +593,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                   <h3 className="text-sm font-medium">Copy into the stores and the game</h3>
                   {reports.reports.map((r) => {
                     const u = reportUrls(r, reports.base, generated)
-                    const b = apps().find((x) => x.app_id === r.app_id)
+                    const b = apps().find((x) => keyOf(x) === r.app_id)
                     const name = b ? buildLabel(b) : r.app_id
                     return u.notify && (
                       <Fragment key={r.app_id}>

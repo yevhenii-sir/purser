@@ -185,7 +185,7 @@ enum Auth {
 }
 
 fn auth(ctx: &mut impl Ctx, app: &GameApp, store_id: &str) -> Result<(Auth, Target), StoreError> {
-    let mut target = Target { app_id: app.app_id.clone(), xsolla_project_id: String::new() };
+    let mut target = Target { app_id: app.store_app_id.clone(), xsolla_project_id: String::new() };
     let a = match store_id {
         store::GOOGLE => Auth::Bearer(stores::google_access_token(ctx, app)?),
         store::APPLE => Auth::Bearer(stores::apple_connect_token(ctx, app).map_err(|e| {
@@ -509,7 +509,7 @@ fn existing_in_store(ctx: &mut impl Ctx, app: &GameApp) -> Result<Vec<(String, S
         }
         store::STRIPE => {
             let (auth, _) = auth(ctx, app, info.id).map_err(|e| e.message().to_string())?;
-            let res = send(ctx, &auth, &sc::stripe_existing_request(&app.app_id))?;
+            let res = send(ctx, &auth, &sc::stripe_existing_request(&app.store_app_id))?;
             if !res.ok() {
                 return Err(st::error_message(res.status, &res.body));
             }
@@ -522,8 +522,8 @@ fn existing_in_store(ctx: &mut impl Ctx, app: &GameApp) -> Result<Vec<(String, S
 /// Reference names of the App Store subscription groups of an iOS build.
 fn apple_groups(ctx: &mut impl Ctx, app: &GameApp) -> Result<Vec<String>, String> {
     let (auth, _) = auth(ctx, app, store::APPLE).map_err(|e| e.message().to_string())?;
-    let res = send(ctx, &auth, &sc::Request::get(purser_core::catalog::apple::apps_url(&app.app_id)?))?;
-    let apple_id = purser_core::catalog::apple::parse_app_id(&res.body, &app.app_id)?;
+    let res = send(ctx, &auth, &sc::Request::get(purser_core::catalog::apple::apps_url(&app.store_app_id)?))?;
+    let apple_id = purser_core::catalog::apple::parse_app_id(&res.body, &app.store_app_id)?;
     let url = format!(
         "{}/v1/apps/{apple_id}/subscriptionGroups?limit=200&fields%5BsubscriptionGroups%5D=referenceName",
         purser_core::catalog::apple::API

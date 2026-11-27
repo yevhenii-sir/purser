@@ -124,7 +124,7 @@ settings:
 
 - `store_commission_percent` (`"30"`);
 - `store_commission_after_year_percent` (`"15"`);
-- `store_commission_by_app` (`{"com.example.mygame": 30}`).
+- `store_commission_by_app` (`{"apple:com.example.mygame": 30}`: keys are build keys, `{store}:{app id}`).
 
 An empty value restores the default.
 

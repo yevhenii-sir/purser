@@ -54,7 +54,7 @@ pub fn admin_refund_purchase(ctx: &mut ProcedureContext, purchase_id: String, no
     if !status::is_owned(&p.status) {
         return error(format!("[ERR_NOT_REVOCABLE] the purchase is {}: nothing to refund", p.status));
     }
-    let url = match google::order_refund_url(&app.app_id, &p.transaction_id) {
+    let url = match google::order_refund_url(&app.store_app_id, &p.transaction_id) {
         Ok(u) => u,
         Err(e) => return error(format!("[ERR_NOT_SUPPORTED] {e}")),
     };
@@ -139,7 +139,7 @@ fn extend_google(ctx: &mut ProcedureContext, app: &GameApp, p: &Purchase, days: 
     if !(1..=MAX_GOOGLE_DEFER_DAYS).contains(&days) {
         return Err(format!("[ERR_BAD_EXTENSION] Google Play renewals move by 1 to {MAX_GOOGLE_DEFER_DAYS} days"));
     }
-    let url = google::subscription_defer_url(&app.app_id, &p.product_id, &p.purchase_token).map_err(|e| format!("[ERR_BAD_EXTENSION] {e}"))?;
+    let url = google::subscription_defer_url(&app.store_app_id, &p.product_id, &p.purchase_token).map_err(|e| format!("[ERR_BAD_EXTENSION] {e}"))?;
     let body = google::subscription_defer_body(p.expires_at_ms, p.expires_at_ms + days * DAY_MS);
     let token = Auth::default().get(|| stores::google_access_token(ctx, app)).map_err(|e| format!("[ERR_STORE] {}", e.message()))?;
     let res = net::send(

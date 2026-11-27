@@ -36,9 +36,6 @@ pub const SERVICE_ACCOUNT_ID: &str = "samsung_service_account_id";
 pub const PRIVATE_KEY: &str = "samsung_private_key";
 /// The app's IAP public key (Seller Portal): verifies Instant Server Notifications.
 pub const IAP_PUBLIC_KEY: &str = "samsung_iap_public_key";
-/// Optional: the package name in Galaxy Store when the build's app id is not the package name
-/// (e.g. `com.example.mygame.samsung` next to the Google Play build).
-pub const PACKAGE_NAME: &str = "samsung_package_name";
 
 pub const STORE: StoreInfo = StoreInfo {
     id: store::SAMSUNG,
@@ -47,7 +44,7 @@ pub const STORE: StoreInfo = StoreInfo {
     implemented: true,
     verification: Verification::ClientReceipt,
     notifications: true,
-    notify_query: "app={app_id}",
+    notify_query: "app={store_app_id}",
     // Notifications are signed JWTs (verified with `samsung_iap_public_key`), not a URL secret.
     notify_secret: None,
     notify_label: "Instant Server Notification URL (Seller Portal → the app → In App Purchase: the ISN URL of each item)",
@@ -73,13 +70,6 @@ pub const STORE: StoreInfo = StoreInfo {
             account_wide: false,
             file: false,
         },
-        SecretSpec {
-            name: PACKAGE_NAME,
-            label: "Package name in Galaxy Store (empty: the app id)",
-            need: Need::Optional,
-            account_wide: false,
-            file: false,
-        },
     ],
     // The server consumes consumables and acknowledges subscriptions after the grant, as Samsung
     // recommends (Purchase Acknowledgment API).
@@ -87,9 +77,8 @@ pub const STORE: StoreInfo = StoreInfo {
     refunds: "Instant Server Notifications (looked up again) and subscription re-checks by the worker",
     reports_price: true,
     binding: Binding::None,
-    app_id_label: "App id (package name, or e.g. package.samsung when the Google Play build uses it)",
-    app_id_placeholder: "com.example.mygame.samsung",
-    app_id_is_store_id: false,
+    store_app_id_label: "Package name (the same as the Google Play build's is fine)",
+    store_app_id_placeholder: "com.example.mygame",
     product_import: false,
     product_create: &[],
     polls_subscriptions: true,
@@ -108,11 +97,6 @@ pub const JWT_LIFETIME_SECS: i64 = 15 * 60;
 pub const TOKEN_CACHE_SECS: i64 = 3600;
 /// `iss` of Instant Server Notifications.
 pub const ISN_ISSUER: &str = "iap.samsungapps.com";
-
-/// The package name of a build: `samsung_package_name`, or the app id.
-pub fn package_name<'a>(configured: Option<&'a str>, app_id: &'a str) -> &'a str {
-    configured.map(str::trim).filter(|p| !p.is_empty()).unwrap_or(app_id)
-}
 
 /// Purchase ids are hex digests; package names Java package names. Anything else from a client
 /// never reaches a URL.
@@ -590,9 +574,6 @@ mod tests {
             "https://devapi.samsungapps.com/iap/seller/v6/applications/com.example.mygame/purchases/subscriptions/p1"
         );
         assert_eq!(acknowledgment_body("consume"), r#"{"action":"consume"}"#);
-        assert_eq!(package_name(Some(" com.x "), "com.x.samsung"), "com.x");
-        assert_eq!(package_name(Some(""), "com.x.samsung"), "com.x.samsung");
-        assert_eq!(package_name(None, "com.x"), "com.x");
     }
 
     #[test]

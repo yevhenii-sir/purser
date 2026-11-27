@@ -110,6 +110,21 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void EntitlementsAndRestore_NameTheBuildsStore()
+        {
+            var transport = new FakeTransport { Next = new HttpResponse(200, "{\"user_id\":\"u1\"}") };
+            var api = new BillingApiClient("https://billing.example.com/route/", 10, transport);
+
+            Sync.Run(api.EntitlementsAsync(new EntitlementsRequest { AppId = "com.test.game", Store = BillingStores.Apple, UserId = "u1" }));
+            Sync.Run(api.RestoreAsync(new RestoreRequest { AppId = "com.test.game", Store = BillingStores.Google, UserId = "u1" }));
+
+            var entitlements = JObject.Parse(transport.Requests[0].Body);
+            Assert.AreEqual(("com.test.game", "apple"), ((string)entitlements["app_id"], (string)entitlements["store"]));
+            var restore = JObject.Parse(transport.Requests[1].Body);
+            Assert.AreEqual(("com.test.game", "google"), ((string)restore["app_id"], (string)restore["store"]));
+        }
+
+        [Test]
         public void ErrorStatusStillParsesBody()
         {
             var transport = new FakeTransport { Next = new HttpResponse(400, "{\"status\":\"invalid\",\"message\":\"Invalid Value\"}") };

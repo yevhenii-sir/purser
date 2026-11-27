@@ -35,10 +35,10 @@ needs only to refresh the balance it shows.
 
 | Who | Route | What |
 |---|---|---|
-| Client | `POST /wallet` `{"app_id", "user_id"}` | `{"status": "ok", "balances": {"gems": 120}}`. Currencies the player never had are missing. |
-| Client | `POST /wallet/spend` `{"app_id", "user_id", "currency", "amount", "reference", "note"}` | `{"status": "ok", "balance": 90, "repeated": false}`. Only builds with player tokens (`client_auth` = `signed`), else `403 ERR_SIGNED_ONLY`. |
-| Backend | `POST /server/wallet` `{"app_id", "user_id"}` | Balances and the latest 50 changes. |
-| Backend | `POST /server/wallet/spend`, `/server/wallet/grant` `{"app_id", "user_id", "currency", "amount", "reference", "note"}` | As `/wallet/spend`. `grant` gives currency (rewards). |
+| Client | `POST /wallet` `{"app_id", "store", "user_id"}` | `{"status": "ok", "balances": {"gems": 120}}`. Currencies the player never had are missing. |
+| Client | `POST /wallet/spend` `{"app_id", "store", "user_id", "currency", "amount", "reference", "note"}` | `{"status": "ok", "balance": 90, "repeated": false}`. Only builds with player tokens (`client_auth` = `signed`), else `403 ERR_SIGNED_ONLY`. |
+| Backend | `POST /server/wallet` `{"app_id", "store", "user_id"}` | Balances and the latest 50 changes. |
+| Backend | `POST /server/wallet/spend`, `/server/wallet/grant` `{"app_id", "store", "user_id", "currency", "amount", "reference", "note"}` | As `/wallet/spend`. `grant` gives currency (rewards). |
 
 The backend routes take a server key with the `wallet` scope (`Authorization: Bearer psk_…`, see
 [game integration](game-integration.md)).

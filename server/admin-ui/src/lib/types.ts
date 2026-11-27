@@ -6,7 +6,10 @@ export type Kind = "consumable" | "non_consumable" | "subscription"
 export type Delivery = "spacetimedb" | "spacetimedb_idc" | "webhook" | "none"
 
 export interface GameApp {
+  /** The build's key, `{store}:{store_app_id}`: what every table of the build refers to. */
   app_id: string
+  /** The build's id in its store (package, bundle id, Steam App ID, any id of a web build). */
+  store_app_id: string
   platform: Platform
   game_key: string
   account: string

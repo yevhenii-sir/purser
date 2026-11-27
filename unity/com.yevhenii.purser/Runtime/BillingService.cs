@@ -157,6 +157,8 @@ namespace Purser
 
         private string AppId => m_Context.AppId;
 
+        private string BuildStore => m_Context.BuildStore;
+
         private bool SkipServer => m_Context.SkipServer;
 
         /// <summary>Creates the service; nothing is loaded until <see cref="InitializeAsync"/>.</summary>

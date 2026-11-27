@@ -48,9 +48,13 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 
 - **App** (UI word) = a `game_key` group of builds. **Build** = one `game_app` row = one app in **one
   store** (`platform` = `android` | `ios` | `amazon` | `steam` | `web`; `store` column, empty = the
-  platform's default; `web` names `stripe` or `xsolla`; an `android` build may name `samsung`). `app_id` is the store's id where the store
-  API needs it (Android package, iOS bundle) and any unique id otherwise (an Amazon build next to a
-  Google Play build: `com.example.mygame.amazon`). "Game" in older code means the same as app.
+  platform's default; `web` names `stripe` or `xsolla`; an `android` build may name `samsung`). A build's key
+  `app_id` = `{store}:{store_app_id}` (`registry::build_key`), so builds of several stores may share an id;
+  `store_app_id` is its id in the store (Android package, iOS bundle, Steam App ID, any id of a web build) and is
+  what store API calls, notification URLs (`?app=`), the game's `BillingEvent` and integration events carry.
+  Every table, secret scope and admin call uses the key. Clients and game backends send `app_id` = the id in
+  the store plus `store` (or a route that names it); `client_guard::parse` / `config::find_build` turn the pair
+  into the key. "Game" in older code means the same as app.
 - **Store registry** (`purser_core::registry`): every per-store fact (`StoreInfo`: platforms, secrets,
   client-receipt vs webhook verification, notification route and URL, finish step after the grant,
   refunds, price reporting, account binding, catalog import, subscription re-checks) and the

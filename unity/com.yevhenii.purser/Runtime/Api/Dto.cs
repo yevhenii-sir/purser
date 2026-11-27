@@ -76,6 +76,9 @@ namespace Purser
     public sealed class AttributesRequest
     {
         [JsonProperty("app_id")] public string AppId;
+        /// <summary>Store of the build the request is for (<see cref="BillingStores"/>): the server finds the build by
+        /// this store and <c>app_id</c>, the app's id in that store.</summary>
+        [JsonProperty("store")] public string Store;
         [JsonProperty("user_id")] public string UserId;
         [JsonProperty("attributes", NullValueHandling = NullValueHandling.Include)] public Dictionary<string, object> Attributes;
         /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
@@ -119,6 +122,9 @@ namespace Purser
         public const int MaxItems = 20;
 
         [JsonProperty("app_id")] public string AppId;
+        /// <summary>Store of the build the request is for (<see cref="BillingStores"/>): the server finds the build by
+        /// this store and <c>app_id</c>, the app's id in that store.</summary>
+        [JsonProperty("store")] public string Store;
         [JsonProperty("user_id")] public string UserId;
         /// <summary>Proof that the client is the items' store user (Meta), checked once for all of them.</summary>
         [JsonProperty("store_user_proof", NullValueHandling = NullValueHandling.Ignore)] public string StoreUserProof;
@@ -150,6 +156,9 @@ namespace Purser
     public sealed class EntitlementsRequest
     {
         [JsonProperty("app_id")] public string AppId;
+        /// <summary>Store of the build the request is for (<see cref="BillingStores"/>): the server finds the build by
+        /// this store and <c>app_id</c>, the app's id in that store.</summary>
+        [JsonProperty("store")] public string Store;
         [JsonProperty("user_id")] public string UserId;
         /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>
         [JsonProperty("client", NullValueHandling = NullValueHandling.Ignore)] public ClientInfoDto Client;
@@ -208,6 +217,9 @@ namespace Purser
     public sealed class PaywallRequest
     {
         [JsonProperty("app_id")] public string AppId;
+        /// <summary>Store of the build the request is for (<see cref="BillingStores"/>): the server finds the build by
+        /// this store and <c>app_id</c>, the app's id in that store.</summary>
+        [JsonProperty("store")] public string Store;
         [JsonProperty("placement")] public string Placement;
         /// <summary>Assigns the player to a running A/B test; without it the default variant is served.</summary>
         [JsonProperty("user_id", NullValueHandling = NullValueHandling.Ignore)] public string UserId;
@@ -247,6 +259,9 @@ namespace Purser
         public const string View = "view";
 
         [JsonProperty("app_id")] public string AppId;
+        /// <summary>Store of the build the request is for (<see cref="BillingStores"/>): the server finds the build by
+        /// this store and <c>app_id</c>, the app's id in that store.</summary>
+        [JsonProperty("store")] public string Store;
         [JsonProperty("placement")] public string Placement;
         [JsonProperty("variant_id")] public string VariantId;
         [JsonProperty("test_id", NullValueHandling = NullValueHandling.Ignore)] public string TestId;

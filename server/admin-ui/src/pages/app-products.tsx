@@ -116,7 +116,7 @@ export function AppProductsTab({ data, go }: TabProps) {
         access: accessOfRow(r).split(",").filter(Boolean),
       }
     })
-    const text = toUnityConfig(await publicRoute(), g.apps.map((a) => ({ store: storeOf(a).id, app_id: a.app_id })), products)
+    const text = toUnityConfig(await publicRoute(), g.apps.map((a) => ({ store: storeOf(a).id, store_app_id: a.store_app_id })), products)
     await tryAct(() => navigator.clipboard.writeText(text), "Copied: in Unity press Paste config from admin panel")
   }
 
@@ -523,7 +523,7 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
           billing_period_days: 0, period: u.period, status, local_kind: some?.kind || "",
         }
       })
-      const unknown = c.builds.filter((b) => !apps.some((a) => a.app_id === b.app_id && storeOf(a).id === b.store))
+      const unknown = c.builds.filter((b) => !apps.some((a) => a.store_app_id === b.store_app_id && storeOf(a).id === b.store))
       setParsed({ rows, storeIds: Object.fromEntries(c.products.map((u) => [u.product_id, u.store_ids])), access: Object.fromEntries(c.products.map((u) => [u.product_id, u.access])), unknown })
       setError(null)
     } catch (e) {
@@ -578,7 +578,7 @@ function UnityImport({ apps, existing, onClose, onSaved, onWizard }: UnityImport
               <div className="rounded-lg border p-3 text-sm">
                 <p>This app has no build for:</p>
                 <ul className="mt-1 list-disc pl-5 font-mono text-xs">
-                  {parsed.unknown.map((b) => <li key={`${b.store}/${b.app_id}`}>{storeById(b.store)?.name || b.store}: {b.app_id}</li>)}
+                  {parsed.unknown.map((b) => <li key={`${b.store}/${b.store_app_id}`}>{storeById(b.store)?.name || b.store}: {b.store_app_id}</li>)}
                 </ul>
                 <p className="mt-2 text-muted-foreground">
                   Nothing is created for them here. Add them with <i>Add a build or run the setup wizard</i> on the{" "}

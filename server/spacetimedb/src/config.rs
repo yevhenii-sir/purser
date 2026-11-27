@@ -155,6 +155,11 @@ pub fn require_secret(tx: &TxContext, app: &GameApp, name: &str) -> Result<Secre
     secret(tx, app, name).ok_or_else(|| format!("credential '{name}' is not configured for app {}", app.app_id))
 }
 
+/// The build a store or client names: its store and its id in the store (`store_app_id`).
+pub fn find_build(tx: &TxContext, store_id: &str, store_app_id: &str) -> Option<GameApp> {
+    find_app(tx, &purser_core::registry::build_key(store_id, store_app_id))
+}
+
 pub fn find_app(tx: &TxContext, app_id: &str) -> Option<GameApp> {
     tx.db.game_app().app_id().find(app_id.to_string())
 }

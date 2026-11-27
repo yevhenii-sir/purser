@@ -72,6 +72,9 @@ impl crate::client_guard::ClientRequest for CheckoutRequest {
     fn app_id(&self) -> &str {
         &self.app_id
     }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
+    }
     fn user_id(&self) -> &str {
         &self.user_id
     }
@@ -140,7 +143,7 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> Answer {
 
 #[handler]
 pub fn telegram_checkout(ctx: &mut HandlerContext, req: Request) -> Response {
-    crate::client_guard::run(ctx, req, "checkout", false, |ctx, r: &CheckoutRequest| checkout(ctx, r))
+    crate::client_guard::run(ctx, req, "checkout", crate::client_guard::StoreOf::Route(purser_core::model::store::TELEGRAM), false, |ctx, r: &CheckoutRequest| checkout(ctx, r))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -158,6 +161,9 @@ pub struct StatusRequest {
 impl crate::client_guard::ClientRequest for StatusRequest {
     fn app_id(&self) -> &str {
         &self.app_id
+    }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
     }
     fn user_id(&self) -> &str {
         &self.user_id
@@ -218,7 +224,7 @@ pub fn checkout_status(ctx: &mut impl Ctx, r: &StatusRequest) -> Answer {
 
 #[handler]
 pub fn telegram_checkout_status(ctx: &mut HandlerContext, req: Request) -> Response {
-    crate::client_guard::run(ctx, req, "entitlements", false, |ctx, r: &StatusRequest| checkout_status(ctx, r))
+    crate::client_guard::run(ctx, req, "entitlements", crate::client_guard::StoreOf::Route(purser_core::model::store::TELEGRAM), false, |ctx, r: &StatusRequest| checkout_status(ctx, r))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -239,7 +245,7 @@ pub fn notification(ctx: &mut impl Ctx, req: Request) -> Answer {
 pub fn handle_update(ctx: &mut impl Ctx, app_id: &str, secret: &str, body: &str) -> Answer {
     let update = tg::parse_update(body);
     let checked = ctx.tx(|tx| {
-        let app = config::find_app(tx, app_id).filter(|a| config::app_store(a).id == store::TELEGRAM)?;
+        let app = config::find_build(tx, store::TELEGRAM, app_id)?;
         let expected = config::secret(tx, &app, tg::WEBHOOK_SECRET).map(|s| s.value);
         let accepted = matches!(&expected, Some(exp) if crate::web::secret_matches(exp, secret));
         let rejected = (!accepted).then_some("wrong or missing X-Telegram-Bot-Api-Secret-Token");
@@ -408,7 +414,7 @@ pub fn set_webhook(ctx: &mut impl Ctx, app: &GameApp, base: &str) -> Result<Stri
     if !tg::valid_webhook_secret(&secret) {
         return Err("telegram_webhook_secret must be 1-256 characters of A-Z, a-z, 0-9, _ and -".into());
     }
-    let url = format!("{}/notify/telegram?app={}", base.trim_end_matches('/'), purser_core::encoding::percent_encode(&app.app_id));
+    let url = format!("{}/notify/telegram?app={}", base.trim_end_matches('/'), purser_core::encoding::percent_encode(&app.store_app_id));
     let body = json!({ "url": url, "secret_token": secret, "allowed_updates": ["message", "pre_checkout_query"] });
     let res = net::send(ctx.http(), "POST", &tg::method_url(&token, "setWebhook")?, &[("Content-Type", "application/json")], body.to_string())
         .map_err(|e| tg::redact(&e, &token))?;

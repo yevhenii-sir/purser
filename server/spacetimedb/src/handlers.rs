@@ -46,7 +46,7 @@ use purser_core::model::{environment, kind, status, store, StoreTx, TxState};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use spacetimedb::http::{handler, router, Body, HandlerContext, Request, Response, Router};
-use crate::client_guard::{self, ClientRequest};
+use crate::client_guard::{self, ClientRequest, StoreOf};
 
 /// Max purchases per `/restore` call (each one is several store calls).
 const MAX_RESTORE_ITEMS: usize = 20;
@@ -86,6 +86,9 @@ impl ClientRequest for VerifyRequest {
     fn app_id(&self) -> &str {
         &self.app_id
     }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
+    }
     fn user_id(&self) -> &str {
         &self.user_id
     }
@@ -96,6 +99,12 @@ macro_rules! client_request {
         impl ClientRequest for $t {
             fn app_id(&self) -> &str {
                 &self.app_id
+            }
+            fn set_app_id(&mut self, key: String) {
+                self.app_id = key;
+            }
+            fn store(&self) -> &str {
+                &self.store
             }
             fn user_id(&self) -> &str {
                 &self.user_id
@@ -445,7 +454,7 @@ fn verify_store(ctx: &mut HandlerContext, req: Request) -> Response {
     if !known {
         return Outcome::status(404, "error", format!("no verification route for store '{store_name}'")).into_response();
     }
-    client_guard::run(ctx, req, "verify", false, |ctx, r: &VerifyRequest| verify(ctx, &store_name, r).into())
+    client_guard::run(ctx, req, "verify", StoreOf::Route(&store_name), false, |ctx, r: &VerifyRequest| verify(ctx, &store_name, r).into())
 }
 
 // ---------------------------------------------------------------------
@@ -455,6 +464,10 @@ fn verify_store(ctx: &mut HandlerContext, req: Request) -> Response {
 #[derive(Deserialize)]
 struct EntitlementsRequest {
     app_id: String,
+    /// The build's store: with `app_id` (its id in the store) it names the build. Required: an
+    /// empty one is refused with a clear message ([`client_guard::parse`]).
+    #[serde(default)]
+    store: String,
     user_id: String,
     #[serde(default)]
     client: ClientInfo,
@@ -463,6 +476,10 @@ struct EntitlementsRequest {
 #[derive(Deserialize)]
 struct RedeemRequest {
     app_id: String,
+    /// The build's store: with `app_id` (its id in the store) it names the build. Required: an
+    /// empty one is refused with a clear message ([`client_guard::parse`]).
+    #[serde(default)]
+    store: String,
     user_id: String,
     code: String,
     #[serde(default)]
@@ -475,7 +492,7 @@ struct RedeemRequest {
 /// `ERR_CODE_ALREADY_REDEEMED` (409). Redeeming a code again answers its grant.
 #[handler]
 fn redeem(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run(ctx, req, "redeem", false, |ctx, r: &RedeemRequest| redeem_code(ctx, r).into())
+    client_guard::run(ctx, req, "redeem", StoreOf::Body, false, |ctx, r: &RedeemRequest| redeem_code(ctx, r).into())
 }
 
 fn redeem_code(ctx: &mut impl Ctx, r: &RedeemRequest) -> Outcome {
@@ -542,6 +559,10 @@ fn get_entitlements(ctx: &mut impl Ctx, r: &EntitlementsRequest) -> Result<Outco
 #[derive(Deserialize)]
 struct WalletRequest {
     app_id: String,
+    /// The build's store: with `app_id` (its id in the store) it names the build. Required: an
+    /// empty one is refused with a clear message ([`client_guard::parse`]).
+    #[serde(default)]
+    store: String,
     user_id: String,
     #[serde(default)]
     client: ClientInfo,
@@ -559,12 +580,16 @@ fn wallet_tx(tx: &TxContext, r: &WalletRequest) -> Result<Outcome, Outcome> {
 /// `POST /wallet`: the player's virtual currency balances in the app.
 #[handler]
 fn wallet(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run_tx(ctx, req, "wallet", true, |tx, r: &WalletRequest| wallet_tx(tx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "wallet", StoreOf::Body, true, |tx, r: &WalletRequest| wallet_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 #[derive(Deserialize)]
 struct SpendRequest {
     app_id: String,
+    /// The build's store: with `app_id` (its id in the store) it names the build. Required: an
+    /// empty one is refused with a clear message ([`client_guard::parse`]).
+    #[serde(default)]
+    store: String,
     user_id: String,
     currency: String,
     amount: i64,
@@ -619,12 +644,12 @@ fn spend_tx(tx: &TxContext, r: &SpendRequest) -> Result<Outcome, Outcome> {
 /// `POST /wallet/spend`: spends the player's currency (builds with player tokens only).
 #[handler]
 fn wallet_spend(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run_tx(ctx, req, "wallet_spend", false, |tx, r: &SpendRequest| spend_tx(tx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "wallet_spend", StoreOf::Body, false, |tx, r: &SpendRequest| spend_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 #[handler]
 fn entitlements(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run_tx(ctx, req, "entitlements", true, |tx, r: &EntitlementsRequest| entitlements_tx(tx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "entitlements", StoreOf::Body, true, |tx, r: &EntitlementsRequest| entitlements_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 #[derive(Deserialize)]
@@ -642,6 +667,10 @@ struct RestoreItem {
 #[derive(Deserialize)]
 struct RestoreRequest {
     app_id: String,
+    /// The build's store: with `app_id` (its id in the store) it names the build. Required: an
+    /// empty one is refused with a clear message ([`client_guard::parse`]).
+    #[serde(default)]
+    store: String,
     user_id: String,
     /// The player's id in the store for every item (Amazon userId, Meta user id).
     #[serde(default)]
@@ -777,7 +806,7 @@ fn restore_purchases(ctx: &mut impl Ctx, r: &RestoreRequest) -> Result<Outcome, 
 
 #[handler]
 fn restore(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run(ctx, req, "restore", true, |ctx, r: &RestoreRequest| restore_purchases(ctx, r).unwrap_or_else(|o| o).into())
+    client_guard::run(ctx, req, "restore", StoreOf::Body, true, |ctx, r: &RestoreRequest| restore_purchases(ctx, r).unwrap_or_else(|o| o).into())
 }
 
 // ---------------------------------------------------------------------
@@ -787,6 +816,10 @@ fn restore(ctx: &mut HandlerContext, req: Request) -> Response {
 #[derive(Deserialize)]
 struct PaywallRequest {
     app_id: String,
+    /// The build's store: with `app_id` (its id in the store) it names the build. Required: an
+    /// empty one is refused with a clear message ([`client_guard::parse`]).
+    #[serde(default)]
+    store: String,
     placement: String,
     /// Assigns the player to a running test; without it the default variant is served.
     #[serde(default)]
@@ -816,7 +849,7 @@ fn get_paywall(ctx: &mut impl Ctx, r: &PaywallRequest) -> Result<Outcome, Outcom
 
 #[handler]
 fn paywall(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run_tx(ctx, req, "paywall", false, |tx, r: &PaywallRequest| paywall_tx(tx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "paywall", StoreOf::Body, false, |tx, r: &PaywallRequest| paywall_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 // ---------------------------------------------------------------------
@@ -827,6 +860,10 @@ fn paywall(ctx: &mut HandlerContext, req: Request) -> Response {
 #[derive(Deserialize)]
 struct AttributesRequest {
     app_id: String,
+    /// The build's store: with `app_id` (its id in the store) it names the build. Required: an
+    /// empty one is refused with a clear message ([`client_guard::parse`]).
+    #[serde(default)]
+    store: String,
     user_id: String,
     /// Key → string / number / boolean; `null` or `""` removes the key.
     attributes: serde_json::Map<String, Value>,
@@ -861,7 +898,7 @@ fn attributes_tx(tx: &TxContext, r: &AttributesRequest) -> Result<Outcome, Outco
 
 #[handler]
 fn player_attributes(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run_tx(ctx, req, "attributes", false, |tx, r: &AttributesRequest| attributes_tx(tx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "attributes", StoreOf::Body, false, |tx, r: &AttributesRequest| attributes_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 fn default_paywall_event() -> String {
@@ -871,6 +908,10 @@ fn default_paywall_event() -> String {
 #[derive(Deserialize)]
 struct PaywallEventRequest {
     app_id: String,
+    /// The build's store: with `app_id` (its id in the store) it names the build. Required: an
+    /// empty one is refused with a clear message ([`client_guard::parse`]).
+    #[serde(default)]
+    store: String,
     placement: String,
     variant_id: String,
     #[serde(default)]
@@ -899,7 +940,7 @@ fn paywall_event_outcome(ctx: &mut impl Ctx, r: &PaywallEventRequest) -> Result<
 
 #[handler]
 fn paywall_event(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run_tx(ctx, req, "paywall_event", false, |tx, r: &PaywallEventRequest| paywall_event_tx(tx, r).unwrap_or_else(|o| o).into())
+    client_guard::run_tx(ctx, req, "paywall_event", StoreOf::Body, false, |tx, r: &PaywallEventRequest| paywall_event_tx(tx, r).unwrap_or_else(|o| o).into())
 }
 
 // ---------------------------------------------------------------------
@@ -1038,7 +1079,7 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     // claimed) in one transaction, the check itself outside it.
     let token = google_oidc::read_token(&authorization);
     let found = ctx.tx(|tx| {
-        let app = config::find_app(tx, &package).filter(|a| config::app_store(a).id == store::GOOGLE)?;
+        let app = config::find_build(tx, store::GOOGLE, &package)?;
         let prepared = token.as_ref().map(|t| google_oidc::prepare(tx, &app, t, now)).map_err(Clone::clone);
         Some((app, prepared))
     });
@@ -1186,7 +1227,7 @@ fn handle_apple_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     let signature = apple::verify_notification(&body, apple_root(), now / 1000).err();
     // One transaction: the build, the checks and their health, the API token.
     let checked = ctx.tx(|tx| {
-        let app = config::find_app(tx, &n.bundle_id).filter(|a| config::app_store(a).id == store::APPLE)?;
+        let app = config::find_build(tx, store::APPLE, &n.bundle_id)?;
         let expected = config::secret(tx, &app, secret_name::APPLE_NOTIFICATION_SECRET).map(|s| s.value);
         let secret_ok = expected.as_deref().is_none_or(|exp| web::secret_matches(exp, &secret));
         let rejected = match (&signature, secret_ok) {
@@ -1301,7 +1342,7 @@ fn handle_huawei_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     };
     let now = ctx.now_micros();
     let checked = ctx.tx(|tx| {
-        let app = config::find_app(tx, &app_id).filter(|a| config::app_store(a).id == store::HUAWEI)?;
+        let app = config::find_build(tx, store::HUAWEI, &app_id)?;
         let expected = config::secret(tx, &app, huawei::NOTIFY_SECRET).map(|s| s.value);
         let accepted = matches!(&expected, Some(exp) if web::secret_matches(exp, &secret));
         record_notification(tx, &app.app_id, "Huawei server notifications", (!accepted).then_some(WRONG_SECRET), n == Notification::Other);
@@ -1320,7 +1361,7 @@ fn handle_huawei_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     });
     let Some((app, accepted, product, mut auth)) = checked else {
         log::warn!("Huawei notification for unknown app {}", log_id(&app_id));
-        return Outcome::status(200, "ignored", "unknown app: the URL needs ?app=<app_id>");
+        return Outcome::status(200, "ignored", "unknown app: the URL needs ?app=<the package name>");
     };
     if !accepted {
         log::warn!("Huawei notification for {} rejected: bad or unconfigured secret", app.app_id);
@@ -1364,15 +1405,14 @@ fn handle_samsung_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
         app_param
     };
     let found = ctx.tx(|tx| {
-        let app = config::find_app(tx, &app_id).filter(|a| config::app_store(a).id == store::SAMSUNG)?;
+        let app = config::find_build(tx, store::SAMSUNG, &app_id)?;
         let key = config::secret(tx, &app, samsung::IAP_PUBLIC_KEY).map(|s| s.value);
-        let package = config::secret(tx, &app, samsung::PACKAGE_NAME).map(|s| s.value);
-        let package = samsung::package_name(package.as_deref(), &app.app_id).to_string();
+        let package = app.store_app_id.clone();
         Some((app, key, package))
     });
     let Some((app, key, package)) = found else {
         log::warn!("Samsung notification for unknown app {}", log_id(&app_id));
-        return Outcome::status(200, "ignored", "unknown app: the URL needs ?app=<app_id>");
+        return Outcome::status(200, "ignored", "unknown app: the URL needs ?app=<the package name>");
     };
     let verified = key
         .ok_or_else(|| "samsung_iap_public_key is not set".to_string())
@@ -1473,12 +1513,12 @@ fn handle_amazon_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     let now = ctx.now_micros();
     // The build and the cached signing certificate in one transaction.
     let loaded = ctx.tx(|tx| {
-        let app = config::find_app(tx, &app_id).filter(|a| config::app_store(a).id == store::AMAZON)?;
+        let app = config::find_build(tx, store::AMAZON, &app_id)?;
         Some((app, stores::cached_sns_certificate(tx, &m.signing_cert_url, now)))
     });
     let Some((app, cached_cert)) = loaded else {
         log::warn!("Amazon notification for unknown app {}", log_id(&app_id));
-        return Outcome::status(200, "ignored", "unknown app: add ?app=<app_id> to the endpoint URL");
+        return Outcome::status(200, "ignored", "unknown app: add ?app=<the package name> to the endpoint URL");
     };
 
     // Any AWS account can sign: only our topic (checked before fetching its certificate), and no
@@ -1603,7 +1643,7 @@ fn dispatch_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
 
 #[handler]
 fn offers_apple_sign(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run(ctx, req, "offers", false, |ctx, r: &crate::offers::AppleOfferRequest| crate::offers::sign_apple_offer(ctx, r))
+    client_guard::run(ctx, req, "offers", StoreOf::Route(purser_core::model::store::APPLE), false, |ctx, r: &crate::offers::AppleOfferRequest| crate::offers::sign_apple_offer(ctx, r))
 }
 
 /// Admin UI (single static page). It talks to `/sql`, `/call/admin_*` and `/logs` of this database
@@ -1667,7 +1707,7 @@ fn admin_page(ctx: &mut HandlerContext, req: Request) -> Response {
 /// `POST /checkout/steam`: the server starts a Steam purchase with its publisher key.
 #[handler]
 fn checkout_steam(ctx: &mut HandlerContext, req: Request) -> Response {
-    client_guard::run(ctx, req, "checkout", false, |ctx, r: &crate::steam::CheckoutRequest| crate::steam::checkout(ctx, r))
+    client_guard::run(ctx, req, "checkout", StoreOf::Route(purser_core::model::store::STEAM), false, |ctx, r: &crate::steam::CheckoutRequest| crate::steam::checkout(ctx, r))
 }
 
 #[handler]

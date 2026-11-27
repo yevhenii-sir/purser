@@ -2,7 +2,9 @@
 
 use super::*;
 
-pub(super) const IOS_APP: &str = "com.studio.game.ios";
+/// The build's key and its id in the store.
+pub(super) const IOS_APP: &str = "apple:com.studio.game.ios";
+pub(super) const IOS_ID: &str = "com.studio.game.ios";
 
 /// A throwaway P-256 key generated from fixed bytes (never a real App Store key).
 pub(super) fn test_p8(seed: u8) -> String {
@@ -23,6 +25,7 @@ pub(super) fn apple_offer_world(with_issuer: bool) -> World {
     w.write(|tx| {
         let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.app_id = IOS_APP.into();
+        app.store_app_id = IOS_ID.into();
         app.platform = purser_core::registry::platform::IOS.into();
         app.store = purser_core::model::store::APPLE.into();
         tx.db.game_app().insert(app);
@@ -69,7 +72,7 @@ fn promotional_offer_is_signed_for_the_players_app_account_token() {
     // The classic signature verifies against the payload Apple rebuilds from the purchase.
     let nonce = body["nonce"].as_str().unwrap();
     let payload = purser_core::offers::promotional_offer_payload(&purser_core::offers::PromotionalOffer {
-        bundle_id: IOS_APP,
+        bundle_id: IOS_ID,
         key_id: "KEY123ABCD",
         product_id: "premium",
         offer_id: "winback_50",
@@ -86,7 +89,7 @@ fn promotional_offer_is_signed_for_the_players_app_account_token() {
     let claims = purser_core::jwt::decode_jws_payload(jws).unwrap();
     assert_eq!(
         (claims["aud"].as_str(), claims["bid"].as_str(), claims["productId"].as_str(), claims["offerIdentifier"].as_str()),
-        (Some("promotional-offer"), Some(IOS_APP), Some("premium"), Some("winback_50"))
+        (Some("promotional-offer"), Some(IOS_ID), Some("premium"), Some("winback_50"))
     );
     assert_eq!((claims["iss"].as_str(), claims["nonce"].as_str()), (Some("issuer-uuid"), Some(nonce)));
     let (input, sig) = jws.rsplit_once('.').unwrap();

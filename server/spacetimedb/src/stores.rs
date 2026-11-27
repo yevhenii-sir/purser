@@ -207,9 +207,9 @@ pub fn google_fetch(
     auth: &mut Auth,
 ) -> Result<StoreTx, StoreError> {
     let url = if product.kind == kind::SUBSCRIPTION {
-        google::subscription_v2_url(&app.app_id, purchase_token)
+        google::subscription_v2_url(&app.store_app_id, purchase_token)
     } else {
-        google::product_url(&app.app_id, &product.product_id, purchase_token)
+        google::product_url(&app.store_app_id, &product.product_id, purchase_token)
     }
     .map_err(StoreError::Invalid)?;
 
@@ -246,7 +246,7 @@ fn google_order_price(ctx: &mut impl Ctx, app: &GameApp, st: &mut StoreTx, token
     if !paid {
         return;
     }
-    let Ok(url) = google::order_url(&app.app_id, &st.transaction_id) else { return };
+    let Ok(url) = google::order_url(&app.store_app_id, &st.transaction_id) else { return };
     let id = st.ledger_id();
     // A one-time purchase the server has not finished in the store is new (or its grant is still
     // under way); a subscription period may be acknowledged already (renewals): the ledger says.
@@ -279,12 +279,12 @@ pub fn google_finish(
     auth: &mut Auth,
 ) -> Result<(), String> {
     let url = match (action, product.kind.as_str()) {
-        (store_action::CONSUME, _) => google::consume_url(&app.app_id, &product.product_id, purchase_token),
+        (store_action::CONSUME, _) => google::consume_url(&app.store_app_id, &product.product_id, purchase_token),
         (store_action::ACKNOWLEDGE, kind::SUBSCRIPTION) => {
-            google::acknowledge_subscription_url(&app.app_id, &product.product_id, purchase_token)
+            google::acknowledge_subscription_url(&app.store_app_id, &product.product_id, purchase_token)
         }
         (store_action::ACKNOWLEDGE, _) => {
-            google::acknowledge_product_url(&app.app_id, &product.product_id, purchase_token)
+            google::acknowledge_product_url(&app.store_app_id, &product.product_id, purchase_token)
         }
         _ => return Ok(()),
     }?;
@@ -340,7 +340,7 @@ pub(crate) fn apple_token(ctx: &mut impl Ctx, app: &GameApp) -> Result<String, S
         return Ok(token);
     }
     let now_secs = now / 1_000_000;
-    let token = jwt::apple_token(&key, &app.app_id, now_secs).map_err(StoreError::Config)?;
+    let token = jwt::apple_token(&key, &app.store_app_id, now_secs).map_err(StoreError::Config)?;
     let expires_at = (now_secs + jwt::APPLE_TOKEN_LIFETIME_SECS) * 1_000_000;
     ctx.tx(|tx| config::store_token(tx, &cache_key, &token, expires_at));
     Ok(token)
@@ -358,7 +358,7 @@ pub fn apple_fetch(
     auth: &mut Auth,
 ) -> Result<StoreTx, StoreError> {
     let (st, base, token) = apple_lookup(ctx, app, transaction_id, likely_environment, auth)?;
-    apple_subscription_status(ctx, base, &token, st)
+    owned_by(app, apple_subscription_status(ctx, base, &token, st)?)
 }
 
 /// One App Store transaction as Apple reports it now, without moving on to the subscription's
@@ -370,7 +370,17 @@ pub fn apple_fetch_transaction(
     likely_environment: &str,
     auth: &mut Auth,
 ) -> Result<StoreTx, StoreError> {
-    apple_lookup(ctx, app, transaction_id, likely_environment, auth).map(|(st, _, _)| st)
+    apple_lookup(ctx, app, transaction_id, likely_environment, auth).and_then(|(st, _, _)| owned_by(app, st))
+}
+
+/// A transaction Apple answered for `app`: its `bundleId` must be the build's bundle id, and the
+/// ledger keeps the build's key instead.
+fn owned_by(app: &GameApp, mut st: StoreTx) -> Result<StoreTx, StoreError> {
+    if st.app_id != app.store_app_id {
+        return Err(StoreError::Invalid(format!("the transaction belongs to another app ({})", st.app_id)));
+    }
+    st.app_id = app.app_id.clone();
+    Ok(st)
 }
 
 /// The transaction, the Server API base that knows it and the token.
@@ -634,12 +644,6 @@ fn samsung_forget_token(ctx: &mut impl Ctx, app: &GameApp, service_account_id: &
     });
 }
 
-/// The package name of a Galaxy Store build (`samsung_package_name`, or its app id).
-pub(crate) fn samsung_package(ctx: &mut impl Ctx, app: &GameApp) -> String {
-    let app_c = app.clone();
-    let configured = ctx.tx(|tx| config::secret(tx, &app_c, purser_core::samsung::PACKAGE_NAME).map(|s| s.value));
-    purser_core::samsung::package_name(configured.as_deref(), &app.app_id).to_string()
-}
 
 fn samsung_answer_error(e: purser_core::samsung::AnswerError) -> StoreError {
     match e {
@@ -657,7 +661,7 @@ fn samsung_headers<'a>(authorization: &'a str, service_account_id: &'a str) -> [
 pub fn samsung_receipt(ctx: &mut impl Ctx, app: &GameApp, product: &Product, purchase_id: &str) -> Result<StoreTx, StoreError> {
     use purser_core::samsung;
     let url = samsung::receipt_url(purchase_id).map_err(StoreError::Invalid)?;
-    let package = samsung_package(ctx, app);
+    let package = app.store_app_id.clone();
     let res = net::send(ctx.http(), "GET", &url, &[("Accept", "application/json")], ()).map_err(StoreError::Transient)?;
     if !res.ok() {
         return Err(StoreError::Transient(format!("Samsung receipt: HTTP {}", res.status)));
@@ -672,7 +676,7 @@ pub fn samsung_fetch(ctx: &mut impl Ctx, app: &GameApp, product: &Product, purch
     if product.kind != kind::SUBSCRIPTION {
         return samsung_receipt(ctx, app, product, purchase_id);
     }
-    let package = samsung_package(ctx, app);
+    let package = app.store_app_id.clone();
     let url = samsung::subscription_url(&package, purchase_id).map_err(StoreError::Invalid)?;
     let (token, account) = samsung_auth(ctx, app, auth)?;
     let authorization = bearer(&token);
@@ -709,7 +713,7 @@ fn samsung_auth(ctx: &mut impl Ctx, app: &GameApp, auth: &mut Auth) -> Result<(S
 /// done.
 pub fn samsung_finish(ctx: &mut impl Ctx, app: &GameApp, purchase_id: &str, action: &str, auth: &mut Auth) -> Result<(), String> {
     use purser_core::samsung;
-    let package = samsung_package(ctx, app);
+    let package = app.store_app_id.clone();
     let url = samsung::acknowledgment_url(&package, purchase_id)?;
     let (token, account) = samsung_auth(ctx, app, auth).map_err(|e| e.message().to_string())?;
     let authorization = bearer(&token);

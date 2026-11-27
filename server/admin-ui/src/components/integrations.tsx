@@ -15,6 +15,7 @@ import { SecretField } from "@/components/secret-field"
 import { call, genSecret } from "@/lib/api"
 import { tryAct } from "@/lib/hooks"
 import { isFileSecret } from "@/lib/secrets"
+import { buildLabel } from "@/lib/stores"
 import { parseJsonOr } from "@/lib/utils"
 import type { GameApp } from "@/lib/types"
 
@@ -125,7 +126,7 @@ export function TestEvent({ apps }: { apps: GameApp[] }) {
         <Field label="App">
           <Select value={target} onValueChange={setApp}>
             <SelectTrigger className="w-full"><SelectValue placeholder="Pick an app" /></SelectTrigger>
-            <SelectContent>{apps.map((a) => <SelectItem key={a.app_id} value={a.app_id}>{a.app_id}</SelectItem>)}</SelectContent>
+            <SelectContent>{apps.map((a) => <SelectItem key={a.app_id} value={a.app_id}>{buildLabel(a)} · {a.store_app_id}</SelectItem>)}</SelectContent>
           </Select>
         </Field>
         <Field label="Integration">
@@ -312,7 +313,7 @@ function IntegrationForm({ kind, row, apps, others, onClose, onSaved }: {
         <Field label="App">
           <Select value={app} onValueChange={setApp} disabled={!!row}>
             <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>{apps.map((a) => <SelectItem key={a.app_id} value={a.app_id}>{a.app_id} ({a.platform})</SelectItem>)}</SelectContent>
+            <SelectContent>{apps.map((a) => <SelectItem key={a.app_id} value={a.app_id}>{buildLabel(a)} · {a.store_app_id}</SelectItem>)}</SelectContent>
           </Select>
         </Field>
         {others.length > 0 && (

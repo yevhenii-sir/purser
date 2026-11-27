@@ -8,6 +8,9 @@ namespace Purser
     public sealed class RedeemRequest
     {
         [JsonProperty("app_id")] public string AppId;
+        /// <summary>Store of the build the request is for (<see cref="BillingStores"/>): the server finds the build by
+        /// this store and <c>app_id</c>, the app's id in that store.</summary>
+        [JsonProperty("store")] public string Store;
         [JsonProperty("user_id")] public string UserId;
         [JsonProperty("code")] public string Code;
         /// <summary>The device, shown on the admin page's player profile (filled by <see cref="BillingService"/>).</summary>

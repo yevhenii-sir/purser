@@ -98,8 +98,13 @@ pub struct Admin {
 #[derive(Clone)]
 #[spacetimedb::table(accessor = game_app, cache_policy = required_in_memory)]
 pub struct GameApp {
+    /// The build's key, `{store}:{store_app_id}` (`purser_core::registry::build_key`): builds of
+    /// several stores may share an id in the store. Every table of a build refers to this.
     #[primary_key]
     pub app_id: String,
+    /// The build's id in its store: Android package, iOS bundle id, Steam App ID, any unique id of
+    /// a web build. Store API calls use it; clients and store notifications name the build by it.
+    pub store_app_id: String,
     /// `android` | `ios` | `amazon` | `steam` | `web` (`purser_core::registry::platform`).
     pub platform: String,
     #[index(btree)]
@@ -574,7 +579,8 @@ fn default_account() -> String {
 }
 #[derive(Deserialize)]
 struct GameAppInput {
-    app_id: String,
+    /// The build's id in its store; its key is `{store}:{store_app_id}`.
+    store_app_id: String,
     platform: String,
     #[serde(default)]
     game_key: String,
@@ -620,36 +626,35 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
     crate::access::audit(ctx, &who, "admin_upsert_game_app", "", &json);
     let i: GameAppInput = serde_json::from_str(&json).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
     who.check_game(&i.game_key)?;
-    if let Some(old) = ctx.db.game_app().app_id().find(&i.app_id) {
+    let store = purser_core::registry::usable_build_store(&i.platform, &i.store)
+        .map_err(|e| format!("[ERR_BAD_APP] {e}"))?;
+    let store_app_id = i.store_app_id.trim().to_string();
+    if store_app_id.is_empty() {
+        return Err("[ERR_BAD_APP] store_app_id is required".into());
+    }
+    if store_app_id.contains(['/', ':', '?', '&', '#', ' ']) || store_app_id.len() > 128 {
+        return Err("[ERR_BAD_APP] store_app_id must not contain '/', ':', '?', '&', '#' or spaces".into());
+    }
+    let key = purser_core::registry::build_key(store.id, &store_app_id);
+    let existing = ctx.db.game_app().app_id().find(&key);
+    if let Some(old) = &existing {
         who.check_game(&old.game_key)?;
     }
-
-    if i.app_id.trim().is_empty() {
-        return Err("[ERR_BAD_APP] app_id is required".into());
-    }
-    if i.app_id.contains(['/', ':']) || i.app_id.len() > 128 {
-        return Err("[ERR_BAD_APP] app_id must not contain '/' or ':'".into());
-    }
-    // Build ids and developer accounts share the secret scopes (`{scope}/{name}`): a build named
-    // like an account (or `default`) would reach that account's secrets.
+    // Build keys and developer accounts share the secret scopes (`{scope}/{name}`): keys carry a
+    // ':', so an account must not.
     let account = if i.account.is_empty() { default_account() } else { i.account.clone() };
-    if i.app_id == config::DEFAULT_SCOPE || ctx.db.game_app().iter().any(|a| a.app_id != i.app_id && a.account == i.app_id) {
-        return Err(format!("[ERR_BAD_APP] app_id {} is the name of a developer account", i.app_id));
-    }
-    if account != config::DEFAULT_SCOPE && ctx.db.game_app().app_id().find(&account).is_some() {
-        return Err(format!("[ERR_BAD_APP] account {account} is the app_id of a build: name the account differently"));
+    if account.contains([':', '/']) {
+        return Err(format!("[ERR_BAD_APP] account {account} must not contain ':' or '/'"));
     }
     // An admin limited to some apps uses only accounts no other app uses (their secrets were set
     // by someone who can reach every app).
-    let current_account = ctx.db.game_app().app_id().find(&i.app_id).map(|a| a.account);
+    let current_account = existing.as_ref().map(|a| a.account.clone());
     if who.scope.is_some() && current_account.as_deref() != Some(account.as_str()) && account != config::DEFAULT_SCOPE {
         let others = ctx.db.game_app().iter().any(|a| a.account == account && !who.sees_game(&a.game_key));
         if others {
             return Err(format!("{} account {account} (it is used by apps you cannot reach)", crate::access::SCOPE_ERROR));
         }
     }
-    let store = purser_core::registry::usable_build_store(&i.platform, &i.store)
-        .map_err(|e| format!("[ERR_BAD_APP] {e}"))?;
     if !delivery::is_valid(&i.delivery) {
         return Err("[ERR_BAD_APP] delivery must be spacetimedb, webhook or none".into());
     }
@@ -679,7 +684,7 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
     if !i.webhook_url.is_empty() {
         purser_core::encoding::check_public_https_url("webhook_url", &i.webhook_url).map_err(|e| format!("[ERR_BAD_APP] {e}"))?;
     }
-    let stored = ctx.db.game_app().app_id().find(&i.app_id);
+    let stored = existing.clone();
     let apple_refund_mode = i.apple_refund_mode.clone().or_else(|| stored.as_ref().map(|a| a.apple_refund_mode.clone())).unwrap_or_default();
     let allow_sandbox = i.allow_sandbox.or(stored.as_ref().map(|a| a.allow_sandbox)).unwrap_or(true);
     let enabled = i.enabled.or(stored.as_ref().map(|a| a.enabled)).unwrap_or(true);
@@ -690,7 +695,6 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
     if purser_core::consumption::mode::is_on(&apple_refund_mode) && store.id != purser_core::model::store::APPLE {
         return Err("[ERR_BAD_APP] apple_refund_mode is for App Store builds".into());
     }
-    let existing = ctx.db.game_app().app_id().find(&i.app_id);
     let sns_topic_arn = match i.sns_topic_arn {
         Some(t) => t.trim().to_string(),
         None => existing.as_ref().map(|a| a.sns_topic_arn.clone()).unwrap_or_default(),
@@ -705,8 +709,9 @@ pub fn admin_upsert_game_app(ctx: &ReducerContext, json: String) -> Result<(), S
     };
 
     let app = GameApp {
-        game_key: if i.game_key.is_empty() { i.app_id.clone() } else { i.game_key },
-        app_id: i.app_id,
+        game_key: if i.game_key.is_empty() { store_app_id.clone() } else { i.game_key },
+        app_id: key,
+        store_app_id,
         platform: i.platform,
         account: if i.account.is_empty() { default_account() } else { i.account },
         delivery: i.delivery,
@@ -1407,7 +1412,7 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
     let event = OutEvent {
         tax_micros: 0,
         kind: event_kind::TEST.to_string(),
-        app_id: app.app_id.clone(),
+        app_id: app.store_app_id.clone(),
         platform: app.platform.clone(),
         store: config::app_store(&app).id.to_string(),
         environment: environment::SANDBOX.to_string(),

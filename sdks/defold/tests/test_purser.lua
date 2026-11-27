@@ -53,6 +53,7 @@ local function client(answers, extra)
 	local config = {
 		base_url = BASE .. "/",
 		app_id = "com.studio.game",
+		store = "google",
 		user_id = "player-1",
 		client = { device = "Pixel 8", os = "Android 15", app_version = "1.2.1" },
 		json_decode = json.decode,
@@ -104,6 +105,18 @@ test("verify body", function()
 		currency = "USD",
 		client = { device = "Pixel 8", os = "Android 15", app_version = "1.2.1", sdk_version = "defold/0.14.0" },
 	}), "verify body")
+end)
+
+test("routes whose path names no store get the build's store", function()
+	local c, calls = client({ { status = 200, body = { status = "ok" } } }, { store = "apple" })
+	local noop = function() end
+	c:entitlements(noop)
+	c:restore({ { product_id = "no_ads", order_id = "2000000001" } }, noop)
+	c:verify("apple", { product_id = "gems", order_id = "2000000123" }, noop)
+	check(calls[1].body.app_id == "com.studio.game" and calls[1].body.store == "apple", "entitlements name the build's store")
+	check(calls[2].body.store == "apple", "restore names the build's store")
+	check(calls[3].body.store == nil, "verify names the store in its path")
+	check(not pcall(purser.new, { base_url = BASE, app_id = "com.studio.game" }), "store is required")
 end)
 
 test("transport errors and 5xx are retried", function()

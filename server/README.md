@@ -77,9 +77,9 @@ One row = one **build**: an app in one store. The builds of the same game (Googl
 
 | Field | Meaning |
 |---|---|
-| `app_id` | unique id of the build: the package / bundle id for Google Play and the App Store (part of the store API calls); any id for the Amazon Appstore, e.g. `com.example.mygame.amazon` when the Google Play build already uses the package name |
+| `store_app_id` | the build's id in its store: the package / bundle id for Google Play, the App Store, Amazon, Huawei and Samsung (part of the store API calls), the Steam App ID, any id for a web build. Builds of different stores may share it: the build's key is `{store}:{store_app_id}` (e.g. `google:com.example.mygame`, `apple:com.example.mygame`), which every other admin call, table and secret scope uses as `app_id` |
 | `platform` | `android` \| `ios` \| `amazon` \| `steam` \| `web` |
-| `store` | `google` \| `apple` \| `amazon` \| `steam` \| `stripe` \| `xsolla`; empty = the platform's default store (`android` → `google`, `ios` → `apple`, `amazon` → `amazon`, `steam` → `steam`). A `web` build must name its store. Rows written before the column existed have it empty |
+| `store` | `google` \| `apple` \| `amazon` \| `huawei` \| `samsung` \| `meta` \| `steam` \| `stripe` \| `xsolla` \| `telegram`; empty = the platform's default store (`android` → `google`, `ios` → `apple`, `amazon` → `amazon`, `steam` → `steam`). A `web` build must name its store |
 | `game_key` | shared game key for `/entitlements` |
 | `account` | secrets profile (developer account), see below |
 | `delivery` | `spacetimedb` \| `spacetimedb_idc` \| `webhook` \| `none` (the game needs no server of its own, the client grants the reward, see “Games without a backend”) |
@@ -149,7 +149,7 @@ cp -r seed.example secrets
 python seed.py
 ```
 
-In `secrets/` (the folder is in `.gitignore`) fill in `spacetime_hosts.json`, `apps.json`, `products.json`, `credentials.json`; key files are referenced in the `value_file` field. The script takes the server and database from `spacetime.json` (`--server` / `--database` override them) and calls `admin_add_spacetime_host`, `admin_upsert_game_app`, `admin_upsert_products`, `admin_set_credential`. Hosts are loaded first, because apps are validated against that list. Placeholders like `<…>` are skipped.
+In `secrets/` (the folder is in `.gitignore`) fill in `spacetime_hosts.json`, `apps.json`, `products.json`, `credentials.json`; key files are referenced in the `value_file` field. A build of `apps.json` gives `store_app_id` (its id in the store), `platform` and, when it is not the platform's default, `store`; the server keys it `{store}:{store_app_id}` (`google:com.example.mygame`), and the other files name the build by that key (`app_id`, a build's secret scope, `store_commission_by_app`). The script takes the server and database from `spacetime.json` (`--server` / `--database` override them) and calls `admin_add_spacetime_host`, `admin_upsert_game_app`, `admin_upsert_products`, `admin_set_credential`. Hosts are loaded first, because apps are validated against that list. Placeholders like `<…>` are skipped.
 
 After `integrations.json` it loads, when present: `paywalls.json` (`admin_upsert_paywall`), `placements.json` (`admin_upsert_placement`; A/B tests are started in the admin page), `alerts.json` (`{"channels": [{name?, kind, enabled, settings, secret?, game_keys?, rules?}], "rules": {...}}` → `admin_upsert_alert_channel`, `admin_set_alert_rules`; channels are found by `name`, which defaults to the kind; a channel without `secret` keeps the stored one) and `settings.json` (`public_base_url`, `store_commission_percent`, `store_commission_by_app`, `store_commission_after_year_percent`, `retention_days` → `admin_set_setting`). The format of every file is in the docstring of `seed.py` and in `seed.example/`.
 
@@ -159,7 +159,7 @@ After `integrations.json` it loads, when present: `paywalls.json` (`admin_upsert
 
 ### Many apps: `bulk_setup.py`
 
-`python bulk_setup.py --apps apps.csv --products products.csv [--from-stores] [--dry-run]` creates or updates builds (`game_key,platform,store,app_id,account,delivery`) and products (`app_id,product_id,kind,catalog_id`) from CSV or JSON tables through `admin_upsert_game_app` and batched `admin_upsert_products`. Every row is checked first and errors are reported per line; an empty cell keeps the stored value, so a second run changes nothing; `--dry-run` prints the diff (new / changed / unchanged); `--from-stores` adds the products `admin_list_store_products` finds in Google Play and the App Store with their prices and periods. `setup_google.py` sets up any number of Google Play builds, 20 per call. The order for hundreds of apps and the file formats: [docs/bulk-setup.md](../docs/bulk-setup.md).
+`python bulk_setup.py --apps apps.csv --products products.csv [--from-stores] [--dry-run]` creates or updates builds (`game_key,platform,store,store_app_id,account,delivery`) and products (`app_id,product_id,kind,catalog_id`, `app_id` = the build key) from CSV or JSON tables through `admin_upsert_game_app` and batched `admin_upsert_products`. Every row is checked first and errors are reported per line; an empty cell keeps the stored value, so a second run changes nothing; `--dry-run` prints the diff (new / changed / unchanged); `--from-stores` adds the products `admin_list_store_products` finds in Google Play and the App Store with their prices and periods. `setup_google.py` sets up any number of Google Play builds, 20 per call (all of them, or the ones named by `--package <package name>`). The order for hundreds of apps and the file formats: [docs/bulk-setup.md](../docs/bulk-setup.md).
 
 ### Setup check
 
@@ -226,6 +226,8 @@ Base: `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route`
 
 Client routes (`/verify/*`, `/restore`, `/entitlements`, `/attributes`, `/paywall`, `/paywall/event`, `/offers/apple/sign`, `/checkout/*`) go through one guard (`client_guard.rs`, rules in `purser_core::client_api`):
 
+- **The build.** `app_id` is the build's id in its store (package, bundle id, Steam App ID, the web build's id). Routes whose path names the store (`/verify/<store>`, `/checkout/<store>`, `/offers/apple/sign`, ...) need nothing else; the others (`/entitlements`, `/restore`, `/paywall`, `/paywall/event`, `/attributes`, `/redeem`, `/wallet`, `/wallet/spend`) also take `store` (`google`, `apple`, ...): a Google Play build and an App Store build may share an id. A missing `store` answers `400 [ERR_BAD_REQUEST]`. The game-backend routes `/server/*` take the same pair.
+
 - **Player tokens.** A build with `client_auth = signed` refuses requests without `Authorization: Bearer <token>`: an HS256 JWT `{"sub": <user_id>, "exp": <unix seconds>, "aud": <game_key>}` (`aud` required: a token without it would work for every app sharing the secret) signed by the game's backend with the build's `client_auth_secret` (at least 32 characters; the Delivery tab creates one). The answer is `401 {"status": "error", "code": "ERR_CLIENT_AUTH"}`. An open build (the default) takes any `user_id`, so player ids must be hard to guess, and `/attributes` refuses personal keys (`email`, `phone`, `name`, `first_name`, `last_name`) there.
 - **Rate limits.** Token buckets per player of a build, and per build for what costs the build something: store look-ups (`client_api::STORE_CALLS`, 600 a minute per build, taken by `/verify` and each `/restore` item only after the request was checked, so junk requests cannot use them up), `/attributes` (1,200) and `/paywall/event` (6,000). Per player (`client_api::limits`): `/verify` 30 a minute, `/restore` 6, `/entitlements` and `/paywall` 60, .... In open builds the player id is the client's word: anyone who knows a player's id can use up that player's bucket, so use ids nobody can guess, or player tokens (`client_auth = signed`). Over a limit: `429 {"code": "ERR_RATE_LIMITED"}` with `Retry-After: <seconds>`. Buckets live in `rate_bucket`; the worker deletes idle ones.
 - **Signed answers.** With a `response_signing_key` (Ed25519 seed, 32 bytes base64; the Delivery tab creates one in the browser), `/entitlements` and `/restore` answers carry `X-Purser-Signature: <base64 signature of the exact body>`; `admin_response_public_key(app_id)` shows the public key games check it with.
@@ -272,7 +274,7 @@ Orders live in `steam_order` (`initiated` → `authorized` → `finalized`, or `
 
 ### `POST /entitlements`
 
-`{"app_id": "...", "user_id": "..."}` → what the player owns across all apps with the same `game_key`, keyed by catalog product id (a product bought in any store of the app is the same entitlement): the access levels the products unlock (the Products tab, `product.access`), the active subscriptions with their renewal state, the non-consumables. Only what gives access now is listed; an access level shows the purchase that lasts longest.
+`{"app_id": "...", "store": "...", "user_id": "..."}` → what the player owns across all apps with the same `game_key`, keyed by catalog product id (a product bought in any store of the app is the same entitlement): the access levels the products unlock (the Products tab, `product.access`), the active subscriptions with their renewal state, the non-consumables. Only what gives access now is listed; an access level shows the purchase that lasts longest.
 
 ```json
 {"access": {"premium": {"product_id": "month_sub", "store": "google", "expires_at_ms": 1793876523123, "purchased_at_ms": 1791188212478,
@@ -288,7 +290,7 @@ Orders live in `steam_order` (`initiated` → `authorized` → `finalized`, or `
 
 ### `POST /restore`
 
-`{"app_id": "...", "user_id": "...", "store_user_id": "<Amazon userId>", "purchases": [{"product_id": "...", "purchase_token": "..." | "order_id": "..."}]}` (up to 20; an item may carry its own `store_user_id`). Runs verify for every purchase the store SDK returned on “Restore purchases” and returns `{results, entitlements}`. The whole call spends at most 5 s on store and delivery calls: items past it answer `503` / `error` ("restore again") and the next call goes on; the same purchase twice is looked up once.
+`{"app_id": "...", "store": "...", "user_id": "...", "store_user_id": "<Amazon userId>", "purchases": [{"product_id": "...", "purchase_token": "..." | "order_id": "..."}]}` (up to 20; an item may carry its own `store_user_id`). Runs verify for every purchase the store SDK returned on “Restore purchases” and returns `{results, entitlements}`. The whole call spends at most 5 s on store and delivery calls: items past it answer `503` / `error` ("restore again") and the next call goes on; the same purchase twice is looked up once.
 
 ### `POST /offers/apple/sign`
 
@@ -296,7 +298,7 @@ Orders live in `steam_order` (`initiated` → `authorized` → `finalized`, or `
 
 ### `POST /paywall`
 
-`{"app_id": "...", "placement": "main_paywall", "user_id": "..."}` → what to show at a placement:
+`{"app_id": "...", "store": "...", "placement": "main_paywall", "user_id": "..."}` → what to show at a placement:
 `{placement, paywall_id, paywall_name, variant_id, test_id, products: [{id, store_id, kind}], remote_config}`
 (`id`: the catalog product id; `store_id`: this build's store id).
 During an A/B test the player is assigned by a hash of the test id and `user_id` (no `user_id`: the
@@ -306,19 +308,19 @@ See [docs/paywalls.md](../docs/paywalls.md).
 
 ### `POST /paywall/event`
 
-`{"app_id": "...", "placement": "...", "variant_id": "...", "test_id": "...", "event": "view"}` → `200 {"status": "ok"}`.
+`{"app_id": "...", "store": "...", "placement": "...", "variant_id": "...", "test_id": "...", "event": "view"}` → `200 {"status": "ok"}`.
 A paywall view for A/B test results (counted per day and variant).
 
 ### `POST /attributes`
 
-`{"app_id": "...", "user_id": "...", "attributes": {"email": "player@example.com", "level": 7, "old_key": null}}` →
+`{"app_id": "...", "store": "...", "user_id": "...", "attributes": {"email": "player@example.com", "level": 7, "old_key": null}}` →
 `200 {"status": "ok", "attributes": {...}}`. Custom attributes of a player for the admin page's player profile: keys
 `a-z0-9_` (up to 40 characters, at most 30 per player and build), values strings / numbers / booleans stored as text,
 `null` or `""` removes a key.
 
 ### `POST /redeem`
 
-`{"app_id": "...", "user_id": "...", "code": "SUMMER-2026"}` → the shape of `/verify`: `200 success` (granted) or `202
+`{"app_id": "...", "store": "...", "user_id": "...", "code": "SUMMER-2026"}` → the shape of `/verify`: `200 success` (granted) or `202
 pending` (on its way to the game) with `transaction_id`, `product_id`, `catalog_product_id`, `is_sub`, `expires_date_ms`,
 `delivery`; `404 invalid` with `code: ERR_CODE_INVALID` (no such code, or turned off), `409 invalid` with
 `ERR_CODE_EXPIRED` / `ERR_CODE_USED_UP`. A promo code of the app (`promo_code`, admin page → the app → Promo codes,
@@ -329,8 +331,8 @@ long random codes, the admin page does, and use player tokens).
 
 ### `POST /wallet`, `/wallet/spend`
 
-A player's virtual currency (docs/wallet.md): `{"app_id", "user_id"}` → `{"status": "ok", "balances": {"gems": 120}}`;
-`/wallet/spend` `{"app_id", "user_id", "currency", "amount", "reference", "note"}` → `{"status": "ok", "balance",
+A player's virtual currency (docs/wallet.md): `{"app_id", "store", "user_id"}` → `{"status": "ok", "balances": {"gems": 120}}`;
+`/wallet/spend` `{"app_id", "store", "user_id", "currency", "amount", "reference", "note"}` → `{"status": "ok", "balance",
 "repeated"}`, `409` `ERR_INSUFFICIENT_FUNDS` / `ERR_REFERENCE_USED`, `403 ERR_SIGNED_ONLY` for builds without player
 tokens. Products with `wallet` (`gems:100`) credit it when granted and take it back when refunded
 (`wallet_balance`, `wallet_tx`; `admin_wallet_adjust(game_key, user_id, currency, delta, note)` for support).

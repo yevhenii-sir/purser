@@ -29,22 +29,24 @@ All three scripts:
 
 ## `apps.csv`
 
-One build per line. A game on Google Play and the App Store is two lines with the same `game_key`.
+One build per line. A game on Google Play and the App Store is two lines with the same `game_key`. Both builds may have the same package name / bundle id.
 
 ```csv
-game_key,platform,store,app_id,account,delivery
+game_key,platform,store,store_app_id,account,delivery
 my-game,android,,com.example.mygame,my-studio,none
 my-game,ios,,com.example.mygame,my-studio,none
-my-game,amazon,,com.example.mygame.amazon,my-studio,none
+my-game,amazon,,com.example.mygame,my-studio,none
 other-game,android,,com.example.othergame,publisher,webhook
 ```
 
+The server keys each build `{store}:{store_app_id}`: the lines above are the builds `google:com.example.mygame`, `apple:com.example.mygame`, `amazon:com.example.mygame` and `google:com.example.othergame`. `products.csv`, the admin page and the other scripts name a build by this key.
+
 | Column | |
 |---|---|
-| `app_id` | required. The store's id where the store API needs it (Android package, iOS bundle id), any unique id otherwise (`com.example.mygame.amazon`). No `/` or `:` |
-| `platform` | required: `android`, `ios`, `amazon`, `steam` or `web` |
-| `store` | empty = the platform's default store. `web` builds name `stripe` or `xsolla` |
-| `game_key` | the app the build belongs to. Empty = the `app_id` |
+| `store_app_id` | required. The build's id in its store: the Android package, the iOS bundle id, the Steam App ID; any unique id in that store otherwise. At most 128 characters, no `/`, `:`, `?`, `&`, `#` or spaces |
+| `platform` | required: `android`, `ios`, `amazon`, `steam`, `huawei` or `web` |
+| `store` | empty = the platform's default store. `web` builds name `stripe`, `xsolla` or `telegram`; an `android` build may name `xsolla`, `samsung` or `meta` |
+| `game_key` | the app the build belongs to. Empty = the `store_app_id` |
 | `account` | the developer account whose keys the build uses. Empty = `default` |
 | `delivery` | `none`, `spacetimedb`, `spacetimedb_idc` or `webhook`. Required for a new build |
 
@@ -67,15 +69,15 @@ One product of one build per line. A game sold in two stores lists the product f
 
 ```csv
 app_id,product_id,kind,catalog_id
-com.example.mygame,gems_100,consumable,
-com.example.mygame,remove_ads,non_consumable,
-com.example.mygame,vip_month,subscription,
-com.example.mygame.ios,com.example.mygame.gems100,consumable,gems_100
+google:com.example.mygame,gems_100,consumable,
+google:com.example.mygame,remove_ads,non_consumable,
+google:com.example.mygame,vip_month,subscription,
+apple:com.example.mygame,com.example.mygame.gems100,consumable,gems_100
 ```
 
 | Column | |
 |---|---|
-| `app_id` | required: a build of `apps.csv` or one on the server |
+| `app_id` | required: the key `{store}:{store_app_id}` of a build of `apps.csv` or one on the server |
 | `product_id` | required: the store's id |
 | `kind` | `consumable`, `non_consumable` or `subscription`. Required for a new product unless `--from-stores` finds it in the store |
 | `catalog_id` | the game's id of the product, one per build |
@@ -91,7 +93,7 @@ Optional columns:
 
 - **Format.** `.csv` files have a header line. Blank lines and lines starting with `#` are skipped. Excel's "CSV UTF-8" works. A `.json` file is a list of objects with the same keys.
 - **An empty cell keeps what the server has.** A new row gets the default. So a file with only `app_id,product_id,price,currency` changes prices and nothing else. Running the same files twice changes nothing the second time.
-- **Checks first.** Every row is checked before anything is written: platforms, stores and kinds as the server accepts them, ids, prices, periods, duplicate builds, duplicate products, a catalog id used twice in a build, products of builds that exist nowhere, a new build without delivery. Errors name the file and line (`apps.csv:12: store apple is not available on android`), and nothing is written.
+- **Checks first.** Every row is checked before anything is written: platforms, stores and kinds as the server accepts them, ids, prices, periods, duplicate builds (the same `store_app_id` twice in one store), duplicate products, product `app_id`s that are not build keys, a catalog id used twice in a build, products of builds that exist nowhere, a new build without delivery. Errors name the file and line (`apps.csv:12: store apple is not available on android`), and nothing is written.
 - **Dry run.** `--dry-run` prints the diff and writes nothing. The diff shows new, changed (with each changed field) and unchanged rows. `-v` lists the unchanged rows too.
 - **Writing.** Builds are written one call each. Products go 100 per `admin_upsert_products` call (`--batch`). A call the server refuses is reported and the rest goes on. A refused batch is sent again one product at a time to find the row.
 - **Exit code.** It is 1 when anything failed. Fix the problem and run the same command again.
@@ -107,6 +109,7 @@ Optional columns:
 
 ## `setup_google.py` for many builds
 
+- Without `--package`, it sets up every Google Play build. `--package com.example.mygame` (repeatable) names one by its package name, the build `google:com.example.mygame`.
 - The module sets up at most 20 builds per call.
 - The script groups the Google Play builds by developer account and sends them 20 at a time. The key of each account goes to that account unless `--scope` names one.
 - All builds share the same Pub/Sub topic (`--topic`, default `play-billing`).

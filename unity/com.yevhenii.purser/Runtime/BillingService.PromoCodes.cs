@@ -20,7 +20,7 @@ namespace Purser
             if (!(m_Api is IPromoCodeApi api))
                 return new PurchaseResult(PurchaseStatus.Failed, null, message: "the billing API client does not redeem codes (IPromoCodeApi)");
 
-            var response = await api.RedeemAsync(new RedeemRequest { AppId = AppId, UserId = user, Code = code.Trim(), Client = m_Client }, ct);
+            var response = await api.RedeemAsync(new RedeemRequest { AppId = AppId, Store = BuildStore, UserId = user, Code = code.Trim(), Client = m_Client }, ct);
             var server = response.Value;
             var productId = m_Config.FindByStoreId(server?.ProductId)?.id ?? server?.ProductId;
             PurchaseResult result;

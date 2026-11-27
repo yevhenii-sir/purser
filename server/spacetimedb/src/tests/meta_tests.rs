@@ -2,14 +2,16 @@
 
 use super::*;
 
-pub(super) const META_APP: &str = "com.studio.game.quest";
+/// The build's key and its id in the store.
+pub(super) const META_APP: &str = "meta:com.studio.game.quest";
+pub(super) const META_ID: &str = "com.studio.game.quest";
 pub(super) const META_USER: &str = "5550001";
 
 /// A Quest build of the game (an Android build in the Meta Horizon Store) with its App ID and secret.
 pub(super) fn add_meta_build(w: &World) {
     w.as_admin(false);
     let app = json!({
-        "app_id": META_APP, "platform": "android", "store": "meta", "game_key": "game", "delivery": "spacetimedb",
+        "store_app_id": META_ID, "platform": "android", "store": "meta", "game_key": "game", "delivery": "spacetimedb",
         "spacetime_url": "https://maincloud.spacetimedb.com", "spacetime_db": "game-db",
         "grant_reducer": "billing_grant", "revoke_reducer": "billing_revoke", "allow_sandbox": false,
     });

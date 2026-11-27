@@ -202,7 +202,8 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
     OutEvent {
         tax_micros: tax_share(p, price_micros),
         kind: kind.to_string(),
-        app_id: p.app_id.clone(),
+        // Services know the app by its id in the store (bundle id, package name).
+        app_id: app.store_app_id.clone(),
         platform: app.platform.clone(),
         store: p.store.clone(),
         environment: p.environment.clone(),

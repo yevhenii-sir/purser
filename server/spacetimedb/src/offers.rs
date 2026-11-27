@@ -25,6 +25,9 @@ impl crate::client_guard::ClientRequest for AppleOfferRequest {
     fn app_id(&self) -> &str {
         &self.app_id
     }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
+    }
     fn user_id(&self) -> &str {
         &self.user_id
     }
@@ -101,7 +104,7 @@ pub fn sign_apple_offer(ctx: &mut impl Ctx, r: &AppleOfferRequest) -> (u16, Valu
     let context = format!("{}/{}/{}/{}/{timestamp_ms}", app.app_id, product.product_id, r.offer_id, r.user_id);
     let nonce = offers::derive_nonce(&p8, counter, &context);
     let offer = PromotionalOffer {
-        bundle_id: &app.app_id,
+        bundle_id: &app.store_app_id,
         key_id: &key_id,
         product_id: &product.product_id,
         offer_id: &r.offer_id,
@@ -120,7 +123,7 @@ pub fn sign_apple_offer(ctx: &mut impl Ctx, r: &AppleOfferRequest) -> (u16, Valu
     let signed_jws = issuer.and_then(|issuer_id| {
         let key = AppleApiKey { issuer_id, key_id: key_id.clone(), private_key_p8: p8.clone() };
         let tx_id = Some(r.transaction_id.as_str()).filter(|t| !t.is_empty());
-        offers::promotional_offer_v2_jws(&key, &app.app_id, &product.product_id, &r.offer_id, tx_id, &nonce, timestamp_ms / 1000)
+        offers::promotional_offer_v2_jws(&key, &app.store_app_id, &product.product_id, &r.offer_id, tx_id, &nonce, timestamp_ms / 1000)
             .map_err(|e| log::warn!("Promotional offer V2 for {}: {e}", app.app_id))
             .ok()
     });
@@ -130,7 +133,7 @@ pub fn sign_apple_offer(ctx: &mut impl Ctx, r: &AppleOfferRequest) -> (u16, Valu
         200,
         json!({
             "status": "success",
-            "app_id": app.app_id,
+            "app_id": app.store_app_id,
             "product_id": product.product_id,
             "offer_id": r.offer_id,
             "key_id": key_id,

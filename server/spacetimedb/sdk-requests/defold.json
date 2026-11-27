@@ -75,6 +75,7 @@
             "purchase_token": "tok-old"
           }
         ],
+        "store": "google",
         "user_id": "player-1"
       }
     },
@@ -89,6 +90,7 @@
           "os": "Android 15",
           "sdk_version": "defold/0.14.0"
         },
+        "store": "google",
         "user_id": "player-1"
       }
     },
@@ -103,6 +105,7 @@
           "sdk_version": "defold/0.14.0"
         },
         "placement": "store",
+        "store": "google",
         "user_id": "player-1"
       }
     },
@@ -112,6 +115,7 @@
         "app_id": "com.studio.game",
         "event": "view",
         "placement": "store",
+        "store": "google",
         "test_id": "test-1",
         "user_id": "player-1",
         "variant_id": "var-a"
@@ -133,6 +137,7 @@
           "os": "Android 15",
           "sdk_version": "defold/0.14.0"
         },
+        "store": "google",
         "user_id": "player-1"
       }
     },
@@ -147,6 +152,7 @@
           "sdk_version": "defold/0.14.0"
         },
         "code": "SUMMER-2026",
+        "store": "google",
         "user_id": "player-1"
       }
     },
@@ -160,6 +166,7 @@
           "os": "Android 15",
           "sdk_version": "defold/0.14.0"
         },
+        "store": "google",
         "user_id": "player-1"
       }
     },
@@ -176,6 +183,7 @@
         },
         "currency": "gems",
         "reference": "sword-1",
+        "store": "google",
         "user_id": "player-1"
       }
     }

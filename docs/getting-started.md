@@ -99,7 +99,7 @@ Run `python seed.py --init` in `server/` of a clone of the repository. It needs 
     The same configuration can live in JSON files. `server/seed.py` uploads them and also runs the setup check:
 
     1. Copy `server/seed.example` to `server/secrets` (git-ignored).
-    2. Fill it in.
+    2. Fill it in. A build in `apps.json` has `store_app_id`, its id in the store (the package name or bundle id; Android and iOS builds may share it), and `platform`. The server keys it `{store}:{store_app_id}`, e.g. `google:com.example.mygame`, and the other files name the build by that key (`app_id` of `products.json` and `integrations.json`, the `scope` of its own keys in `credentials.json`).
     3. Run `python seed.py --check`.
 
     `python seed.py --export backup` writes the configuration of a database to files in the same format. Keep them in git, or use them to copy the configuration to another database. The export covers apps, products, integrations, paywalls, placements, alerts and settings. For keys it writes the names of the keys that are set, never their values.

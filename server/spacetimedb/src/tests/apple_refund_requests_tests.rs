@@ -11,7 +11,7 @@ pub(super) fn apple_sandbox_world() -> World {
         tx.db.game_app().app_id().update(app);
     });
     let payload = json!({
-        "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_APP,
+        "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_ID,
         "productId": "gems", "type": "Consumable", "environment": "Sandbox",
     });
     let jws = format!(
@@ -75,10 +75,10 @@ pub(super) fn refund_request(w: &World) -> Outcome {
 /// An App Store notification for the iOS build's transaction, its JWS made by `sign`.
 pub(super) fn apple_notification(w: &World, kind: &str, sign: fn(&str) -> String) -> Outcome {
     let jws = |v: Value| sign(&v.to_string());
-    let tx = jws(json!({ "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_APP }));
+    let tx = jws(json!({ "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_ID }));
     let payload = jws(json!({
         "notificationType": kind, "notificationUUID": "n1",
-        "data": { "bundleId": IOS_APP, "environment": "Sandbox", "signedTransactionInfo": tx },
+        "data": { "bundleId": IOS_ID, "environment": "Sandbox", "signedTransactionInfo": tx },
     }));
     let req = http::Request::builder()
         .method("POST")
@@ -190,7 +190,7 @@ fn refund_mode_is_only_for_app_store_builds() {
     let w = World::new();
     w.as_admin(false);
     let upsert = |app_id: &str, platform: &str, mode: &str| {
-        let v = json!({ "app_id": app_id, "platform": platform, "delivery": "none", "apple_refund_mode": mode });
+        let v = json!({ "store_app_id": app_id, "platform": platform, "delivery": "none", "apple_refund_mode": mode });
         w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_game_app(ctx, v.to_string()))
     };
     assert!(upsert("com.studio.ios", "ios", "prefer").is_ok());

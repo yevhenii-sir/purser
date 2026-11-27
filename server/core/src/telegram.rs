@@ -40,7 +40,7 @@ pub const STORE: StoreInfo = StoreInfo {
     implemented: true,
     verification: Verification::Webhook,
     notifications: true,
-    notify_query: "app={app_id}",
+    notify_query: "app={store_app_id}",
     notify_secret: None,
     notify_label: "Bot webhook URL (setWebhook with secret_token = telegram_webhook_secret; the Setup tab sets it)",
     secrets: &[
@@ -57,9 +57,8 @@ pub const STORE: StoreInfo = StoreInfo {
     refunds: "refunded_payment updates of the bot",
     reports_price: true,
     binding: Binding::None,
-    app_id_label: "App id (any unique id, e.g. package.telegram)",
-    app_id_placeholder: "com.example.mygame.telegram",
-    app_id_is_store_id: false,
+    store_app_id_label: "App id (any unique id of the Telegram build)",
+    store_app_id_placeholder: "com.example.mygame",
     product_import: false,
     product_create: &[],
     // No look-up API: a period that was not renewed ends when its time is up.

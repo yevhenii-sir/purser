@@ -48,7 +48,7 @@ fn overview_counts_the_ledger_in_one_pass() {
 fn purchase_list_filters_before_the_limit() {
     let w = World::new();
     w.as_admin(false);
-    const OTHER: &str = "com.studio.other";
+    const OTHER: &str = "google:com.studio.other";
     // 40 recent rows of another app, then the rows we look for, older than all of them.
     for i in 0..40 {
         w.put_purchase(&format!("google:other-{i}"), OTHER, status::COMPLETED, i);
@@ -270,7 +270,7 @@ fn health_is_rewritten_at_most_once_a_minute_unless_the_verdict_changes() {
 #[test]
 fn rejected_notifications_are_written_at_most_once_a_minute() {
     let w = World::new();
-    let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
+    let test = json!({ "packageName": PACKAGE, "testNotification": { "version": "1.0" } });
     assert_eq!(w.google_push("", test.clone()).http, 401);
     w.advance_clock(10);
     assert_eq!(w.google_push("", test.clone()).http, 401);

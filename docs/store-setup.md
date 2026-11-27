@@ -190,7 +190,7 @@ The server checks receipts with Amazon's [Receipt Verification Service](https://
 
 ### The build
 
-Add a build with platform **Amazon** (wizard → Add a build). Its app id only has to be unique on the server, because RVS receipts carry no package name. When the Google Play build already uses the package name, use e.g. `com.example.mygame.amazon`. Use the same value for the `amazon` build in the Unity `BillingConfig`.
+Add a build with platform **Amazon** (wizard → Add a build). Its app id is the package name, the same as the Google Play build's: a build is its store and its id, so the two do not collide. RVS receipts carry no package name, so any id unique among Amazon builds works too; use the same value for the `amazon` build in the Unity `BillingConfig` when it is not the package name.
 
 Products use the Amazon SKUs. For subscriptions, use the term SKU (the one the client buys) or the parent SKU.
 
@@ -233,7 +233,7 @@ Huawei devices without Google services buy through HMS In-App Purchases. The ser
 
 ### The build
 
-Add a build with platform **Huawei** (wizard → Add a build). Its app id only has to be unique on the server. When the Google Play build already uses the package name, use e.g. `com.example.mygame.huawei`. Use the same value for the `huawei` build in the Unity `BillingConfig`.
+Add a build with platform **Huawei** (wizard → Add a build). Its app id is the package name, the same as the Google Play build's is fine (a build is its store and its id).
 
 Products use the AppGallery product ids. Huawei reports the price paid (×100 in the buyer's currency) and the buyer's country.
 
@@ -284,12 +284,7 @@ Galaxy devices buy through Samsung In-App Purchase. The server:
 
 ### The build
 
-Add an **Android** build with store **Samsung Galaxy Store** (wizard → Add a build). Its app id only has to be unique on the server. When the Google Play build already uses the package name:
-
-- use e.g. `com.example.mygame.samsung` as the app id;
-- set `samsung_package_name` to the package name, because Samsung's APIs and receipts name the package.
-
-Use the same app id for the `samsung` build in the Unity `BillingConfig`. Products use the Seller Portal item ids. Samsung reports the price paid (with tax) and the buyer's country.
+Add an **Android** build with store **Samsung Galaxy Store** (wizard → Add a build). Its app id is the package name, the same as the Google Play build's is fine (a build is its store and its id): Samsung's APIs and receipts name the package. Products use the Seller Portal item ids. Samsung reports the price paid (with tax) and the buyer's country.
 
 ### Keys
 
@@ -329,7 +324,7 @@ This section covers the Meta Horizon Store: add-ons (consumables and durables) a
 
 ### The build
 
-Add a build with platform **Android** and store **Meta Horizon Store** (wizard → Add a build). Its app id only has to be unique on the server. When the Google Play build already uses the package name, use e.g. `com.example.mygame.quest`. Use the same value for the `meta` build in the Unity `BillingConfig`.
+Add a build with platform **Android** and store **Meta Horizon Store** (wizard → Add a build). Its app id only has to be unique among Meta builds: the package name, the same as the Google Play build's, is fine (a build is its store and its id).
 
 Products use the add-on SKUs of the Developer Dashboard. Meta's server APIs report no price for add-ons. Give products a price, or let the client send the localized one (the Unity package does). A subscription period counts the price of its current term.
 
@@ -723,7 +718,7 @@ Use a `sk_test_` key, Sandbox purchases on, and a test card (`4242 4242 4242 424
 
 Stripe reports the price paid, in the currency the customer paid. Zero-decimal currencies like JPY are handled.
 
-Stripe's processing fee is not a store commission. Set the proceeds estimate for Stripe builds with the per-build commission (Revenue → Store fee in the admin page). For example, `admin_set_setting("store_commission_by_app", "{\"com.example.mygame.web\": 3}")` (≈ card fee) or `0`.
+Stripe's processing fee is not a store commission. Set the proceeds estimate for Stripe builds with the per-build commission (Revenue → Store fee in the admin page). For example, `admin_set_setting("store_commission_by_app", "{\"stripe:com.example.mygame\": 3}")` (keys are build keys, `{store}:{app id}`) (≈ card fee) or `0`.
 
 Taxes collected by Stripe Tax are part of the amount.
 

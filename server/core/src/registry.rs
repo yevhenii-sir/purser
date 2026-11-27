@@ -117,7 +117,8 @@ pub struct StoreInfo {
     pub verification: Verification,
     /// The store calls `/notify/<id>` (server notifications or webhooks).
     pub notifications: bool,
-    /// Query of the notification URL; `{app_id}` is replaced with the build's app id.
+    /// Query of the notification URL; `{store_app_id}` is replaced with the build's id in the store
+    /// (the route names the store, so the two make the build's key).
     pub notify_query: &'static str,
     /// Secret carried as `?secret=` in the notification URL (shown when set or not optional).
     pub notify_secret: Option<&'static str>,
@@ -130,13 +131,9 @@ pub struct StoreInfo {
     /// The store reports the price paid; otherwise revenue uses the client's or the catalog price.
     pub reports_price: bool,
     pub binding: Binding,
-    /// What `app_id` means for this store, e.g. "Android package".
-    pub app_id_label: &'static str,
-    pub app_id_placeholder: &'static str,
-    /// `app_id` must equal the store's own app identifier (it is part of store API calls / checked
-    /// against the receipt). False: any unique id, e.g. `com.example.mygame.amazon` when the
-    /// Google Play build already uses the package name.
-    pub app_id_is_store_id: bool,
+    /// What a build's `store_app_id` (its id in the store) is for this store, e.g. "Android package".
+    pub store_app_id_label: &'static str,
+    pub store_app_id_placeholder: &'static str,
     /// `admin_list_store_products` can import the catalog from the store.
     pub product_import: bool,
     /// Product kinds the admin page can create in the store (`admin_store_create`); empty: none.
@@ -165,11 +162,11 @@ impl StoreInfo {
     }
 
     /// Full notification URL for a build; `secret_set`: the `notify_secret` is configured.
-    pub fn notify_url(&self, base: &str, app_id: &str, secret_set: bool) -> Option<String> {
+    pub fn notify_url(&self, base: &str, store_app_id: &str, secret_set: bool) -> Option<String> {
         let route = self.notify_route()?;
         let mut params: Vec<String> = Vec::new();
         if !self.notify_query.is_empty() {
-            params.push(self.notify_query.replace("{app_id}", app_id));
+            params.push(self.notify_query.replace("{store_app_id}", store_app_id));
         }
         if let Some(name) = self.notify_secret {
             let optional = self.secret(name).is_some_and(|s| s.need == Need::Optional);
@@ -212,9 +209,8 @@ const fn planned(
         refunds: "",
         reports_price: false,
         binding: Binding::None,
-        app_id_label: "App id",
-        app_id_placeholder: "",
-        app_id_is_store_id: false,
+        store_app_id_label: "App id",
+        store_app_id_placeholder: "",
         product_import: false,
         product_create: &[],
         polls_subscriptions: false,
@@ -245,9 +241,8 @@ pub const GOOGLE: StoreInfo = StoreInfo {
     refunds: "Real-time developer notifications (voided purchases)",
     reports_price: false,
     binding: Binding::GoogleAccountId,
-    app_id_label: "Android package",
-    app_id_placeholder: "com.example.mygame",
-    app_id_is_store_id: true,
+    store_app_id_label: "Android package",
+    store_app_id_placeholder: "com.example.mygame",
     product_import: true,
     product_create: &[kind::CONSUMABLE, kind::NON_CONSUMABLE, kind::SUBSCRIPTION],
     polls_subscriptions: true,
@@ -300,9 +295,8 @@ pub const APPLE: StoreInfo = StoreInfo {
     refunds: "App Store Server Notifications V2 (REFUND, REVOKE, EXPIRED)",
     reports_price: true,
     binding: Binding::AppleAccountToken,
-    app_id_label: "iOS bundle id",
-    app_id_placeholder: "com.example.mygame",
-    app_id_is_store_id: true,
+    store_app_id_label: "iOS bundle id",
+    store_app_id_placeholder: "com.example.mygame",
     product_import: true,
     product_create: &[kind::CONSUMABLE, kind::NON_CONSUMABLE, kind::SUBSCRIPTION],
     polls_subscriptions: true,
@@ -402,6 +396,13 @@ pub fn build_store(platform_id: &str, store_column: &str) -> Result<&'static Sto
 }
 
 /// Like [`build_store`], for creating or changing a build: the store must also be implemented.
+/// The key of a build (`game_app.app_id`): its store and its id in the store, so builds of
+/// several stores may share an id (`google:com.example.game`, `apple:com.example.game`). Clients
+/// and stores name a build by its id in the store and the store (the route's, or `store`).
+pub fn build_key(store_id: &str, store_app_id: &str) -> String {
+    format!("{store_id}:{store_app_id}")
+}
+
 pub fn usable_build_store(platform_id: &str, store_column: &str) -> Result<&'static StoreInfo, String> {
     let s = build_store(platform_id, store_column)?;
     if !s.implemented {
@@ -486,7 +487,7 @@ mod tests {
                 assert!(s.secret(name).is_some(), "{}: notify_secret {name} is not in secrets", s.id);
             }
             if s.implemented && s.verification != Verification::Manual {
-                assert!(!s.docs.is_empty() && !s.app_id_placeholder.is_empty(), "{}", s.id);
+                assert!(!s.docs.is_empty() && !s.store_app_id_placeholder.is_empty(), "{}", s.id);
             }
         }
     }

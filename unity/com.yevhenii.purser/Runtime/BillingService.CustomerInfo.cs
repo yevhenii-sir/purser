@@ -60,6 +60,7 @@ namespace Purser
                 var request = new RestoreRequest
                 {
                     AppId = batch.AppId,
+                    Store = batch.Store,
                     UserId = user,
                     AppInstanceId = appInstanceId,
                     Attribution = attribution,

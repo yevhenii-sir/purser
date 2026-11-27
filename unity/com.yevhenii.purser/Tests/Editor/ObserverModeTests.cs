@@ -274,7 +274,9 @@ namespace Purser.Tests
 
                 Assert.AreEqual(2, h.Api.RestoreRequests.Count);
                 Assert.IsTrue(h.Api.RestoreRequests.All(r => r.ClientFinished));
-                Assert.AreEqual("com.test.game.ios", h.Api.RestoreRequests.Single(r => r.Purchases[0].OrderId == "2000000001").AppId);
+                var apple = h.Api.RestoreRequests.Single(r => r.Purchases[0].OrderId == "2000000001");
+                Assert.AreEqual(("com.test.game.ios", BillingStores.Apple), (apple.AppId, apple.Store));
+                Assert.AreEqual(BillingStores.Google, h.Api.RestoreRequests.Single(r => r.Purchases[0].PurchaseToken == "tok-1").Store);
                 Assert.IsNotNull(info);
                 Assert.IsTrue(h.Service.HasAccess("no_ads"));
             }

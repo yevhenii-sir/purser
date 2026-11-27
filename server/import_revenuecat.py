@@ -9,9 +9,12 @@ RevenueCat's Scheduled Data Exports deliver the transactions feed as gzip-compre
     python import_revenuecat.py --database <your-billing-db> --csv transactions.csv.gz \\
         --app apple=com.example.mygame --app google=com.example.mygame --dry-run
 
-Mapping: `store` app_store → apple, play_store → google, stripe → stripe, promotional → manual
-(`--app <store>=<app_id>` names the build each store's rows belong to; rows of stores without one
-are counted and skipped). Products must exist in the build (`--skip-unknown` skips rows of other
+Mapping: `store` app_store → apple, play_store → google, stripe → stripe, promotional → manual.
+`--app <store>=<id>` names the build each store's rows belong to: for apple, google and stripe the
+build's id in that store (bundle id, package name, the Stripe build's id), so `apple=com.example.mygame`
+is the build apple:com.example.mygame; promotional grants (`manual`) go to a build of any store,
+named by its key (`manual=google:com.example.mygame`). Rows of stores without one are counted and
+skipped. Products must exist in the build (`--skip-unknown` skips rows of other
 products). Imported rows are final: nothing is delivered to the game again and no integration
 event is sent. Google rows have no purchase token in the export, so store notifications find
 them only after the player's client verifies or restores the purchase once.
@@ -24,7 +27,7 @@ import io
 import json
 import sys
 
-from stdb import StdbError, call_raw, select, server_url, sql_str, token
+from stdb import StdbError, build_key, call_raw, select, server_url, sql_str, token
 
 STORES = {"app_store": "apple", "play_store": "google", "stripe": "stripe", "promotional": "manual"}
 REQUIRED = [
@@ -38,6 +41,8 @@ OPTIONAL = [
     "country", "ownership_type", "updated_at", "effective_end_time",
 ]
 BATCH = 500
+# RevenueCat's store of a row -> the platform of its Purser build (`manual`: any build, named by key).
+PLATFORM_OF = {"apple": "ios", "google": "android", "stripe": "web"}
 
 
 def open_csv(path):
@@ -143,25 +148,41 @@ def map_row(r, app_id, kinds, now_micros, user_column="rc_original_app_user_id")
     }
 
 
+def parse_apps(items):
+    """`--app` values -> {store: build key}; exits on a bad one."""
+    apps = {}
+    for item in items:
+        store, _, value = item.partition("=")
+        if store not in STORES.values() or not value:
+            sys.exit(f"--app {item}: use <{'|'.join(STORES.values())}>=<id>")
+        if store == "manual":
+            # Promotional grants belong to no store: the build is named by its key.
+            if ":" not in value:
+                sys.exit(f"--app {item}: name the build of promotional grants by its key, e.g. manual=google:com.example.mygame")
+            apps[store] = value
+            continue
+        try:
+            apps[store] = build_key(PLATFORM_OF[store], value, store)
+        except ValueError as e:
+            sys.exit(f"--app {item}: {e}")
+    return apps
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--server", default="maincloud", help="CLI server nickname or URL")
     p.add_argument("--database", required=True)
     p.add_argument("--csv", required=True, help="RevenueCat transactions export (.csv or .csv.gz)")
-    p.add_argument("--app", action="append", default=[], metavar="STORE=APP_ID",
-                   help="build of a store's rows: apple=…, google=…, stripe=…, manual=… (repeat)")
+    p.add_argument("--app", action="append", default=[], metavar="STORE=ID",
+                   help="build of a store's rows: apple=<bundle id>, google=<package>, stripe=<id>, "
+                        "manual=<build key> (repeat)")
     p.add_argument("--user-column", default="rc_original_app_user_id",
                    help="column with the player id the game uses (or rc_last_seen_app_user_id_alias)")
     p.add_argument("--skip-unknown", action="store_true", help="skip rows of products the build does not have")
     p.add_argument("--dry-run", action="store_true", help="map and count, import nothing")
     a = p.parse_args()
 
-    apps = {}
-    for item in a.app:
-        store, _, app_id = item.partition("=")
-        if store not in STORES.values() or not app_id:
-            sys.exit(f"--app {item}: use <{'|'.join(STORES.values())}>=<app_id>")
-        apps[store] = app_id
+    apps = parse_apps(a.app)
     if not apps:
         sys.exit("name at least one build: --app apple=com.example.mygame")
 

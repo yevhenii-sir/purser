@@ -35,9 +35,8 @@ export interface StoreInfo {
   refunds: string
   reports_price: boolean
   binding: "google_account_id" | "apple_account_token" | "none"
-  app_id_label: string
-  app_id_placeholder: string
-  app_id_is_store_id: boolean
+  store_app_id_label: string
+  store_app_id_placeholder: string
   product_import: boolean
   /** Product kinds the admin page can create in the store (`admin_store_create`). */
   product_create: string[]
@@ -109,4 +108,9 @@ export const PLATFORM_ICON: Record<string, LucideIcon> = {
   amazon: ShoppingBagIcon,
   steam: Gamepad2Icon,
   web: GlobeIcon,
+}
+
+/** A build's key (`game_app.app_id`): its store and its id in the store (`purser_core::registry::build_key`). */
+export function buildKey(store: string, storeAppId: string): string {
+  return `${store}:${storeAppId}`
 }

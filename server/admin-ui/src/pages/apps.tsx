@@ -167,7 +167,7 @@ export function AppsPage({ go }: PageProps) {
                         {r.g.apps.map((a) => {
                           const Icon = PLATFORM_ICON[a.platform] || SmartphoneIcon
                           return (
-                            <span key={a.app_id} title={a.app_id} className={cn("inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs", !a.enabled && "opacity-50")}>
+                            <span key={a.app_id} title={a.store_app_id} className={cn("inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs", !a.enabled && "opacity-50")}>
                               <Icon className="size-3 text-muted-foreground" />
                               {buildLabel(a)}
                             </span>
@@ -176,7 +176,7 @@ export function AppsPage({ go }: PageProps) {
                       </span>
                     ),
                   },
-                  { title: "Bundle ids", hidden: true, size: 280, cell: (r) => <span className="flex flex-col">{r.g.apps.map((a) => <Mono key={a.app_id} className="truncate">{a.app_id}</Mono>)}</span> },
+                  { title: "Bundle ids", hidden: true, size: 280, cell: (r) => <span className="flex flex-col">{r.g.apps.map((a) => <Mono key={a.app_id} className="truncate">{a.store_app_id}</Mono>)}</span> },
                   {
                     title: "Setup",
                     size: 120,
@@ -213,7 +213,7 @@ export function AppsPage({ go }: PageProps) {
                     {g.apps.map((a) => (
                       <div key={a.app_id} className="flex items-center gap-2 text-sm">
                         <span className="w-20 shrink-0 truncate text-muted-foreground">{buildLabel(a)}</span>
-                        <Mono className="truncate">{a.app_id}</Mono>
+                        <Mono className="truncate">{a.store_app_id}</Mono>
                         {!a.enabled && <Tone tone="bad">disabled</Tone>}
                       </div>
                     ))}

@@ -78,7 +78,7 @@ namespace Purser.Tests
             var paywall = Sync.Run(m_Service.GetPaywallAsync("main_paywall"));
 
             var request = m_Api.PaywallRequests.Single();
-            Assert.AreEqual("com.example.mygame", request.AppId);
+            Assert.AreEqual(("com.example.mygame", BillingStores.Google), (request.AppId, request.Store));
             Assert.AreEqual("main_paywall", request.Placement);
             Assert.AreEqual(User, request.UserId);
 
@@ -210,8 +210,8 @@ namespace Purser.Tests
 
             Assert.IsTrue(Sync.Run(m_Service.LogPaywallShownAsync(paywall)));
             var ev = m_Api.PaywallEvents.Single();
-            Assert.AreEqual(("com.example.mygame", "main_paywall", "b", "main-ab-1", User, "view"),
-                (ev.AppId, ev.Placement, ev.VariantId, ev.TestId, ev.UserId, ev.Event));
+            Assert.AreEqual(("com.example.mygame", BillingStores.Google, "main_paywall", "b", "main-ab-1", User, "view"),
+                (ev.AppId, ev.Store, ev.Placement, ev.VariantId, ev.TestId, ev.UserId, ev.Event));
 
             m_Api.PaywallEventResult = new ApiResult<StatusResponse>(0, null, "no network");
             Assert.IsFalse(Sync.Run(m_Service.LogPaywallShownAsync(paywall)));
@@ -234,16 +234,16 @@ namespace Purser.Tests
             var transport = new FakeTransport { Next = new HttpResponse(200, Answer) };
             var api = new BillingApiClient("https://billing.example.com/route/", 10, transport);
 
-            var result = Sync.Run(api.PaywallAsync(new PaywallRequest { AppId = "com.example.mygame", Placement = "main_paywall" }));
+            var result = Sync.Run(api.PaywallAsync(new PaywallRequest { AppId = "com.example.mygame", Store = "google", Placement = "main_paywall" }));
             Assert.AreEqual("https://billing.example.com/route/paywall", transport.Requests[0].Url);
-            Assert.AreEqual("{\"app_id\":\"com.example.mygame\",\"placement\":\"main_paywall\"}", transport.Requests[0].Body);
+            Assert.AreEqual("{\"app_id\":\"com.example.mygame\",\"store\":\"google\",\"placement\":\"main_paywall\"}", transport.Requests[0].Body);
             Assert.AreEqual("main-ab-1", result.Value.TestId);
             Assert.AreEqual(3, result.Value.Products.Count);
 
             transport.Next = new HttpResponse(200, "{\"status\":\"ok\"}");
-            Sync.Run(api.PaywallEventAsync(new PaywallEventRequest { AppId = "a", Placement = "p", VariantId = "b" }));
+            Sync.Run(api.PaywallEventAsync(new PaywallEventRequest { AppId = "a", Store = "apple", Placement = "p", VariantId = "b" }));
             Assert.AreEqual("https://billing.example.com/route/paywall/event", transport.Requests[1].Url);
-            Assert.AreEqual("{\"app_id\":\"a\",\"placement\":\"p\",\"variant_id\":\"b\",\"event\":\"view\"}", transport.Requests[1].Body);
+            Assert.AreEqual("{\"app_id\":\"a\",\"store\":\"apple\",\"placement\":\"p\",\"variant_id\":\"b\",\"event\":\"view\"}", transport.Requests[1].Body);
         }
     }
 }

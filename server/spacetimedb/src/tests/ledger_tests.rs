@@ -172,7 +172,7 @@ fn refund_during_a_pending_transfer_is_revoked_from_the_previous_owner() {
     w.fake.borrow_mut().failing_reducer.clear();
 
     let voided = json!({
-        "packageName": APP,
+        "packageName": PACKAGE,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 1 },
     });
     assert_eq!(w.google_notification(voided).http, 200);
@@ -250,7 +250,7 @@ fn voided_purchase_is_revoked_in_the_game() {
     let w = World::new();
     w.verify("player-1", "gems");
     let voided = json!({
-        "packageName": APP,
+        "packageName": PACKAGE,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 2 },
     });
 
@@ -486,7 +486,7 @@ fn player_profile_shows_the_device_attributes_and_when_the_player_was_seen() {
 
     // Attributes: set, change, remove; invalid keys are refused.
     let set = |attrs: Value| {
-        let r = AttributesRequest { app_id: APP.into(), user_id: "player-1".into(), attributes: attrs.as_object().unwrap().clone(), client: Default::default() };
+        let r = AttributesRequest { app_id: APP.into(), store: String::new(), user_id: "player-1".into(), attributes: attrs.as_object().unwrap().clone(), client: Default::default() };
         set_attributes(&mut w.ctx(), &r).unwrap_or_else(|o| o)
     };
     assert_eq!(set(json!({ "clan": "wolves", "level": 7 })).http, 200);
@@ -532,4 +532,41 @@ fn app_display_name_is_set_and_cleared() {
     assert!(set(&game_key, &"x".repeat(81)).unwrap_err().contains("ERR_BAD_NAME"));
     assert_eq!(set(&game_key, " "), Ok(()));
     assert_eq!(name(), None, "an empty name shows the key again");
+}
+
+#[test]
+fn google_play_and_app_store_builds_with_the_same_id_coexist() {
+    use crate::client_guard::{name_build, StoreOf};
+    let w = World::new();
+    w.write(|tx| {
+        tx.db.game_app().app_id().delete(APP.to_string());
+    });
+    w.as_admin(false);
+    for (platform, store) in [("android", store::GOOGLE), ("ios", store::APPLE)] {
+        let build = json!({ "game_key": "game", "store_app_id": PACKAGE, "platform": platform, "store": store, "delivery": "none" });
+        w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_game_app(ctx, build.to_string())).unwrap();
+    }
+    let builds = w.read(|tx| {
+        let mut b: Vec<(String, String, String)> =
+            tx.db.game_app().iter().map(|a| (a.app_id, a.store_app_id, a.platform)).collect();
+        b.sort();
+        b
+    });
+    assert_eq!(
+        builds,
+        [
+            ("apple:com.studio.game".to_string(), PACKAGE.to_string(), "ios".to_string()),
+            ("google:com.studio.game".to_string(), PACKAGE.to_string(), "android".to_string()),
+        ]
+    );
+
+    // A client request names the build by its id in the store and its store.
+    let named = |store: &str| {
+        let mut r = EntitlementsRequest { app_id: PACKAGE.into(), store: store.into(), user_id: "player-1".into(), client: Default::default() };
+        name_build(&mut r, StoreOf::Body).map_err(|a| a.0)?;
+        Ok::<_, u16>(w.read(|tx| tx.db.game_app().app_id().find(r.app_id.clone())).map(|a| (a.app_id, a.platform)))
+    };
+    assert_eq!(named("apple"), Ok(Some(("apple:com.studio.game".to_string(), "ios".to_string()))));
+    assert_eq!(named("google"), Ok(Some(("google:com.studio.game".to_string(), "android".to_string()))));
+    assert_eq!(named(""), Err(400), "the store is required");
 }

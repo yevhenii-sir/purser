@@ -15,7 +15,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-const APP: &str = "com.studio.game";
+/// The Google Play build's key (`{store}:{store_app_id}`) and its package, its id in the store.
+const APP: &str = "google:com.studio.game";
+const PACKAGE: &str = "com.studio.game";
 const NOW_MICROS: i64 = 1_790_000_000_000_000;
 const TOKEN: &str = "tok-1";
 const ORDER: &str = "GPA.1111-2222-3333-44444";
@@ -149,6 +151,7 @@ impl World {
         self.write(|tx| {
             tx.db.game_app().insert(GameApp {
                 app_id: APP.into(),
+                store_app_id: PACKAGE.into(),
                 platform: purser_core::registry::platform::ANDROID.into(),
                 game_key: "game".into(),
                 account: config::DEFAULT_SCOPE.into(),
@@ -275,7 +278,7 @@ impl World {
     }
 
     fn entitlements(&self, user: &str) -> Value {
-        let r = EntitlementsRequest { app_id: APP.into(), user_id: user.into(), client: Default::default() };
+        let r = EntitlementsRequest { app_id: APP.into(), store: String::new(), user_id: user.into(), client: Default::default() };
         get_entitlements(&mut self.ctx(), &r).unwrap_or_else(|o| o).body
     }
 
@@ -350,8 +353,10 @@ impl World {
 
     /// An RTDN push of the build's subscription: signed by "Google" as the build's service account.
     fn google_notification(&self, notification: Value) -> Outcome {
-        let package = notification["packageName"].as_str().unwrap_or(APP).to_string();
-        let token = self.push_token(|c| c["aud"] = json!(purser_core::google_oidc::audience(&package)));
+        // The audience is the build's key, `google:<packageName>`.
+        let package = notification["packageName"].as_str().unwrap_or(PACKAGE).to_string();
+        let key = purser_core::registry::build_key(purser_core::model::store::GOOGLE, &package);
+        let token = self.push_token(|c| c["aud"] = json!(purser_core::google_oidc::audience(&key)));
         self.google_push(&format!("Bearer {token}"), notification)
     }
 

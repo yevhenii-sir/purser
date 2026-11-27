@@ -33,8 +33,13 @@ type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 export interface PurserOptions {
   /** The billing server: `https://<host>/v1/database/<db>/route`. */
   baseUrl: string;
-  /** This build's `app_id` (for the web: the Stripe, Xsolla or Telegram build). */
+  /** This build's `app_id`: the app's id in its store (package name, bundle id; for the web: the id of the Stripe,
+   * Xsolla or Telegram build). Builds in different stores may share it. */
   appId: string;
+  /** The store of this build: `google`, `apple`, `amazon`, `huawei`, `samsung`, `meta`, `steam`, `stripe`, `xsolla` or
+   * `telegram`. Sent with `app_id` to the routes whose path names no store (`/entitlements`, `/restore`, `/paywall`,
+   * `/attributes`, `/redeem`, `/wallet`): the server finds the build by both. */
+  store: string;
   /** The player; set later with `setUserId`. Requests that need a player fail without one. */
   userId?: string;
   /** `app_version`, `device`, `os` shown on the admin page (device and os default to what the browser says). */
@@ -110,6 +115,7 @@ interface RawResponse {
 export class PurserClient {
   private readonly baseUrl: string;
   private readonly appId: string;
+  private readonly store: string;
   private userId: string;
   private readonly client: ClientInfo;
   private readonly options: PurserOptions;
@@ -120,9 +126,11 @@ export class PurserClient {
   constructor(options: PurserOptions) {
     if (!options.baseUrl) throw new Error("Purser: baseUrl is empty");
     if (!options.appId) throw new Error("Purser: appId is empty");
+    if (!options.store) throw new Error("Purser: store is empty");
     this.options = options;
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.appId = options.appId;
+    this.store = options.store;
     this.userId = options.userId ?? "";
     this.client = { ...defaultClientInfo(), ...options.client, sdk_version: `typescript/${SDK_VERSION}` };
     const f = options.fetch ?? (globalThis.fetch as FetchLike | undefined);
@@ -213,6 +221,7 @@ export class PurserClient {
     }
     const body = {
       app_id: this.appId,
+      store: this.store,
       user_id: this.userId,
       ...compact({
         store_user_id: opts.storeUserId,
@@ -231,7 +240,8 @@ export class PurserClient {
 
   /** `POST /entitlements`: access levels, subscriptions and non-consumables of the player. */
   entitlements(): Promise<ApiResult<CustomerInfo>> {
-    return this.post<CustomerInfo>("/entitlements", { app_id: this.appId, user_id: this.userId, client: this.client }, { signed: true });
+    const body = { app_id: this.appId, store: this.store, user_id: this.userId, client: this.client };
+    return this.post<CustomerInfo>("/entitlements", body, { signed: true });
   }
 
   /** Whether the customer info gives `access` (e.g. `premium`) at `nowMs` (default: the server's time of the answer). */
@@ -247,7 +257,7 @@ export class PurserClient {
 
   /** `POST /paywall`: what to show at a placement (the player's A/B test variant when a player is set). */
   paywall(placement: string): Promise<ApiResult<PaywallResponse>> {
-    const body = { app_id: this.appId, placement, ...compact({ user_id: this.userId }), client: this.client };
+    const body = { app_id: this.appId, store: this.store, placement, ...compact({ user_id: this.userId }), client: this.client };
     return this.post<PaywallResponse>("/paywall", body);
   }
 
@@ -255,6 +265,7 @@ export class PurserClient {
   paywallEvent(paywall: PaywallAttribution & { placement: string; variant_id: string }, event = "view"): Promise<ApiResult<StatusResponse>> {
     const body = {
       app_id: this.appId,
+      store: this.store,
       placement: paywall.placement,
       variant_id: paywall.variant_id,
       ...compact({ test_id: paywall.test_id, user_id: this.userId }),
@@ -265,23 +276,30 @@ export class PurserClient {
 
   /** `POST /attributes`: custom player attributes (strings, numbers, booleans; `null` or `""` removes a key). */
   setAttributes(attributes: Record<string, string | number | boolean | null>): Promise<ApiResult<AttributesResponse>> {
-    return this.post<AttributesResponse>("/attributes", { app_id: this.appId, user_id: this.userId, attributes, client: this.client });
+    return this.post<AttributesResponse>("/attributes", {
+      app_id: this.appId,
+      store: this.store,
+      user_id: this.userId,
+      attributes,
+      client: this.client,
+    });
   }
 
   /** `POST /redeem`: a promo code; the answer has the shape of `/verify` (`success`, `pending`, `invalid` + `code`). */
   redeem(code: string): Promise<ApiResult<VerifyResponse>> {
-    return this.post<VerifyResponse>("/redeem", { app_id: this.appId, user_id: this.userId, code, client: this.client });
+    return this.post<VerifyResponse>("/redeem", { app_id: this.appId, store: this.store, user_id: this.userId, code, client: this.client });
   }
 
   /** `POST /wallet`: virtual currency balances. */
   wallet(): Promise<ApiResult<WalletResponse>> {
-    return this.post<WalletResponse>("/wallet", { app_id: this.appId, user_id: this.userId, client: this.client });
+    return this.post<WalletResponse>("/wallet", { app_id: this.appId, store: this.store, user_id: this.userId, client: this.client });
   }
 
   /** `POST /wallet/spend` (builds with player tokens). Retry a failed spend with the same `reference`: it spends once. */
   spend(currency: string, amount: number, reference: string, note?: string): Promise<ApiResult<SpendResponse>> {
     const body = {
       app_id: this.appId,
+      store: this.store,
       user_id: this.userId,
       currency,
       amount: Math.round(amount),

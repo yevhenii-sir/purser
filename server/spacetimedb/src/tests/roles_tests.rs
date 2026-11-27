@@ -237,7 +237,8 @@ fn a_voided_notification_of_another_package_leaves_the_purchase_alone() {
     w.verify("player-1", "gems");
     w.write(|tx| {
         let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
-        app.app_id = "com.example.other".into();
+        app.app_id = "google:com.example.other".into();
+        app.store_app_id = "com.example.other".into();
         tx.db.game_app().insert(app);
     });
     let voided = json!({
@@ -346,24 +347,27 @@ fn a_worker_run_stops_starting_calls_after_its_budget() {
 
 #[test]
 fn a_build_whose_calls_time_out_does_not_hold_up_the_others() {
-    const OTHER: &str = "com.studio.other";
+    const OTHER: &str = "google:com.studio.other";
     let w = World::new();
     w.write(|tx| {
         let mut app = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
         app.app_id = OTHER.into();
+        app.store_app_id = "com.studio.other".into();
         tx.db.game_app().insert(app);
         tx.db.product().insert(Product::new(OTHER, "gems", kind::CONSUMABLE));
     });
     w.fake.borrow_mut().game_status = 503;
     let buy = |app: &str, user: &str| {
-        let order = format!("GPA.{app}.{user}");
+        // Purchase tokens and order ids name the package (a build key's ':' is not allowed there).
+        let package = app.trim_start_matches("google:");
+        let order = format!("GPA.{package}.{user}");
         let purchase = json!({ "orderId": order, "purchaseState": 0, "consumptionState": 0, "acknowledgementState": 0 });
-        w.script(&format!("{TOKEN}-{app}-{user}"), 200, &purchase.to_string());
+        w.script(&format!("{TOKEN}-{package}-{user}"), 200, &purchase.to_string());
         let r: VerifyRequest = serde_json::from_value(json!({
-            "app_id": app, "user_id": user, "product_id": "gems", "purchase_token": format!("{TOKEN}-{app}-{user}"),
+            "app_id": app, "user_id": user, "product_id": "gems", "purchase_token": format!("{TOKEN}-{package}-{user}"),
         }))
         .unwrap();
-        verify(&mut w.ctx(), store::GOOGLE, &r);
+        assert_eq!(verify(&mut w.ctx(), store::GOOGLE, &r).body["status"], "pending", "the game database is down");
         w.advance_clock(1);
     };
     // The first build's rows are older: without fairness they would take the whole run.
@@ -373,8 +377,9 @@ fn a_build_whose_calls_time_out_does_not_hold_up_the_others() {
     buy(OTHER, "p5");
     w.fake.borrow_mut().game_status = 200;
     w.advance_clock(3600);
-    // The first build's game database does not answer (no reply: a timeout).
-    w.script(&format!("\"app_id\":\"{APP}\""), 0, "");
+    // The first build's game database does not answer (no reply: a timeout). Events to the game
+    // name the build by its package.
+    w.script(&format!("\"app_id\":\"{PACKAGE}\""), 0, "");
     w.run_worker();
     let tried = |app: &str| w.read(|tx| tx.db.purchase().app_created().filter((app, i64::MIN..)).filter(|p| p.attempts > 1).count());
     let delivered = |app: &str| {
@@ -487,7 +492,7 @@ fn purchase_counters_follow_every_ledger_write() {
     w.verify("player-1", "no_ads");
     w.restore("player-2", "no_ads");
     let voided = json!({
-        "packageName": APP,
+        "packageName": PACKAGE,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 1 },
     });
     w.google_notification(voided);

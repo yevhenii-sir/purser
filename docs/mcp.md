@@ -52,7 +52,7 @@ Other clients take the same command. For Claude Desktop, in `claude_desktop_conf
 
 | Tool | What it returns | Backed by |
 |---|---|---|
-| `list_apps` | Apps, their builds (store, account, delivery) and product catalogs | SQL `game_app`, `product` |
+| `list_apps` | Apps, their builds (key `{store}:{store_app_id}`, id in the store, account, delivery) and product catalogs. Tools that take `app_id` / `app_ids` name builds by these keys, e.g. `google:com.example.mygame` | SQL `game_app`, `product` |
 | `overview` | Purchases by status, rows the worker is still processing, counters | `admin_overview` |
 | `revenue` | USD totals, daily series, by app / product, subscriptions, paywall views; `from`, `to`, `game_key`, `app_ids`, `include_sandbox` | `admin_revenue_stats` (`summary: true`) |
 | `find_player` | Players behind a user id, ledger id, transaction / order id or purchase token | `admin_find_player` |

@@ -16,7 +16,7 @@ namespace Purser
             if (string.IsNullOrEmpty(placementId))
                 throw new ArgumentException("Placement id is empty", nameof(placementId));
             var user = SyncUser();
-            var response = await m_Api.PaywallAsync(new PaywallRequest { AppId = AppId, Placement = placementId, UserId = user, Client = m_Client }, ct);
+            var response = await m_Api.PaywallAsync(new PaywallRequest { AppId = AppId, Store = BuildStore, Placement = placementId, UserId = user, Client = m_Client }, ct);
             if (response.IsHttpSuccess && response.Value != null)
             {
                 var now = m_UtcNow();
@@ -84,6 +84,7 @@ namespace Purser
                 var response = await m_Api.PaywallEventAsync(new PaywallEventRequest
                 {
                     AppId = AppId,
+                    Store = BuildStore,
                     Placement = paywall.PlacementId,
                     VariantId = paywall.VariantId,
                     TestId = NullIfEmpty(paywall.TestId),

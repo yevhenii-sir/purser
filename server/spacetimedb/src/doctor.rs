@@ -407,7 +407,7 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
 
     let base = s.public_base_url.clone();
     let notify_secret_set = store.notify_secret.is_some_and(|n| s.secret(n).is_some());
-    let notify = store.notify_url(&base, &app.app_id, notify_secret_set).unwrap_or_default();
+    let notify = store.notify_url(&base, &app.store_app_id, notify_secret_set).unwrap_or_default();
     let (push_account, push_audience) = if store.id == store::GOOGLE {
         (google_push_account(&s).unwrap_or_default(), purser_core::google_oidc::audience(&app.app_id))
     } else {
@@ -474,7 +474,7 @@ fn check_google(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report
             return;
         }
     };
-    let verdict = match google::voided_purchases_url(&s.app.app_id) {
+    let verdict = match google::voided_purchases_url(&s.app.store_app_id) {
         Err(e) => v(Level::Fail, e, "Fix app_id"),
         Ok(url) => match net::send(ctx.http(), "GET", &url, &[("Authorization", &bearer(&token))], ()) {
             Ok(res) => d::classify_google_access(res.status, &sa.client_email),
@@ -507,7 +507,7 @@ fn check_apple(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report)
         return;
     };
     let key = AppleApiKey { issuer_id: issuer.into(), key_id: key_id.into(), private_key_p8: p8.into() };
-    if let Err(e) = jwt::apple_token(&key, &s.app.app_id, ctx.now_micros() / 1_000_000) {
+    if let Err(e) = jwt::apple_token(&key, &s.app.store_app_id, ctx.now_micros() / 1_000_000) {
         r.add("apple_key", "App Store key", v(Level::Fail, e, "Upload the .p8 file of the In-App Purchase key as is"));
         return;
     }
@@ -627,7 +627,7 @@ fn check_telegram(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Repo
         r.add("telegram_bot", "Telegram bot", v(Level::Skip, "offline check", ""));
         return;
     }
-    let expected = format!("{}/notify/telegram?app={}", s.public_base_url.trim_end_matches('/'), purser_core::encoding::percent_encode(&s.app.app_id));
+    let expected = format!("{}/notify/telegram?app={}", s.public_base_url.trim_end_matches('/'), purser_core::encoding::percent_encode(&s.app.store_app_id));
     match crate::telegram::bot_info(ctx, token) {
         Ok((username, hook, last_error)) => {
             r.add("telegram_bot", "Telegram bot", v(Level::Ok, format!("@{username}"), ""));
@@ -993,7 +993,7 @@ fn probe_ga4(ctx: &mut impl Ctx, app: &GameApp, firebase_app_id: &str, api_secre
     let event = OutEvent {
         tax_micros: 0,
         kind: event_kind::TEST.into(),
-        app_id: app.app_id.clone(),
+        app_id: app.store_app_id.clone(),
         platform: app.platform.clone(),
         store: String::new(),
         environment: environment::SANDBOX.into(),
@@ -1070,7 +1070,7 @@ pub fn ping_webhook(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, String> {
     if app.delivery != delivery::WEBHOOK || !app.webhook_url.starts_with("https://") {
         return Err("the app does not deliver to an https webhook".into());
     }
-    let body = d::webhook_ping_body(&app.app_id, ctx.now_ms());
+    let body = d::webhook_ping_body(&app.store_app_id, ctx.now_ms());
     let signature = signature_header(&secret, body.as_bytes(), ctx.now_ms() / 1000);
     let res = net::send(
         ctx.http(),

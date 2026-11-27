@@ -2,7 +2,9 @@
 
 use super::*;
 
-pub(super) const XSOLLA_APP: &str = "com.studio.game.web";
+/// The build's key and its id in the store.
+pub(super) const XSOLLA_APP: &str = "xsolla:com.studio.game.web";
+pub(super) const XSOLLA_ID: &str = "com.studio.game.web";
 pub(super) const XSOLLA_SECRET: &str = "xsolla-project-secret";
 pub(super) const XSOLLA_TOKEN_URL: &str = "store.xsolla.com/api/v3/project/44056/admin/payment/token";
 
@@ -10,7 +12,7 @@ pub(super) const XSOLLA_TOKEN_URL: &str = "store.xsolla.com/api/v3/project/44056
 pub(super) fn add_xsolla_build(w: &World, allow_sandbox: bool) {
     w.as_admin(false);
     let app = json!({
-        "app_id": XSOLLA_APP, "platform": "web", "store": "xsolla", "game_key": "game", "delivery": "spacetimedb",
+        "store_app_id": XSOLLA_ID, "platform": "web", "store": "xsolla", "game_key": "game", "delivery": "spacetimedb",
         "spacetime_url": "https://maincloud.spacetimedb.com", "spacetime_db": "game-db",
         "grant_reducer": "billing_grant", "revoke_reducer": "billing_revoke", "allow_sandbox": allow_sandbox,
     });
@@ -113,12 +115,12 @@ pub(super) fn xsolla_status(w: &World, user: &str, order_id: &str) -> (u16, Valu
     crate::xsolla::checkout_status(&mut w.ctx(), &r)
 }
 
-/// Posts a webhook signed with `secret` to `/notify/xsolla?app=<XSOLLA_APP>`.
+/// Posts a webhook signed with `secret` to `/notify/xsolla?app=<XSOLLA_ID>`.
 pub(super) fn xsolla_webhook_signed(w: &World, body: &str, secret: &str) -> Outcome {
     let sig = purser_core::xsolla::signature(body.as_bytes(), secret);
     let req = http::Request::builder()
         .method("POST")
-        .uri(format!("/notify/xsolla?app={XSOLLA_APP}"))
+        .uri(format!("/notify/xsolla?app={XSOLLA_ID}"))
         .header("Authorization", format!("Signature {sig}"))
         .body(Body::from(body.to_string()))
         .unwrap();
@@ -154,7 +156,7 @@ pub(super) fn xsolla_date(ms: i64) -> String {
 pub(super) fn xsolla_check(w: &World, online: bool) -> std::collections::BTreeMap<String, (String, String)> {
     let opts: crate::doctor::Options = serde_json::from_value(json!({ "online": online })).unwrap();
     let report = crate::doctor::check_app(&mut w.ctx(), XSOLLA_APP, &opts).unwrap();
-    assert_eq!(report["urls"]["notify"], format!("{}/notify/xsolla?app={XSOLLA_APP}", report["urls"]["base"].as_str().unwrap()));
+    assert_eq!(report["urls"]["notify"], format!("{}/notify/xsolla?app={XSOLLA_ID}", report["urls"]["base"].as_str().unwrap()));
     report["checks"]
         .as_array()
         .unwrap()
@@ -292,7 +294,7 @@ fn xsolla_webhooks_are_signed_with_the_project_secret() {
     // Unsigned.
     let req = http::Request::builder()
         .method("POST")
-        .uri(format!("/notify/xsolla?app={XSOLLA_APP}"))
+        .uri(format!("/notify/xsolla?app={XSOLLA_ID}"))
         .body(Body::from(paid.clone()))
         .unwrap();
     assert_eq!(dispatch_notification(&mut w.ctx(), req).http, 400);

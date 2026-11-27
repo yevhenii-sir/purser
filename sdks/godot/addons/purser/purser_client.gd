@@ -26,8 +26,14 @@ const KEEP := "keep"
 
 ## The billing server: [code]https://<host>/v1/database/<db>/route[/code].
 var base_url := ""
-## This build's [code]app_id[/code].
+## This build's [code]app_id[/code]: the app's id in its store (package name, bundle id). Builds in different
+## stores may share it.
 var app_id := ""
+## The store of this build ([code]google[/code], [code]apple[/code], [code]amazon[/code], [code]huawei[/code],
+## [code]samsung[/code], [code]meta[/code], [code]steam[/code], [code]stripe[/code], [code]xsolla[/code],
+## [code]telegram[/code]), sent with [code]app_id[/code] to the routes whose path names no store: the server finds the
+## build by both.
+var store := ""
 ## The player; set it after sign-in.
 var user_id := ""
 ## [code]device[/code], [code]os[/code], [code]app_version[/code], [code]sdk_version[/code] shown on the admin page.
@@ -50,11 +56,12 @@ var sleeper: Callable
 var _tokens := {}
 
 
-## Settings: [code]base_url[/code], [code]app_id[/code], [code]user_id[/code], [code]app_version[/code],
+## Settings: [code]base_url[/code], [code]app_id[/code], [code]store[/code], [code]user_id[/code], [code]app_version[/code],
 ## [code]timeout_seconds[/code], [code]retries[/code], [code]retry_delay[/code], [code]player_token_provider[/code].
 func configure(options: Dictionary) -> Node:
 	base_url = _s(options.get("base_url")).rstrip("/")
 	app_id = _s(options.get("app_id"))
+	store = _s(options.get("store"))
 	user_id = _s(options.get("user_id"))
 	timeout_seconds = float(options.get("timeout_seconds", timeout_seconds))
 	retries = int(options.get("retries", retries))
@@ -74,13 +81,14 @@ func configure(options: Dictionary) -> Node:
 # Purchases
 # --------------------------------------------------------------------------------------------
 
-## [code]POST /verify/<store>[/code] ([code]google[/code], [code]apple[/code], [code]amazon[/code], ...). [param purchase]:
+## [code]POST /verify/<store>[/code] ([param purchase_store]: [code]google[/code], [code]apple[/code],
+## [code]amazon[/code], ...; usually [member store]). [param purchase]:
 ## [code]product_id[/code], [code]purchase_token[/code] (Google), [code]order_id[/code] (Apple transactionId, Amazon
 ## receiptId), [code]store_user_id[/code] (Amazon userId), [code]price_micros[/code], [code]currency[/code],
 ## [code]app_instance_id[/code], [code]attribution[/code], [code]paywall[/code] (a [method paywall] answer),
 ## [code]offer_id[/code], [code]client_finished[/code].
-func verify(store: String, purchase: Dictionary) -> Dictionary:
-	return await post("/verify/" + store.uri_encode(), verify_body(purchase))
+func verify(purchase_store: String, purchase: Dictionary) -> Dictionary:
+	return await post("/verify/" + purchase_store.uri_encode(), verify_body(purchase))
 
 
 ## The [code]/verify[/code] body of a purchase.
@@ -106,8 +114,8 @@ func verify_body(p: Dictionary) -> Dictionary:
 ## [code]false[/code] when granting failed) runs first, then [code]finish.call(true)[/code]; a refusal calls
 ## [code]finish.call(false)[/code]; anything else leaves the purchase unfinished, so the store delivers it again.
 ## Returns [code]{"outcome", "action", "result"}[/code].
-func process_purchase(store: String, purchase: Dictionary, grant: Callable, finish: Callable) -> Dictionary:
-	var result := await verify(store, purchase)
+func process_purchase(purchase_store: String, purchase: Dictionary, grant: Callable, finish: Callable) -> Dictionary:
+	var result := await verify(purchase_store, purchase)
 	return await apply_outcome(result, grant, finish)
 
 
@@ -168,7 +176,7 @@ static func finish_action(outcome: String) -> String:
 func restore(purchases: Array, options: Dictionary = {}) -> Dictionary:
 	if purchases.size() > MAX_RESTORE_ITEMS:
 		return _failure("at most %d purchases per restore call" % MAX_RESTORE_ITEMS)
-	var body := {"app_id": app_id, "user_id": user_id}
+	var body := {"app_id": app_id, "store": store, "user_id": user_id}
 	_put(body, "store_user_id", options.get("store_user_id"))
 	_put(body, "app_instance_id", options.get("app_instance_id"))
 	var attribution: Variant = options.get("attribution")
@@ -189,7 +197,7 @@ func restore(purchases: Array, options: Dictionary = {}) -> Dictionary:
 
 ## [code]POST /entitlements[/code]: [code]{access, subscriptions, non_consumables, paused?, server_time_ms}[/code].
 func entitlements() -> Dictionary:
-	return await post("/entitlements", {"app_id": app_id, "user_id": user_id, "client": client_info})
+	return await post("/entitlements", {"app_id": app_id, "store": store, "user_id": user_id, "client": client_info})
 
 
 ## Whether an [method entitlements] answer gives [param access] (e.g. [code]premium[/code]) now.
@@ -209,7 +217,7 @@ static func has_access(customer_info: Variant, access: String) -> bool:
 
 ## [code]POST /paywall[/code]: what to show at [param placement].
 func paywall(placement: String) -> Dictionary:
-	var body := {"app_id": app_id, "placement": placement}
+	var body := {"app_id": app_id, "store": store, "placement": placement}
 	_put(body, "user_id", user_id)
 	body["client"] = client_info
 	return await post("/paywall", body)
@@ -217,7 +225,7 @@ func paywall(placement: String) -> Dictionary:
 
 ## [code]POST /paywall/event[/code]: the [method paywall] answer [param shown] was shown.
 func paywall_event(shown: Dictionary, event := "view") -> Dictionary:
-	var body := {"app_id": app_id, "placement": _s(shown.get("placement")), "variant_id": _s(shown.get("variant_id"))}
+	var body := {"app_id": app_id, "store": store, "placement": _s(shown.get("placement")), "variant_id": _s(shown.get("variant_id"))}
 	_put(body, "test_id", shown.get("test_id"))
 	_put(body, "user_id", user_id)
 	body["event"] = event
@@ -226,22 +234,23 @@ func paywall_event(shown: Dictionary, event := "view") -> Dictionary:
 
 ## [code]POST /attributes[/code]: custom attributes; [code]null[/code] or [code]""[/code] removes a key.
 func set_attributes(attributes: Dictionary) -> Dictionary:
-	return await post("/attributes", {"app_id": app_id, "user_id": user_id, "attributes": attributes, "client": client_info})
+	var body := {"app_id": app_id, "store": store, "user_id": user_id, "attributes": attributes, "client": client_info}
+	return await post("/attributes", body)
 
 
 ## [code]POST /redeem[/code]: a promo code; the answer has the shape of [code]/verify[/code].
 func redeem(code: String) -> Dictionary:
-	return await post("/redeem", {"app_id": app_id, "user_id": user_id, "code": code, "client": client_info})
+	return await post("/redeem", {"app_id": app_id, "store": store, "user_id": user_id, "code": code, "client": client_info})
 
 
 ## [code]POST /wallet[/code]: [code]{"status": "ok", "balances": {"gems": 120}}[/code].
 func wallet() -> Dictionary:
-	return await post("/wallet", {"app_id": app_id, "user_id": user_id, "client": client_info})
+	return await post("/wallet", {"app_id": app_id, "store": store, "user_id": user_id, "client": client_info})
 
 
 ## [code]POST /wallet/spend[/code] (builds with player tokens). Retry a failed spend with the same [param reference].
 func spend(currency: String, amount: int, reference: String, note := "") -> Dictionary:
-	var body := {"app_id": app_id, "user_id": user_id, "currency": currency, "amount": amount, "reference": reference}
+	var body := {"app_id": app_id, "store": store, "user_id": user_id, "currency": currency, "amount": amount, "reference": reference}
 	_put(body, "note", note)
 	body["client"] = client_info
 	return await post("/wallet/spend", body)

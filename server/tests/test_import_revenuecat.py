@@ -31,8 +31,8 @@ def row(**kw):
 
 class MapTest(unittest.TestCase):
     def test_an_active_subscription(self):
-        m = rc.map_row(row(), "com.example.ios", KINDS, NOW)
-        self.assertEqual(m["id"], "apple:2000001")
+        m = rc.map_row(row(), "apple:com.example.mygame", KINDS, NOW)
+        self.assertEqual((m["id"], m["app_id"]), ("apple:2000001", "apple:com.example.mygame"))
         self.assertEqual((m["kind"], m["status"], m["reason"]), ("subscription", "completed", "purchase"))
         self.assertEqual((m["price_micros"], m["currency"], m["country"]), (9_990_000, "USD", "US"))
         self.assertEqual(m["expires_at_ms"], rc.micros("2026-12-01 10:00:00") // 1000)
@@ -69,6 +69,15 @@ class MapTest(unittest.TestCase):
         kept = rc.latest_versions([new, old])
         self.assertEqual(len(kept), 1)
         self.assertEqual(kept[0]["refunded_at"], "2026-10-05 00:00:00")
+
+    def test_builds_of_the_stores(self):
+        apps = rc.parse_apps(["apple=com.example.mygame", "google=com.example.mygame", "stripe=web-1",
+                              "manual=google:com.example.mygame"])
+        self.assertEqual(apps, {"apple": "apple:com.example.mygame", "google": "google:com.example.mygame",
+                                "stripe": "stripe:web-1", "manual": "google:com.example.mygame"})
+        for bad in ("play=com.example.mygame", "apple=", "manual=com.example.mygame"):
+            with self.assertRaises(SystemExit, msg=bad):
+                rc.parse_apps([bad])
 
     def test_gzipped_csv_and_times(self):
         buf = io.StringIO()

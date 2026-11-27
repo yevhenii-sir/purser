@@ -123,9 +123,9 @@ fn refused(http: u16, code: &str, message: impl Into<String>) -> web::Answer {
     (http, json!({ "status": "error", "code": code, "message": message.into() }))
 }
 
-/// Checks the key of a request in transaction `tx`: known, has `wanted`, and the build `app_id`
-/// belongs to its app; then its rate limit. `Err`: the answer.
-fn check(tx: &TxContext, authorization: &str, wanted: &str, app_id: &str) -> Result<(Caller, crate::GameApp), (web::Answer, Option<u64>)> {
+/// Checks the key of a request in transaction `tx`: known, has `wanted`, and the build (`store`,
+/// its id in the store `app_id`) belongs to its app; then its rate limit. `Err`: the answer.
+fn check(tx: &TxContext, authorization: &str, wanted: &str, store: &str, app_id: &str) -> Result<(Caller, crate::GameApp), (web::Answer, Option<u64>)> {
     let key = api::bearer(authorization);
     if keys::key_id(key).is_none() {
         return Err((refused(401, ERR_SERVER_KEY, "Authorization: Bearer <server key> is missing or malformed"), None));
@@ -136,9 +136,12 @@ fn check(tx: &TxContext, authorization: &str, wanted: &str, app_id: &str) -> Res
     if !keys::has_scope(&k.scopes, wanted) {
         return Err((refused(403, ERR_SERVER_SCOPE, format!("the key has no '{wanted}' scope")), None));
     }
-    let app = match config::find_app(tx, app_id).filter(|a| a.enabled) {
+    if store.is_empty() {
+        return Err((refused(400, "ERR_BAD_REQUEST", "store is required: the store of the build (google, apple, ...)"), None));
+    }
+    let app = match config::find_build(tx, store, app_id).filter(|a| a.enabled) {
         Some(a) if a.game_key == k.game_key => a,
-        _ => return Err((refused(403, ERR_SERVER_SCOPE, format!("build {app_id} is not a build of the key's app")), None)),
+        _ => return Err((refused(403, ERR_SERVER_SCOPE, format!("build {store}:{app_id} is not a build of the key's app")), None)),
     };
     let now = tx_now_micros(tx);
     if let Err(wait) = crate::client_guard::take(tx, &format!("server/{}", k.key_id), keys::KEY_LIMIT, now) {
@@ -171,7 +174,11 @@ fn authorization(req: &Request) -> String {
 
 #[derive(Deserialize)]
 pub struct EntitlementsQuery {
+    /// The build's id in its store; with `store` it names the build.
     pub app_id: String,
+    /// Required: an empty one is refused with a clear message.
+    #[serde(default)]
+    pub store: String,
     pub user_id: String,
 }
 
@@ -180,7 +187,7 @@ pub fn entitlements(ctx: &mut impl Ctx, authorization: &str, q: &EntitlementsQue
     if !crate::handlers::valid_user_id(&q.user_id) {
         return (refused(400, "ERR_BAD_USER", "invalid user_id"), None);
     }
-    ctx.tx(|tx| match check(tx, authorization, scope::READ, &q.app_id) {
+    ctx.tx(|tx| match check(tx, authorization, scope::READ, &q.store, &q.app_id) {
         Ok((_, app)) => ((200, ledger::entitlements(tx, &app, &q.user_id)), None),
         Err(e) => e,
     })
@@ -188,7 +195,11 @@ pub fn entitlements(ctx: &mut impl Ctx, authorization: &str, q: &EntitlementsQue
 
 #[derive(Deserialize)]
 pub struct GrantRequest {
+    /// The build's id in its store; with `store` it names the build.
     pub app_id: String,
+    /// Required: an empty one is refused with a clear message.
+    #[serde(default)]
+    pub store: String,
     pub user_id: String,
     pub product_id: String,
     /// Your id of this grant: a repeated request with it grants nothing more.
@@ -207,7 +218,7 @@ pub fn grant(ctx: &mut impl Ctx, authorization: &str, r: &GrantRequest) -> (web:
         return (refused(400, "ERR_BAD_JSON", "transaction_id: 1-128 characters of A-Z a-z 0-9 - _ . :"), None);
     }
     let outcome = ctx.tx(|tx| {
-        let (caller, app) = check(tx, authorization, scope::GRANT, &r.app_id)?;
+        let (caller, app) = check(tx, authorization, scope::GRANT, &r.store, &r.app_id)?;
         let id = purser_core::model::ledger_id(purser_core::model::store::MANUAL, &crate::manual_transaction_id(&app.game_key, &r.transaction_id));
         if let Some(p) = tx.db.purchase().id().find(&id) {
             // The same request again: answers what the first one did; another one with this id is refused.
@@ -241,7 +252,11 @@ pub fn grant(ctx: &mut impl Ctx, authorization: &str, r: &GrantRequest) -> (web:
 
 #[derive(Deserialize)]
 pub struct RevokeRequest {
+    /// The build's id in its store; with `store` it names the build.
     pub app_id: String,
+    /// Required: an empty one is refused with a clear message.
+    #[serde(default)]
+    pub store: String,
     /// Ledger id of the purchase (`{store}:{transaction_id}`, e.g. `manual:reward-42`).
     pub purchase_id: String,
     #[serde(default)]
@@ -252,7 +267,7 @@ pub struct RevokeRequest {
 /// gets `revoke` (reason `admin`). Not a refund: revenue does not change.
 pub fn revoke(ctx: &mut impl Ctx, authorization: &str, r: &RevokeRequest) -> (web::Answer, Option<u64>) {
     let outcome = ctx.tx(|tx| {
-        let (caller, _) = check(tx, authorization, scope::REVOKE, &r.app_id)?;
+        let (caller, _) = check(tx, authorization, scope::REVOKE, &r.store, &r.app_id)?;
         let p = tx.db.purchase().id().find(&r.purchase_id).ok_or((refused(404, "ERR_PURCHASE_NOT_FOUND", "unknown purchase"), None))?;
         let ours = config::find_app(tx, &p.app_id).is_some_and(|a| a.game_key == caller.game_key);
         if !ours {
@@ -276,7 +291,11 @@ pub fn revoke(ctx: &mut impl Ctx, authorization: &str, r: &RevokeRequest) -> (we
 
 #[derive(Deserialize)]
 pub struct WalletQuery {
+    /// The build's id in its store; with `store` it names the build.
     pub app_id: String,
+    /// Required: an empty one is refused with a clear message.
+    #[serde(default)]
+    pub store: String,
     pub user_id: String,
 }
 
@@ -285,7 +304,7 @@ pub fn wallet(ctx: &mut impl Ctx, authorization: &str, q: &WalletQuery) -> (web:
     if !crate::handlers::valid_user_id(&q.user_id) {
         return (refused(400, "ERR_BAD_USER", "invalid user_id"), None);
     }
-    ctx.tx(|tx| match check(tx, authorization, scope::WALLET, &q.app_id) {
+    ctx.tx(|tx| match check(tx, authorization, scope::WALLET, &q.store, &q.app_id) {
         Ok((caller, _)) => {
             let body = json!({
                 "status": "ok",
@@ -300,7 +319,11 @@ pub fn wallet(ctx: &mut impl Ctx, authorization: &str, q: &WalletQuery) -> (web:
 
 #[derive(Deserialize)]
 pub struct WalletChangeRequest {
+    /// The build's id in its store; with `store` it names the build.
     pub app_id: String,
+    /// Required: an empty one is refused with a clear message.
+    #[serde(default)]
+    pub store: String,
     pub user_id: String,
     pub currency: String,
     pub amount: i64,
@@ -318,7 +341,7 @@ fn wallet_change(ctx: &mut impl Ctx, authorization: &str, r: &WalletChangeReques
         return (refused(400, "ERR_BAD_AMOUNT", "amount must be positive"), None);
     }
     ctx.tx(|tx| {
-        let (caller, _) = match check(tx, authorization, scope::WALLET, &r.app_id) {
+        let (caller, _) = match check(tx, authorization, scope::WALLET, &r.store, &r.app_id) {
             Ok(c) => c,
             Err(e) => return e,
         };

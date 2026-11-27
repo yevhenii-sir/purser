@@ -1,6 +1,6 @@
 [
   {
-    "app_id": "com.example.mygame",
+    "app_id": "google:com.example.mygame",
     "kind": "ga4",
     "enabled": true,
     "settings": {
@@ -9,7 +9,7 @@
     }
   },
   {
-    "app_id": "com.example.mygame",
+    "app_id": "google:com.example.mygame",
     "kind": "appsflyer",
     "enabled": true,
     "settings": {
@@ -18,7 +18,7 @@
     }
   },
   {
-    "app_id": "com.example.mygame.ios",
+    "app_id": "apple:com.example.mygame",
     "kind": "appsflyer",
     "enabled": true,
     "settings": {
@@ -27,7 +27,7 @@
     }
   },
   {
-    "app_id": "com.example.mygame",
+    "app_id": "google:com.example.mygame",
     "kind": "tenjin",
     "enabled": false,
     "settings": {

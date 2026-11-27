@@ -208,7 +208,11 @@ end
 
 --- A client of one build. `config`:
 --   base_url        "https://<host>/v1/database/<db>/route"
---   app_id          this build's app_id
+--   app_id          this build's app_id: the app's id in its store (package name, bundle id); builds in
+--                   different stores may share it
+--   store           the store of this build: "google", "apple", "amazon", "huawei", "samsung", "meta", "steam",
+--                   "stripe", "xsolla" or "telegram"; sent with app_id to the routes whose path names no store
+--                   (the server finds the build by both)
 --   user_id         the player (or client:set_user_id later)
 --   app_version     default game.project's project.version
 --   client          { device =, os =, app_version = } to override what sys.get_sys_info says
@@ -224,9 +228,11 @@ end
 function M.new(config)
 	assert(config and config.base_url and config.base_url ~= "", "purser: base_url is required")
 	assert(config.app_id and config.app_id ~= "", "purser: app_id is required")
+	assert(config.store and config.store ~= "", "purser: store is required")
 	local self = setmetatable({}, Client)
 	self.base_url = config.base_url:gsub("/+$", "")
 	self.app_id = config.app_id
+	self.store = config.store
 	self.user_id = config.user_id or ""
 	self.client = default_client(config.app_version)
 	for _, key in ipairs({ "device", "os", "app_version" }) do
@@ -423,7 +429,7 @@ function Client:restore(purchases, callback, options)
 	if #purchases > M.MAX_RESTORE_ITEMS then
 		return callback(failure("at most " .. M.MAX_RESTORE_ITEMS .. " purchases per restore call"))
 	end
-	local body = { app_id = self.app_id, user_id = self.user_id, client = self.client }
+	local body = { app_id = self.app_id, store = self.store, user_id = self.user_id, client = self.client }
 	put(body, "store_user_id", options.store_user_id)
 	put(body, "app_instance_id", options.app_instance_id)
 	if type(options.attribution) == "table" and next(options.attribution) then
@@ -446,7 +452,7 @@ end
 
 --- POST /entitlements: { access, subscriptions, non_consumables, paused?, server_time_ms }.
 function Client:entitlements(callback)
-	self:post("/entitlements", { app_id = self.app_id, user_id = self.user_id, client = self.client }, callback)
+	self:post("/entitlements", { app_id = self.app_id, store = self.store, user_id = self.user_id, client = self.client }, callback)
 end
 
 --- Whether an /entitlements answer gives `access` (e.g. "premium") now.
@@ -465,14 +471,20 @@ end
 
 --- POST /paywall: what to show at `placement`.
 function Client:paywall(placement, callback)
-	local body = { app_id = self.app_id, placement = placement, client = self.client }
+	local body = { app_id = self.app_id, store = self.store, placement = placement, client = self.client }
 	put(body, "user_id", self.user_id)
 	self:post("/paywall", body, callback)
 end
 
 --- POST /paywall/event: the /paywall answer `shown` was shown.
 function Client:paywall_event(shown, callback, event)
-	local body = { app_id = self.app_id, placement = str(shown.placement), variant_id = str(shown.variant_id), event = event or "view" }
+	local body = {
+		app_id = self.app_id,
+		store = self.store,
+		placement = str(shown.placement),
+		variant_id = str(shown.variant_id),
+		event = event or "view",
+	}
 	put(body, "test_id", shown.test_id)
 	put(body, "user_id", self.user_id)
 	self:post("/paywall/event", body, callback)
@@ -480,22 +492,31 @@ end
 
 --- POST /attributes: strings, numbers, booleans; "" removes a key.
 function Client:set_attributes(attributes, callback)
-	self:post("/attributes", { app_id = self.app_id, user_id = self.user_id, attributes = attributes, client = self.client }, callback)
+	local body = { app_id = self.app_id, store = self.store, user_id = self.user_id, attributes = attributes, client = self.client }
+	self:post("/attributes", body, callback)
 end
 
 --- POST /redeem: a promo code; the answer has the shape of /verify.
 function Client:redeem(code, callback)
-	self:post("/redeem", { app_id = self.app_id, user_id = self.user_id, code = code, client = self.client }, callback)
+	self:post("/redeem", { app_id = self.app_id, store = self.store, user_id = self.user_id, code = code, client = self.client }, callback)
 end
 
 --- POST /wallet: { status = "ok", balances = { gems = 120 } }.
 function Client:wallet(callback)
-	self:post("/wallet", { app_id = self.app_id, user_id = self.user_id, client = self.client }, callback)
+	self:post("/wallet", { app_id = self.app_id, store = self.store, user_id = self.user_id, client = self.client }, callback)
 end
 
 --- POST /wallet/spend (builds with player tokens). Retry a failed spend with the same `reference`.
 function Client:spend(currency, amount, reference, callback, note)
-	local body = { app_id = self.app_id, user_id = self.user_id, currency = currency, amount = math.floor(amount + 0.5), reference = reference, client = self.client }
+	local body = {
+		app_id = self.app_id,
+		store = self.store,
+		user_id = self.user_id,
+		currency = currency,
+		amount = math.floor(amount + 0.5),
+		reference = reference,
+		client = self.client,
+	}
 	put(body, "note", note)
 	self:post("/wallet/spend", body, callback)
 end

@@ -68,6 +68,9 @@ impl crate::client_guard::ClientRequest for CheckoutRequest {
     fn app_id(&self) -> &str {
         &self.app_id
     }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
+    }
     fn user_id(&self) -> &str {
         &self.user_id
     }
@@ -219,12 +222,15 @@ fn client_ip(req: &Request) -> String {
 #[handler]
 pub(crate) fn checkout_route(ctx: &mut HandlerContext, req: Request) -> Response {
     let ip = client_ip(&req);
-    crate::client_guard::run(ctx, req, "checkout", false, |ctx, r: &CheckoutRequest| checkout(ctx, r, &ip))
+    crate::client_guard::run(ctx, req, "checkout", crate::client_guard::StoreOf::Route(purser_core::model::store::XSOLLA), false, |ctx, r: &CheckoutRequest| checkout(ctx, r, &ip))
 }
 
 impl crate::client_guard::ClientRequest for StatusRequest {
     fn app_id(&self) -> &str {
         &self.app_id
+    }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
     }
     fn user_id(&self) -> &str {
         &self.user_id
@@ -289,7 +295,7 @@ pub(crate) fn checkout_status(ctx: &mut impl Ctx, r: &StatusRequest) -> Answer {
 
 #[handler]
 pub(crate) fn checkout_status_route(ctx: &mut HandlerContext, req: Request) -> Response {
-    crate::client_guard::run(ctx, req, "entitlements", false, |ctx, r: &StatusRequest| checkout_status(ctx, r))
+    crate::client_guard::run(ctx, req, "entitlements", crate::client_guard::StoreOf::Route(purser_core::model::store::XSOLLA), false, |ctx, r: &StatusRequest| checkout_status(ctx, r))
 }
 
 // ---------------------------------------------------------------------
@@ -299,6 +305,9 @@ pub(crate) fn checkout_status_route(ctx: &mut HandlerContext, req: Request) -> R
 impl crate::client_guard::ClientRequest for ClaimRequest {
     fn app_id(&self) -> &str {
         &self.app_id
+    }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
     }
     fn user_id(&self) -> &str {
         &self.user_id
@@ -415,7 +424,7 @@ pub(crate) fn claim(ctx: &mut impl Ctx, r: &ClaimRequest) -> Answer {
 
 #[handler]
 pub(crate) fn claim_route(ctx: &mut HandlerContext, req: Request) -> Response {
-    crate::client_guard::run(ctx, req, "claim", false, |ctx, r: &ClaimRequest| claim(ctx, r))
+    crate::client_guard::run(ctx, req, "claim", crate::client_guard::StoreOf::Route(purser_core::model::store::XSOLLA), false, |ctx, r: &ClaimRequest| claim(ctx, r))
 }
 
 // ---------------------------------------------------------------------
@@ -432,7 +441,7 @@ pub(crate) fn notification(ctx: &mut impl Ctx, req: Request) -> Answer {
     };
     // One transaction: the build, its webhook secret and project id.
     let loaded = ctx.tx(|tx| {
-        let app = config::find_app(tx, &app_id).filter(|a| config::app_store(a).id == store::XSOLLA)?;
+        let app = config::find_build(tx, store::XSOLLA, &app_id)?;
         let secret = config::secret(tx, &app, x::WEBHOOK_SECRET).map(|s| s.value);
         let project_id = config::secret(tx, &app, x::PROJECT_ID).map(|s| s.value);
         Some((app, secret, project_id))

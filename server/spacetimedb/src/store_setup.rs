@@ -61,11 +61,11 @@ fn connect_app(ctx: &mut impl Ctx, app: &GameApp) -> Result<(String, String), St
     let token = stores::apple_connect_token(ctx, app).map_err(|e| {
         format!("{} (an App Store Connect Team key: apple_connect_key_id and apple_connect_private_key_p8)", e.message())
     })?;
-    let res = net::send(ctx.http(), "GET", &apple::apps_url(&app.app_id)?, &[("Authorization", &bearer(&token))], ())?;
+    let res = net::send(ctx.http(), "GET", &apple::apps_url(&app.store_app_id)?, &[("Authorization", &bearer(&token))], ())?;
     if !res.ok() {
         return Err(connect_error(&res));
     }
-    Ok((apple::parse_app_id(&res.body, &app.app_id)?, token))
+    Ok((apple::parse_app_id(&res.body, &app.store_app_id)?, token))
 }
 
 /// Points both notification URLs of the build's app (production and sandbox, version 2) to this
@@ -168,7 +168,7 @@ pub fn setup_stripe_webhook(ctx: &mut impl Ctx, app_id: &str, from_page: &str, r
         (key, config::secret(tx, &app_c, st::WEBHOOK_SECRET).is_some())
     });
     let key = key?;
-    let url = format!("{base}/notify/stripe?app={}", purser_core::encoding::percent_encode(&app.app_id));
+    let url = format!("{base}/notify/stripe?app={}", purser_core::encoding::percent_encode(&app.store_app_id));
     let existing = webhook_endpoints(ctx, &key)?.into_iter().find(|e| e.url == url);
     if let Some(ep) = &existing {
         if has_secret {
@@ -228,7 +228,7 @@ pub fn admin_setup_telegram_webhook(ctx: &mut ProcedureContext, app_id: String, 
 pub fn check_stripe_webhook(ctx: &mut impl Ctx, app: &GameApp, key: &str, base: &str) -> Verdict {
     match webhook_endpoints(ctx, key) {
         Ok(endpoints) => {
-            let expected = format!("{}/notify/stripe?app={}", base.trim_end_matches('/'), purser_core::encoding::percent_encode(&app.app_id));
+            let expected = format!("{}/notify/stripe?app={}", base.trim_end_matches('/'), purser_core::encoding::percent_encode(&app.store_app_id));
             st::classify_webhook(&endpoints, &expected)
         }
         Err(e) => (Level::Warn, e, String::new()),
@@ -441,7 +441,7 @@ pub fn setup_google(ctx: &mut impl Ctx, input: &str) -> Result<Value, String> {
     let mut ok = true;
     for (app, account) in apps.iter().zip(accounts) {
         let step = format!("subscription {}", app.app_id);
-        let sub = gs::subscription_id(&app.app_id)?;
+        let sub = gs::subscription_id(&app.store_app_id)?;
         let push = gs::Push {
             endpoint: format!("{base}/notify/google"),
             service_account: account,

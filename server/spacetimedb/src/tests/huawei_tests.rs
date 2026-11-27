@@ -2,13 +2,15 @@
 
 use super::*;
 
-pub(super) const HUAWEI_APP: &str = "com.studio.game.huawei";
+/// The build's key and its id in the store.
+pub(super) const HUAWEI_APP: &str = "huawei:com.studio.game.huawei";
+pub(super) const HUAWEI_ID: &str = "com.studio.game.huawei";
 
 /// A Huawei build of the game with its App ID, secret and notification secret.
 pub(super) fn add_huawei_build(w: &World) {
     w.as_admin(false);
     let app = json!({
-        "app_id": HUAWEI_APP, "platform": "huawei", "game_key": "game", "delivery": "spacetimedb",
+        "store_app_id": HUAWEI_ID, "platform": "huawei", "game_key": "game", "delivery": "spacetimedb",
         "spacetime_url": "https://maincloud.spacetimedb.com", "spacetime_db": "game-db",
         "grant_reducer": "billing_grant", "revoke_reducer": "billing_revoke", "allow_sandbox": false,
     });
@@ -41,7 +43,7 @@ pub(super) fn huawei_verify(w: &World, user: &str, product_id: &str, order_id: &
 pub(super) fn huawei_notification(w: &World, secret: &str, body: Value) -> Outcome {
     let req = http::Request::builder()
         .method("POST")
-        .uri(format!("/notify/huawei?app={HUAWEI_APP}&secret={secret}"))
+        .uri(format!("/notify/huawei?app={HUAWEI_ID}&secret={secret}"))
         .body(Body::from(body.to_string()))
         .unwrap();
     dispatch_notification(&mut w.ctx(), req)

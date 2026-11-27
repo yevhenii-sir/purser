@@ -63,9 +63,6 @@
   ],
   "stores": [
     {
-      "app_id_is_store_id": true,
-      "app_id_label": "Android package",
-      "app_id_placeholder": "com.example.mygame",
       "binding": "google_account_id",
       "docs": "google-play",
       "finish": "server_consume_acknowledge",
@@ -98,13 +95,12 @@
           "need": "required"
         }
       ],
+      "store_app_id_label": "Android package",
+      "store_app_id_placeholder": "com.example.mygame",
       "verification": "client_receipt",
       "verify_route": "/verify/google"
     },
     {
-      "app_id_is_store_id": true,
-      "app_id_label": "iOS bundle id",
-      "app_id_placeholder": "com.example.mygame",
       "binding": "apple_account_token",
       "docs": "app-store",
       "finish": "client",
@@ -172,13 +168,12 @@
           "need": "optional"
         }
       ],
+      "store_app_id_label": "iOS bundle id",
+      "store_app_id_placeholder": "com.example.mygame",
       "verification": "client_receipt",
       "verify_route": "/verify/apple"
     },
     {
-      "app_id_is_store_id": false,
-      "app_id_label": "App id (package name, or e.g. package.amazon when the Google Play build uses it)",
-      "app_id_placeholder": "com.example.mygame.amazon",
       "binding": "none",
       "docs": "amazon-appstore",
       "finish": "client",
@@ -187,7 +182,7 @@
       "name": "Amazon Appstore",
       "notifications": true,
       "notify_label": "Real-Time Notifications endpoint (Developer Console → the app → App Services)",
-      "notify_query": "app={app_id}",
+      "notify_query": "app={store_app_id}",
       "notify_route": "/notify/amazon",
       "notify_secret": null,
       "platforms": [
@@ -207,13 +202,12 @@
           "need": "required"
         }
       ],
+      "store_app_id_label": "Package name (the same as the Google Play build's is fine)",
+      "store_app_id_placeholder": "com.example.mygame",
       "verification": "client_receipt",
       "verify_route": "/verify/amazon"
     },
     {
-      "app_id_is_store_id": true,
-      "app_id_label": "Steam App ID",
-      "app_id_placeholder": "480",
       "binding": "none",
       "docs": "steam",
       "finish": "none",
@@ -242,13 +236,12 @@
           "need": "required"
         }
       ],
+      "store_app_id_label": "Steam App ID",
+      "store_app_id_placeholder": "480",
       "verification": "client_receipt",
       "verify_route": "/verify/steam"
     },
     {
-      "app_id_is_store_id": false,
-      "app_id_label": "App id (any unique id of the web build)",
-      "app_id_placeholder": "com.example.mygame.web",
       "binding": "none",
       "docs": "stripe",
       "finish": "none",
@@ -257,7 +250,7 @@
       "name": "Stripe",
       "notifications": true,
       "notify_label": "Webhook endpoint (Stripe Dashboard → Developers → Webhooks → Add destination)",
-      "notify_query": "app={app_id}",
+      "notify_query": "app={store_app_id}",
       "notify_route": "/notify/stripe",
       "notify_secret": null,
       "platforms": [
@@ -288,13 +281,12 @@
           "need": "required"
         }
       ],
+      "store_app_id_label": "App id (any unique id of the web build)",
+      "store_app_id_placeholder": "com.example.mygame",
       "verification": "webhook",
       "verify_route": null
     },
     {
-      "app_id_is_store_id": false,
-      "app_id_label": "App id (any unique id; one Xsolla project per build)",
-      "app_id_placeholder": "com.example.mygame.web",
       "binding": "none",
       "docs": "xsolla",
       "finish": "none",
@@ -303,7 +295,7 @@
       "name": "Xsolla",
       "notifications": true,
       "notify_label": "Webhook URL (Publisher Account → the project → Project settings → Webhooks)",
-      "notify_query": "app={app_id}",
+      "notify_query": "app={store_app_id}",
       "notify_route": "/notify/xsolla",
       "notify_secret": null,
       "platforms": [
@@ -349,13 +341,12 @@
           "need": "optional"
         }
       ],
+      "store_app_id_label": "App id (any unique id; one Xsolla project per build)",
+      "store_app_id_placeholder": "com.example.mygame",
       "verification": "webhook",
       "verify_route": null
     },
     {
-      "app_id_is_store_id": false,
-      "app_id_label": "App id (package name, or e.g. package.huawei when the Google Play build uses it)",
-      "app_id_placeholder": "com.example.mygame.huawei",
       "binding": "none",
       "docs": "huawei-appgallery",
       "finish": "client",
@@ -364,7 +355,7 @@
       "name": "Huawei AppGallery",
       "notifications": true,
       "notify_label": "Server notification URL (AppGallery Connect → the app → In-App Purchases → Settings, version v2)",
-      "notify_query": "app={app_id}",
+      "notify_query": "app={store_app_id}",
       "notify_route": "/notify/huawei",
       "notify_secret": "huawei_notify_secret",
       "platforms": [
@@ -405,13 +396,12 @@
           "need": "optional"
         }
       ],
+      "store_app_id_label": "Package name (the same as the Google Play build's is fine)",
+      "store_app_id_placeholder": "com.example.mygame",
       "verification": "client_receipt",
       "verify_route": "/verify/huawei"
     },
     {
-      "app_id_is_store_id": false,
-      "app_id_label": "App id (any unique id, e.g. package.telegram)",
-      "app_id_placeholder": "com.example.mygame.telegram",
       "binding": "none",
       "docs": "telegram-stars",
       "finish": "none",
@@ -420,7 +410,7 @@
       "name": "Telegram Stars",
       "notifications": true,
       "notify_label": "Bot webhook URL (setWebhook with secret_token = telegram_webhook_secret; the Setup tab sets it)",
-      "notify_query": "app={app_id}",
+      "notify_query": "app={store_app_id}",
       "notify_route": "/notify/telegram",
       "notify_secret": null,
       "platforms": [
@@ -447,13 +437,12 @@
           "need": "required"
         }
       ],
+      "store_app_id_label": "App id (any unique id of the Telegram build)",
+      "store_app_id_placeholder": "com.example.mygame",
       "verification": "webhook",
       "verify_route": null
     },
     {
-      "app_id_is_store_id": false,
-      "app_id_label": "App id (package name, or e.g. package.samsung when the Google Play build uses it)",
-      "app_id_placeholder": "com.example.mygame.samsung",
       "binding": "none",
       "docs": "samsung-galaxy-store",
       "finish": "server_consume_acknowledge",
@@ -462,7 +451,7 @@
       "name": "Samsung Galaxy Store",
       "notifications": true,
       "notify_label": "Instant Server Notification URL (Seller Portal → the app → In App Purchase: the ISN URL of each item)",
-      "notify_query": "app={app_id}",
+      "notify_query": "app={store_app_id}",
       "notify_route": "/notify/samsung",
       "notify_secret": null,
       "platforms": [
@@ -494,22 +483,14 @@
           "label": "IAP public key (Seller Portal): verifies Instant Server Notifications",
           "name": "samsung_iap_public_key",
           "need": "recommended"
-        },
-        {
-          "account_wide": false,
-          "file": false,
-          "label": "Package name in Galaxy Store (empty: the app id)",
-          "name": "samsung_package_name",
-          "need": "optional"
         }
       ],
+      "store_app_id_label": "Package name (the same as the Google Play build's is fine)",
+      "store_app_id_placeholder": "com.example.mygame",
       "verification": "client_receipt",
       "verify_route": "/verify/samsung"
     },
     {
-      "app_id_is_store_id": false,
-      "app_id_label": "App id (any unique id, e.g. package.quest when the Google Play build uses the package)",
-      "app_id_placeholder": "com.example.mygame.quest",
       "binding": "none",
       "docs": "meta-quest",
       "finish": "server_consume_acknowledge",
@@ -545,13 +526,12 @@
           "need": "required"
         }
       ],
+      "store_app_id_label": "App id (any unique id, e.g. the package name)",
+      "store_app_id_placeholder": "com.example.mygame",
       "verification": "client_receipt",
       "verify_route": "/verify/meta"
     },
     {
-      "app_id_is_store_id": false,
-      "app_id_label": "App id",
-      "app_id_placeholder": "",
       "binding": "none",
       "docs": "",
       "finish": "none",
@@ -570,6 +550,8 @@
       "refunds": "Revoked by an admin",
       "reports_price": false,
       "secrets": [],
+      "store_app_id_label": "App id",
+      "store_app_id_placeholder": "",
       "verification": "manual",
       "verify_route": null
     }

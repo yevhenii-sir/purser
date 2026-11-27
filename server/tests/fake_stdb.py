@@ -2,7 +2,7 @@
 reducers the scripts call, recorded in `calls`. Use as a context manager:
 
     with FakeServer() as s:
-        s.add_app("com.example.mygame", "android")
+        key = s.add_app("com.example.mygame", "android")   # "google:com.example.mygame"
         bulk_setup.main([...])
 """
 import json
@@ -20,17 +20,16 @@ DB = "billing-test"
 APP_DEFAULTS = {"game_key": "", "account": "default", "spacetime_url": "", "spacetime_db": "", "grant_reducer": "",
                 "revoke_reducer": "", "webhook_url": "", "allow_sandbox": True, "enabled": True,
                 "client_consumes": False, "apple_refund_mode": "", "sns_topic_arn": "", "client_auth": "open"}
-DEFAULT_STORE = {"android": "google", "ios": "apple", "amazon": "amazon", "steam": "steam"}
 PRODUCT_DEFAULTS = {"price_micros": 0, "currency": "", "title": "", "description": "", "period": "",
                     "apple_group": "", "catalog_id": "", "access": ""}
 
 
 class FakeServer:
     def __init__(self):
-        self.apps = {}
+        self.apps = {}  # build key ({store}:{store_app_id}) -> game_app row
         self.products = {}
-        self.catalogs = {}  # app_id -> admin_list_store_products answer, or {"error": ...}
-        self.reports = {}  # app_id -> admin_check_app answer
+        self.catalogs = {}  # build key -> admin_list_store_products answer, or {"error": ...}
+        self.reports = {}  # build key -> admin_check_app answer
         self.refuse_products = set()  # product ids admin_upsert_products refuses
         self.calls = []
         self.owner = True
@@ -38,12 +37,15 @@ class FakeServer:
 
     # -- state ----------------------------------------------------------------------------------
 
-    def add_app(self, app_id, platform, **fields):
-        row = dict(APP_DEFAULTS, app_id=app_id, platform=platform, store=DEFAULT_STORE.get(platform, ""),
-                   delivery="none")
+    def add_app(self, store_app_id, platform, **fields):
+        """A build on the server; returns its key."""
+        store = stdb.build_store(platform, fields.pop("store", ""))
+        key = stdb.build_key(platform, store_app_id, store)
+        row = dict(APP_DEFAULTS, app_id=key, store_app_id=store_app_id, platform=platform, store=store, delivery="none")
         row.update(fields)
-        row["game_key"] = row["game_key"] or app_id
-        self.apps[app_id] = row
+        row["game_key"] = row["game_key"] or store_app_id
+        self.apps[key] = row
+        return key
 
     def add_product(self, app_id, product_id, kind, **fields):
         self.products[f"{app_id}:{product_id}"] = dict(PRODUCT_DEFAULTS, key=f"{app_id}:{product_id}", app_id=app_id,
@@ -95,14 +97,17 @@ class FakeServer:
 
     def admin_upsert_game_app(self, text):
         i = json.loads(text)
+        if "app_id" in i:  # the server makes the key: a script sending one is out of date
+            raise stdb.StdbError("HTTP 530", 530, "[ERR_BAD_JSON] unknown field `app_id`")
         if i.get("delivery") not in ("none", "spacetimedb", "webhook"):
             raise stdb.StdbError("HTTP 530", 530, "[ERR_BAD_APP] delivery must be spacetimedb, webhook or none")
+        store = stdb.build_store(i["platform"], i.get("store", ""))
+        key = stdb.build_key(i["platform"], i["store_app_id"], store)
         row = dict(APP_DEFAULTS)
-        row.update(self.apps.get(i["app_id"], {}))
-        row.update(i)
-        row["store"] = i.get("store") or DEFAULT_STORE[i["platform"]]
-        row["game_key"] = row["game_key"] or row["app_id"]
-        self.apps[i["app_id"]] = row
+        row.update(self.apps.get(key, {}))
+        row.update(i, app_id=key, store=store)
+        row["game_key"] = row["game_key"] or row["store_app_id"]
+        self.apps[key] = row
         return None
 
     def admin_upsert_products(self, text):

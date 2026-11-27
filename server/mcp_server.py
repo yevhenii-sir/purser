@@ -155,7 +155,7 @@ def app_ids_of_game(db, game_key):
 
 
 def scope_app_ids(db, args):
-    """Build ids from `app_id` / `app_ids` / `game_key`; empty = all."""
+    """Build keys from `app_id` / `app_ids` / `game_key`; empty = all."""
     ids = arg_list(args, "app_ids")
     one = arg_str(args, "app_id")
     if one:
@@ -185,7 +185,7 @@ def t_list_apps(db, args):
     games = {}
     for a in sorted(apps, key=lambda a: (a["game_key"], a["app_id"])):
         games.setdefault(a["game_key"], []).append({
-            "app_id": a["app_id"], "platform": a["platform"], "store": a["store"],
+            "app_id": a["app_id"], "store_app_id": a["store_app_id"], "platform": a["platform"], "store": a["store"],
             "account": a["account"], "delivery": a["delivery"], "enabled": a["enabled"],
             "allow_sandbox": a["allow_sandbox"],
             "products": sorted(by_app.get(a["app_id"], []), key=lambda p: p["product_id"]),
@@ -379,7 +379,8 @@ S = {"type": "string"}
 B = {"type": "boolean"}
 DAY = {"type": "string", "description": "YYYY-MM-DD (UTC)"}
 SCOPE = {
-    "app_id": {"type": "string", "description": "One build (see list_apps)"},
+    "app_id": {"type": "string", "description": "One build, by its key {store}:{id in the store}, e.g. "
+                                                "google:com.example.mygame (see list_apps)"},
     "game_key": {"type": "string", "description": "All builds of one app (see list_apps)"},
 }
 
@@ -395,8 +396,9 @@ CHECK = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": Fals
 
 TOOLS = [
     ("list_apps", t_list_apps, READ,
-     "Apps (game_key) with their builds (one per store: app_id, platform, store, account, delivery) and "
-     "each build's product catalog. Start here to learn the ids other tools take.",
+     "Apps (game_key) with their builds (one per store: app_id = the build key {store}:{store_app_id}, "
+     "store_app_id = its id in the store, platform, store, account, delivery) and each build's product "
+     "catalog. Start here to learn the ids other tools take: they name a build by its key.",
      schema({"game_key": {"type": "string", "description": "Only this app"}})),
     ("overview", t_overview, READ,
      "Ledger counters: purchases in total and by status, purchases the worker is still processing "
@@ -407,7 +409,7 @@ TOOLS = [
      "store fee, purchases, payers, trials, renewals), the daily series, by app, by product, "
      "subscriptions and paywall views. Default range: the last 30 days; sandbox purchases are left out.",
      schema({"from": DAY, "to": DAY, "game_key": SCOPE["game_key"],
-             "app_ids": {"type": "array", "items": S, "description": "Only these builds"},
+             "app_ids": {"type": "array", "items": S, "description": "Only these builds (keys, see list_apps)"},
              "include_sandbox": B})),
     ("find_player", t_find_player, READ,
      "Finds the player(s) behind a user id, ledger id ({store}:{transaction_id}), transaction / order id "
@@ -420,7 +422,7 @@ TOOLS = [
     ("list_purchases", t_list_purchases, READ,
      "Ledger rows updated in a time range, newest first. Statuses: verified, granted, completed, "
      "revoke_pending, revoked, expire_pending, expired, transfer_pending, rejected.",
-     schema({**SCOPE, "app_ids": {"type": "array", "items": S},
+     schema({**SCOPE, "app_ids": {"type": "array", "items": S, "description": "Only these builds (keys, see list_apps)"},
              "status": S,
              "since": {"type": "string", "description": "YYYY-MM-DD or ISO 8601 time (default: all time)"},
              "until": {"type": "string", "description": "YYYY-MM-DD (inclusive) or ISO 8601 time"},
@@ -451,7 +453,7 @@ WRITE_TOOLS = [
      "Grants a product to a player without a store purchase (support compensation, promo). It goes "
      "through the ledger: the worker delivers it to the game and /entitlements lists it. Pass a "
      "transaction_id to make retries safe.",
-     schema({"app_id": S, "user_id": S, "product_id": S, "transaction_id": S,
+     schema({"app_id": SCOPE["app_id"], "user_id": S, "product_id": S, "transaction_id": S,
              "expires_at": {"type": "string", "description": "Subscriptions: YYYY-MM-DD or ISO time; empty = never"},
              "note": S}, ["app_id", "user_id", "product_id"])),
     ("revoke_purchase", t_revoke_purchase, {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True},
@@ -513,7 +515,8 @@ class Server:
                 "protocolVersion": requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
-                "instructions": f"Billing database '{self.db.database}'. Call list_apps first to learn the app ids. "
+                "instructions": f"Billing database '{self.db.database}'. Call list_apps first to learn the build keys "
+                                "({store}:{id in the store}) other tools take as app_id. "
                                 "Amounts are USD unless a currency is given; micros fields are millionths.",
             })
         if method == "ping":

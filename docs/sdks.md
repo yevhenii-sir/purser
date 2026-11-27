@@ -16,6 +16,24 @@ The store purchase itself stays with the engine's IAP plugin.
 | Godot 4 addon (GDScript, `HTTPRequest`) | Godot 4.2+ | [sdks/godot](../sdks/godot/README.md) | GodotGooglePlayBilling, godot-ios-plugins `InAppStore` |
 | Defold module (Lua, `http.request`) | Defold | [sdks/defold](../sdks/defold/README.md) | extension-iap |
 
+## The build a client is for
+
+A client is set up for one build: its `app_id` and its `store`.
+
+- `app_id` is the app's id in its store: the Android package name, the iOS bundle id, the Steam app id, or the id of the Stripe, Xsolla or Telegram build.
+- `store` is the store of that build: `google`, `apple`, `amazon`, `huawei`, `samsung`, `meta`, `steam`, `stripe`, `xsolla` or `telegram`.
+
+Builds in different stores often share an app id (`com.example.mygame` on Google Play and on the App Store), so the server finds the build by both. `/verify/<store>`, the checkout routes and the other routes whose path names a store send `app_id` only. Every other route sends `store` next to `app_id`: `/entitlements`, `/restore`, `/paywall`, `/paywall/event`, `/attributes`, `/redeem`, `/wallet`, `/wallet/spend`.
+
+| SDK | Setting |
+|---|---|
+| Unity | the store adapter's store and `BillingConfig.AppIdFor(store)` (no setting) |
+| TypeScript | `new PurserClient({ appId, store, ... })` |
+| Godot | `configure({"app_id": ..., "store": ...})` |
+| Defold | `purser.new({ app_id = ..., store = ... })` |
+
+A game sold in two stores through one SDK client makes a client for each store.
+
 ## What each covers
 
 | | TypeScript | Godot | Defold |

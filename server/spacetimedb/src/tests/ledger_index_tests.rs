@@ -109,25 +109,25 @@ fn the_derived_ledger_tables_follow_every_change_and_rebuild_to_the_same() {
 fn a_build_with_a_huge_backlog_does_not_starve_the_others() {
     let w = World::new();
     w.write(|tx| {
-        let product = Product::new("com.studio.broken", "gems", kind::CONSUMABLE);
+        let product = Product::new("google:com.studio.broken", "gems", kind::CONSUMABLE);
         for i in 0..3000 {
-            let p = Purchase::new("google", &format!("old-{i:04}"), "com.studio.broken", &product, "player-1", NOW_MICROS - 1_000_000 + i);
+            let p = Purchase::new("google", &format!("old-{i:04}"), "google:com.studio.broken", &product, "player-1", NOW_MICROS - 1_000_000 + i);
             ledger::insert_purchase(tx, p);
         }
-        let product = Product::new("com.studio.other", "gems", kind::CONSUMABLE);
-        ledger::insert_purchase(tx, Purchase::new("google", "new-1", "com.studio.other", &product, "player-2", NOW_MICROS));
+        let product = Product::new("google:com.studio.other", "gems", kind::CONSUMABLE);
+        ledger::insert_purchase(tx, Purchase::new("google", "new-1", "google:com.studio.other", &product, "player-2", NOW_MICROS));
     });
     let none = std::collections::BTreeSet::new();
     let picked = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 10, &none));
     assert_eq!(picked.len(), 10);
-    assert!(picked[..2].contains(&("google:new-1".to_string(), "com.studio.other".to_string())), "builds take turns: {picked:?}");
-    assert_eq!(picked.iter().filter(|(_, app)| app == "com.studio.broken").count(), 9, "the rest of the batch goes to the build with work");
-    let broken: Vec<&str> = picked.iter().filter(|(_, app)| app == "com.studio.broken").map(|(id, _)| id.as_str()).collect();
+    assert!(picked[..2].contains(&("google:new-1".to_string(), "google:com.studio.other".to_string())), "builds take turns: {picked:?}");
+    assert_eq!(picked.iter().filter(|(_, app)| app == "google:com.studio.broken").count(), 9, "the rest of the batch goes to the build with work");
+    let broken: Vec<&str> = picked.iter().filter(|(_, app)| app == "google:com.studio.broken").map(|(id, _)| id.as_str()).collect();
     assert_eq!(broken[0], "google:old-0000", "oldest first within a build");
     // A build left out (its host did not answer in this run).
-    let skip: std::collections::BTreeSet<String> = ["com.studio.broken".to_string()].into();
+    let skip: std::collections::BTreeSet<String> = ["google:com.studio.broken".to_string()].into();
     let picked = w.read(|tx| crate::ledger_index::due(tx, NOW_MICROS, 10, &skip));
-    assert_eq!(picked, vec![("google:new-1".to_string(), "com.studio.other".to_string())]);
+    assert_eq!(picked, vec![("google:new-1".to_string(), "google:com.studio.other".to_string())]);
 }
 
 #[test]
@@ -135,7 +135,7 @@ fn builds_take_turns_when_more_have_work_than_a_run_takes() {
     let w = World::new();
     w.write(|tx| {
         for b in 0..30 {
-            let app = format!("com.studio.b{b:02}");
+            let app = format!("google:com.studio.b{b:02}");
             let product = Product::new(&app, "gems", kind::CONSUMABLE);
             ledger::insert_purchase(tx, Purchase::new("google", &format!("t-{b}"), &app, &product, "player-1", NOW_MICROS));
         }
@@ -384,7 +384,7 @@ fn a_late_reversal_of_a_transaction_revoked_again_changes_nothing() {
     w.run_worker();
     // Apple refunded it again; the reversal of the first refund arrives late.
     let payload = json!({
-        "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_APP,
+        "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_ID,
         "productId": "gems", "type": "Consumable", "environment": "Sandbox", "revocationDate": 1_700_000_000_000i64,
     });
     let jws = format!(

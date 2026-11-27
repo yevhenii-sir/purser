@@ -38,7 +38,7 @@ pub(super) fn find_player(w: &World, query: &str) -> Value {
 
 pub(super) fn voided_notification(product_type: i64) -> Value {
     json!({
-        "packageName": APP,
+        "packageName": PACKAGE,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": product_type },
     })
 }

@@ -16,12 +16,18 @@ func _ready() -> void:
 	add_child(purser)
 	purser.configure({
 		"base_url": "https://stdb.example.com/v1/database/<your-billing-db>/route",
-		"app_id": "com.example.mygame",            # the build's app_id (its store's build)
+		"app_id": "com.example.mygame",            # the build's app_id: the app's id in its store
+		"store": "google",                         # the build's store: google, apple, amazon, steam, ...
 		"user_id": player_id,
 		# Builds with client_auth = signed: a player token from your backend (HS256 JWT, docs/game-integration.md).
 		"player_token_provider": func(uid: String) -> String: return await backend.purser_token(uid),
 	})
 ```
+
+Builds in different stores may share an app id (`com.example.mygame` on Google Play and on the App Store): the server
+finds the build by `store` and `app_id`, so `store` is sent next to `app_id` to every route whose path names no store
+(`/entitlements`, `/restore`, `/paywall`, `/paywall/event`, `/attributes`, `/redeem`, `/wallet`, `/wallet/spend`). A game
+sold in two stores configures a client for each.
 
 Every call is awaited and returns `{"http_status", "value", "error", "code", "retry_after"}` (`http_status` 0: the
 server was not reached). Requests are retried after a transport error, a 5xx or a 429 (waiting its `Retry-After`, at most

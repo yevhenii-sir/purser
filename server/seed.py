@@ -17,7 +17,12 @@ Usage (from server/, after `spacetime login` as the database owner, or with PURS
 Files in --dir (all optional), loaded in this order:
     spacetime_hosts.json  array of self-hosted SpacetimeDB hosts -> admin_add_spacetime_host
                       (owner only; loaded first because apps on those hosts are validated against it)
-    apps.json         array of game apps        -> admin_upsert_game_app
+    apps.json         array of builds           -> admin_upsert_game_app
+                      {store_app_id, platform, store?, game_key, account, delivery, ...}: store_app_id
+                      is the build's id in its store (package name, bundle id; any unique id for
+                      stores without one) and an empty store is the platform's default. The server
+                      keys the build `{store}:{store_app_id}` (google:com.example.mygame): that key is
+                      the `app_id` of every other file and the scope of the build's own secrets.
     app_names.json    {game_key: display name}  -> admin_set_app_name (the admin page's app names)
     products.json     array of products         -> admin_upsert_products
     steam.json        {"builds": [{app_id, steam_app_id?, sandbox?}]  -> admin_set_steam_build,
@@ -40,6 +45,7 @@ Files in --dir (all optional), loaded in this order:
                       (credential alert-<id>/alert_*); an enabled channel without any is skipped.
     settings.json     {public_base_url, store_commission_percent, store_commission_by_app,
                        store_commission_after_year_percent}  -> admin_set_setting
+                      (store_commission_by_app: {build key: percent})
 Values starting with `<` are placeholders and are skipped.
 
 --export writes the same files from the database (owner only: it reads the tables with /sql).
@@ -169,6 +175,15 @@ def alert_channel_label(ch):
     return name, label + (f" [{'; '.join(filters)}]" if filters else "")
 
 
+def app_key(app, where="apps.json"):
+    """The key of a build of apps.json, `{store}:{store_app_id}` as the server makes it; exits on a
+    platform or store the server would refuse."""
+    try:
+        return stdb.build_key(app.get("platform", ""), app.get("store_app_id", ""), app.get("store", ""))
+    except ValueError as e:
+        sys.exit(f"{where}: {app.get('store_app_id') or json.dumps(app)}: {e}")
+
+
 def seed(a, d):
     for host in load(d / "spacetime_hosts.json") or []:
         if has_placeholder(host):
@@ -177,8 +192,9 @@ def seed(a, d):
         print(f"host     {host}")
 
     for app in load(d / "apps.json") or []:
+        key = app_key(app)
         call(a, "admin_upsert_game_app", json.dumps(app))
-        print(f"app      {app['app_id']}")
+        print(f"app      {key}")
 
     for key, name in (load(d / "app_names.json") or {}).items():
         if has_placeholder(name):
@@ -281,7 +297,8 @@ UNITY_TYPE = {"consumable": "Consumable", "non_consumable": "NonConsumable", "su
 
 def unity_config(route, builds, products):
     """The Unity inspector's config (same shape as the admin page's "Copy Unity config"): every
-    build, and every product once by its catalog id with the store ids that differ and a price."""
+    build by its store and its id there, and every product once by its catalog id with the store ids
+    that differ and a price. `builds`: {app_id (the key), store, store_app_id}."""
     store_of = {b["app_id"]: b["store"] for b in builds}
     by_id = {}
     for p in products:
@@ -295,7 +312,7 @@ def unity_config(route, builds, products):
             item.update(price=p["price_micros"] / 1e6, currency=p["currency"])
         if p.get("access") and "access" not in item:
             item["access"] = [a for a in p["access"].split(",") if a]
-    config = {"serverBaseUrl": route, "builds": [{"store": b["store"], "appId": b["app_id"]} for b in builds],
+    config = {"serverBaseUrl": route, "builds": [{"store": b["store"], "appId": b["store_app_id"]} for b in builds],
               "products": list(by_id.values())}
     return json.dumps(config, indent=2)
 
@@ -325,8 +342,8 @@ def run_check(a, app_ids, quiet=False):
 
 
 def check(a, d):
-    """Runs admin_check_app for every app in apps.json. Returns True when nothing failed."""
-    apps = [x["app_id"] for x in load(d / "apps.json") or []]
+    """Runs admin_check_app for every build in apps.json. Returns True when nothing failed."""
+    apps = [app_key(x) for x in load(d / "apps.json") or []]
     if not apps:
         sys.exit(f"no apps in {d / 'apps.json'} to check")
     ok, reports, _ = run_check(a, apps, quiet=a.json)
@@ -429,7 +446,9 @@ def export(a, d, force):
     if hosts:
         files["spacetime_hosts.json"] = hosts
 
-    apps = sorted(sql(a, "SELECT * FROM game_app"), key=lambda r: (r["game_key"], r["app_id"]))
+    # The key (`app_id`) is the server's: apps.json names a build by its store and its id there.
+    apps = [{k: v for k, v in r.items() if k != "app_id"}
+            for r in sorted(sql(a, "SELECT * FROM game_app"), key=lambda r: (r["game_key"], r["app_id"]))]
     if apps:
         files["apps.json"] = apps
 
@@ -608,9 +627,10 @@ def init(a):
     builds = []
     for platform in ("android", "ios", "amazon"):
         store = stores[platforms[platform]["default_store"]]
-        app_id = ask(f"{store['name']} build: {store['app_id_label']} (empty: none)")
-        if app_id:
-            builds.append({"app_id": app_id, "platform": platform, "store": store["id"]})
+        store_app_id = ask(f"{store['name']} build: {store['store_app_id_label']} (empty: none)")
+        if store_app_id:
+            builds.append({"app_id": stdb.build_key(platform, store_app_id, store["id"]), "store_app_id": store_app_id,
+                           "platform": platform, "store": store["id"]})
     if not builds:
         sys.exit("no builds: add Steam or web builds in the admin page or in apps.json")
 
@@ -634,7 +654,7 @@ def init(a):
         target["webhook_url"] = ask("Webhook URL (https://...)", required=True)
         creds.append({"scope": account, "name": "webhook_secret", "value": secrets.token_hex(32)})
 
-    apps = [{"app_id": b["app_id"], "platform": b["platform"], "game_key": game_key, "account": account,
+    apps = [{"store_app_id": b["store_app_id"], "platform": b["platform"], "game_key": game_key, "account": account,
              **target, "allow_sandbox": True, "enabled": True} for b in builds]
 
     asked = set()

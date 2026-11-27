@@ -82,7 +82,7 @@ export function AppCombobox({
       <>
         <span className="min-w-0 truncate">{selected.group.name}</span>
         <span className="shrink-0 text-muted-foreground">· {buildLabel(build)}</span>
-        {ambiguous && <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{build.app_id}</span>}
+        {ambiguous && <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{build.store_app_id}</span>}
       </>
     ) : (
       <span className="truncate">{selected.group.name}</span>
@@ -156,7 +156,7 @@ export function AppCombobox({
                         >
                           {Icon ? <Icon className="text-muted-foreground" /> : null}
                           <span className="shrink-0">{buildLabel(a)}</span>
-                          <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{a.app_id}</span>
+                          <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">{a.store_app_id}</span>
                         </CommandItem>
                       )
                     })}

@@ -145,7 +145,7 @@ namespace Purser
             try
             {
                 var response = await m_Api.EntitlementsAsync(
-                    new EntitlementsRequest { AppId = m_Context.AppId, UserId = user, Client = m_Context.Client }, m_Context.Lifetime);
+                    new EntitlementsRequest { AppId = m_Context.AppId, Store = m_Context.BuildStore, UserId = user, Client = m_Context.Client }, m_Context.Lifetime);
                 if (response.IsHttpSuccess && response.Value != null)
                 {
                     // Only an answer counts for the foreground throttle: a failed refresh is tried again on the next resume.

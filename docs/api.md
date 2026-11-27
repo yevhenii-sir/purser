@@ -32,6 +32,7 @@ https://<host>/v1/database/<your-billing-db>/route
 
 Client routes follow these rules (see [game integration](game-integration.md#client-requests-player-tokens-limits-signed-answers)):
 
+- **The build.** `app_id` is the app's id in its store (package name, bundle id). Builds in different stores may share it, so the routes whose path does not name a store (`/restore`, `/entitlements`, `/paywall`, `/paywall/event`, `/attributes`, `/redeem`, `/wallet`, `/wallet/spend`) also take `store`: the store of the build (`google`, `apple`, `amazon`, ...). The server finds the build by both.
 - **Player tokens.** They may need a player token (`Authorization: Bearer`) in builds with signed client requests.
 - **Rate limits.** They are rate limited (`429` + `Retry-After`).
 - **Signed answers.** With a signing key, `/entitlements` and `/restore` answers are signed (`X-Purser-Signature`).

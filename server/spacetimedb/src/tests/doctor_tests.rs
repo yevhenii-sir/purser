@@ -111,7 +111,7 @@ fn doctor_does_not_send_the_token_to_a_host_that_is_not_allowed() {
 #[test]
 fn rtdn_push_tokens_must_name_the_build_audience_and_service_account() {
     let w = World::new();
-    let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
+    let test = json!({ "packageName": PACKAGE, "testNotification": { "version": "1.0" } });
     let push = |change: fn(&mut Value)| w.google_push(&format!("Bearer {}", w.push_token(change)), test.clone());
 
     let o = push(|c| c["aud"] = json!("purser-rtdn:com.other.game"));
@@ -144,7 +144,7 @@ fn rtdn_push_tokens_must_name_the_build_audience_and_service_account() {
 fn google_keys_are_cached_and_fetched_for_an_unknown_key_at_most_once_a_minute() {
     use purser_core::google_oidc::{audience, testing};
     let w = World::new();
-    let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
+    let test = json!({ "packageName": PACKAGE, "testNotification": { "version": "1.0" } });
     let certs = || w.calls(purser_core::google_oidc::CERTS_URL);
     assert_eq!(w.google_notification(test.clone()).http, 200);
     assert_eq!(w.google_notification(test.clone()).http, 200);
@@ -174,7 +174,7 @@ fn google_keys_are_cached_and_fetched_for_an_unknown_key_at_most_once_a_minute()
 #[test]
 fn a_failed_fetch_of_google_keys_is_retried_by_pub_sub() {
     let w = World::new();
-    let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
+    let test = json!({ "packageName": PACKAGE, "testNotification": { "version": "1.0" } });
     w.script(purser_core::google_oidc::CERTS_URL, 500, "backend error");
     assert_eq!(w.google_notification(test.clone()).http, 503);
     w.fake.borrow_mut().overrides.clear();
@@ -189,7 +189,7 @@ fn a_failed_fetch_of_google_keys_is_retried_by_pub_sub() {
 fn rtdn_without_a_token_and_test_notifications_show_up_in_the_setup_check() {
     let w = World::new();
     w.as_admin(false);
-    let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
+    let test = json!({ "packageName": PACKAGE, "testNotification": { "version": "1.0" } });
 
     assert_eq!(w.google_push("", test.clone()).http, 401);
     let h = w.notify_health();
@@ -275,7 +275,7 @@ fn app_store_catalog_is_listed_and_compared() {
         .to_string(),
     );
     w.script("/v1/apps?filter%5BbundleId%5D=com.studio.game.ios", 200, &json!({ "data": [
-        { "type": "apps", "id": "1234567890", "attributes": { "bundleId": IOS_APP } }] }).to_string());
+        { "type": "apps", "id": "1234567890", "attributes": { "bundleId": IOS_ID } }] }).to_string());
     w.script("/subscriptionGroups?", 200, r#"{"data":[{"type":"subscriptionGroups","id":"g"}],"included":[
         {"type":"subscriptions","id":"s1","attributes":{"productId":"premium","subscriptionPeriod":"ONE_MONTH"}},
         {"type":"subscriptions","id":"s2","attributes":{"productId":"vip_year","subscriptionPeriod":"ONE_YEAR"}}]}"#);

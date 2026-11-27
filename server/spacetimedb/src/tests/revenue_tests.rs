@@ -96,7 +96,7 @@ fn a_refund_of_some_units_takes_back_their_part_of_the_price() {
     let two_refunded = json!({ "purchaseState": 0, "orderId": ORDER, "quantity": 3, "refundableQuantity": 1, "consumptionState": 1 });
     w.script("/purchases/products/", 200, &two_refunded.to_string());
     let voided = json!({
-        "packageName": APP,
+        "packageName": PACKAGE,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 2, "refundType": 2 },
     });
     assert_eq!(w.google_notification(voided.clone()).http, 200);
@@ -131,7 +131,7 @@ fn a_prorated_app_store_refund_takes_back_its_share_of_the_price() {
     let refunded_total = |w: &World| revenue_rows(w).values().map(|r| r.4).sum::<i64>();
     let st = purser_core::apple::parse_transaction_payload(
         &json!({
-            "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_APP, "productId": "gems",
+            "transactionId": "2000000123", "originalTransactionId": "2000000123", "bundleId": IOS_ID, "productId": "gems",
             "environment": "Sandbox", "price": price / 1000, "currency": "USD",
             "revocationDate": NOW_MICROS / 1000, "revocationType": "REFUND_PRORATED", "revocationPercentage": 40_000,
         }),
@@ -163,7 +163,7 @@ fn refunds_count_and_transfers_and_manual_grants_add_no_revenue() {
     w.verify("player-1", "no_ads");
     w.restore("player-2", "no_ads");
     let voided = json!({
-        "packageName": APP,
+        "packageName": PACKAGE,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 1 },
     });
     w.google_notification(voided);
@@ -196,7 +196,7 @@ fn rebuilding_from_the_ledger_gives_the_live_numbers() {
     w.restore("player-2", "no_ads");
     w.advance_clock(86_400);
     let voided = json!({
-        "packageName": APP,
+        "packageName": PACKAGE,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 1 },
     });
     w.google_notification(voided);
@@ -512,12 +512,13 @@ fn a_revenue_report_of_one_app_reads_only_its_builds() {
         use crate::revenue::revenue_daily;
         let mine = tx.db.revenue_daily().iter().next().unwrap();
         let mut other = tx.db.game_app().app_id().find(APP.to_string()).unwrap();
-        other.app_id = "com.other.game".into();
+        other.app_id = "google:com.other.game".into();
+        other.store_app_id = "com.other.game".into();
         other.game_key = "other".into();
         tx.db.game_app().insert(other);
         tx.db.revenue_daily().insert(crate::revenue::RevenueDaily {
-            key: mine.key.replace(APP, "com.other.game"),
-            app_id: "com.other.game".into(),
+            key: mine.key.replace(APP, "google:com.other.game"),
+            app_id: "google:com.other.game".into(),
             gross_micros: 5_000_000,
             ..mine
         });

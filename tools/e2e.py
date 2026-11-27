@@ -79,8 +79,13 @@ def main():
             check(False, f"sql {q[:60]} ({code} {body[:200]!r})")
         return json.loads(body)[0]
 
-    app = "com.example.e2e"
-    call("admin_upsert_game_app", json.dumps({"game_key": "e2e", "app_id": app, "platform": "android", "delivery": "none"}))
+    # A build is keyed {store}:{its id in the store}: admin calls name it by the key, clients by the id and the store.
+    # The App Store build shares the package name of the Google Play one.
+    package = "com.example.e2e"
+    app, ios_app = f"google:{package}", f"apple:{package}"
+    client = {"app_id": package, "store": "google"}
+    call("admin_upsert_game_app", json.dumps({"game_key": "e2e", "store_app_id": package, "platform": "android", "delivery": "none"}))
+    call("admin_upsert_game_app", json.dumps({"game_key": "e2e", "store_app_id": package, "platform": "ios", "delivery": "none"}))
     call("admin_upsert_products", json.dumps([
         {"app_id": app, "product_id": "vip", "kind": "subscription", "access": "premium"},
         {"app_id": app, "product_id": "no_ads", "kind": "non_consumable"},
@@ -98,10 +103,10 @@ def main():
     check(code == 200 and h.get("content-encoding") == "gzip" and gzip.decompress(body).startswith(b"<!doctype html>"), "admin page gzipped")
     code, _, _ = req("GET", f"{route}/admin", headers={"If-None-Match": h.get("etag", "")})
     check(code == 304, "admin page 304 by ETag")
-    code, _, body = req("POST", f"{route}/entitlements", json.dumps({"app_id": app, "user_id": "player-3"}).encode())
+    code, _, body = req("POST", f"{route}/entitlements", json.dumps({**client, "user_id": "player-3"}).encode())
     check(code == 200 and json.loads(body)["non_consumables"] == ["no_ads"], f"/entitlements {body[:200]!r}")
-    rows = sql(f"SELECT app_id FROM game_app WHERE app_id = '{app}' OR app_id = 'none'")["rows"]
-    check(len(rows) == 1, "/sql with OR")
+    rows = sql(f"SELECT app_id FROM game_app WHERE app_id = '{app}' OR app_id = '{ios_app}' OR app_id = 'none'")["rows"]
+    check(len(rows) == 2, "/sql with OR: two builds of one package name, one per store")
 
     # The full revenue report is counted by a scheduled job, a batch per call: asked again until it is done.
     report = {}
@@ -116,20 +121,20 @@ def main():
     key_id = secrets.token_hex(6)
     key = f"psk_{key_id}_{secrets.token_urlsafe(32)}"
     call("admin_add_server_key", json.dumps({"game_key": "e2e", "name": "ci", "scopes": "read", "key_id": key_id, "key_hash": hashlib.sha256(key.encode()).hexdigest()}))
-    code, _, body = req("POST", f"{route}/server/entitlements", json.dumps({"app_id": app, "user_id": "player-4"}).encode(), headers={"Authorization": f"Bearer {key}"})
+    code, _, body = req("POST", f"{route}/server/entitlements", json.dumps({**client, "user_id": "player-4"}).encode(), headers={"Authorization": f"Bearer {key}"})
     check(code == 200 and json.loads(body)["non_consumables"] == ["no_ads"], f"/server/entitlements {body[:200]!r}")
-    code, _, _ = req("POST", f"{route}/server/entitlements", json.dumps({"app_id": app, "user_id": "player-4"}).encode())
+    code, _, _ = req("POST", f"{route}/server/entitlements", json.dumps({**client, "user_id": "player-4"}).encode())
     check(code == 401, "/server/entitlements without a key is refused")
 
     # Moving to another server: a paused server asks callers to come back later; ending the move
     # serves the routes again (forwarding needs a public https server: module tests cover it).
     ok = lambda body: json.loads(json.loads(body)).get("ok") is True
     check(ok(call("admin_set_move", "paused", "")), "admin_set_move paused")
-    code, h, body = req("POST", f"{route}/entitlements", json.dumps({"app_id": app, "user_id": "player-3"}).encode())
+    code, h, body = req("POST", f"{route}/entitlements", json.dumps({**client, "user_id": "player-3"}).encode())
     check(code == 503 and h.get("retry-after") == "60" and b"ERR_MOVING" in body, f"a paused server answers 503 with Retry-After ({code} {body[:120]!r})")
     check(json.loads(req("GET", f"{route}/healthz")[2]).get("moving") == "paused", "/healthz reports the move")
     check(ok(call("admin_set_move", "", "")), "the move ended")
-    code, _, body = req("POST", f"{route}/entitlements", json.dumps({"app_id": app, "user_id": "player-3"}).encode())
+    code, _, body = req("POST", f"{route}/entitlements", json.dumps({**client, "user_id": "player-3"}).encode())
     check(code == 200, "the routes are served again")
 
     if a.game_wasm:
@@ -162,7 +167,7 @@ def main():
     # New rows of auto-increment tables (the log, the audit) get ids that do not collide with restored ones.
     call("admin_grant_manual", json.dumps({"app_id": app, "user_id": "player-9", "product_id": "no_ads", "transaction_id": "after-restore"}))
     check(len(sql("SELECT * FROM purchase_log")["rows"]) > before["purchase_log"], "a grant after the restore writes the log (no id collision)")
-    code, _, body = req("POST", f"{route}/entitlements", json.dumps({"app_id": app, "user_id": "player-3"}).encode())
+    code, _, body = req("POST", f"{route}/entitlements", json.dumps({**client, "user_id": "player-3"}).encode())
     check(code == 200 and json.loads(body)["non_consumables"] == ["no_ads"], "/entitlements after the restore (owned purchases reindexed)")
     print("done")
 
@@ -179,8 +184,9 @@ def idc(a, base, tok, db, req, check, call, sql):
     billing = billing[2:] if billing.startswith("0x") else billing
     code, _, body = req("POST", f"{base}/v1/database/{game_db}/call/allow_purser", json.dumps([{"__identity__": "0x" + billing}]).encode(), tok=tok)
     check(code == 200, f"the game allows billing's identity ({code} {body[:200]!r})")
-    app = "com.example.e2e.idc"
-    call("admin_upsert_game_app", json.dumps({"game_key": "e2e", "app_id": app, "platform": "android", "delivery": "spacetimedb_idc", "spacetime_db": game}))
+    package = "com.example.e2e.idc"
+    app = f"google:{package}"
+    call("admin_upsert_game_app", json.dumps({"game_key": "e2e", "store_app_id": package, "platform": "android", "delivery": "spacetimedb_idc", "spacetime_db": game}))
     call("admin_upsert_products", json.dumps([{"app_id": app, "product_id": "no_ads", "kind": "non_consumable"}]))
     call("admin_grant_manual", json.dumps({"app_id": app, "user_id": "player-idc", "product_id": "no_ads", "transaction_id": "idc-1"}))
     rows, status = [], ""

@@ -29,9 +29,49 @@ const PRUNE_BATCH: usize = 5000;
 
 /// The build and player a client request is about.
 pub trait ClientRequest {
+    /// The build: the app's id in the store as the client sends it, then (after [`parse`]) the
+    /// build's key `{store}:{app id}`.
     fn app_id(&self) -> &str;
+    fn set_app_id(&mut self, key: String);
+    /// The `store` field of a route whose path names no store; empty for the others.
+    fn store(&self) -> &str {
+        ""
+    }
     /// Empty when the request names no player (a paywall before sign-in).
     fn user_id(&self) -> &str;
+}
+
+/// Where a client route learns the build's store.
+#[derive(Clone, Copy, Debug)]
+pub enum StoreOf<'a> {
+    /// The route names it: `/verify/<store>`, `/checkout/stripe`, ...
+    Route(&'a str),
+    /// The request's `store` field.
+    Body,
+}
+
+/// The JSON body of a client request, its `app_id` turned into the build's key with the store.
+pub fn parse<T: DeserializeOwned + ClientRequest>(req: Request, store: StoreOf) -> Result<T, Answer> {
+    let mut r: T = web::json(req)?;
+    name_build(&mut r, store)?;
+    Ok(r)
+}
+
+/// Turns the `app_id` of a parsed request (the app's id in the store) into the build's key.
+pub fn name_build<T: ClientRequest>(r: &mut T, store: StoreOf) -> Result<(), Answer> {
+    let store = match store {
+        StoreOf::Route(s) => s.to_string(),
+        StoreOf::Body => r.store().to_string(),
+    };
+    if store.is_empty() {
+        return Err(web::answer(400, "error", "[ERR_BAD_REQUEST] store is required: the store of the build (google, apple, ...)"));
+    }
+    if purser_core::registry::store(&store).is_none() {
+        return Err(web::answer(400, "error", format!("[ERR_BAD_REQUEST] unknown store '{store}'")));
+    }
+    let key = purser_core::registry::build_key(&store, r.app_id());
+    r.set_app_id(key);
+    Ok(())
 }
 
 /// A request the guard let through.
@@ -168,6 +208,7 @@ pub fn run_tx<C: Ctx, T: DeserializeOwned + ClientRequest>(
     ctx: &mut C,
     req: Request,
     route: &str,
+    store: StoreOf,
     signs: bool,
     f: impl Fn(&TxContext, &T) -> Answer,
 ) -> Response {
@@ -176,7 +217,7 @@ pub fn run_tx<C: Ctx, T: DeserializeOwned + ClientRequest>(
         Err(moved) => return *moved,
     };
     let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let r: T = match web::json(req) {
+    let r: T = match parse(req, store) {
         Ok(r) => r,
         Err(a) => return web::respond(a),
     };
@@ -191,6 +232,7 @@ pub fn run<C: Ctx, T: DeserializeOwned + ClientRequest>(
     ctx: &mut C,
     req: Request,
     route: &str,
+    store: StoreOf,
     signs: bool,
     f: impl FnOnce(&mut C, &T) -> Answer,
 ) -> Response {
@@ -199,7 +241,7 @@ pub fn run<C: Ctx, T: DeserializeOwned + ClientRequest>(
         Err(moved) => return *moved,
     };
     let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
-    let r: T = match web::json(req) {
+    let r: T = match parse(req, store) {
         Ok(r) => r,
         Err(a) => return web::respond(a),
     };

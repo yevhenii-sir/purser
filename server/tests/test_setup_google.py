@@ -42,7 +42,7 @@ class MainTest(unittest.TestCase):
             for i in range(25):
                 s.add_app(f"com.example.g{i:02}", "android", account="studio")
             s.add_app("com.example.p", "android", account="publisher")
-            s.add_app("com.example.ios", "ios", account="studio")
+            s.add_app("com.example.p", "ios", account="studio")
             code, out = self.run_main("--new-key", "--topic", "billing")
         self.assertEqual(code, 0, out)
         requests = [json.loads(c[1]) for c in s.calls if c[0] == "admin_setup_google"]
@@ -50,7 +50,10 @@ class MainTest(unittest.TestCase):
         self.assertEqual({r["topic"] for r in requests}, {"billing"})
         # A new key once per account.
         self.assertEqual([r["new_key"] for r in requests], [True, False, True])
-        self.assertNotIn("com.example.ios", [i for r in requests for i in r["app_ids"]])
+        # Builds go by key: the App Store build of the same package is left out.
+        ids = [i for r in requests for i in r["app_ids"]]
+        self.assertIn("google:com.example.p", ids)
+        self.assertNotIn("apple:com.example.p", ids)
         self.assertIn("== 2/3 (account studio)", out)
         self.assertEqual(out.count("Left to do"), 1)
         self.assertNotIn("ya29.test-token", out)
@@ -72,8 +75,21 @@ class MainTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(len(calls), 2)
         self.assertIn("Pub/Sub API: permission denied", out)
-        self.assertIn("Not set up: com.example.g20, ", out)
-        self.assertNotIn("com.example.g19,", out.split("Not set up:")[1])
+        self.assertIn("Not set up: google:com.example.g20, ", out)
+        self.assertNotIn("google:com.example.g19,", out.split("Not set up:")[1])
+
+    def test_builds_named_by_package(self):
+        with FakeServer() as s:
+            s.add_app("com.example.a", "android")
+            s.add_app("com.example.b", "android")
+            s.add_app("com.example.c", "ios")
+            code, out = self.run_main("--package", "com.example.b")
+            self.assertEqual(code, 0, out)
+            requests = [json.loads(c[1]) for c in s.calls if c[0] == "admin_setup_google"]
+            self.assertEqual([r["app_ids"] for r in requests], [["google:com.example.b"]])
+            # An App Store build has no Google Play build of its bundle id.
+            code, out = self.run_main("--package", "com.example.c")
+        self.assertIn("no Google Play build of com.example.c (google:com.example.c) in the database", str(code))
 
 
 if __name__ == "__main__":

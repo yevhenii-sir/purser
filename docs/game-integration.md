@@ -293,13 +293,13 @@ Create a key in one of two ways:
 
 The key is made on your side and shown once. The server keeps only its SHA-256.
 
-Send it as `Authorization: Bearer psk_…`. A key works for every build of the app and has scopes:
+Send it as `Authorization: Bearer psk_…`. A key works for every build of the app and has scopes. A request names a build as clients do: `app_id` is its id in the store (package, bundle id) and `store` its store (`google`, `apple`, ...).
 
 | Route | Scope | Body | What it does |
 |---|---|---|---|
-| `POST /server/entitlements` | `read` | `{"app_id", "user_id"}` | Returns the player's customer info, the same as `/entitlements`. |
-| `POST /server/grant` | `grant` | `{"app_id", "user_id", "product_id", "transaction_id", "expires_at_ms"?, "note"?}` | Gives a product without a store purchase (rewards, compensation). The game gets `grant` like for a purchase (store `manual`, no revenue). Idempotent by your `transaction_id`. |
-| `POST /server/revoke` | `revoke` | `{"app_id", "purchase_id", "reason"?}` | Takes a purchase back (`revoke`, reason `admin`). It is not a refund. |
+| `POST /server/entitlements` | `read` | `{"app_id", "store", "user_id"}` | Returns the player's customer info, the same as `/entitlements`. |
+| `POST /server/grant` | `grant` | `{"app_id", "store", "user_id", "product_id", "transaction_id", "expires_at_ms"?, "note"?}` | Gives a product without a store purchase (rewards, compensation). The game gets `grant` like for a purchase (store `manual`, no revenue). Idempotent by your `transaction_id`. |
+| `POST /server/revoke` | `revoke` | `{"app_id", "store", "purchase_id", "reason"?}` | Takes a purchase back (`revoke`, reason `admin`). It is not a refund. |
 
 Errors:
 

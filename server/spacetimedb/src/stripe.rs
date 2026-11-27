@@ -108,6 +108,9 @@ impl crate::client_guard::ClientRequest for CheckoutRequest {
     fn app_id(&self) -> &str {
         &self.app_id
     }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
+    }
     fn user_id(&self) -> &str {
         &self.user_id
     }
@@ -176,7 +179,7 @@ pub fn checkout(ctx: &mut impl Ctx, r: &CheckoutRequest) -> Answer {
 
 #[handler]
 pub fn checkout_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
-    crate::client_guard::run(ctx, req, "checkout", false, |ctx, r: &CheckoutRequest| checkout(ctx, r))
+    crate::client_guard::run(ctx, req, "checkout", crate::client_guard::StoreOf::Route(purser_core::model::store::STRIPE), false, |ctx, r: &CheckoutRequest| checkout(ctx, r))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -186,6 +189,9 @@ pub fn checkout_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
 impl crate::client_guard::ClientRequest for ManageRequest {
     fn app_id(&self) -> &str {
         &self.app_id
+    }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
     }
     fn user_id(&self) -> &str {
         &self.user_id
@@ -264,7 +270,7 @@ pub fn manage(ctx: &mut impl Ctx, r: &ManageRequest) -> Answer {
 
 #[handler]
 pub fn manage_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
-    crate::client_guard::run(ctx, req, "manage", false, |ctx, r: &ManageRequest| manage(ctx, r))
+    crate::client_guard::run(ctx, req, "manage", crate::client_guard::StoreOf::Route(purser_core::model::store::STRIPE), false, |ctx, r: &ManageRequest| manage(ctx, r))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -361,6 +367,9 @@ impl crate::client_guard::ClientRequest for VerifyRequest {
     fn app_id(&self) -> &str {
         &self.app_id
     }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
+    }
     fn user_id(&self) -> &str {
         &self.user_id
     }
@@ -435,7 +444,7 @@ pub fn verify_session(ctx: &mut impl Ctx, r: &VerifyRequest) -> Answer {
 
 #[handler]
 pub fn verify_stripe(ctx: &mut HandlerContext, req: Request) -> Response {
-    crate::client_guard::run(ctx, req, "verify", false, |ctx, r: &VerifyRequest| verify_session(ctx, r))
+    crate::client_guard::run(ctx, req, "verify", crate::client_guard::StoreOf::Route(purser_core::model::store::STRIPE), false, |ctx, r: &VerifyRequest| verify_session(ctx, r))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -452,7 +461,7 @@ fn reject(ctx: &mut impl Ctx, app: &GameApp, reason: &str) -> Answer {
 pub fn handle_notification(ctx: &mut impl Ctx, app_param: &str, signature: &str, body: &[u8]) -> Answer {
     // One transaction: the build, the webhook secret and the secret key.
     let loaded = ctx.tx(|tx| {
-        let app = config::find_app(tx, app_param).filter(|a| config::app_store(a).id == store::STRIPE)?;
+        let app = config::find_build(tx, store::STRIPE, app_param)?;
         let secret = config::secret(tx, &app, st::WEBHOOK_SECRET).map(|s| s.value).unwrap_or_default();
         Some((secret_key(tx, &app), secret, app))
     });

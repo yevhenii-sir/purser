@@ -2,14 +2,16 @@
 
 use super::*;
 
-pub(super) const WEB_APP: &str = "com.studio.game.web";
+/// The build's key and its id in the store.
+pub(super) const WEB_APP: &str = "stripe:com.studio.game.web";
+pub(super) const WEB_ID: &str = "com.studio.game.web";
 pub(super) const WHSEC: &str = "whsec_test_secret";
 
 /// A Stripe web build of the same game, created through the admin reducer.
 pub(super) fn add_stripe_build(w: &World) {
     w.as_admin(false);
     let app = json!({
-        "app_id": WEB_APP, "platform": "web", "store": "stripe", "game_key": "game", "delivery": "spacetimedb",
+        "store_app_id": WEB_ID, "platform": "web", "store": "stripe", "game_key": "game", "delivery": "spacetimedb",
         "spacetime_url": "https://maincloud.spacetimedb.com", "spacetime_db": "game-db",
         "grant_reducer": "billing_grant", "revoke_reducer": "billing_revoke", "allow_sandbox": true,
     });
@@ -46,7 +48,7 @@ pub(super) fn stripe_webhook_signed(w: &World, body: &str, secret: &str, at_secs
     let header = format!("t={at_secs},v1={}", purser_core::stripe::sign(secret, at_secs, body.as_bytes()));
     let req = http::Request::builder()
         .method("POST")
-        .uri(format!("/notify/stripe?app={WEB_APP}"))
+        .uri(format!("/notify/stripe?app={WEB_ID}"))
         .header("Stripe-Signature", header)
         .body(Body::from(body.to_string()))
         .unwrap();
@@ -74,7 +76,7 @@ pub(super) fn grants(w: &World) -> usize {
 pub(super) fn stripe_doctor(w: &World, online: bool) -> std::collections::BTreeMap<String, (String, String)> {
     let opts: crate::doctor::Options = serde_json::from_value(json!({ "online": online })).unwrap();
     let report = crate::doctor::check_app(&mut w.ctx(), WEB_APP, &opts).unwrap();
-    assert_eq!(report["urls"]["notify"], format!("{}/notify/stripe?app={WEB_APP}", report["urls"]["base"].as_str().unwrap()));
+    assert_eq!(report["urls"]["notify"], format!("{}/notify/stripe?app={WEB_ID}", report["urls"]["base"].as_str().unwrap()));
     report["checks"]
         .as_array()
         .unwrap()
@@ -99,7 +101,7 @@ fn stripe_checkout_creates_a_session_for_the_catalog_price() {
     assert_eq!((http, body["session_id"].as_str(), body["url"].as_str()), (200, Some("cs_test_1"), Some("https://checkout.stripe.com/c/pay/cs_test_1")), "{body}");
     let call = w.fake.borrow().calls.iter().find(|c| c.contains("checkout/sessions")).cloned().unwrap();
     assert!(call.starts_with("POST https://api.stripe.com/v1/checkout/sessions mode=subscription&line_items[0][price]=price_vip&line_items[0][quantity]=1"), "{call}");
-    for part in ["client_reference_id=player-1", "subscription_data[metadata][user_id]=player-1", "metadata[app_id]=com.studio.game.web", "success_url=https%3A%2F%2Fgame.example%2Fok"] {
+    for part in ["client_reference_id=player-1", "subscription_data[metadata][user_id]=player-1", "metadata[app_id]=stripe%3Acom.studio.game.web", "success_url=https%3A%2F%2Fgame.example%2Fok"] {
         assert!(call.contains(part), "{part} in {call}");
     }
     assert_eq!(w.calls("api.stripe.com"), 1, "one outbound call");
@@ -201,7 +203,7 @@ fn stripe_webhooks_need_a_valid_signature() {
     let header = format!("t={now},v1={}", purser_core::stripe::sign(WHSEC, now, body.as_bytes()));
     let req = http::Request::builder()
         .method("POST")
-        .uri(format!("/notify/stripe?app={WEB_APP}"))
+        .uri(format!("/notify/stripe?app={WEB_ID}"))
         .header("Stripe-Signature", header)
         .body(Body::from(tampered))
         .unwrap();
@@ -210,7 +212,7 @@ fn stripe_webhooks_need_a_valid_signature() {
     assert_eq!(grants(&w), 0);
     assert_eq!(stripe_doctor(&w, false)["notifications"].0, "fail");
     // Unknown builds are acknowledged and ignored (nothing to verify against).
-    let req = http::Request::builder().method("POST").uri(format!("/notify/stripe?app={APP}")).body(Body::from(body.clone())).unwrap();
+    let req = http::Request::builder().method("POST").uri(format!("/notify/stripe?app={PACKAGE}")).body(Body::from(body.clone())).unwrap();
     assert_eq!(dispatch_notification(&mut w.ctx(), req).body["status"], "ignored");
 
     w.advance_clock(5);

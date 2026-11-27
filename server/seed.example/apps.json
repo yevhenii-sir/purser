@@ -1,6 +1,6 @@
 [
   {
-    "app_id": "com.example.mygame",
+    "store_app_id": "com.example.mygame",
     "platform": "android",
     "game_key": "my-game",
     "account": "my-studio",
@@ -13,7 +13,7 @@
     "enabled": true
   },
   {
-    "app_id": "com.example.mygame.ios",
+    "store_app_id": "com.example.mygame",
     "platform": "ios",
     "game_key": "my-game",
     "account": "my-studio",

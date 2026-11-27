@@ -2,15 +2,16 @@
 
 use super::*;
 
-pub(super) const SAMSUNG_APP: &str = "com.studio.game.samsung";
+/// The Galaxy Store build: the same package as the Google Play build, a key of its own.
+pub(super) const SAMSUNG_APP: &str = "samsung:com.studio.game";
 pub(super) const SAMSUNG_PURCHASE: &str = "579cc7245d57cc1ba072b81d06e6f86cd49d3da63854538eea68927378799a37";
 
-/// A Galaxy Store build of the game (an Android build next to the Google Play one) with its
-/// service account and IAP key; `package`: its `samsung_package_name`, if any.
-pub(super) fn add_samsung_build(w: &World, package: Option<&str>) {
+/// A Galaxy Store build of the game (an Android build next to the Google Play one, the same
+/// package) with its service account and IAP key.
+pub(super) fn add_samsung_build(w: &World) {
     w.as_admin(false);
     let app = json!({
-        "app_id": SAMSUNG_APP, "platform": "android", "store": "samsung", "game_key": "game", "delivery": "spacetimedb",
+        "store_app_id": PACKAGE, "platform": "android", "store": "samsung", "game_key": "game", "delivery": "spacetimedb",
         "spacetime_url": "https://maincloud.spacetimedb.com", "spacetime_db": "game-db",
         "grant_reducer": "billing_grant", "revoke_reducer": "billing_revoke", "allow_sandbox": false,
     });
@@ -23,9 +24,6 @@ pub(super) fn add_samsung_build(w: &World, package: Option<&str>) {
     w.set_secret(purser_core::samsung::SERVICE_ACCOUNT_ID, "sa-0001");
     w.set_secret(purser_core::samsung::PRIVATE_KEY, purser_core::samsung::testing::PRIVATE_PEM);
     w.set_secret(purser_core::samsung::IAP_PUBLIC_KEY, purser_core::samsung::testing::PUBLIC_PEM);
-    if let Some(p) = package {
-        w.set_secret(purser_core::samsung::PACKAGE_NAME, p);
-    }
     w.script("devapi.samsungapps.com/auth/accessToken", 200, r#"{"ok":true,"createdItem":{"accessToken":"sam-at"}}"#);
     w.script("PATCH https://devapi.samsungapps.com/iap/v6/applications/", 200, r#"{"totalCount":1,"purchaseItemList":[{"purchaseId":"x","statusCode":"0","statusString":"success."}]}"#);
 }
@@ -59,7 +57,7 @@ pub(super) fn samsung_receipt(status: &str) -> Value {
 #[test]
 fn samsung_purchases_are_verified_consumed_and_refunded() {
     let w = World::new();
-    add_samsung_build(&w, Some("com.studio.game"));
+    add_samsung_build(&w);
     samsung_answer(&w, "iap.samsungapps.com/iap/v6/receipt", samsung_receipt("success"));
     assert_eq!(samsung_verify(&w, "player-1", "gems", "").body["status"], "error", "the purchase id is required");
     let o = samsung_verify(&w, "player-1", "gems", SAMSUNG_PURCHASE);
@@ -89,11 +87,11 @@ fn samsung_purchases_are_verified_consumed_and_refunded() {
     let data = json!({ "orderId": "S20261101KRA0000001", "purchaseId": SAMSUNG_PURCHASE, "testPayYn": "N", "betaTestYn": "N" });
     let signed = purser_core::samsung::testing::notification(purser_core::samsung::testing::PRIVATE_PEM, "ITEM_REFUNDED", "com.studio.game", data.clone());
     let forged = purser_core::samsung::testing::notification(purser_core::samsung::testing::PRIVATE_PEM, "ITEM_REFUNDED", "com.other.game", data);
-    assert_eq!(samsung_notification(&w, &format!("?app={SAMSUNG_APP}"), &forged).http, 401, "for another package");
+    assert_eq!(samsung_notification(&w, &format!("?app={PACKAGE}"), &forged).http, 401, "for another package");
     let mut tampered = signed.clone();
     tampered.pop();
-    assert_eq!(samsung_notification(&w, &format!("?app={SAMSUNG_APP}"), &tampered).http, 401);
-    let o = samsung_notification(&w, &format!("?app={SAMSUNG_APP}"), &signed);
+    assert_eq!(samsung_notification(&w, &format!("?app={PACKAGE}"), &tampered).http, 401);
+    let o = samsung_notification(&w, &format!("?app={PACKAGE}"), &signed);
     assert_eq!(o.http, 200, "{}", o.body);
     assert_eq!(find(&w, "samsung:S20261101KRA0000001").unwrap().status, status::REVOKED);
     assert_eq!(w.calls("/call/billing_revoke"), 1);
@@ -102,7 +100,7 @@ fn samsung_purchases_are_verified_consumed_and_refunded() {
 #[test]
 fn samsung_subscriptions_follow_their_status() {
     let w = World::new();
-    add_samsung_build(&w, None);
+    add_samsung_build(&w);
     let month = NOW_MICROS / 1000 + 30 * 86_400_000;
     let date = |ms: i64| purser_core::time::format_rfc3339(ms).replace('T', " ")[..19].to_string();
     let status_of = |order: &str, end_ms: i64| {
@@ -110,7 +108,7 @@ fn samsung_subscriptions_follow_their_status() {
             "subscriptionFirstPurchaseID": "first-1", "countryCode": "USA", "price": { "localCurrencyCode": "USD", "localPrice": 4.99 },
             "itemID": "vip", "freeTrial": "N", "realMode": "Y", "latestOrderId": order, "currentPaymentPlan": "R", "gracePeriodYN": "N" })
     };
-    let needle = "GET https://devapi.samsungapps.com/iap/seller/v6/applications/com.studio.game.samsung/purchases/subscriptions/";
+    let needle = "GET https://devapi.samsungapps.com/iap/seller/v6/applications/com.studio.game/purchases/subscriptions/";
     samsung_answer(&w, needle, status_of("S-ORDER-1", month));
     let o = samsung_verify(&w, "player-1", "vip", "first-1");
     assert_eq!(o.body["status"], "success", "{}", o.body);
@@ -125,7 +123,7 @@ fn samsung_subscriptions_follow_their_status() {
     samsung_answer(&w, needle, status_of("S-ORDER-2", month + 30 * 86_400_000));
     let renewed = json!({ "itemId": "vip", "firstOrderId": "S-ORDER-1", "firstPurchaseId": "first-1", "renewedOrderId": "S-ORDER-2",
         "renewedPurchaseId": "second-2", "paymentPlan": "Regular", "testPayYn": "N", "betaTestYn": "N" });
-    let jwt = purser_core::samsung::testing::notification(purser_core::samsung::testing::PRIVATE_PEM, "ARS_RENEWED", SAMSUNG_APP, renewed);
+    let jwt = purser_core::samsung::testing::notification(purser_core::samsung::testing::PRIVATE_PEM, "ARS_RENEWED", PACKAGE, renewed);
     let o = samsung_notification(&w, "", &jwt);
     assert_eq!(o.http, 200, "{}", o.body);
     let renewal = find(&w, "samsung:S-ORDER-2").expect("the renewal is a row of its own");
@@ -144,7 +142,7 @@ fn samsung_subscriptions_follow_their_status() {
 #[test]
 fn the_samsung_setup_check_asks_for_a_token() {
     let w = World::new();
-    add_samsung_build(&w, None);
+    add_samsung_build(&w);
     w.as_admin(false);
     let opts: crate::doctor::Options = serde_json::from_value(json!({ "online": true })).unwrap();
     let level = |w: &World, id: &str| {
@@ -171,7 +169,7 @@ pub(super) fn amazon_notification(w: &World, query: &str, body: &str) -> Outcome
 pub(super) fn amazon_check(w: &World) -> std::collections::BTreeMap<String, (String, String)> {
     let opts: crate::doctor::Options = serde_json::from_value(json!({ "online": false })).unwrap();
     let report = crate::doctor::check_app(&mut w.ctx(), AMAZON_APP, &opts).unwrap();
-    assert_eq!(report["urls"]["notify"], format!("{}/notify/amazon?app={AMAZON_APP}", report["urls"]["base"].as_str().unwrap()));
+    assert_eq!(report["urls"]["notify"], format!("{}/notify/amazon?app={AMAZON_ID}", report["urls"]["base"].as_str().unwrap()));
     report["checks"]
         .as_array()
         .unwrap()
@@ -190,7 +188,7 @@ fn amazon_notifications_are_signed_confirmed_and_recheck_the_receipt() {
     assert_eq!(c["notifications"].0, "warn");
 
     // Endpoint confirmation: the token is shown by the setup check.
-    let o = amazon_notification(&w, &format!("?app={AMAZON_APP}"), SNS_CONFIRMATION);
+    let o = amazon_notification(&w, &format!("?app={AMAZON_ID}"), SNS_CONFIRMATION);
     assert_eq!(o.http, 200, "{}", o.body);
     let c = amazon_check(&w);
     assert!(c["notifications"].1.contains("confirm-token-123"), "{:?}", c["notifications"]);
@@ -201,7 +199,7 @@ fn amazon_notifications_are_signed_confirmed_and_recheck_the_receipt() {
     w.fake.borrow_mut().overrides.clear();
     w.script(SNS_CERT_URL, 200, SNS_CERT_PEM);
     w.script("verifyReceiptId", 200, &rvs_receipt("gems", "CONSUMABLE", json!({ "cancelDate": NOW_MICROS / 1000, "cancelReason": 1 })));
-    let o = amazon_notification(&w, &format!("?app={AMAZON_APP}"), SNS_RTN_CANCELLED);
+    let o = amazon_notification(&w, &format!("?app={AMAZON_ID}"), SNS_RTN_CANCELLED);
     assert_eq!(o.http, 200, "{}", o.body);
     assert_eq!(find(&w, AMAZON_LEDGER_ID).unwrap().status, status::REVOKED);
     assert_eq!(w.reducer_calls().last().map(String::as_str), Some("billing_revoke player-1 refund"));
@@ -211,16 +209,16 @@ fn amazon_notifications_are_signed_confirmed_and_recheck_the_receipt() {
     // A tampered message is rejected and shows up in the setup check.
     let tampered = SNS_RTN_CANCELLED.replace("CONSUMABLE_CANCELLED", "ENTITLEMENT_CANCELLED");
     w.advance_clock(5);
-    assert_eq!(amazon_notification(&w, &format!("?app={AMAZON_APP}"), &tampered).http, 401);
+    assert_eq!(amazon_notification(&w, &format!("?app={AMAZON_ID}"), &tampered).http, 401);
     assert_eq!(amazon_check(&w)["notifications"].0, "fail");
 
     // A certificate from anywhere but Amazon SNS is never fetched.
     let foreign = SNS_RTN_CANCELLED.replace("https://sns.us-east-1.amazonaws.com/", "https://evil.example/");
-    assert_eq!(amazon_notification(&w, &format!("?app={AMAZON_APP}"), &foreign).http, 401);
+    assert_eq!(amazon_notification(&w, &format!("?app={AMAZON_ID}"), &foreign).http, 401);
     assert_eq!(w.calls("evil.example"), 0);
 
     // Unknown builds are ignored (Google builds included).
-    assert_eq!(amazon_notification(&w, &format!("?app={APP}"), SNS_RTN_CANCELLED).body["status"], "ignored");
+    assert_eq!(amazon_notification(&w, &format!("?app={PACKAGE}"), SNS_RTN_CANCELLED).body["status"], "ignored");
 }
 
 #[test]
@@ -228,7 +226,7 @@ fn amazon_notifications_come_from_the_pinned_topic_and_are_recent() {
     let w = World::new();
     add_amazon_build(&w);
     w.script(SNS_CERT_URL, 200, SNS_CERT_PEM);
-    let q = format!("?app={AMAZON_APP}");
+    let q = format!("?app={AMAZON_ID}");
     assert_eq!(amazon_notification(&w, &q, SNS_CONFIRMATION).http, 200);
     let c = amazon_check(&w);
     assert_eq!(c["sns_topic"].0, "warn", "not pinned yet: {:?}", c["sns_topic"]);

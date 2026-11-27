@@ -104,7 +104,7 @@ pub fn list_store_products(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, St
             config::app_store(&app).name
         ));
     }
-    let pkg = app.app_id.clone();
+    let pkg = app.store_app_id.clone();
     let remote = if store_id == store::APPLE {
         let token = stores::apple_connect_token(ctx, &app).map_err(|e: StoreError| {
             format!("{} (catalog import needs an App Store Connect API Team key: apple_connect_key_id, apple_connect_private_key_p8)", e.message())

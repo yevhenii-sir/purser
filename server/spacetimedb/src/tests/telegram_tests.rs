@@ -2,14 +2,16 @@
 
 use super::*;
 
-pub(super) const TG_APP: &str = "com.studio.game.telegram";
+/// The build's key and its id in the store.
+pub(super) const TG_APP: &str = "telegram:com.studio.game.telegram";
+pub(super) const TG_ID: &str = "com.studio.game.telegram";
 pub(super) const TG_TOKEN: &str = "123456789:AAH-abcdefghijklmnopqrstuv";
 pub(super) const TG_SECRET: &str = "tg-webhook-secret";
 
 pub(super) fn add_telegram_build(w: &World) {
     w.as_admin(false);
     let app = json!({
-        "app_id": TG_APP, "platform": "web", "store": "telegram", "game_key": "game", "delivery": "spacetimedb",
+        "store_app_id": TG_ID, "platform": "web", "store": "telegram", "game_key": "game", "delivery": "spacetimedb",
         "spacetime_url": "https://maincloud.spacetimedb.com", "spacetime_db": "game-db",
         "grant_reducer": "billing_grant", "revoke_reducer": "billing_revoke",
     });
@@ -36,7 +38,7 @@ pub(super) fn tg_status(w: &World, order: &str, user: &str) -> crate::web::Answe
 }
 
 pub(super) fn tg_update(w: &World, secret: &str, update: Value) -> crate::web::Answer {
-    crate::telegram::handle_update(&mut w.ctx(), TG_APP, secret, &update.to_string())
+    crate::telegram::handle_update(&mut w.ctx(), TG_ID, secret, &update.to_string())
 }
 
 pub(super) fn tg_paid(order: &str, charge: &str, stars: i64, subscription: Option<(i64, bool)>) -> Value {
@@ -126,7 +128,7 @@ fn the_telegram_setup_sets_the_bot_webhook() {
     w.as_admin(false);
     w.script("/setWebhook", 200, r#"{"ok":true,"result":true}"#);
     let set = crate::store_setup::setup_telegram_webhook(&mut w.ctx(), TG_APP, "https://stdb.example.com/v1/database/billing/route").unwrap();
-    assert_eq!(set["url"], format!("https://stdb.example.com/v1/database/billing/route/notify/telegram?app={TG_APP}"));
+    assert_eq!(set["url"], format!("https://stdb.example.com/v1/database/billing/route/notify/telegram?app={TG_ID}"));
     let call = w.fake.borrow().calls.iter().find(|c| c.contains("setWebhook")).cloned().unwrap();
     assert!(call.contains("/setWebhook"), "{call}");
 }

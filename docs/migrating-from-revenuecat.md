@@ -32,7 +32,7 @@ Columns of the export:
 
 Options of `import_revenuecat.py`:
 
-- `--app <store>=<app_id>` names the build of each store's rows: `apple`, `google`, `stripe`, or `manual` for RevenueCat's promotional grants. Rows of other stores are counted and skipped.
+- `--app <store>=<id>` names the build of each store's rows. For `apple`, `google` and `stripe` it is the build's id in that store: `apple=com.example.mygame` is the build `apple:com.example.mygame`. RevenueCat's promotional grants (`manual`) go to a build of any store, named by its key: `manual=google:com.example.mygame`. Rows of other stores are counted and skipped.
 - Every product of the export must exist in the build, or pass `--skip-unknown`.
 - `--user-column rc_last_seen_app_user_id_alias` takes the player id from that column. Use it when your game identifies players by the alias.
 

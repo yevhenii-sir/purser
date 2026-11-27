@@ -28,8 +28,8 @@ use spacetimedb::{ReducerContext, Table, TxContext};
 pub struct SteamBuild {
     #[primary_key]
     pub app_id: String,
-    /// Steam App ID when the build's `app_id` is not (e.g. a second build of the same App ID);
-    /// empty = `app_id`.
+    /// Steam App ID when the build's `store_app_id` is not (e.g. a second build of the same App ID);
+    /// empty = `store_app_id`.
     pub steam_app_id: String,
     /// Use `ISteamMicroTxnSandbox`: no money moves, purchases are recorded as sandbox.
     pub sandbox: bool,
@@ -154,7 +154,7 @@ pub(crate) struct Api {
 }
 
 struct BuildSettings {
-    /// What the App ID was read from (the build's `app_id` or `steam_app_id`).
+    /// What the App ID was read from (the build's `store_app_id` or `steam_app_id`).
     steam_app: String,
     app_id: Result<u32, String>,
     sandbox: bool,
@@ -164,7 +164,7 @@ struct BuildSettings {
 fn build_settings(tx: &TxContext, app: &GameApp) -> BuildSettings {
     let row = tx.db.steam_build().app_id().find(&app.app_id);
     let (sandbox, require_ticket) = row.as_ref().map_or((false, false), |b| (b.sandbox, b.require_ticket));
-    let steam_app = row.map(|b| b.steam_app_id).filter(|v| !v.is_empty()).unwrap_or_else(|| app.app_id.clone());
+    let steam_app = row.map(|b| b.steam_app_id).filter(|v| !v.is_empty()).unwrap_or_else(|| app.store_app_id.clone());
     BuildSettings { app_id: s::parse_app_id(&steam_app), steam_app, sandbox, require_ticket }
 }
 
@@ -240,8 +240,8 @@ pub fn admin_set_steam_build(ctx: &ReducerContext, json: String) -> Result<(), S
         return Err(format!("[ERR_BAD_APP] {} is not a Steam build", app.app_id));
     }
     let steam_app_id = i.steam_app_id.trim().to_string();
-    s::parse_app_id(if steam_app_id.is_empty() { &app.app_id } else { &steam_app_id })
-        .map_err(|e| format!("[ERR_BAD_APP] {e}: set steam_app_id when the build's app_id is not the Steam App ID"))?;
+    s::parse_app_id(if steam_app_id.is_empty() { &app.store_app_id } else { &steam_app_id })
+        .map_err(|e| format!("[ERR_BAD_APP] {e}: set steam_app_id when the build's store_app_id is not the Steam App ID"))?;
     let existing = ctx.db.steam_build().app_id().find(&app.app_id);
     let row = SteamBuild {
         app_id: app.app_id.clone(),
@@ -385,6 +385,9 @@ fn update_order(ctx: &mut impl Ctx, order_id: u64, f: impl Fn(&mut SteamOrder, i
 impl crate::client_guard::ClientRequest for CheckoutRequest {
     fn app_id(&self) -> &str {
         &self.app_id
+    }
+    fn set_app_id(&mut self, key: String) {
+        self.app_id = key;
     }
     fn user_id(&self) -> &str {
         &self.user_id

@@ -68,8 +68,12 @@ namespace Purser
         /// source is disposed with the service.</summary>
         public CancellationToken Lifetime => m_Lifetime.Token;
 
-        /// <summary>The build's app id on the billing server.</summary>
-        public string AppId => Config.AppIdFor(Store.Store);
+        /// <summary>The store of the build (<see cref="IStoreAdapter.Store"/>), sent with <see cref="AppId"/>: the server
+        /// finds the build by both.</summary>
+        public string BuildStore => Store.Store;
+
+        /// <summary>The build's app id in its store (<see cref="BillingConfig.AppIdFor"/>).</summary>
+        public string AppId => Config.AppIdFor(BuildStore);
 
         /// <summary>Key of the player caches (customer info, paywalls): the app id on this server. Another server (a
         /// dev profile) keeps caches of its own.</summary>

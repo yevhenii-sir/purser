@@ -20,7 +20,7 @@ fn a_rebuild_of_one_app_leaves_the_others_alone() {
     w.write(|tx| {
         use crate::revenue::revenue_daily;
         let mine = tx.db.revenue_daily().iter().next().unwrap();
-        tx.db.revenue_daily().insert(crate::revenue::RevenueDaily { key: mine.key.replace(APP, "com.other.game"), app_id: "com.other.game".into(), ..mine });
+        tx.db.revenue_daily().insert(crate::revenue::RevenueDaily { key: mine.key.replace(APP, "google:com.other.game"), app_id: "google:com.other.game".into(), ..mine });
         crate::revenue::invalidate_apps(tx, &[APP.to_string()]);
     });
     w.as_admin(false);
@@ -236,7 +236,7 @@ pub(super) fn mixed_ledger(w: &World) {
     // Same original transaction id in another app (not the same subscription).
     rows.push(ledger_row("apple:2000-x", t0 + 380 * DAY_MICROS, |p| {
         p.store = "apple".into();
-        p.app_id = "com.studio.other".into();
+        p.app_id = "apple:com.studio.other".into();
         p.kind = kind::SUBSCRIPTION.into();
         p.original_transaction_id = "2000-0".into();
         p.price_micros = 2_000_000;
@@ -346,7 +346,7 @@ fn summary_stats_read_only_the_aggregates_and_say_when_a_rebuild_runs() {
     assert_eq!((summary["totals"]["net_usd_micros"].as_i64(), summary["by_app"][0]["app_id"].as_str()), (Some(990_000), Some(APP)));
     assert_eq!(summary["by_app"][0]["net_usd_micros"], 990_000);
     assert_eq!((summary["rebuilding"].as_bool(), full["rebuilding"].as_bool()), (Some(false), Some(false)));
-    let filtered = stats(&w, json!({ "summary": true, "app_ids": ["com.other"], "from": "2026-09-01", "to": "2026-09-30" }));
+    let filtered = stats(&w, json!({ "summary": true, "app_ids": ["google:com.other"], "from": "2026-09-01", "to": "2026-09-30" }));
     assert_eq!((filtered["totals"]["purchases"].as_u64(), filtered["series"].as_array().unwrap().len()), (Some(0), 30));
 
     w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::revenue::admin_rebuild_revenue(ctx, String::new())).unwrap();
@@ -377,7 +377,7 @@ fn summary_stats_carry_what_the_revenue_tree_needs() {
     assert!(subs.contains_key("series") && subs.contains_key("renewal_rate"));
     assert!(!subs.contains_key("active_now") && !subs.contains_key("mrr_usd_micros"), "those read the ledger");
     assert_eq!(stats(&w, json!({ "summary": true, "game_key": "game" }))["paywall_views"], 3);
-    assert_eq!(stats(&w, json!({ "summary": true, "app_ids": ["com.other"] }))["paywall_views"], 0);
+    assert_eq!(stats(&w, json!({ "summary": true, "app_ids": ["google:com.other"] }))["paywall_views"], 0);
     assert_eq!(stats(&w, json!({ "summary": true, "from": "2026-08-01", "to": "2026-08-31" }))["paywall_views"], 0);
 }
 

@@ -158,7 +158,7 @@ fn sweep_google(ctx: &mut impl Ctx, app: &GameApp, start_ms: i64, end_ms: i64, b
     let token = auth.get(|| stores::google_access_token(ctx, app)).map_err(|e| e.message().to_string())?;
     let mut page = String::new();
     loop {
-        let url = google::voided_purchases_page_url(&app.app_id, start_ms, end_ms, &page)?;
+        let url = google::voided_purchases_page_url(&app.store_app_id, start_ms, end_ms, &page)?;
         let res = net::send(ctx.http(), "GET", &url, &[("Authorization", &bearer(&token))], ())?;
         if !res.ok() {
             return Err(match res.status {
@@ -258,7 +258,7 @@ fn apply_apple(ctx: &mut impl Ctx, app: &GameApp, body: &str, token: &str) {
         return;
     }
     let Ok(n) = apple::parse_notification(body) else { return };
-    if n.bundle_id != app.app_id {
+    if n.bundle_id != app.store_app_id {
         return;
     }
     let mut auth = Auth::new(Some(token.to_string()));

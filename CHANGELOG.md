@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Breaking
+
+- A build is its store and its id in the store, so a Google Play build and an App Store build (or an Amazon, Huawei, Samsung build) may share a package name / bundle id. `game_app` gets `store_app_id` (the id in the store: package, bundle id, Steam App ID, any id of a web build) and its key `app_id` becomes `{store}:{store_app_id}` (`google:com.example.mygame`, `apple:com.example.mygame`); products, ledger rows, secrets scopes, integrations, revenue rows and every admin call use the key. Store API calls, notification URLs (`/notify/amazon?app=<package>`, ...), the game's `BillingEvent.app_id` and integration events carry the id in the store. The `.amazon` / `.huawei` / `.samsung` / `.quest` suffixes are no longer needed, and the `samsung_package_name` secret is gone (the build's id is the package).
+- Client requests name the build by its id in the store and its store: routes whose path names no store (`/entitlements`, `/restore`, `/paywall`, `/paywall/event`, `/attributes`, `/redeem`, `/wallet`, `/wallet/spend`) and the game-backend routes `/server/*` take `store`; the SDKs send it (Unity from its store adapter, TypeScript `store`, Godot and Defold a `store` setting). Older clients are refused with `400 [ERR_BAD_REQUEST] store is required`.
+- `admin_upsert_game_app` takes `store_app_id` instead of `app_id`; seed files (`apps.json`: `store_app_id`; the other files: build keys), `bulk_setup.py` (`store_app_id` column, product rows by key), `setup_google.py --package`, `import_revenuecat.py` (`--app apple=<bundle id>` → `apple:<bundle id>`) follow.
+- Needs a publish with `--delete-data`: the builds' keys change. Load the setup again with `seed.py` (or the admin page) afterwards.
+
+### Added
+
+- The Add an app wizard asks for the app's name first and derives the app key from it (`Magnet Rings` → `magnet-rings`) until the key is typed; the name is saved with the builds (`admin_set_app_name`). A name with no Latin letters leaves the key to the app id, as before.
+
 ## 0.14.0 - 2026-11-27
 
 **In short:** Google Play notifications are authenticated by Pub/Sub's push token instead of a secret in the URL; integrations take the game's own event names and name free trials and subscription refunds apart, and GA4 counts renewals as purchases; releases carry a signed build provenance, and every page of the docs is rewritten for reading.

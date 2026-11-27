@@ -21,7 +21,8 @@ import { PurserClient } from "@purser/client";
 
 const purser = new PurserClient({
   baseUrl: "https://stdb.example.com/v1/database/<your-billing-db>/route",
-  appId: "com.example.mygame.web",          // the build's app_id
+  appId: "com.example.mygame.web",          // the build's app_id: the app's id in its store
+  store: "stripe",                           // the build's store: google, apple, amazon, steam, stripe, xsolla, telegram, ...
   userId: player.id,                         // or purser.setUserId(...) after sign-in
   client: { app_version: "1.2.1" },          // device and os default to what the browser reports
   // Builds with client_auth = signed: a player token from your backend (HS256 JWT, see docs/game-integration.md).
@@ -30,6 +31,11 @@ const purser = new PurserClient({
   responsePublicKey: "<base64 Ed25519 public key>",
 });
 ```
+
+Builds in different stores may share an app id (`com.example.mygame` on Google Play and on the App Store): the server
+finds the build by `store` and `appId`, so `store` is sent next to `app_id` to every route whose path names no store
+(`/entitlements`, `/restore`, `/paywall`, `/paywall/event`, `/attributes`, `/redeem`, `/wallet`, `/wallet/spend`). One
+client is one build: a game sold in two stores makes a client for each.
 
 Every method resolves with `{ httpStatus, value?, error?, code?, retryAfterMs? }` and never rejects for HTTP or network
 failures. Requests are retried after a transport error, a 5xx or a 429 (waiting its `Retry-After`, at most 60 s), never

@@ -121,6 +121,7 @@
       "route": "/restore",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "attribution": {
           "appsflyer_id": "1700000000000-1234567890123456789",
@@ -145,6 +146,7 @@
       "route": "/restore",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "purchases": [
           {
@@ -178,6 +180,7 @@
       "route": "/restore",
       "body": {
         "app_id": "com.studio.game.quest",
+        "store": "meta",
         "user_id": "player-1",
         "store_user_proof": "nonce-2",
         "purchases": [
@@ -194,6 +197,7 @@
       "replay": true,
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "client": {
           "device": "Xiaomi 23117RA68G",
@@ -207,6 +211,7 @@
       "route": "/paywall",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "placement": "store",
         "user_id": "player-1",
         "client": {
@@ -221,6 +226,7 @@
       "route": "/paywall/event",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "placement": "store",
         "variant_id": "var-a",
         "test_id": "test-1",
@@ -327,6 +333,7 @@
       "route": "/redeem",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "code": "SUMMER-2026",
         "client": {
@@ -342,6 +349,7 @@
       "replay": true,
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "attributes": {
           "clan": "wolves",
@@ -360,6 +368,7 @@
       "route": "/wallet",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "client": {
           "device": "Xiaomi 23117RA68G",
@@ -373,6 +382,7 @@
       "route": "/wallet/spend",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "currency": "gems",
         "amount": 30,

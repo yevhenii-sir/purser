@@ -14,9 +14,10 @@ project, and `spacetime login` as the database owner or an admin with the Secret
 PURSER_TOKEN set):
     python setup_google.py --project my-cloud-project --dry-run    # print what would change
     python setup_google.py --project my-cloud-project              # every Google Play build
-    python setup_google.py --project my-cloud-project --app-id com.example.mygame
+    python setup_google.py --project my-cloud-project --package com.example.mygame   # one build
     python setup_google.py --project my-cloud-project --new-key    # replace the service account key
 
+`--package` (repeatable) names a build by its package name: the Google Play build google:<package>.
 The builds must exist already (admin page, seed.py or bulk_setup.py). The module takes at most 20
 builds per call: more are set up 20 at a time, grouped by developer account (each account gets its
 key unless --scope names one), all on the same topic. The access token is never printed or passed
@@ -62,14 +63,14 @@ def read(base, db, tok, table, column="", value=""):
     return v or []
 
 
-def google_builds(base, db, tok, wanted):
-    """The builds to set up, {app_id: developer account}."""
+def google_builds(base, db, tok, packages):
+    """The builds to set up, {build key: developer account}: the Google Play builds of `packages`, or all."""
     rows = {r["app_id"]: r for r in read(base, db, tok, "game_app")}
-    for app_id in wanted:
-        if app_id not in rows:
-            sys.exit(f"no build {app_id} in the database: add it first (admin page -> Add an app, or seed.py)")
-        if rows[app_id]["store"] != GOOGLE_STORE:
-            sys.exit(f"{app_id} is not a Google Play build")
+    wanted = [stdb.build_key("android", p, GOOGLE_STORE) for p in packages]
+    for key, package in zip(wanted, packages):
+        if key not in rows:
+            sys.exit(f"no Google Play build of {package} ({key}) in the database: add it first "
+                     "(admin page -> Add an app, or seed.py)")
     ids = list(dict.fromkeys(wanted)) or sorted(a for a, r in rows.items() if r["store"] == GOOGLE_STORE)
     if not ids:
         sys.exit("no Google Play builds in the database: add one first (admin page -> Add an app, or seed.py)")
@@ -136,7 +137,8 @@ def main(argv=None):
     p.add_argument("--server", default=cfg.get("server", "maincloud"))
     p.add_argument("--database", default=cfg.get("database"))
     p.add_argument("--project", required=True, help="Google Cloud project id (the one linked to Play Console)")
-    p.add_argument("--app-id", action="append", default=[], help="a Google Play build (repeatable; default: all)")
+    p.add_argument("--package", action="append", default=[],
+                   help="the package name of a Google Play build (repeatable; default: every Google Play build)")
     p.add_argument("--scope", help="where google_service_account_json goes (default: the builds' developer account, else default)")
     p.add_argument("--topic", default="play-billing", help="Pub/Sub topic name (default: play-billing)")
     p.add_argument("--new-key", action="store_true", help="create and store a new service account key")
@@ -146,7 +148,7 @@ def main(argv=None):
         sys.exit("No database: pass --database or copy spacetime.example.json to spacetime.json and set it")
 
     base, tok = stdb.server_url(a.server), stdb.token()
-    builds = google_builds(base, a.database, tok, a.app_id)
+    builds = google_builds(base, a.database, tok, a.package)
     route = route_base(base, a.database, tok)
     calls = batches(builds, a.scope or "")
     print(f"Google Cloud project {a.project}; {len(builds)} build(s) in {len(calls)} call(s) of at most {BATCH}; "

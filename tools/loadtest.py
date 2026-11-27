@@ -17,7 +17,7 @@ the environment, so a store or game behind the proxy can be as slow as a test ne
     python tools/loadtest.py delivery none                            # the queue drains
     python tools/loadtest.py health
 
-`setup` publishes a throwaway database with one build (`com.example.load`) and 40 server keys (the
+`setup` publishes a throwaway database with one build (`google:com.example.load`) and 40 server keys (the
 `/server/*` routes stand in for a client purchase: a grant runs the same ledger steps, and a webhook
 delivery is the outbound call). State is kept in `loadtest-state.json` next to the working directory.
 Results print as one JSON line per run: answers per second, latency percentiles, status codes.
@@ -40,7 +40,9 @@ import urllib.request
 
 STATE = "loadtest-state.json"
 DELAY_FILE = "loadtest-delay.txt"
-APP = "com.example.load"
+PACKAGE = "com.example.load"
+APP = f"google:{PACKAGE}"  # the build key admin calls take; requests send the package and the store
+CLIENT = {"app_id": PACKAGE, "store": "google"}
 PLAYERS = 3000
 KEYS = 40
 
@@ -69,7 +71,7 @@ def call(s, name, *args):
 
 
 def app_input(delivery):
-    i = {"game_key": "load", "app_id": APP, "platform": "android", "delivery": delivery}
+    i = {"game_key": "load", "store_app_id": PACKAGE, "platform": "android", "delivery": delivery}
     if delivery == "webhook":
         i["webhook_url"] = "https://slow-game.example.com/hook"
     return json.dumps(i)
@@ -165,13 +167,13 @@ def setup(a):
 def request_for(route, rnd, seq):
     user = f"player-{rnd.randrange(PLAYERS)}"
     if route == "entitlements":
-        return "/entitlements", {"app_id": APP, "user_id": user}, False
+        return "/entitlements", {**CLIENT, "user_id": user}, False
     if route == "server_entitlements":
-        return "/server/entitlements", {"app_id": APP, "user_id": user}, True
+        return "/server/entitlements", {**CLIENT, "user_id": user}, True
     if route == "grant":
         product = "no_ads" if seq % 3 == 0 else "coins"
         tx = f"t-{os.getpid()}-{threading.get_ident()}-{seq}-{rnd.getrandbits(32)}"
-        return "/server/grant", {"app_id": APP, "user_id": user, "product_id": product, "transaction_id": tx}, True
+        return "/server/grant", {**CLIENT, "user_id": user, "product_id": product, "transaction_id": tx}, True
     raise SystemExit(f"unknown route {route}")
 
 

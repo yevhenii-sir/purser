@@ -45,6 +45,7 @@
       "route": "/restore",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "purchases": [
           {
@@ -66,6 +67,7 @@
       "replay": true,
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "client": {
           "device": "Pixel 8",
@@ -79,6 +81,7 @@
       "route": "/paywall",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "placement": "store",
         "user_id": "player-1",
         "client": {
@@ -93,6 +96,7 @@
       "route": "/paywall/event",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "placement": "store",
         "variant_id": "var-a",
         "test_id": "test-1",
@@ -105,6 +109,7 @@
       "replay": true,
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "attributes": {
           "clan": "wolves",
@@ -123,6 +128,7 @@
       "route": "/redeem",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "code": "SUMMER-2026",
         "client": {
@@ -137,6 +143,7 @@
       "route": "/wallet",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "client": {
           "device": "Pixel 8",
@@ -150,6 +157,7 @@
       "route": "/wallet/spend",
       "body": {
         "app_id": "com.studio.game",
+        "store": "google",
         "user_id": "player-1",
         "currency": "gems",
         "amount": 30,

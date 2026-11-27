@@ -19,6 +19,7 @@ func _initialize() -> void:
 
 func _run() -> void:
 	await _test_verify_body()
+	await _test_store()
 	await _test_retries()
 	await _test_rate_limit()
 	await _test_no_retry_on_4xx()
@@ -44,6 +45,7 @@ func _client(extra := {}):
 	var options := {
 		"base_url": BASE + "/",
 		"app_id": "com.studio.game",
+		"store": "google",
 		"user_id": "player-1",
 		"client": {"device": "Pixel 8", "os": "Android 15", "app_version": "1.2.1"},
 	}
@@ -81,6 +83,18 @@ func _test_verify_body() -> void:
 	var body: Dictionary = calls[0]["body"]
 	check(not body.has("order_id"), "empty fields are left out")
 	check(body["price_micros"] == 990000 and body["client"]["sdk_version"] == "godot/0.14.0", "price and sdk version")
+	c.free()
+
+
+func _test_store() -> void:
+	answers = [_answer(200, {"status": "ok"})]
+	var c = _client({"store": "apple"})
+	await c.entitlements()
+	await c.restore([{"product_id": "no_ads", "order_id": "2000000001"}])
+	await c.verify("apple", {"product_id": "gems", "order_id": "2000000123"})
+	check(calls[0]["body"]["app_id"] == "com.studio.game" and calls[0]["body"]["store"] == "apple", "entitlements name the build's store")
+	check(calls[1]["body"]["store"] == "apple", "restore names the build's store")
+	check(not calls[2]["body"].has("store"), "verify names the store in its path")
 	c.free()
 
 

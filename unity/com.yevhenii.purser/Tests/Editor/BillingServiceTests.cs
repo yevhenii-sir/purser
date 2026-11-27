@@ -183,7 +183,8 @@ namespace Purser.Tests
             Assert.AreEqual(PurchaseStatus.Success, result.Status);
             Assert.IsTrue(result.GrantOnClient);
             Assert.AreSame(result, granted, "granted in the same handler as a purchase");
-            Assert.AreEqual(("summer-2026", User), (m_Api.RedeemRequests.Single().Code, m_Api.RedeemRequests.Single().UserId));
+            var redeem = m_Api.RedeemRequests.Single();
+            Assert.AreEqual(("summer-2026", User, BillingStores.Google), (redeem.Code, redeem.UserId, redeem.Store));
         }
 
         [Test]
@@ -216,6 +217,7 @@ namespace Purser.Tests
             var spent = Sync.Run(m_Service.SpendAsync("gems", 30, " sword-1 "));
             Assert.AreEqual((WalletStatus.Success, 90L), (spent.Status, spent.Balance));
             Assert.AreEqual(("gems", 30L, "sword-1", User), (m_Api.SpendRequests[0].Currency, m_Api.SpendRequests[0].Amount, m_Api.SpendRequests[0].Reference, m_Api.SpendRequests[0].UserId));
+            Assert.AreEqual(("com.test.game", BillingStores.Google), (m_Api.SpendRequests[0].AppId, m_Api.SpendRequests[0].Store));
 
             m_Api.SpendResult = new ApiResult<SpendResponse>(409, new SpendResponse { Status = "error", Code = ErrorCodes.InsufficientFunds, Message = "the balance is 90" },
                 "HTTP 409", ErrorCodes.InsufficientFunds);
@@ -745,7 +747,7 @@ namespace Purser.Tests
             var ok = Sync.Run(m_Service.SetCustomAttributesAsync(new Dictionary<string, object> { ["email"] = "player@example.com", ["level"] = 7, ["old"] = null }));
             Assert.IsTrue(ok);
             var request = m_Api.AttributeRequests.Single();
-            Assert.AreEqual(("com.test.game", User), (request.AppId, request.UserId));
+            Assert.AreEqual(("com.test.game", BillingStores.Google, User), (request.AppId, request.Store, request.UserId));
             Assert.AreEqual(7, request.Attributes["level"]);
             var body = Newtonsoft.Json.Linq.JObject.Parse(Newtonsoft.Json.JsonConvert.SerializeObject(request));
             Assert.AreEqual(Newtonsoft.Json.Linq.JTokenType.Null, body["attributes"]["old"].Type, "null removes the key on the server");

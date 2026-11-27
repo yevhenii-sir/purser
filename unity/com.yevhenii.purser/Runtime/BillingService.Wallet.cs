@@ -12,7 +12,7 @@ namespace Purser
         {
             if (!(Ready(out var user, out var notReady) is IWalletApi api))
                 return notReady;
-            var response = await api.GetWalletAsync(new WalletRequest { AppId = AppId, UserId = user, Client = m_Client }, ct);
+            var response = await api.GetWalletAsync(new WalletRequest { AppId = AppId, Store = BuildStore, UserId = user, Client = m_Client }, ct);
             if (response.IsHttpSuccess && response.Value != null)
                 return new WalletResult(WalletStatus.Success, response.Value.Balances ?? new Dictionary<string, long>());
             return new WalletResult(WalletStatus.Failed, message: response.Code ?? response.Error);
@@ -25,7 +25,7 @@ namespace Purser
                 return notReady;
             if (string.IsNullOrWhiteSpace(currency) || amount <= 0 || string.IsNullOrWhiteSpace(reference))
                 return new WalletResult(WalletStatus.Rejected, message: "currency, a positive amount and a reference are needed");
-            var request = new SpendRequest { AppId = AppId, UserId = user, Currency = currency.Trim(), Amount = amount, Reference = reference.Trim(), Client = m_Client };
+            var request = new SpendRequest { AppId = AppId, Store = BuildStore, UserId = user, Currency = currency.Trim(), Amount = amount, Reference = reference.Trim(), Client = m_Client };
             var response = await api.SpendAsync(request, ct);
             var body = response.Value;
             WalletResult result;

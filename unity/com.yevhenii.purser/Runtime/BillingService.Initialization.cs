@@ -235,6 +235,7 @@ namespace Purser
             var response = await m_Api.AttributesAsync(new AttributesRequest
             {
                 AppId = AppId,
+                Store = BuildStore,
                 UserId = user,
                 Attributes = new Dictionary<string, object>(attributes),
                 Client = m_Client,

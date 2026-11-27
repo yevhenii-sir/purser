@@ -308,7 +308,7 @@ fn a_purchase_of_a_build_that_is_gone_is_blocked_and_a_saved_build_retries_it() 
     // Saving the build again (its delivery fixed meanwhile) tries the row at once.
     w.fake.borrow_mut().game_status = 200;
     let input = json!({
-        "app_id": APP, "platform": app.platform, "game_key": app.game_key, "delivery": app.delivery,
+        "store_app_id": PACKAGE, "platform": app.platform, "game_key": app.game_key, "delivery": app.delivery,
         "spacetime_url": app.spacetime_url, "spacetime_db": app.spacetime_db,
         "grant_reducer": app.grant_reducer, "revoke_reducer": app.revoke_reducer,
     });
@@ -367,7 +367,7 @@ fn alerts_are_throttled_and_repeats_reported_after_the_window() {
 fn rejected_store_notification_is_alerted() {
     let w = World::new();
     setup_alerts(&w, false);
-    w.google_push("", json!({ "packageName": APP, "testNotification": { "version": "1.0" } }));
+    w.google_push("", json!({ "packageName": PACKAGE, "testNotification": { "version": "1.0" } }));
     let msgs = alert_messages(&w);
     assert_eq!(msgs.iter().map(|m| m.rule.as_str()).collect::<Vec<_>>(), ["notification_rejected"]);
     assert!(msgs[0].detail.contains("Google Play RTDN"));
@@ -572,7 +572,7 @@ fn silent_store_notifications_and_stale_exchange_rates_are_alerted_by_the_worker
     w.run_worker();
     assert_eq!(rules(&w).len(), 2, "a lasting condition is reported once");
 
-    w.google_notification(json!({ "packageName": APP, "testNotification": { "version": "1.0" } }));
+    w.google_notification(json!({ "packageName": PACKAGE, "testNotification": { "version": "1.0" } }));
     w.script("api.frankfurter.dev/v1/latest", 200, r#"{"amount":1.0,"base":"USD","date":"2026-09-21","rates":{"EUR":0.9}}"#);
     w.advance_clock(6 * 3600);
     w.run_worker();

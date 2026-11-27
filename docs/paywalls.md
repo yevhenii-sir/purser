@@ -136,7 +136,7 @@ Base: `https://<host>/v1/database/<your-billing-db>/route`.
 ### `POST /paywall`
 
 ```json
-{"app_id": "com.example.mygame", "placement": "main_paywall", "user_id": "<player id, optional>"}
+{"app_id": "com.example.mygame", "store": "google", "placement": "main_paywall", "user_id": "<player id, optional>"}
 ```
 
 ```json
@@ -168,7 +168,7 @@ Errors:
 ### `POST /paywall/event`
 
 ```json
-{"app_id": "com.example.mygame", "placement": "main_paywall", "variant_id": "b", "test_id": "main_paywall-20261110", "user_id": "...", "event": "view"}
+{"app_id": "com.example.mygame", "store": "google", "placement": "main_paywall", "variant_id": "b", "test_id": "main_paywall-20261110", "user_id": "...", "event": "view"}
 ```
 
 The answer is `200 {"status": "ok"}`. Only `view` is supported.

@@ -146,7 +146,7 @@ mod cases {
         w.script(
             "/v1/apps?filter%5BbundleId%5D=com.studio.game.ios",
             200,
-            &json!({ "data": [{ "type": "apps", "id": "1234567890", "attributes": { "bundleId": IOS_APP } }] }).to_string(),
+            &json!({ "data": [{ "type": "apps", "id": "1234567890", "attributes": { "bundleId": IOS_ID } }] }).to_string(),
         );
         w.script("POST https://api.appstoreconnect.apple.com/v1/inAppPurchaseVersions", 201, r#"{"data":{"id":"ver-1"}}"#);
         w.script("POST https://api.appstoreconnect.apple.com/v1/subscriptionVersions", 201, r#"{"data":{"id":"sver-1"}}"#);

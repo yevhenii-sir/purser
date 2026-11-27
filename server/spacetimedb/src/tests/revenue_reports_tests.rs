@@ -297,7 +297,7 @@ fn rebuilding_trials_and_countries_gives_the_live_numbers() {
     w.advance_clock(86_400);
     // The paid period is refunded.
     let voided = json!({
-        "packageName": APP,
+        "packageName": PACKAGE,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": "GPA.8888-0000-0000-00001..0", "productType": 1 },
     });
     w.google_notification(voided);

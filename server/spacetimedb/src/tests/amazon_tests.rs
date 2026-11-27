@@ -2,7 +2,9 @@
 
 use super::*;
 
-pub(super) const AMAZON_APP: &str = "com.studio.game.amazon";
+/// The build's key and its id in the store.
+pub(super) const AMAZON_APP: &str = "amazon:com.studio.game.amazon";
+pub(super) const AMAZON_ID: &str = "com.studio.game.amazon";
 pub(super) const AMAZON_RECEIPT: &str = "amzn-receipt-1";
 pub(super) const AMAZON_USER: &str = "amzn-user-1";
 pub(super) const AMAZON_LEDGER_ID: &str = "amazon:amzn-receipt-1";
@@ -12,7 +14,7 @@ pub(super) const SNS_CERT_URL: &str = "SimpleNotificationService-test.pem";
 pub(super) fn add_amazon_build(w: &World) {
     w.as_admin(false);
     let app = json!({
-        "app_id": AMAZON_APP, "platform": "amazon", "game_key": "game", "delivery": "spacetimedb",
+        "store_app_id": AMAZON_ID, "platform": "amazon", "game_key": "game", "delivery": "spacetimedb",
         "spacetime_url": "https://maincloud.spacetimedb.com", "spacetime_db": "game-db",
         "grant_reducer": "billing_grant", "revoke_reducer": "billing_revoke", "allow_sandbox": false,
     });
@@ -55,13 +57,13 @@ fn saving_a_build_without_its_flags_keeps_them() {
     let w = World::new();
     w.as_admin(false);
     let upsert = |v: Value| w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_game_app(ctx, v.to_string())).unwrap();
-    upsert(json!({ "app_id": "com.example.flags", "platform": "android", "delivery": "none", "allow_sandbox": false, "enabled": false }));
+    upsert(json!({ "store_app_id": "com.example.flags", "platform": "android", "delivery": "none", "allow_sandbox": false, "enabled": false }));
     // The setup wizard saves the build again without the flags it does not show.
-    upsert(json!({ "app_id": "com.example.flags", "platform": "android", "delivery": "none" }));
-    let a = w.read(|tx| tx.db.game_app().app_id().find("com.example.flags".to_string()).unwrap());
+    upsert(json!({ "store_app_id": "com.example.flags", "platform": "android", "delivery": "none" }));
+    let a = w.read(|tx| tx.db.game_app().app_id().find("google:com.example.flags".to_string()).unwrap());
     assert_eq!((a.allow_sandbox, a.enabled), (false, false));
-    upsert(json!({ "app_id": "com.example.fresh", "platform": "android", "delivery": "none" }));
-    let b = w.read(|tx| tx.db.game_app().app_id().find("com.example.fresh".to_string()).unwrap());
+    upsert(json!({ "store_app_id": "com.example.fresh", "platform": "android", "delivery": "none" }));
+    let b = w.read(|tx| tx.db.game_app().app_id().find("google:com.example.fresh".to_string()).unwrap());
     assert_eq!((b.allow_sandbox, b.enabled, b.client_consumes), (true, true, false), "new builds get the defaults");
 }
 
@@ -70,7 +72,7 @@ fn builds_take_their_store_from_the_registry() {
     let w = World::new();
     w.as_admin(false);
     let upsert = |v: Value| w.test.with_reducer_tx(TestAuth::internal(), |ctx| crate::admin_upsert_game_app(ctx, v.to_string()));
-    let base = json!({ "app_id": "com.example.web", "delivery": "none" });
+    let base = json!({ "store_app_id": "com.example.web", "delivery": "none" });
     let with = |extra: Value| {
         let mut v = base.clone();
         for (k, val) in extra.as_object().unwrap() {
@@ -88,7 +90,7 @@ fn builds_take_their_store_from_the_registry() {
     assert_eq!(upsert(with(json!({ "platform": "amazon" }))), Ok(()));
     let stored = w
         .test
-        .with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.game_app().app_id().find("com.example.web".to_string())))
+        .with_reducer_tx(TestAuth::internal(), |tx| Ok::<_, ()>(tx.db.game_app().app_id().find("amazon:com.example.web".to_string())))
         .unwrap()
         .unwrap();
     assert_eq!(stored.store, "amazon", "the resolved store is stored");
