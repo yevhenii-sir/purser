@@ -225,6 +225,8 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
   /** Picked stores other than the App Store with a listing limit; the App Store gets its own fields. */
   const limits = stores.filter((s) => s !== "apple" && LISTING_LIMITS[s]).map((s): [string, { title: number; description: number }] => [s, LISTING_LIMITS[s]])
   const apple = stores.includes("apple")
+  /** Only App Store builds picked: one field, showing the text the App Store gets (its own, else the shared one). */
+  const appleOnly = apple && stores.length === 1
   const appByid = (id: string) => apps.find((a) => a.app_id === id)
 
   return (
@@ -265,11 +267,11 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
                   cell: (p) => {
                     const d = drafts[p.product_id]
                     return (
-                      <div className="space-y-1">
-                        <Input className="h-8 min-w-40" value={d.title} onChange={(e) => set(p.product_id, { title: e.target.value })} />
-                        {limits.map(([s, l]) => <Limit key={s} store={s} text={textFor(d, s).title} max={l.title} />)}
+                      <div className="flex min-w-40 flex-col gap-1">
+                        {!appleOnly && <Input className="h-8" value={d.title} onChange={(e) => set(p.product_id, { title: e.target.value })} />}
+                        {!appleOnly && limits.map(([s, l]) => <Limit key={s} store={s} text={textFor(d, s).title} max={l.title} />)}
                         {apple && (
-                          <Input className="h-8 min-w-40" placeholder="App Store: as above" aria-label="Title in the App Store" value={d.apple_title}
+                          <Input className="h-8" placeholder="App Store: as above" aria-label="Title in the App Store" value={appleOnly ? d.apple_title || d.title : d.apple_title}
                             onChange={(e) => set(p.product_id, { apple_title: e.target.value })} />
                         )}
                         {apple && <Limit store="apple" text={textFor(d, "apple").title} max={LISTING_LIMITS.apple.title} />}
@@ -282,12 +284,12 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
                   cell: (p) => {
                     const d = drafts[p.product_id]
                     return (
-                      <div className="space-y-1">
-                        <Input className="h-8 min-w-40" placeholder="Same as the title" value={d.description} onChange={(e) => set(p.product_id, { description: e.target.value })} />
-                        {limits.map(([s, l]) => <Limit key={s} store={s} text={textFor(d, s).description} max={l.description} />)}
+                      <div className="flex min-w-40 flex-col gap-1">
+                        {!appleOnly && <Input className="h-8" placeholder="Same as the title" value={d.description} onChange={(e) => set(p.product_id, { description: e.target.value })} />}
+                        {!appleOnly && limits.map(([s, l]) => <Limit key={s} store={s} text={textFor(d, s).description} max={l.description} />)}
                         {apple && (
-                          <Input className="h-8 min-w-40" placeholder="App Store: as above" aria-label="Description in the App Store" value={d.apple_description}
-                            onChange={(e) => set(p.product_id, { apple_description: e.target.value })} />
+                          <Input className="h-8" placeholder={appleOnly ? "Same as the title" : "App Store: as above"} aria-label="Description in the App Store"
+                            value={appleOnly ? d.apple_description || d.description : d.apple_description} onChange={(e) => set(p.product_id, { apple_description: e.target.value })} />
                         )}
                         {apple && <Limit store="apple" text={textFor(d, "apple").description} max={LISTING_LIMITS.apple.description} />}
                       </div>
