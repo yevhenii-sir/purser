@@ -9,6 +9,8 @@
 
 **[Documentation](https://yevhenii-sir.github.io/purser/)** · **[Admin panel demo](https://yevhenii-sir.github.io/purser/demo/)** (read-only, made-up data, no sign-in) · **[Latest release](https://github.com/yevhenii-sir/purser/releases/latest)**
 
+> **Status: before 1.0.** Purser has not run a live game yet, and a minor release may still need a publish with `--delete-data`. What is promised, how often releases come out and how far each store has been tried: [versions and upgrades](docs/releases.md).
+
 ```mermaid
 flowchart LR
     client["<b>Game client</b><br/>Unity · Godot · Defold<br/>TypeScript (web, Telegram)<br/>or any engine over HTTP"]
@@ -32,6 +34,8 @@ Have a [SpacetimeDB](https://spacetimedb.com) account? There is nothing else to 
 curl -LO https://github.com/yevhenii-sir/purser/releases/latest/download/purser.wasm
 spacetime publish --server maincloud --bin-path purser.wasm <your-billing-db>
 ```
+
+Optionally check that the file was built by this repository's release workflow from a tagged commit: `gh attestation verify purser.wasm -R yevhenii-sir/purser` ([GitHub CLI](https://cli.github.com)).
 
 1. Open `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin` and sign in with your token (`spacetime login show --token`).
 2. Apps → **Add an app**: package / bundle ids, how rewards reach the game, store keys ([store setup](docs/store-setup.md)), products. The last step checks everything and shows the URLs to paste into Play Console and App Store Connect.
@@ -103,6 +107,7 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | [docs/moving-servers.md](docs/moving-servers.md) | Moving to another server: a stable address of your own, what knows the server's address, copying the database |
 | [docs/migrating-from-adapty.md](docs/migrating-from-adapty.md) | Running next to Adapty |
 | [docs/migrating-from-revenuecat.md](docs/migrating-from-revenuecat.md) | Importing RevenueCat's transactions export, switching clients |
+| [docs/releases.md](docs/releases.md) | Versions and upgrades: status of each store, what a release promises before and after 1.0, how often releases come out |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Every error code, and what to do |
 | [server/README.md](server/README.md) | Server reference: tables, secrets, HTTP API, admin calls, `seed.py` |
 | [unity/com.yevhenii.purser/README.md](unity/com.yevhenii.purser/README.md) | Unity package |

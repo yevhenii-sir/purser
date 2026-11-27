@@ -13,6 +13,8 @@ curl -LO https://github.com/yevhenii-sir/purser/releases/latest/download/purser.
 spacetime publish --server maincloud --bin-path purser.wasm <your-billing-db>
 ```
 
+To check that the file was built by this repository's release workflow from a tagged commit (not changed after the build), run `gh attestation verify purser.wasm -R yevhenii-sir/purser` with the [GitHub CLI](https://cli.github.com). Releases up to 0.13.0 have no attestation.
+
 The admin panel is at `https://maincloud.spacetimedb.com/v1/database/<your-billing-db>/route/admin`; sign in with your token (`spacetime login show --token`). Coworkers can later sign in with Google, GitHub or Discord through SpacetimeAuth instead of tokens ([sign-in with a provider](self-hosting.md#sign-in-with-google-github-and-other-accounts)).
 
 ### On your own server (Docker)

@@ -43,8 +43,10 @@ Unity: add the package to `"testables"` in a project's `manifest.json` and run t
 
 ## Schema changes
 
-Purser has no production users yet, so tables change the clean way: rename, reorder or remove columns instead of keeping legacy ones. A release whose schema SpacetimeDB cannot migrate in place says in both changelogs that it needs a publish with `--delete-data`. New tables and indexes migrate in place.
+Purser has no production users yet, so until 1.0 ([docs/releases.md](docs/releases.md)) tables change the clean way: rename, reorder or remove columns instead of keeping legacy ones. A release whose schema SpacetimeDB cannot migrate in place says in both changelogs that it needs a publish with `--delete-data`. New tables and indexes migrate in place.
 
 ## Releases
 
 Bump the version in `server/core/Cargo.toml`, `server/spacetimedb/Cargo.toml`, `unity/.../package.json` and `PurserInfo.Version` (`unity/.../Runtime/Billing.cs`), keep `server/spacetimedb/sdk-requests/current.json` in step with what the Unity SDK sends, move "Unreleased" in both changelogs, then push a `vX.Y.Z` tag: the release workflow builds `purser.wasm` and attaches it to the GitHub release.
+
+A release's section in `CHANGELOG.md` starts with an **In short:** line (two or three lines: what changed) and an **Upgrade:** line (in place, or `--delete-data` and how to keep the data), then the details; `server/tests/test_release_notes.py` checks it. The release workflow takes that section and the Unity package's (`tools/release_notes.py`) as the GitHub release's notes. How often releases come out and what they promise: [docs/releases.md](docs/releases.md).

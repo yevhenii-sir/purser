@@ -35,14 +35,14 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
 | `server/setup_google.py` | Google Play setup from the terminal: gets a `gcloud` access token and calls the `admin_setup_google` procedure (APIs, service account + key, Pub/Sub topic, RTDN push subscriptions). |
 | `server/mcp_server.py` | MCP server (stdlib JSON-RPC over stdio) over the admin procedures; see docs/mcp.md. |
 | `unity/com.yevhenii.purser` | UPM package: `BillingService`, `BillingConfig`, providers, Editor inspector, EditMode tests, native iOS plugin (`Runtime/Plugins/iOS`). The core (`Purser.Runtime`) does not reference Unity IAP; the Unity IAP 5 adapter is the assembly `Purser.UnityIap` (`Runtime/UnityIap`, compiled only with `com.unity.purchasing` 5.4+ via the `PURSER_UNITY_IAP5` version define, registers `Billing.DefaultStoreFactory` on load), its tests are `Purser.Tests.UnityIap` (`Tests/Editor/UnityIap`). |
-| `sdks/` | Client SDKs for other engines, the same HTTP contract and purchase-finishing rules as the Unity package (docs/sdks.md): `typescript` (`@purser/client`, `fetch`, no runtime dependencies; tests: `npm install && npm test`, Node 22+, a fake fetch), `godot` (`addons/purser/purser_client.gd`, `HTTPRequest`; tests: `godot --headless --path sdks/godot -s tests/test_purser.gd`, not run in CI), `defold` (`purser/purser.lua`, `http.request`, `game.project` shares `purser` as a library; tests: `lua tests/test_purser.lua` from `sdks/defold`, any Lua 5.1-5.4 or LuaJIT). What each sends is in `server/spacetimedb/sdk-requests/<sdk>.json` (the TypeScript and Defold tests rewrite theirs with `UPDATE_SDK_REQUESTS=1`, the Godot test compares its own); the module's `every_request_of_every_sdk_is_accepted` parses every file and refuses fields the server does not read. |
+| `sdks/` | Client SDKs for other engines, the same HTTP contract and purchase-finishing rules as the Unity package (docs/sdks.md): `typescript` (`@purser/client`, `fetch`, no runtime dependencies; tests: `npm install && npm test`, Node 22+, a fake fetch), `godot` (`addons/purser/purser_client.gd`, `HTTPRequest`; tests: `godot --headless --path sdks/godot -s tests/test_purser.gd`, CI runs it on Godot 4.2, the oldest supported), `defold` (`purser/purser.lua`, `http.request`, `game.project` shares `purser` as a library; tests: `lua tests/test_purser.lua` from `sdks/defold`, any Lua 5.1-5.4 or LuaJIT). What each sends is in `server/spacetimedb/sdk-requests/<sdk>.json` (the TypeScript and Defold tests rewrite theirs with `UPDATE_SDK_REQUESTS=1`, the Godot test compares its own); the module's `every_request_of_every_sdk_is_accepted` parses every file and refuses fields the server does not read. |
 | `docs/` | store setup, game integration contract, analytics, self-hosting, migrating from Adapty. |
 | `tools/generate_unity_meta.py` | Creates `.meta` files for new Unity package files (deterministic GUIDs). |
 | `tools/e2e.py` | End-to-end check of a built module on a real SpacetimeDB server (CI runs it in a container). |
 | `tools/demo_snapshot.py`, `tools/mkdocs_hooks.py` | The admin page demo's snapshot (`admin-ui/demo`), hooks of the docs site build. |
 | `deploy/docker/` | Self-hosting with `docker compose`: SpacetimeDB, `publish.sh`, an optional Caddy proxy with the public allowlist. |
 | `tools/loadtest.py` | Load test of a built module on a local SpacetimeDB, with a local proxy standing in for a slow store (not in CI). |
-| `.github/workflows/` | `ci.yml` (tests, wasm, end to end on SpacetimeDB, admin page freshness, scripts, the TypeScript and Defold SDKs, personal-infra grep guard), `release.yml` (tag `v*`), `docs.yml` (the docs site and the admin page demo), `audit.yml` (weekly `cargo deny` of the module's wasm dependencies, configured in `server/deny.toml`, and `npm audit`); `dependabot.yml`. |
+| `.github/workflows/` | `ci.yml` (tests, wasm, end to end on SpacetimeDB, admin page freshness, scripts, the TypeScript, Godot and Defold SDKs, personal-infra grep guard), `release.yml` (tag `v*`), `docs.yml` (the docs site and the admin page demo), `audit.yml` (weekly `cargo deny` of the module's wasm dependencies, configured in `server/deny.toml`, and `npm audit`); `dependabot.yml`. |
 
 ## Domain model (names used everywhere)
 
@@ -157,9 +157,9 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   in memory can fail and roll the transaction back; the ledger retries, but don't add full scans of
   the cold tables outside the revenue rebuild and backups (they pull every row back into memory).
 
-## Schema rules (no users yet: no legacy)
+## Schema rules (no users yet: no legacy, until 1.0)
 
-- Purser has no production users yet: change tables the clean way (rename, reorder, retype, remove)
+- Until 1.0 (docs/releases.md: what each version promises) Purser has no production users: change tables the clean way (rename, reorder, retype, remove)
   instead of keeping legacy columns, `#[default]` attributes or upgrade code. A release whose schema
   cannot be migrated in place says in both changelogs that it needs a publish with `--delete-data`.
 - New tables and indexes migrate in place (SpacetimeDB adds indexes automatically).
@@ -261,7 +261,8 @@ Run `spacetime` CLI commands from outside `server/` (or pass the database explic
   `Integrations/`. New files need `.meta` files (run the generator). Keep the public API documented
   with XML comments. Native code goes to `Runtime/Plugins/<platform>` with a `PluginImporter` meta.
 - Docs and code are in **English**. Keep `CHANGELOG.md` (repo) and the Unity package `CHANGELOG.md`
-  updated under "Unreleased".
+  updated under "Unreleased". A released section of `CHANGELOG.md` starts with `**In short:**` and `**Upgrade:**`
+  lines (it becomes the GitHub release's notes through `tools/release_notes.py`).
 - **No personal infrastructure** in the repo: use placeholders (`<your-billing-db>`,
   `com.example.mygame`, `stdb.example.com`). CI greps for known private hostnames and fails.
 - Never commit secrets (`server/secrets/`, `*.p8`, service-account JSON are gitignored).

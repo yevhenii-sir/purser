@@ -14,4 +14,6 @@ Please report security issues privately through GitHub's **Security → Report a
 
 ## Scope notes
 
-`/verify`, `/restore` and `/entitlements` are public by design: a purchase can only be granted with a token the store confirms. Consumables are bound to the buyer's account id; owned products follow the store account (restore). `/entitlements` reveals what a given `user_id` owns, so don't use guessable user ids if that matters for your game.
+`/verify`, `/restore` and `/entitlements` are public by design: a purchase can only be granted with a token the store confirms. Consumables are bound to the buyer's account id; owned products follow the store account (restore).
+
+By default (Client requests: *open*) any client may name any player, so anyone who knows a `user_id` can read what that player owns (`/entitlements`) or set their attributes. A game with a backend should turn on **player tokens** (Client requests: *signed*): the backend signs a short-lived token for the signed-in player and every client request without a valid one gets `401 ERR_CLIENT_AUTH` ([game integration](docs/game-integration.md#client-requests-player-tokens-limits-signed-answers)). Games without a backend should use player ids nobody can guess (UUIDs).

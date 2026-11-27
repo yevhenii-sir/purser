@@ -134,6 +134,17 @@ jobs:
       - name: Defold (Lua)
         working-directory: sdks/defold
         run: sudo apt-get update -qq && sudo apt-get install -y -qq lua5.4 && lua5.4 tests/test_purser.lua
+      # The oldest Godot the addon supports (docs/sdks.md), checked against the SHA-512 of its release.
+      - name: Godot
+        working-directory: sdks/godot
+        env:
+          GODOT: Godot_v4.2.2-stable_linux.x86_64
+          GODOT_SHA512: 4c0294f437b97cf14f848d921ed028cb6e100ebbfcf6480f2d50292d001221cf29cda73f0a96a8c0e80b145b65cdbf7e422252dbbe17e79d883753e500306276
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/godot.zip" "https://github.com/godotengine/godot/releases/download/4.2.2-stable/$GODOT.zip"
+          echo "$GODOT_SHA512  $RUNNER_TEMP/godot.zip" | sha512sum -c -
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP"
+          timeout 300 "$RUNNER_TEMP/$GODOT" --headless --path . -s tests/test_purser.gd
 
   tooling:
     name: scripts

@@ -76,6 +76,7 @@ nav:
   - Owner alerts: alerts.md
   - Self-hosting: self-hosting.md
   - Moving to another server: moving-servers.md
+  - Versions and upgrades: releases.md
   - Migrating from Adapty: migrating-from-adapty.md
   - Migrating from RevenueCat: migrating-from-revenuecat.md
   - Troubleshooting: troubleshooting.md

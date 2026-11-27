@@ -2,13 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- Releases carry a signed build provenance attestation of `purser.wasm` and `seed.example.zip`: `gh attestation verify purser.wasm -R yevhenii-sir/purser` checks that the file was built by the release workflow from the tagged commit (README, docs/getting-started.md).
+- CI runs the Godot addon's tests on Godot 4.2, the oldest supported version.
+- docs/releases.md, *Versions and upgrades*: Purser has not run a live game yet, how far each store has been tried (automated tests, sandbox and live purchases), what a release promises before and after 1.0, how often releases come out and how to upgrade. The README and the docs site's front page say the status.
+- GitHub releases carry their notes from the changelogs (`tools/release_notes.py`: the release's section of `CHANGELOG.md` and of the Unity package's), and a tag without a changelog section publishes nothing. Every released section starts with **In short** and **Upgrade** lines, added to the earlier releases too.
+
 ### Changed
+
+- SECURITY.md: what anyone who knows a player id can read without player tokens, and turning them on instead of relying on ids nobody can guess.
 
 - Docs: the README and the docs site's front page list every implemented store (Huawei AppGallery, Samsung Galaxy Store, Meta Quest and Telegram Stars were missing) and the SDKs for other engines.
 
 ## 0.13.0 - 2026-11-26
 
-Publishes over 0.12.0 in place (new tables only): no `--delete-data`, no backup needed.
+**In short:** Moving to another server without losing a purchase (`migrate.py --switch`); admins sign in with Google, GitHub or Discord through an OpenID Connect provider, invited by email or by company domain; the admin page shows each role only what it can do.
+
+**Upgrade:** in place over 0.12.0 (new tables only): no `--delete-data`, no backup needed.
 
 ### Added
 
@@ -25,6 +36,10 @@ Publishes over 0.12.0 in place (new tables only): no `--delete-data`, no backup 
 - Admins page: the admin list is a sortable grid with a search (name, email, identity, apps) and a role filter (one of them: the admins of domain rules); an admin's apps show as a control like the role (the first app and how many more, all of them in its tooltip); picking apps (admins, invitations, domain rules, alert channels) names the chosen ones above the list, lists them first and ticks everything a filter matches at once; lists of apps in tables take one line; *Needs attention* on the Overview pages through every problem with a filter instead of showing 12; changing the role or apps of an admin who joined through a domain rule asks first, since it detaches them from the rule.
 
 ## 0.12.0 - 2026-11-26
+
+**In short:** Samsung Galaxy Store and Meta Quest; virtual currency wallets; paywall audiences and install cohorts; Google Play subscription add-ons and price changes of subscriptions; Singular, Branch, Kochava, Braze and OneSignal integrations and an S3-compatible export; client SDKs for TypeScript, Godot and Defold.
+
+**Upgrade:** publish with `--delete-data` and keep the data with `backup.py` (see Breaking).
 
 ### Breaking
 
@@ -61,6 +76,10 @@ Publishes over 0.12.0 in place (new tables only): no `--delete-data`, no backup 
 
 ## 0.11.0 - 2026-11-26
 
+**In short:** Huawei AppGallery and Telegram Stars; promo codes and purchases of several units; prices, taxes and refunds read from the stores' APIs; refunds and extensions from the purchase page; business alerts, `GET /metrics` and an `analytics` = `off` mode for large games.
+
+**Upgrade:** publish with `--delete-data` and keep the data with `backup.py` (see Breaking).
+
 ### Breaking
 
 - Publish with `--delete-data` (keep the data with `backup.py`): `purchase` gains `quantity`, `tax_micros`, `refund_share_milli`, `reinstated`, `access_was_until_ms` and `error_log_id` (`backup.py restore` gives the restored purchases `quantity` 1, the rest 0). `revenue_report_row` is gone. The business alerts read the new `build_sales_daily`, which starts empty: `revenue_drop`, `refund_spike` and `no_purchases` compare against a week of sales recorded after the upgrade. The delivery event (`BillingEvent`, the webhook body, the `spacetimedb_idc` struct) gains `quantity` after `kind`: game modules add it to their struct (`server/game-receiver`, docs/game-integration.md).
@@ -92,6 +111,10 @@ Publishes over 0.12.0 in place (new tables only): no `--delete-data`, no backup 
 - The admin page demo shows the current features: Huawei AppGallery and Telegram Stars builds, VAT and multi-unit purchases, a prorated refund, promo codes, an alert channel with business alerts and the daily summary.
 
 ## 0.10.0 - 2026-11-25
+
+**In short:** Purchases under load: queue drainers, a 3 s budget per client request, purchases that wait for a setup fix instead of failing; every delivery event has an `event_id` and webhook signatures carry the time; delivery to a game database on the same server (`spacetimedb_idc`); observer mode, bulk setup from CSV and the Stripe customer portal; many revenue, refund and security fixes.
+
+**Upgrade:** publish with `--delete-data` and keep the data with `backup.py` (see Breaking).
 
 ### Breaking
 
@@ -180,6 +203,10 @@ Publishes over 0.12.0 in place (new tables only): no `--delete-data`, no backup 
 
 ## 0.9.0 - 2026-11-24
 
+**In short:** Amplitude, Mixpanel and Meta Conversions API integrations; server keys for the game's backend (`/server/entitlements`, `/server/grant`, `/server/revoke`); RevenueCat import; refused integration events kept for a resend; `/entitlements` and `/restore` read what players own from memory; CI runs an end-to-end check on a real SpacetimeDB.
+
+**Upgrade:** publish with `--delete-data` and keep the data with `backup.py` (see Breaking).
+
 ### Breaking
 
 - Publish with `--delete-data`: the `purchase` table loses its `app_id`, `transaction_id` and `next_attempt_at_micros` indexes and gains `trial_conversion`, `after_first_year`, `offer_type`, `paused_until_ms` and `family_shared`. `/entitlements` gains `paused`, and every state `family_shared`; game events gain the reason `paused`. `admin_select` still finds a purchase by `transaction_id` (through the ledger id).
@@ -221,12 +248,20 @@ Publishes over 0.12.0 in place (new tables only): no `--delete-data`, no backup 
 
 ## 0.8.1 - 2026-11-20
 
+**In short:** SpacetimeDB 2.16.1 and tiered storage: ledger history and daily aggregates may leave memory.
+
+**Upgrade:** in place, no `--delete-data`.
+
 ### Changed
 
 - Needs SpacetimeDB 2.16.1 or newer (the module is built with 2.16.1; the Docker setup uses `v2.16.1`). Publish in place: no `--delete-data`.
 - Tables say where their rows may live (tiered storage): the purchase log, admin audit and daily revenue aggregates may leave memory, purchases, player profiles, attribution ids and Steam orders stay at least on disk, everything else stays in memory, also after SpacetimeDB 3.0 changes the default.
 
 ## 0.8.0 - 2026-11-16
+
+**In short:** Access levels in `/entitlements`; subscription states (grace period, billing issue, auto-renew off, upgrades) followed and re-checked by the worker; player tokens and rate limits on client routes; player data export and erasure; `backup.py`.
+
+**Upgrade:** publish with `--delete-data` and update the Unity package together with the server (see Breaking).
 
 ### Breaking
 
@@ -263,6 +298,10 @@ Publish this version with `--delete-data` and update the Unity package together 
 - Admin page: fields of two-column dialogs line up at the top when one of them has a hint or a longer label.
 
 ## 0.7.0 - 2026-11-15
+
+**In short:** Compatibility code removed (one `app_id` in every request, no Adapty-era delivery format); alert routing by channel; admins limited to some apps; one-click store setup; a price per build; an admin page for many apps.
+
+**Upgrade:** publish with `--delete-data` and update the Unity package together with the server (see Breaking).
 
 ### Breaking
 
@@ -303,6 +342,10 @@ Purser has no production users yet, so compatibility code is removed instead of 
 
 ## 0.6.0 - 2026-11-12
 
+**In short:** Security hardening: App Store notifications verified up to Apple's root certificate, SNS replays and foreign topics refused, Steam auth tickets checked, no secrets in logged URLs, a strict CSP for the admin page, request body limits; outbound work bounded by time.
+
+**Upgrade:** not recorded (the changelog says it from 0.7.0 on).
+
 ### Security
 
 - App Store notifications must be signed by Apple: the `signedPayload` JWS is verified (ES256, its `x5c` chain up to Apple Root CA - G3, which ships with the module, and Apple's marker extensions). Before, a build without `apple_notification_secret` accepted anything; the secret is now an optional extra check.
@@ -329,6 +372,10 @@ Purser has no production users yet, so compatibility code is removed instead of 
 
 ## 0.5.0 - 2026-11-11
 
+**In short:** Store listings of products (title, description, subscription period) and one catalog id per product across stores.
+
+**Upgrade:** not recorded (the changelog says it from 0.7.0 on).
+
 - Products keep an optional store listing: title, description, and for subscriptions the billing period and the App Store subscription group (new `product` columns `title`, `description`, `period`, `apple_group`).
   - Edited in the product dialog; Create in store starts from it and saves what it used.
   - The store catalog import fills the period, Download JSON / From JSON carry the fields, and the Products table shows "/ month" next to a subscription's price.
@@ -340,6 +387,10 @@ Purser has no production users yet, so compatibility code is removed instead of 
   - The Products tab shows one row per product with each build's store id, and the product dialog edits the store ids per build. The Unity config import and export map the config's `id` / `storeIds` to them; Create in store keeps the picked id as the catalog id of a Stripe Price.
 
 ## 0.4.0 - 2026-11-11
+
+**In short:** Admin roles (Owner, Admin, Editor, Support, Viewer) and an audit log; products created in Google Play, the App Store, Stripe and Xsolla from the Products tab.
+
+**Upgrade:** not recorded (the changelog says it from 0.7.0 on).
 
 - Admin roles: Owner, Admin, Editor, Support, Viewer. Every admin reducer and procedure checks the caller's role.
   - On the Admins page you add a coworker with a name and a role and generate a token for them, shown once. Admins can also be renamed, given another role, or removed. Only the owner manages admins with the Admin role.
@@ -358,6 +409,10 @@ Purser has no production users yet, so compatibility code is removed instead of 
 
 ## 0.3.0 - 2026-11-10
 
+**In short:** Player profiles; integrations send gross revenue or proceeds; the Unity config copied and imported with prices; display names of apps.
+
+**Upgrade:** not recorded (the changelog says it from 0.7.0 on).
+
 - Player profile in the admin page: per build, when the server first and last heard from the player, the device the client reported (model, OS, app and SDK version, the optional `client` object of `/verify`, `/restore`, `/entitlements`, `/paywall`), the custom attributes the game set (new `POST /attributes`) and the billing country of the newest purchase. New table `player_profile`; `last_seen` is rewritten at most once an hour. The release workflow checks `PurserInfo.Version` too.
 
 - Integrations choose how revenue is sent, like Adapty: **Gross revenue**, **Proceeds after store commission** or **Proceeds after store commission and taxes** (`revenue`: `gross`, `proceeds`, `net` in the settings of GA4, AppsFlyer, Adjust, Tenjin and AppMetrica). The commission comes from the Store fee settings (per app, lowered after a subscription's first paid year) and is fixed when the event is queued; the tax is estimated from the buyer's billing country with the standard VAT / GST rate (`purser_core::tax`). The webhook and the Cloud Storage export carry all three amounts (`price_micros`, `proceeds_micros`, `net_micros`) with `country` and `commission_percent`.
@@ -370,12 +425,18 @@ Purser has no production users yet, so compatibility code is removed instead of 
 
 ## 0.2.0 - 2026-11-10
 
+**In short:** The Unity config is keyed by store, so a game can have several builds of one platform, and it goes both ways between the admin page and the Unity inspector.
+
+**Upgrade:** not recorded (the changelog says it from 0.7.0 on).
+
 - Unity package: the config is keyed by store (`builds`, per-product `storeIds`), so one game can have several web builds (Stripe and Xsolla); **Copy config for admin panel** in the inspector; fixes for purchases without a product id, Amazon receipts the server rejected, web purchases without attribution and paywall, hanging purchases and game handler exceptions. Breaking for the package API: see `unity/com.yevhenii.purser/CHANGELOG.md`.
 - Admin page: the Unity config goes both ways. **Paste from Unity** on the first step of the new app wizard fills in the builds (merged by store and app id) and the products from the JSON the Unity config inspector copies; **Import from Unity** on an app's Products tab compares the pasted products with the app's (new, changed, same), saves them to every build with the store's own product id and keeps existing prices, and lists builds the app does not have instead of creating them. The config is keyed by store (`builds: [{store, appId}]`, `products: [{id, type, storeIds}]`); the wizard's Unity config now lists every build (Steam and web included) and per-store product ids. Configs in the old format (`androidAppId`, ...) are refused with a hint to copy them again from Unity.
 
 ## 0.1.0 - 2026-11-10
 
-First public release.
+**In short:** First public release: Google Play, App Store, Amazon Appstore, Steam, Stripe and Xsolla; the ledger with retries; the admin page with the setup check; revenue in USD; paywalls and A/B tests; alerts; GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, webhook and Cloud Storage integrations; the MCP server and the admin page demo.
+
+**Upgrade:** a first install; databases of earlier builds need a publish with `--delete-data`.
 
 - Catalog import from the App Store: "Import from App Store" on the Products tab and in the new app wizard lists the app's in-app purchases (with the real consumable / non-consumable kind) and subscriptions (with their period) through the App Store Connect API, next to the existing Google Play import. Needs an App Store Connect API Team key (new optional account secrets `apple_connect_key_id`, `apple_connect_private_key_p8`; the issuer id is shared). An app with several importable builds gets a button for each. Importing a product the store lists without a price keeps its configured price.
 - App Store refund requests: when a player asks Apple for a refund (`CONSUMPTION_REQUEST`), the server answers within the 12 hours Apple gives with whether the purchase was delivered and used, and optionally the outcome it recommends (decline for delivered purchases, a full refund when the delivery failed, prorated for subscriptions). Per build: `game_app.apple_refund_mode` (`off`, `inform`, `prefer`), set on the app's Delivery tab. Only for players who consented in the game (`attribution.refund_data_consent`, `SetRefundDataConsent` in the Unity package). Answers are queued in `apple_consumption_outbox`, retried until the deadline and listed in the purchase history; the setup check shows the mode.

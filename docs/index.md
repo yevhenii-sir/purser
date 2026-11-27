@@ -4,6 +4,8 @@ In-app purchase billing for mobile games and apps on [SpacetimeDB](https://space
 
 [Deploy to maincloud](getting-started.md#on-maincloud){ .md-button .md-button--primary } [Self-host with Docker](self-hosting.md){ .md-button } [Admin panel demo](https://yevhenii-sir.github.io/purser/demo/){ .md-button }
 
+> **Status: before 1.0.** Purser has not run a live game yet, and a minor release may still need a publish with `--delete-data`. What is promised, how often releases come out and how far each store has been tried: [versions and upgrades](releases.md).
+
 ```mermaid
 flowchart LR
     client["<b>Game client</b><br/>Unity · Godot · Defold<br/>TypeScript (web, Telegram)<br/>or any engine over HTTP"]

@@ -33,6 +33,11 @@ jobs:
           sdk=$(grep -m1 'const string Version' unity/com.yevhenii.purser/Runtime/Billing.cs | cut -d'"' -f2)
           echo "tag=$tag crate=$crate upm=$upm sdk=$sdk"
           [ "$tag" = "$crate" ] && [ "$tag" = "$upm" ] && [ "$tag" = "$sdk" ] || { echo "::error::Tag v$tag does not match Cargo.toml ($crate) / package.json ($upm) / PurserInfo.Version ($sdk)"; exit 1; }
+      # The release's notes are its sections of both changelogs (docs/releases.md).
+      - name: Release notes
+        run: |
+          mkdir notes
+          python3 tools/release_notes.py "${GITHUB_REF_NAME#v}" > notes/notes.md || { echo "::error::CHANGELOG.md has no section for ${GITHUB_REF_NAME#v}"; exit 1; }
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: server
@@ -51,19 +56,41 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-notes
+          path: notes/
+          if-no-files-found: error
+          retention-days: 1
 
+  # Attests here, not in `build`: the job that runs dependency build scripts gets no id-token.
   release:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-assets
           path: dist
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-notes
+          path: notes
+      # Signed build provenance (Sigstore): `gh attestation verify purser.wasm -R yevhenii-sir/purser`
+      # proves the file was built by this workflow from the tagged commit. The .sha256 next to it
+      # only catches a broken download.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/purser.wasm
+            dist/seed.example.zip
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        # The changelog sections first, then GitHub's generated list (the compare link).
+        run: gh release create "$GITHUB_REF_NAME" dist/* --notes-file notes/notes.md --generate-notes
