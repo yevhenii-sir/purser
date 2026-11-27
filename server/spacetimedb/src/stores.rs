@@ -393,6 +393,9 @@ fn apple_lookup(
 ) -> Result<(StoreTx, &'static str, String), StoreError> {
     let token = auth.get(|| apple_token(ctx, app))?;
     let mut last = String::new();
+    // An environment that refuses the key (production does, for an app not on the App Store yet)
+    // does not end the look-up: the key is wrong only when every environment refuses it.
+    let mut refused = Vec::new();
     for base in apple::api_bases(likely_environment) {
         let url = apple::transaction_url(base, transaction_id).map_err(StoreError::Invalid)?;
         let res = net::send(ctx.http(), "GET", &url, &[("Authorization", &bearer(&token))], ())
@@ -404,13 +407,14 @@ fn apple_lookup(
             }
             404 => last = res.describe(),
             400 => return Err(StoreError::Invalid(format!("App Store lookup: {}", res.describe()))),
-            401 | 403 => {
-                let msg = format!("App Store auth failed: {}", res.describe());
-                report_rejected(ctx, app, &msg);
-                return Err(StoreError::Config(msg));
-            }
+            401 | 403 => refused.push(res.describe()),
             _ => return Err(StoreError::Transient(format!("App Store lookup: {}", res.describe()))),
         }
+    }
+    if refused.len() == 2 {
+        let msg = format!("App Store auth failed: {}", refused.join("; "));
+        report_rejected(ctx, app, &msg);
+        return Err(StoreError::Config(msg));
     }
     Err(StoreError::Invalid(format!("transaction not found in production or sandbox: {last}")))
 }

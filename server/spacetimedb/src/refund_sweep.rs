@@ -225,18 +225,23 @@ fn sweep_apple(ctx: &mut impl Ctx, app: &GameApp, start_ms: i64, end_ms: i64, bu
         bases.push(apple::SANDBOX_API);
     }
     let body = apple::notification_history_body(start_ms, end_ms, "REFUND");
-    for base in bases {
+    // Production refuses an app not on the App Store yet: the key is wrong only when every
+    // environment read refuses it.
+    let mut refused = Vec::new();
+    let tried = bases.len();
+    'bases: for base in bases {
         let mut page = String::new();
         loop {
             let url = apple::notification_history_url(base, &page);
             let headers = [("Authorization", bearer(&token)), ("Content-Type", "application/json".to_string())];
             let headers: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
             let res = net::send(ctx.http(), "POST", &url, &headers, body.clone())?;
+            if matches!(res.status, 401 | 403) {
+                refused.push(format!("{} {}", if base == apple::PRODUCTION_API { "production" } else { "sandbox" }, res.describe()));
+                continue 'bases;
+            }
             if !res.ok() {
-                return Err(match res.status {
-                    401 | 403 => format!("Apple refused the notification history ({}): check the App Store Server API key", res.describe()),
-                    _ => format!("App Store notification history: {}", res.describe()),
-                });
+                return Err(format!("App Store notification history: {}", res.describe()));
             }
             let (notifications, next) = apple::parse_notification_history(&res.body)?;
             for n in notifications {
@@ -248,6 +253,12 @@ fn sweep_apple(ctx: &mut impl Ctx, app: &GameApp, start_ms: i64, end_ms: i64, bu
                 Some(t) => page = t,
             }
         }
+    }
+    if refused.len() == tried {
+        return Err(format!(
+            "Apple refused the notification history ({}): check the App Store Server API key (production refuses an app until it is on the App Store; allow sandbox purchases to read sandbox)",
+            refused.join("; ")
+        ));
     }
     Ok(())
 }

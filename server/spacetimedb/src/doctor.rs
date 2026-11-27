@@ -564,11 +564,20 @@ fn check_apple(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report)
     }
 
     let mut verdict = v(Level::Warn, "no answer", "Try again later");
+    // Production refuses an app that is not on the App Store yet (401, or 404): sandbox decides.
+    let mut production_refused = None;
     for (base, env) in [(apple::PRODUCTION_API, environment::PRODUCTION), (apple::SANDBOX_API, environment::SANDBOX)] {
         let res = net::send(ctx.http(), "POST", &apple::test_notification_url(base), &[("Authorization", &auth)], ());
         match res {
             Ok(res) => {
-                verdict = d::classify_apple_test(res.status, env);
+                verdict = match production_refused {
+                    Some(p) => d::classify_apple_test_sandbox_only(p, res.status),
+                    None => d::classify_apple_test(res.status, env),
+                };
+                if env == environment::PRODUCTION && matches!(res.status, 401 | 403 | 404) {
+                    production_refused = Some(res.status);
+                    continue;
+                }
                 if res.status == 200 {
                     if let Some(t) = apple::parse_test_notification_token(&res.body) {
                         let (app_id, base) = (s.app.app_id.clone(), base.to_string());
@@ -582,9 +591,7 @@ fn check_apple(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report)
                     }
                     break;
                 }
-                if res.status != 404 {
-                    break;
-                }
+                break;
             }
             Err(e) => {
                 verdict = v(Level::Warn, e, "Try again later");

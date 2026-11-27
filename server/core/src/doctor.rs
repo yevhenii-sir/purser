@@ -122,6 +122,20 @@ pub fn classify_apple_test(status: u16, environment: &str) -> Verdict {
     }
 }
 
+/// The App Store Server API test when production refused (`production_status`: 401, 403 or 404)
+/// and sandbox answered `sandbox_status`: an app that is not on the App Store yet exists only in
+/// sandbox, and Apple refuses its production requests with 401.
+pub fn classify_apple_test_sandbox_only(production_status: u16, sandbox_status: u16) -> Verdict {
+    if sandbox_status != 200 {
+        return classify_apple_test(sandbox_status, crate::model::environment::SANDBOX);
+    }
+    v(
+        Level::Ok,
+        format!("App Store Server API accepts the key (sandbox; production answers HTTP {production_status})"),
+        "Production refuses the app until it is on the App Store: once it is live, run the check again",
+    )
+}
+
 /// `GET /inApps/v1/notifications/test/{token}`: did Apple manage to deliver the test notification?
 pub fn classify_apple_test_status(status: u16, body: &str) -> Verdict {
     if status != 200 {
@@ -310,6 +324,14 @@ pub fn integration_activity(config: Verdict, a: &IntegrationActivity, when: impl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_app_not_on_the_app_store_yet_passes_in_sandbox() {
+        let ok = classify_apple_test_sandbox_only(401, 200);
+        assert_eq!(ok.0, Level::Ok);
+        assert!(ok.1.contains("sandbox") && ok.1.contains("401"), "{}", ok.1);
+        assert_eq!(classify_apple_test_sandbox_only(401, 401).0, Level::Fail, "refused in both: the key");
+    }
 
     #[test]
     fn integration_activity_shows_failures_skips_and_the_last_event() {

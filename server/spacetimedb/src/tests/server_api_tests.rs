@@ -765,6 +765,17 @@ fn the_worker_applies_an_app_store_refund_from_the_notification_history() {
 }
 
 
+#[test]
+fn the_refund_sweep_reads_the_sandbox_when_production_refuses_the_app() {
+    let w = refund_world(None, "off");
+    // An app not on the App Store yet: production refuses it, the sandbox answers.
+    w.script("api.storekit.itunes.apple.com/inApps/v1/notifications/history", 401, "");
+    w.script("api.storekit-sandbox.itunes.apple.com/inApps/v1/notifications/history", 200, r#"{"notificationHistory":[],"hasMore":false}"#);
+    w.run_worker();
+    let row = sweep_row(&w, IOS_APP).unwrap();
+    assert_eq!(row.last_error, "", "a refusal of production alone is no error");
+}
+
 // --- Purchases of several units at once ---
 
 #[test]

@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- An App Store build whose app is not on the App Store yet failed with "App Store rejected the API key (HTTP 401)": Apple refuses production requests for such an app with 401, not 404, and Purser took the refusal for a wrong key without asking the sandbox. A transaction look-up, the refund sweep and the setup check go on to the other environment; the key is reported wrong only when both refuse it.
 - A store catalog import with "Also add to" other builds overwrote their products: an App Store import (which carries no prices) set the Google Play prices to 0. The other builds now get only the products they do not have, and a store that reports no price keeps the price a product has.
 - The Apple keys are labelled by where they come from: the In-App Purchase key (Users and Access > Integrations > In-App Purchase) checks purchases, the Team key (App Store Connect API > Team Keys) imports the catalog and sets up the App Store.
 - The refund sweep of Google Play builds read voided purchases from exactly 30 days back, which Google refuses ("Start time must be within [30] days of data"): it starts a day later now, so refunds no notification reported are found again.

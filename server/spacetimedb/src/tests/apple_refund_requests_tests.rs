@@ -46,6 +46,27 @@ fn apple_asks_the_environment_of_the_ledger_row_first() {
     assert_eq!(w.calls("/call/billing_grant"), 1);
 }
 
+#[test]
+fn production_refusing_an_app_not_on_the_app_store_yet_leaves_it_to_the_sandbox() {
+    let w = apple_sandbox_world();
+    // Apple answers 401 in production for an app that is not on the App Store yet.
+    w.script("api.storekit.itunes.apple.com/inApps/v1/transactions/", 401, "");
+    let verify_order = |w: &World, order: &str| {
+        let r: VerifyRequest = serde_json::from_value(json!({
+            "app_id": IOS_APP, "user_id": "player-1", "product_id": "gems", "order_id": order,
+        }))
+        .unwrap();
+        verify(&mut w.ctx(), store::APPLE, &r)
+    };
+    let o = verify_order(&w, "2000000123");
+    assert_eq!(o.body["status"], "success", "the sandbox answers: {}", o.body);
+
+    // Refused in both environments: the key is wrong.
+    w.script("storekit-sandbox.itunes.apple.com/inApps/v1/transactions/2000000999", 401, "");
+    let o = verify_order(&w, "2000000999");
+    assert_eq!((o.http, o.body["message"].as_str()), (500, Some("store credentials are not configured correctly")), "{}", o.body);
+}
+
 // --- Apple refund requests (CONSUMPTION_REQUEST) ---
 
 pub(super) const CONSUMPTION_URL: &str = "PUT https://api.storekit-sandbox.itunes.apple.com/inApps/v2/transactions/consumption/2000000123";
