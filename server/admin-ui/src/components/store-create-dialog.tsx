@@ -7,9 +7,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
+import { Count, DataTable, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
 import { call, proc, select } from "@/lib/api"
-import { buildLabel, creatorBuilds, storeOf } from "@/lib/stores"
+import { buildLabel, creatorBuilds, LISTING_LIMITS, storeById, storeOf } from "@/lib/stores"
 import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { PERIODS } from "@/lib/periods"
@@ -26,6 +26,9 @@ export interface CreateSource {
   prices: Record<string, { price_micros: number; currency: string }>
   title: string
   description: string
+  /** The App Store builds' own title and description; empty: the shared ones. */
+  apple_title?: string
+  apple_description?: string
   period: string
   apple_group: string
 }
@@ -34,6 +37,8 @@ interface Draft {
   on: boolean
   title: string
   description: string
+  apple_title: string
+  apple_description: string
   price: string
   currency: string
   period: string
@@ -93,6 +98,7 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() =>
     Object.fromEntries(products.map((p) => [p.product_id, {
       on: preselected.includes(p.product_id), title: p.title || titleOf(p.product_id), description: p.description,
+      apple_title: p.apple_title || "", apple_description: p.apple_description || "",
       price: p.price_micros > 0 ? String(p.price_micros / 1e6) : "", currency: p.currency || "USD", period: p.period || "P1M",
     }])))
   const [targets, setTargets] = useState<Record<string, boolean>>(() => Object.fromEntries(builds.map((a) => [a.app_id, true])))
@@ -104,15 +110,33 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
   const set = (id: string, patch: Partial<Draft>) => setDrafts((d) => ({ ...d, [id]: { ...d[id], ...patch } }))
   const picked = products.filter((p) => drafts[p.product_id]?.on)
   const pickedBuilds = builds.filter((a) => targets[a.app_id])
-  const inputs = () => picked.map((p) => {
+  /** The text a store gets: the App Store its own where it has one. */
+  const textFor = (d: Draft, store: string) => ({
+    title: (store === "apple" && d.apple_title.trim()) || d.title.trim(),
+    description: (store === "apple" && d.apple_description.trim()) || d.description.trim() || ((store === "apple" && d.apple_title.trim()) || d.title.trim()),
+  })
+  const inputs = (store = "") => picked.map((p) => {
     const d = drafts[p.product_id]
     return {
-      product_id: p.product_id, kind: p.kind, title: d.title.trim(), description: d.description.trim(),
+      product_id: p.product_id, kind: p.kind, ...textFor(d, store),
       price_micros: Math.round(Number(d.price || 0) * 1e6), currency: d.currency.trim().toUpperCase(),
       ...(p.kind === "subscription" ? { period: d.period, apple_group: group.trim() } : {}),
     }
   })
-  const request = () => JSON.stringify({ app_ids: pickedBuilds.map((a) => a.app_id), products: inputs() })
+  /** Builds by the text they take: the App Store's, and the others' (one request each). */
+  const groups = (ids: string[]) => {
+    const isApple = (id: string) => storeOf(apps.find((a) => a.app_id === id)!).id === "apple"
+    return ([["apple", ids.filter(isApple)], ["", ids.filter((id) => !isApple(id))]] as [string, string[]][]).filter(([, g]) => g.length)
+  }
+  const previewOf = async (ids: string[]): Promise<Preview> => {
+    const parts = await Promise.all(groups(ids).map(([store, g]) => proc<Preview>("admin_store_create_preview", JSON.stringify({ app_ids: g, products: inputs(store) }))))
+    return {
+      rows: parts.flatMap((p) => p.rows),
+      apple_groups: Object.assign({}, ...parts.map((p) => p.apple_groups)),
+      warnings: Object.assign({}, ...parts.map((p) => p.warnings)),
+      pending: parts.flatMap((p) => p.pending),
+    }
+  }
   /** A build's own saved price when it differs from the product's shared one, else the draft price. */
   const forBuild = <T extends { product_id: string; price_micros: number; currency: string }>(appId: string, item: T): T => {
     const p = products.find((x) => x.product_id === item.product_id)
@@ -124,7 +148,7 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
     setBusy(true)
     setError(null)
     try {
-      setPreview(await proc<Preview>("admin_store_create_preview", request()))
+      setPreview(await previewOf(pickedBuilds.map((a) => a.app_id)))
     } catch (e) {
       setError(errorText(e))
     } finally {
@@ -136,7 +160,7 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
     if (!preview?.pending.length) return
     setBusy(true)
     try {
-      const more = await proc<Preview>("admin_store_create_preview", JSON.stringify({ app_ids: preview.pending, products: inputs() }))
+      const more = await previewOf(preview.pending)
       setPreview({
         rows: [...preview.rows, ...more.rows],
         apple_groups: { ...preview.apple_groups, ...more.apple_groups },
@@ -156,13 +180,12 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
   const start = async () => {
     if (!preview) return
     setBusy(true)
-    const all = inputs()
     let started = 0
     try {
       for (const a of pickedBuilds) {
         if (startedBuilds.current.has(a.app_id)) continue
         const ids = new Set(preview.rows.filter((r) => r.app_id === a.app_id && r.status === "create").map((r) => r.product_id))
-        const items = all.filter((p) => ids.has(p.product_id)).map((p) => forBuild(a.app_id, p))
+        const items = inputs(storeOf(a).id).filter((p) => ids.has(p.product_id)).map((p) => forBuild(a.app_id, p))
         if (!items.length) continue
         await call("admin_store_create", JSON.stringify({ app_ids: [a.app_id], products: items }))
         startedBuilds.current.add(a.app_id)
@@ -183,9 +206,8 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
   /** Products the store already has but this build does not list yet. */
   const existing = (preview?.rows || []).filter((r) => r.status === "exists" && r.store_product_id && !listed(r.app_id, r.store_product_id))
   const addExisting = async () => {
-    const byId = new Map(inputs().map((p) => [p.product_id, p]))
     const items = existing.map((r) => {
-      const p = byId.get(r.product_id)
+      const p = inputs(storeOf(appByid(r.app_id)!).id).find((x) => x.product_id === r.product_id)
       const price = p ? forBuild(r.app_id, p) : { price_micros: 0, currency: "" }
       return {
         app_id: r.app_id, product_id: r.store_product_id, catalog_id: r.product_id, kind: r.kind, price_micros: price.price_micros, currency: price.currency,
@@ -200,6 +222,9 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
   const hasSubscription = picked.some((p) => p.kind === "subscription")
   const appleGroups = [...new Set(Object.values(preview?.apple_groups || {}).flat())]
   const stores = [...new Set(pickedBuilds.map((a) => storeOf(a).id))]
+  /** Picked stores other than the App Store with a listing limit; the App Store gets its own fields. */
+  const limits = stores.filter((s) => s !== "apple" && LISTING_LIMITS[s]).map((s): [string, { title: number; description: number }] => [s, LISTING_LIMITS[s]])
+  const apple = stores.includes("apple")
   const appByid = (id: string) => apps.find((a) => a.app_id === id)
 
   return (
@@ -237,12 +262,37 @@ function StoreCreate({ apps, products, listed, preselected = [], onClose, onStar
                 { title: "Product", cell: (p) => <div className="min-w-0"><Mono>{p.product_id}</Mono><div className="text-xs text-muted-foreground">{p.kind.replace("_", "-")}</div></div> },
                 {
                   title: "Title",
-                  cell: (p) => <Input className="h-8 min-w-40" value={drafts[p.product_id].title} onChange={(e) => set(p.product_id, { title: e.target.value })} />,
+                  cell: (p) => {
+                    const d = drafts[p.product_id]
+                    return (
+                      <div className="space-y-1">
+                        <Input className="h-8 min-w-40" value={d.title} onChange={(e) => set(p.product_id, { title: e.target.value })} />
+                        {limits.map(([s, l]) => <Limit key={s} store={s} text={textFor(d, s).title} max={l.title} />)}
+                        {apple && (
+                          <Input className="h-8 min-w-40" placeholder="App Store: as above" aria-label="Title in the App Store" value={d.apple_title}
+                            onChange={(e) => set(p.product_id, { apple_title: e.target.value })} />
+                        )}
+                        {apple && <Limit store="apple" text={textFor(d, "apple").title} max={LISTING_LIMITS.apple.title} />}
+                      </div>
+                    )
+                  },
                 },
                 {
                   title: "Description",
-                  cell: (p) => <Input className="h-8 min-w-40" placeholder="Same as the title" value={drafts[p.product_id].description}
-                    onChange={(e) => set(p.product_id, { description: e.target.value })} />,
+                  cell: (p) => {
+                    const d = drafts[p.product_id]
+                    return (
+                      <div className="space-y-1">
+                        <Input className="h-8 min-w-40" placeholder="Same as the title" value={d.description} onChange={(e) => set(p.product_id, { description: e.target.value })} />
+                        {limits.map(([s, l]) => <Limit key={s} store={s} text={textFor(d, s).description} max={l.description} />)}
+                        {apple && (
+                          <Input className="h-8 min-w-40" placeholder="App Store: as above" aria-label="Description in the App Store" value={d.apple_description}
+                            onChange={(e) => set(p.product_id, { apple_description: e.target.value })} />
+                        )}
+                        {apple && <Limit store="apple" text={textFor(d, "apple").description} max={LISTING_LIMITS.apple.description} />}
+                      </div>
+                    )
+                  },
                 },
                 {
                   title: "Price",
@@ -414,4 +464,9 @@ export function StoreJobs({ apps, onFinished }: { apps: GameApp[]; onFinished: (
       )}
     </Section>
   )
+}
+
+/** The length a store takes, under a field: `Google Play 40/55`, red when longer. */
+function Limit({ store, text, max }: { store: string; text: string; max: number }) {
+  return <div className="text-[11px] text-muted-foreground">{storeById(store)?.name || store} <Count text={text} max={max} /></div>
 }

@@ -11,6 +11,7 @@
 
 ### Added
 
+- App Store builds can have their own title and description (the App Store takes 35 and 55 characters, Google Play 55 and 200): the product dialog has App Store fields (empty: the shared ones) and character counts against each store's limit; Create in store sends each store its own text and shows the counts before the check; a catalog import fills each build's own listing, and a new row of another store only with what fits there.
 - The catalog import brings the store listing (title and description, in English when the store has one) of Google Play and App Store products, and the App Store's prices (the US price, else the base territory's): a call or two per App Store product. The listing fills only fields that are empty here.
 - The Setup tab asks Apple for a test notification from each App Store build's card (**Test notification**, next to Set in App Store Connect) instead of one button for every App Store build.
 - The Products tab is a sortable grid with hideable columns, a search (product id, store ids, title), type and "missing in <build>" filters, and bulk actions on the checked rows: change the type, add to or remove from a build, create in the store, delete. The product dialog has **Delete** too (the product goes from every build; purchases of it stay in the ledger). `RichTable` takes an optional row selection.

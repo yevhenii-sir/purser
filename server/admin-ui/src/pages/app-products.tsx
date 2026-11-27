@@ -10,11 +10,11 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
 import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
-import { DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
+import { Count, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
 import { RichTable, type RichColumn } from "@/components/rich-table"
 import { StoreCreateDialog, StoreJobs } from "@/components/store-create-dialog"
 import { call, proc, publicRoute, select } from "@/lib/api"
-import { buildLabel, creatorBuilds, storeById, storeOf } from "@/lib/stores"
+import { buildLabel, creatorBuilds, LISTING_LIMITS, storeById, storeOf } from "@/lib/stores"
 import { errorText, money } from "@/lib/format"
 import { tryAct, useAsync } from "@/lib/hooks"
 import { catalogIdOf, KINDS, listingOf, type CatalogRow, type GameApp, type Kind, type Product } from "@/lib/types"
@@ -60,6 +60,22 @@ type Listing = { title: string; description: string; period: string; apple_group
 /** The access levels of a product (the same on every build; the first build that has them). */
 const accessOfRow = (r: Row) => Object.values(r.by).map((p) => p?.access || "").find(Boolean) || ""
 const walletOfRow = (r: Row) => Object.values(r.by).map((p) => p?.wallet || "").find(Boolean) || ""
+
+const isApple = (a: GameApp) => storeOf(a).id === "apple"
+type Text = { title: string; description: string }
+
+/** Title and description of a product on some builds: each from the first of them that has it. */
+function textOf(r: Row, apps: GameApp[]): Text {
+  const ps = apps.map((a) => r.by[a.app_id]).filter((p): p is Product => !!p)
+  return { title: ps.map((p) => p.title || "").find(Boolean) || "", description: ps.map((p) => p.description || "").find(Boolean) || "" }
+}
+/** The shared text (the builds outside the App Store first) and the App Store's own when it differs. */
+function textsOf(r: Row, apps: GameApp[]): { shared: Text; apple: Text } {
+  const others = textOf(r, apps.filter((a) => !isApple(a)))
+  const apple = textOf(r, apps.filter(isApple))
+  const shared = { title: others.title || apple.title, description: others.description || apple.description }
+  return { shared, apple: { title: apple.title !== shared.title ? apple.title : "", description: apple.description !== shared.description ? apple.description : "" } }
+}
 
 /** The store listing of a product: each field from the first build that has it set. */
 function listingOfRow(r: Row): Listing {
@@ -337,7 +353,11 @@ export function AppProductsTab({ data, go }: TabProps) {
             const p = r.by[a.app_id]
             return p && Number(p.price_micros) > 0 ? [[a.app_id, { price_micros: Number(p.price_micros), currency: p.currency }]] : []
           }))
-          return { product_id: r.product_id, kind: r.kind, price_micros: common.price_micros, currency: common.currency || "USD", prices, ...listingOfRow(r) }
+          const { shared, apple } = textsOf(r, g.apps)
+          return {
+            product_id: r.product_id, kind: r.kind, price_micros: common.price_micros, currency: common.currency || "USD", prices, ...listingOfRow(r),
+            ...shared, apple_title: apple.title, apple_description: apple.description,
+          }
         })} />
       {importers.map((a) => (
         <StoreImportDialog key={a.app_id} open={dialog === `import:${a.app_id}`} app={a} others={g.apps.filter((o) => o !== a)} existing={rows} onClose={() => setDialog(null)} onSaved={products.reload} />
@@ -394,8 +414,13 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
       return [a.app_id, differs ? { price: priceText(p.price_micros), currency: p.currency } : { price: "", currency: "" }]
     })))
   const setOwnOf = (appId: string, patch: Partial<{ price: string; currency: string }>) => setOwn((o) => ({ ...o, [appId]: { ...o[appId], ...patch } }))
-  const [listing, setListing] = useState<Listing>(() => (row ? listingOfRow(row) : { title: "", description: "", period: "", apple_group: "" }))
+  const [listing, setListing] = useState<Listing>(() => (row ? { ...listingOfRow(row), ...textsOf(row, apps).shared } : { title: "", description: "", period: "", apple_group: "" }))
   const setL = (patch: Partial<Listing>) => setListing((l) => ({ ...l, ...patch }))
+  /** The App Store builds' own title and description (empty: the shared ones). */
+  const [appleText, setAppleText] = useState<Text>(() => (row ? textsOf(row, apps).apple : { title: "", description: "" }))
+  const hasApple = apps.some(isApple)
+  const appleTitle = appleText.title.trim() || listing.title.trim()
+  const appleDescription = appleText.description.trim() || listing.description.trim()
   const [access, setAccess] = useState(() => (row ? accessOfRow(row).split(",").join(", ") : ""))
   const [wallet, setWallet] = useState(() => (row ? walletOfRow(row).split(",").join(", ") : ""))
   const [on, setOn] = useState<Record<string, boolean>>(() => Object.fromEntries(apps.map((a) => [a.app_id, row ? !!row.by[a.app_id] : true])))
@@ -434,7 +459,7 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
     const items = apps.filter((a) => on[a.app_id]).map((a) => ({
       app_id: a.app_id, product_id: storeIdOf(a), catalog_id: id, kind, ...priceOf(a), access: kind === "consumable" ? "" : access, wallet,
       // Sent even when empty: clearing a field here clears it on every build.
-      title: listing.title.trim(), description: listing.description.trim(),
+      ...(isApple(a) ? { title: appleTitle, description: appleDescription } : { title: listing.title.trim(), description: listing.description.trim() }),
       ...(kind === "subscription" ? { period: listing.period, apple_group: listing.apple_group.trim() } : {}),
     }))
     const ok = await tryAct(async () => {
@@ -507,8 +532,26 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
               <p className="text-sm font-medium">Store listing</p>
               <p className="text-xs text-muted-foreground">Optional. Fills in Create in store; the store keeps its own copy, edits there do not come back here.</p>
             </div>
-            <Field label="Title"><Input value={listing.title} maxLength={55} placeholder={productId.trim() ? productId.trim().replace(/[_.-]+/g, " ") : "e.g. 100 gems"} onChange={(e) => setL({ title: e.target.value })} /></Field>
-            <Field label="Description"><Textarea className="min-h-16" value={listing.description} maxLength={200} placeholder="Same as the title" onChange={(e) => setL({ description: e.target.value })} /></Field>
+            <Field label="Title" hint={<Count text={listing.title} max={LISTING_LIMITS.google.title} />}>
+              <Input value={listing.title} maxLength={LISTING_LIMITS.google.title} placeholder={productId.trim() ? productId.trim().replace(/[_.-]+/g, " ") : "e.g. 100 gems"} onChange={(e) => setL({ title: e.target.value })} />
+            </Field>
+            <Field label="Description" hint={<Count text={listing.description} max={LISTING_LIMITS.google.description} />}>
+              <Textarea className="min-h-16" value={listing.description} maxLength={LISTING_LIMITS.google.description} placeholder="Same as the title" onChange={(e) => setL({ description: e.target.value })} />
+            </Field>
+            {hasApple && (
+              <div className="grid gap-3 rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">App Store</span> takes a title of {LISTING_LIMITS.apple.title} and a description of {LISTING_LIMITS.apple.description} characters at most.
+                  Empty: the ones above.
+                </p>
+                <Field label="Title in the App Store" hint={<Count text={appleTitle} max={LISTING_LIMITS.apple.title} />}>
+                  <Input value={appleText.title} maxLength={LISTING_LIMITS.apple.title} placeholder={listing.title || "as above"} onChange={(e) => setAppleText((t) => ({ ...t, title: e.target.value }))} />
+                </Field>
+                <Field label="Description in the App Store" hint={<Count text={appleDescription} max={LISTING_LIMITS.apple.description} />}>
+                  <Input value={appleText.description} maxLength={LISTING_LIMITS.apple.description} placeholder={listing.description || "as above"} onChange={(e) => setAppleText((t) => ({ ...t, description: e.target.value }))} />
+                </Field>
+              </div>
+            )}
             {kind === "subscription" && (
               <div className="grid items-start gap-4 sm:grid-cols-2">
                 <Field label="Period">
@@ -576,12 +619,19 @@ function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
         : own && Number(own.price_micros) > 0 ? { price_micros: Number(own.price_micros), currency: own.currency }
         : known ? { price_micros: Number(known.price_micros), currency: known.currency } : { price_micros: 0, currency: p.currency })
       // The store listing fills only what is empty here: a title or description typed here stays.
+      // Each build keeps its own listing (stores take different lengths): the store's fills the empty
+      // fields of this build, and a new row of another build the fields that fit its store.
       const { title, description, ...rest } = p
-      const had = row ? listingOfRow(row) : { title: "", description: "" }
-      const listing = { ...(title && !had.title ? { title } : {}), ...(description && !had.description ? { description } : {}) }
-      const mine = { ...rest, app_id: app.app_id, catalog_id, ...priceFor(row?.by[app.app_id]), ...listing }
+      const own = row?.by[app.app_id]
+      const listing = { ...(title && !own?.title ? { title } : {}), ...(description && !own?.description ? { description } : {}) }
+      const fitting = (o: GameApp) => {
+        const max = LISTING_LIMITS[storeOf(o).id]
+        const fits = (t: string | undefined, n: number | undefined) => !!t && (!n || [...t].length <= n)
+        return { ...(fits(title, max?.title) ? { title } : {}), ...(fits(description, max?.description) ? { description } : {}) }
+      }
+      const mine = { ...rest, app_id: app.app_id, catalog_id, ...priceFor(own), ...listing }
       // The other builds get only what they do not have: their own rows are never overwritten.
-      const theirs = alsoOthers ? others.filter((o) => !row?.by[o.app_id]).map((o) => ({ ...rest, app_id: o.app_id, catalog_id, ...priceFor(), ...listing })) : []
+      const theirs = alsoOthers ? others.filter((o) => !row?.by[o.app_id]).map((o) => ({ ...rest, app_id: o.app_id, catalog_id, ...priceFor(), ...fitting(o) })) : []
       return [mine, ...theirs]
     })
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Saved ${picked.length} product(s)`)

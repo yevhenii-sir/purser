@@ -114,3 +114,9 @@ export const PLATFORM_ICON: Record<string, LucideIcon> = {
 export function buildKey(store: string, storeAppId: string): string {
   return `${store}:${storeAppId}`
 }
+
+/** Store listing lengths each store takes when a product is created there (`purser_core::store_create`). */
+export const LISTING_LIMITS: Record<string, { title: number; description: number }> = {
+  google: { title: 55, description: 200 },
+  apple: { title: 35, description: 55 },
+}

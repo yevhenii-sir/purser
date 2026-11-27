@@ -231,3 +231,9 @@ export function Stat({ label, value, hint, onClick }: { label: ReactNode; value:
 export function DialogBody({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cn("-mx-4 -my-2 max-h-[min(65svh,42rem)] overflow-y-auto px-4 py-2", className)}>{children}</div>
 }
+
+/** `12/35` under a text field; red when the text is longer than the store takes. */
+export function Count({ text, max }: { text: string; max: number }) {
+  const n = [...text].length
+  return <span className={cn("tabular-nums", n > max && "font-medium text-destructive")}>{n}/{max}</span>
+}
