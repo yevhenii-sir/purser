@@ -1,45 +1,72 @@
 # Troubleshooting
 
-Errors carry a code: `[ERR_…] message` in admin calls (the admin page shows the message), `"code": "ERR_…"` in the JSON
-of client and server routes. The setup check (app → Check, or `python seed.py --check`) explains most configuration
-problems before they reach players; the Logs page shows what the module did.
+This page lists every error code and what to do about it. Look up the code you got in the tables below.
+
+Errors carry a code:
+
+- **Admin calls**: `[ERR_…] message`. The admin page shows the message.
+- **Client and server routes**: `"code": "ERR_…"` in the JSON.
+
+Two tools help you find the cause:
+
+- **The setup check** (app → Check, or `python seed.py --check`) explains most configuration problems before they reach players.
+- **The Logs page** shows what the module did.
 
 ## Purchases and players
 
 | Code | Where | What it means | What to do |
 |---|---|---|---|
 | `ERR_CLIENT_AUTH` | client routes, `401` | The build has `client_auth = signed` and the request has no player token, an expired one, one for another `user_id` / app, or one without `aud` (the app's game key). | Have your backend sign a fresh HS256 token for this player ([game-integration.md](game-integration.md#client-requests-player-tokens-limits-signed-answers)). |
-| `ERR_RATE_LIMITED` | client and server routes, `429` | Too many requests of this player or build (client routes) or key (`/server/*`). | Wait `Retry-After` seconds; the Unity package does it by itself. A burst from one player id is usually a client loop. |
-| `ERR_TX_CLAIMED` | `/verify` | The store transaction belongs to another player id (consumables never move). | Normal for a replayed receipt; if the player id changed (reinstall), use stable ids. |
-| `ERR_CONSUMED_ELSEWHERE` | `/verify` (Google) | A consumable is consumed in Google Play but this ledger never had it: granted by another system or a replay. | When another billing system or the client still consumes, turn on *Client consumes purchases itself* on the build. |
-| `ERR_MOVING` | every client, server-key and store route, `503` (or `502` while forwarding) | The server is moving to another one: paused while its database is copied, or the new server did not answer a forwarded request. | Nothing to do: clients and stores try again after `Retry-After`. If it lasts, the owner ends or finishes the move (Settings → Server → Moving to another server, [moving to another server](moving-servers.md)). |
-| `ERR_TRANSFER_LIMIT` | `/restore` | Restoring a purchase on another player id is not allowed by the app's transfer policy now. | Delivery tab → Transfer policy; support can move it by hand (player page → Move). |
+| `ERR_RATE_LIMITED` | client and server routes, `429` | Too many requests of this player or build (client routes) or key (`/server/*`). | Wait `Retry-After` seconds. The Unity package does it by itself. A burst from one player id is usually a client loop. |
+| `ERR_TX_CLAIMED` | `/verify` | The store transaction belongs to another player id (consumables never move). | Normal for a replayed receipt. If the player id changed (reinstall), use stable ids. |
+| `ERR_CONSUMED_ELSEWHERE` | `/verify` (Google) | A consumable is consumed in Google Play, but this ledger never had it. Another system granted it, or it is a replay. | When another billing system or the client still consumes, turn on *Client consumes purchases itself* on the build. |
+| `ERR_MOVING` | every client, server-key and store route, `503` (or `502` while forwarding) | The server is moving to another one. It is paused while its database is copied, or the new server did not answer a forwarded request. | Nothing to do: clients and stores try again after `Retry-After`. If it lasts, the owner ends or finishes the move (Settings → Server → Moving to another server, [moving to another server](moving-servers.md)). |
+| `ERR_TRANSFER_LIMIT` | `/restore` | Restoring a purchase on another player id is not allowed by the app's transfer policy now. | Change it on the Delivery tab → Transfer policy. Support can move it by hand (player page → Move). |
 | `ERR_NOT_TRANSFERABLE` | admin move | Consumables stay with the player who bought them. | — |
 | `ERR_PERSONAL_ATTRIBUTE` | `/attributes`, `403` | `email`, `phone`, `name` … are accepted only from builds with player tokens. | Use player tokens, or keep personal data out of attributes. |
 | `ERR_PURCHASE_NOT_FOUND` | admin, `/server/revoke` | No such ledger id (or not one of the key's app). | Ledger ids are `{store}:{transaction_id}`. |
 | `ERR_NOT_REVOCABLE` | admin, `/server/revoke` | The purchase cannot be revoked in its state (still being verified, already ended). | Look at its history on the purchase page. |
-| `ERR_TX_EXISTS` | manual grant, `/server/grant` (`409`) | The `transaction_id` of a grant is already used (by another grant). | Use one id per grant; repeat the same request to get its result. |
+| `ERR_TX_EXISTS` | manual grant, `/server/grant` (`409`) | The `transaction_id` of a grant is already used (by another grant). | Use one id per grant. Repeat the same request to get its result. |
 | `ERR_BAD_USER` | admin, `/server/*` | A player id must be 1-128 characters of `A-Z a-z 0-9 - _ . :` (client routes answer `400 "invalid user_id"`). | The Unity SDK refuses other ids in `SetUserId`; hash an e-mail address, for example. |
-| `ERR_REPORT_COUNTING` | `admin_revenue_stats`, `admin_revenue_overview` | Another admin is counting the same report for the first time. | Ask again in a few seconds (the admin page does it by itself); a count that has not finished in 2 minutes no longer holds others. |
+| `ERR_REPORT_COUNTING` | `admin_revenue_stats`, `admin_revenue_overview` | Another admin is counting the same report for the first time. | Ask again in a few seconds (the admin page does it by itself). A count that has not finished in 2 minutes no longer holds others. |
 | `ERR_CODE_INVALID`, `ERR_CODE_EXPIRED`, `ERR_CODE_USED_UP` | `/redeem` (404 / 409) | The promo code does not exist or is turned off, its end date passed, or as many players as allowed redeemed it. | Promo codes tab of the app. |
-| `ERR_BAD_CODE` | admin promo codes | A code is 4-32 characters of `A-Z 0-9 -`; the product must be in the app's catalog; a subscription code needs `duration_days`. | — |
-| `ERR_NOT_SUPPORTED`, `ERR_STORE`, `ERR_BAD_EXTENSION` | admin refund / extension | The store cannot do it from here (App Store refunds are Apple's; other stores' consoles), the store refused or did not answer (the message says why; Google needs *Manage orders and subscriptions*), or the days are out of the store's range (Google 1-365, Apple 1-90; Apple allows two extensions a year). | Fix the cause and try again; a refused call changed nothing. |
+| `ERR_BAD_CODE` | admin promo codes | A code is 4-32 characters of `A-Z 0-9 -`. The product must be in the app's catalog. A subscription code needs `duration_days`. | — |
+| `ERR_NOT_SUPPORTED`, `ERR_STORE`, `ERR_BAD_EXTENSION` | admin refund / extension | One of these: <br>• The store cannot do it from here. App Store refunds are Apple's; other stores' refunds are done in their consoles. <br>• The store refused or did not answer. The message says why. Google needs *Manage orders and subscriptions*. <br>• The days are out of the store's range (Google 1-365, Apple 1-90). Apple allows two extensions a year. | Fix the cause and try again. A refused call changed nothing. |
 | `ERR_BAD_TABLE` | `backup.py` (`admin_backup_page`) | The module does not page that table: the backup reads it with `/sql`. | — |
-| `ERR_PLAYER_TOKENS_REQUIRED` | `/manage/stripe`, `403` | The customer portal acts for the player's Stripe customer: only builds with player tokens get a session. | Use player tokens, or Stripe's customer portal login link (`StripeCheckoutOptions.CustomerPortalLoginUrl`). |
+| `ERR_PLAYER_TOKENS_REQUIRED` | `/manage/stripe`, `403` | The customer portal acts for the player's Stripe customer, so only builds with player tokens get a session. | Use player tokens, or Stripe's customer portal login link (`StripeCheckoutOptions.CustomerPortalLoginUrl`). |
 | `ERR_NO_SUBSCRIPTION` | `/manage/stripe`, `404` | The player has no active Stripe subscription in this build. | The login link still lets a customer in by email. |
 | `ERR_OFFER_KEY` | `/offers/apple/sign` | The App Store In-App Purchase key for promotional offers is not configured. | Keys tab ([apple-offers.md](apple-offers.md)). |
 
-A purchase that stays *pending* on the Overview has a `last_error`: a store or delivery call that keeps failing
-(credentials, the game's reducer or webhook). The worker retries with backoff; fix the cause and it goes on by itself,
-or use **Retry now**. `GET /healthz` reports `pending_purchases`, `due_purchases`, `oldest_due_secs`,
-`stuck_purchases` and `blocked_purchases` for monitors.
+### Pending purchases
 
-A purchase that waits as **blocked** (the Overview's *Waiting* column) cannot work with the setup as it is: its error
-names the missing secret (`spacetime_token`, `webhook_secret`, the Google service account), the SpacetimeDB host the
-owner has not allowed (Server page → SpacetimeDB hosts), the `spacetime_db` that is not the game database's identity,
-or the deleted build. Nothing is sent meanwhile and the `delivery_failing` alert is raised at once. Saving the build,
-setting a secret of its scope (the build, its developer account or `default`) or allowing a host tries it again
-at once; otherwise it is looked at every 6 hours.
+A purchase that stays *pending* on the Overview has a `last_error`. It is a store or delivery call that keeps failing
+(credentials, the game's reducer or webhook). The worker retries with backoff.
+
+- Fix the cause, and the purchase goes on by itself.
+- Or use **Retry now**.
+
+For monitors, `GET /healthz` reports `pending_purchases`, `due_purchases`, `oldest_due_secs`,
+`stuck_purchases` and `blocked_purchases`.
+
+### Blocked purchases
+
+A purchase that waits as **blocked** (the Overview's *Waiting* column) cannot work with the setup as it is. Its error
+names one of these:
+
+- the missing secret (`spacetime_token`, `webhook_secret`, the Google service account);
+- the SpacetimeDB host the owner has not allowed (Server page → SpacetimeDB hosts);
+- the `spacetime_db` that is not the game database's identity;
+- the deleted build.
+
+Nothing is sent meanwhile, and the `delivery_failing` alert is raised at once.
+
+Any of these tries it again at once:
+
+- saving the build;
+- setting a secret of its scope (the build, its developer account or `default`);
+- allowing a host.
+
+Otherwise it is looked at every 6 hours.
 
 ## Server keys (`/server/*`)
 
@@ -58,7 +85,7 @@ at once; otherwise it is looked at every 6 hours.
 | `ERR_ROLE` | Your role cannot do this (viewer, support, editor, admin). |
 | `ERR_SCOPE` | You are limited to some apps and this is another app or a server-wide setting. |
 | `ERR_OWNER_ONLY` | Only the database owner (the identity that published it) can do this: imports, reindexing, delivery hosts. |
-| `ERR_ADMIN_PROTECTED`, `ERR_ADMIN_SELF`, `ERR_ADMIN_SELF_REMOVE` | The owner cannot be changed; nobody changes their own role or removes themselves. |
+| `ERR_ADMIN_PROTECTED`, `ERR_ADMIN_SELF`, `ERR_ADMIN_SELF_REMOVE` | The owner cannot be changed. Nobody changes their own role or removes themselves. |
 | `ERR_BAD_JSON` | The input is not the expected JSON (the message names the field). |
 | `ERR_BAD_APP`, `ERR_UNKNOWN_APP` | No such build or app, or a build field is invalid. |
 | `ERR_BAD_PRODUCT` | A product field is invalid (kind, price, access levels). |
@@ -69,10 +96,10 @@ at once; otherwise it is looked at every 6 hours.
 | `ERR_BAD_ROLE`, `ERR_BAD_IDENTITY`, `ERR_BAD_NAME` | Admins page input. |
 | `ERR_BAD_HOST` | A self-hosted delivery host must be an https host name. |
 | `ERR_BAD_FX` | A manual exchange rate needs an ISO currency and a positive rate. |
-| `ERR_BAD_ALERT`, `ERR_ALERT_SECRET_MISSING` | Alert channel input; set the channel's secret first. |
+| `ERR_BAD_ALERT`, `ERR_ALERT_SECRET_MISSING` | Alert channel input is invalid, or the channel's secret is missing: set the secret first. |
 | `ERR_BAD_QUERY` | An admin read without the index it needs (purchases are read by id, player, transaction or token). |
 | `ERR_BAD_IMPORT` | An imported row is not a valid ledger row, or its build is not configured here. |
-| `ERR_STRIPE_WEBHOOK_EXISTS` | A Stripe endpoint for this build exists but its signing secret is not stored here: paste it on the Keys tab or delete the endpoint in Stripe. |
+| `ERR_STRIPE_WEBHOOK_EXISTS` | A Stripe endpoint for this build exists, but its signing secret is not stored here. Paste it on the Keys tab, or delete the endpoint in Stripe. |
 
 ## Paywalls and A/B tests
 
@@ -81,19 +108,23 @@ at once; otherwise it is looked at every 6 hours.
 | `ERR_BAD_PAYWALL`, `ERR_BAD_PLACEMENT`, `ERR_BAD_TEST`, `ERR_BAD_EVENT` | Invalid paywall, placement, test or event input (the message names the field). |
 | `ERR_PAYWALL_NOT_FOUND`, `ERR_PLACEMENT_NOT_FOUND`, `ERR_UNKNOWN_TEST`, `ERR_UNKNOWN_VARIANT`, `ERR_NO_TEST` | The paywall, placement, test or variant does not exist (any more). |
 | `ERR_PAYWALL_IN_USE` | A placement or a running test still shows the paywall. |
-| `ERR_TEST_RUNNING` | A placement has a running test: stop it first. |
+| `ERR_TEST_RUNNING` | A placement has a running test. Stop it first. |
 
 ## Operations
 
-- **`/healthz` answers `503 worker_stopped`**: the ledger worker has not run for 5 minutes. The Overview offers to
-  restart it (`admin_ensure_worker`); after a publish it starts by itself.
-- **`/healthz` says `backlog`** (and the `queue_behind` alert fired): a purchase has waited 15 minutes after it became
-  due. The errors of the waiting purchases on the Overview say why: usually a store or the game's server that answers
-  slowly or not at all (its rows wait a minute after every call without a reply). When the calls succeed but there are
-  more purchases than the drainers take, raise `worker_lanes` (Server page → Worker, or `spacetime call <db> admin_set_setting '"worker_lanes"' '"4"'`, at most 8); each
-  drainer holds one module instance while it waits ([self-hosting.md](self-hosting.md#capacity)).
-- **An integration dropped events** (Integrations tab shows *The last event was dropped*): fix its key or settings,
-  then send the dropped events again (`admin_replay_integration_events(app_id, kind)`; they are kept for 30 days).
-- **After restoring with SQL** (a backup, an import done by hand): `admin_reindex_ledger` rebuilds the worker's queue
-  and the players' owned purchases; `backup.py restore` runs it, and the worker finishes an interrupted one.
-- **A restore stopped half-way**: run `backup.py restore … --resume`.
+Problems without an error code, by symptom:
+
+- **`/healthz` answers `503 worker_stopped`.** The ledger worker has not run for 5 minutes. The Overview offers to
+  restart it (`admin_ensure_worker`). After a publish it starts by itself.
+- **`/healthz` says `backlog`** (and the `queue_behind` alert fired). A purchase has waited 15 minutes after it became
+  due.
+    - Read the errors of the waiting purchases on the Overview: they say why. Usually a store or the game's server
+      answers slowly or not at all (its rows wait a minute after every call without a reply).
+    - When the calls succeed but there are more purchases than the drainers take, raise `worker_lanes` (Server page →
+      Worker, or `spacetime call <db> admin_set_setting '"worker_lanes"' '"4"'`, at most 8). Each drainer holds one
+      module instance while it waits ([self-hosting.md](self-hosting.md#capacity)).
+- **An integration dropped events** (Integrations tab shows *The last event was dropped*). Fix its key or settings.
+  Then send the dropped events again (`admin_replay_integration_events(app_id, kind)`). They are kept for 30 days.
+- **After restoring with SQL** (a backup, an import done by hand). Run `admin_reindex_ledger`: it rebuilds the worker's
+  queue and the players' owned purchases. `backup.py restore` runs it, and the worker finishes an interrupted one.
+- **A restore stopped half-way.** Run `backup.py restore … --resume`.

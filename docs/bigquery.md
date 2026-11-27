@@ -1,21 +1,27 @@
 # Purchase events in BigQuery
 
+This page shows how to query purchase events in BigQuery. With it, purchases, renewals and refunds can
+sit next to the GA4 / Firebase export.
+
 The **Cloud Storage** integration writes every purchase event as a file of one JSON line:
-`gs://<bucket>/<folder>/dt=YYYY-MM-DD/<time>-<event>-<transaction>.json`. BigQuery reads these
-files directly, so purchases, renewals and refunds can sit next to the GA4 / Firebase export.
+`gs://<bucket>/<folder>/dt=YYYY-MM-DD/<time>-<event>-<transaction>.json`. BigQuery reads these files
+directly.
 
 ## 1. Export the events
 
-Admin page → the app → **Integrations** → **Google Cloud Storage**: the bucket, a folder (for
-example `billing/events`), and a service account key with the **Storage Object Creator** role on the
-bucket. Pick the events you want, or leave them all. **Send test event** writes a `test` event.
+1. Open the admin page → the app → **Integrations** → **Google Cloud Storage**.
+2. Enter the bucket and a folder (for example `billing/events`).
+3. Add a service account key with the **Storage Object Creator** role on the bucket.
+4. Pick the events you want, or leave them all.
+5. Click **Send test event** to write a `test` event.
 
 ## 2. A table over the files
 
-An external table reads the files where they are, partitioned by the `dt=` folders. Use the schema
-of [`bigquery-schema.json`](bigquery-schema.json): without it, autodetection turns `attribution`,
-whose keys differ from player to player, into a sparse record. The schema leaves `attribution` out
-and reads the same ids from `attribution_json` as a `JSON` column.
+An external table reads the files where they are, partitioned by the `dt=` folders.
+
+Use the schema of [`bigquery-schema.json`](bigquery-schema.json). Without it, autodetection turns
+`attribution` into a sparse record, because its keys differ from player to player. The schema leaves
+`attribution` out and reads the same ids from `attribution_json` as a `JSON` column.
 
 ```bash
 bq mkdef --source_format=NEWLINE_DELIMITED_JSON \
@@ -28,8 +34,9 @@ bq mk --external_table_definition=purser_events.def <project>:<dataset>.purser_e
 
 `--ignore_unknown_values` keeps the table readable when a later server version adds a field.
 
-For faster queries over a long history, load the files into a native table instead (for example once
-a day for the previous day):
+### Faster queries over a long history
+
+Load the files into a native table instead. For example, load the previous day once a day:
 
 ```bash
 bq load --source_format=NEWLINE_DELIMITED_JSON --ignore_unknown_values \
@@ -71,8 +78,8 @@ GROUP BY tenjin_id
 
 ## Notes
 
-- One file per event: the storage cost is small, but listing millions of files is slow. Keep the
+- **One file per event.** The storage cost is small, but listing millions of files is slow. Keep the
   external table for recent days and load older ones into a native table.
-- Sandbox purchases are exported only with **Send sandbox / test purchases** on.
-- Amounts are in micros of `currency`. The admin page's revenue report converts to USD with ECB
-  rates; to do the same in BigQuery, join a table of daily rates.
+- **Sandbox purchases** are exported only with **Send sandbox / test purchases** on.
+- **Amounts** are in micros of `currency`. The admin page's revenue report converts to USD with ECB
+  rates. To do the same in BigQuery, join a table of daily rates.

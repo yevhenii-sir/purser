@@ -1,12 +1,17 @@
 # MCP server (ask Claude about your billing)
 
-`server/mcp_server.py` is a [Model Context Protocol](https://modelcontextprotocol.io) server for a billing database. With it Claude Code, Claude Desktop or any other MCP client can answer questions such as "how much did we make last week by app?", "why didn't player 12345 get their gems?" or "is the iOS build set up correctly?" from your own database.
+`server/mcp_server.py` is a [Model Context Protocol](https://modelcontextprotocol.io) server for a billing database. With it, Claude Code, Claude Desktop or any other MCP client can answer questions from your own database, such as:
 
-It is one Python file with no dependencies (Python 3.9+, standard library only). It talks to the module over the same HTTP API as the admin page and only calls the admin procedures and a few fixed read queries: there is no free-form SQL tool, and secrets are never read.
+- "how much did we make last week by app?"
+- "why didn't player 12345 get their gems?"
+- "is the iOS build set up correctly?"
+
+It is one Python file with no dependencies (Python 3.9+, standard library only). It talks to the module over the same HTTP API as the admin page. It only calls the admin procedures and a few fixed read queries. There is no free-form SQL tool, and secrets are never read.
 
 ## Register it
 
-From the repository root, signed in with `spacetime login` as the database owner (or an admin):
+1. Sign in with `spacetime login` as the database owner (or an admin).
+2. From the repository root, run:
 
 ```bash
 claude mcp add purser -- python server/mcp_server.py --database <your-billing-db>
@@ -20,7 +25,14 @@ Options:
 | `--database` | Database name. Default: `server/spacetime.json` |
 | `--allow-writes` | Also offer the write tools below. Off by default |
 
-The token is the `PURSER_TOKEN` environment variable when it is set, otherwise the one `spacetime login show --token` prints. It is sent only over https, or over http to this machine (`localhost`, `127.0.0.1`, `[::1]`), and is dropped from redirects to another origin. Its identity must be an admin of the database. The tools that read tables (`list_apps`, `integration_health`, `paywall_results` without a placement) need the database **owner**, because all tables are private.
+### The token
+
+- **Where it comes from:** the `PURSER_TOKEN` environment variable when it is set. Otherwise, the one `spacetime login show --token` prints.
+- **Where it is sent:** only over https, or over http to this machine (`localhost`, `127.0.0.1`, `[::1]`). It is dropped from redirects to another origin.
+- **Who it must be:** its identity must be an admin of the database.
+- **Owner-only tools:** the tools that read tables (`list_apps`, `integration_health`, `paywall_results` without a placement) need the database **owner**, because all tables are private.
+
+### Other clients
 
 Other clients take the same command. For Claude Desktop, in `claude_desktop_config.json`:
 
@@ -59,13 +71,23 @@ With `--allow-writes`:
 | `revoke_purchase` | Revokes a purchase (the game gets `revoke` with reason `admin`). Not a refund | `admin_revoke_purchase` |
 | `requeue_purchase` | Makes the worker retry a purchase now | `admin_requeue_purchase` |
 
-Clients ask before each tool call unless you allow it, and the write tools are marked as such. `check_app` is not marked read-only either: it saves its report and, online, calls the stores, the delivery target and integration endpoints. Keep writes off for a server you only use for questions.
+Clients ask before each tool call unless you allow it, and the write tools are marked as such.
 
-A failed call (bad arguments, an unknown app, the server unreachable) comes back to the model as a tool error with the module's message; the server keeps running.
+!!! note "`check_app` is not marked read-only"
+    It saves its report. Online, it also calls the stores, the delivery target and integration endpoints.
+
+Keep writes off for a server you only use for questions.
+
+A failed call (bad arguments, an unknown app, the server unreachable) comes back to the model as a tool error with the module's message. The server keeps running.
 
 ## Privacy
 
-Whatever a tool returns goes to the model provider of your MCP client, like any other text in the conversation: player ids, transaction ids, purchase tokens, countries, attribution ids (GAID / IDFV / AppsFlyer id) and revenue. Check that this fits your privacy policy and your agreement with the provider before using it on a production database. Secrets are never returned: the server does not read the `credential` table, and the module never returns secret values from any call.
+Whatever a tool returns goes to the model provider of your MCP client, like any other text in the conversation. That includes player ids, transaction ids, purchase tokens, countries, attribution ids (GAID / IDFV / AppsFlyer id) and revenue.
+
+!!! warning
+    Before using it on a production database, check that this fits your privacy policy and your agreement with the provider.
+
+Secrets are never returned. The server does not read the `credential` table, and the module never returns secret values from any call.
 
 ## Try it without a client
 

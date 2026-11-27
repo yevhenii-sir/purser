@@ -1,8 +1,14 @@
 # Client SDKs for other engines
 
-Besides the [Unity package](../unity/com.yevhenii.purser/README.md), `sdks/` has clients for other engines. They speak
-the same HTTP contract (server/README.md, "HTTP API"), send the same `client` info and follow the Unity package's
-rules for finishing purchases. The store purchase itself stays with the engine's IAP plugin.
+This page lists Purser's clients for engines other than Unity and what each one covers. Read it if your game is a web game or is built with Godot or Defold.
+
+Besides the [Unity package](../unity/com.yevhenii.purser/README.md), `sdks/` has clients for other engines. They:
+
+- speak the same HTTP contract (server/README.md, "HTTP API");
+- send the same `client` info;
+- follow the Unity package's rules for finishing purchases.
+
+The store purchase itself stays with the engine's IAP plugin.
 
 | SDK | For | Folder | Store purchases through |
 |---|---|---|---|
@@ -25,31 +31,39 @@ rules for finishing purchases. The store purchase itself stays with the engine's
 | Signed answers (`X-Purser-Signature`, Ed25519) | yes (Web Crypto) | no (no Ed25519 in Godot) | no |
 | Account binding ids (Google `obfuscatedAccountId`, Apple `appAccountToken`) | both | both | Google, ids up to 64 characters |
 
-`client.sdk_version` is `typescript/<version>`, `godot/<version>` or `defold/<version>`, so the admin page's player
-profile shows which SDK a player runs.
+`client.sdk_version` is `typescript/<version>`, `godot/<version>` or `defold/<version>`. The admin page's player profile uses it to show which SDK a player runs.
 
 ## Finishing store purchases
 
-The flow is the same everywhere: the store purchase, `verify`, then the store's finish step only after the server's
-answer. Each SDK's `processPurchase` / `process_purchase` applies it:
+Every SDK follows the same order:
+
+1. The store purchase.
+2. `verify`.
+3. The store's finish step, only after the server's answer.
+
+Each SDK's `processPurchase` / `process_purchase` applies it:
 
 | Server answer | Outcome | Store purchase |
 |---|---|---|
-| `success` (200), `pending` (202) | success | grant the reward first when the answer has `delivery: client` (a failed grant leaves the purchase unfinished), then finish it as granted |
-| `invalid`, `forbidden`, `expired`, `revoked` | rejected | finish it as refused: Apple `finishTransaction`, Amazon `notifyFulfillment(UNAVAILABLE)`; a Google purchase is left unacknowledged, so Google refunds it in three days instead of the player losing the money to a setup mistake |
-| `pending_or_canceled` | pending payment | keep it: the store reports it again when it is paid |
-| no network, 429, 5xx, `error` (after the SDK's retries) | retry | keep it: the store delivers it again (next launch) and it is verified again; the server answers from its ledger |
+| `success` (200), `pending` (202) | success | When the answer has `delivery: client`, grant the reward first. A failed grant leaves the purchase unfinished. Then finish it as granted. |
+| `invalid`, `forbidden`, `expired`, `revoked` | rejected | Finish it as refused: Apple `finishTransaction`, Amazon `notifyFulfillment(UNAVAILABLE)`. A Google purchase is left unacknowledged, so Google refunds it in three days instead of the player losing the money to a setup mistake. |
+| `pending_or_canceled` | pending payment | Keep it. The store reports it again when it is paid. |
+| no network, 429, 5xx, `error` (after the SDK's retries) | retry | Keep it. The store delivers it again (next launch) and it is verified again. The server answers from its ledger. |
 
-Turn off the IAP plugin's automatic finishing (`auto_finish_transactions = 0` in Defold, `set_auto_finish_transaction(false)`
-for StoreKit in Godot). With `delivery: client`, save the granted `transaction_id`: a purchase delivered again answers
-`success` with the same id.
+In your game:
+
+- Turn off the IAP plugin's automatic finishing: `auto_finish_transactions = 0` in Defold, `set_auto_finish_transaction(false)` for StoreKit in Godot.
+- With `delivery: client`, save the granted `transaction_id`. A purchase delivered again answers `success` with the same id.
 
 ## The contract with the server
 
-Every SDK's requests are kept in `server/spacetimedb/sdk-requests/` (`current.json` for Unity, `typescript.json`,
-`godot.json`, `defold.json`), written or compared by the SDK's own tests. The module's tests
-`every_request_of_every_sdk_is_accepted` and `the_purchase_flow_of_every_sdk_works` parse every body with the server's
-request types, refuse fields the server does not read, and replay a verify, the entitlements and the attributes.
+Every SDK's requests are kept in `server/spacetimedb/sdk-requests/`: `current.json` for Unity, `typescript.json`, `godot.json` and `defold.json`. The SDK's own tests write or compare its file.
+
+The module's tests `every_request_of_every_sdk_is_accepted` and `the_purchase_flow_of_every_sdk_works` use these files. They:
+
+- parse every body with the server's request types;
+- refuse fields the server does not read;
+- replay a verify, the entitlements and the attributes.
 
 | SDK | Tests |
 |---|---|

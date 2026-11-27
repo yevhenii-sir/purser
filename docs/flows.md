@@ -1,16 +1,21 @@
 # How it works
 
-Sequence diagrams of the main flows: who calls whom, in what order, and what the ledger row goes through. The details
-of each step are on the pages linked under each diagram.
+This page shows the main flows as sequence diagrams: who calls whom, in what order, and what the ledger row goes
+through. Read it to see the whole path of a purchase. The details of each step are on the pages linked under each
+diagram.
 
-Names used below: **client** is the game on the player's device (the Unity package or any [SDK](sdks.md)), **Purser**
-is the billing database, **game server** is your game's SpacetimeDB database or backend that receives rewards, and
-the **ledger** is Purser's table of purchases (one row per store transaction).
+Names used below:
+
+- **Client**: the game on the player's device (the Unity package or any [SDK](sdks.md)).
+- **Purser**: the billing database.
+- **Game server**: your game's SpacetimeDB database or backend that receives rewards.
+- **Ledger**: Purser's table of purchases, one row per store transaction.
 
 ## A purchase in Google Play or the App Store
 
-The client buys through the store, then asks Purser to check the purchase. Purser looks it up in the store's API, writes
-the ledger row first and only then calls anything else, so a failure at any later step is retried, never lost.
+The client buys through the store, then asks Purser to check the purchase. Purser looks it up in the store's API. It
+writes the ledger row first and only then calls anything else. A failure at any later step is therefore retried,
+never lost.
 
 ```mermaid
 sequenceDiagram
@@ -40,10 +45,11 @@ sequenceDiagram
     G-->>C: Reward arrives through the game's own data
 ```
 
-- A consumable is credited only to the player whose id the purchase carries (`obfuscatedAccountId` / `appAccountToken`);
-  a purchase consumed outside Purser is refused with `ERR_CONSUMED_ELSEWHERE`.
+- A consumable is credited only to the player whose id the purchase carries (`obfuscatedAccountId` / `appAccountToken`).
+- A purchase consumed outside Purser is refused with `ERR_CONSUMED_ELSEWHERE`.
 - If delivery does not finish within the request's time budget, `/verify` answers `202 pending` and the worker
-  carries on (see [Delivery and retries](#delivery-and-retries)). The client finishes the order anyway: the ledger has it.
+  carries on (see [Delivery and retries](#delivery-and-retries)). The client finishes the order anyway, because the
+  ledger has it.
 - On `error` or without network the client does **not** finish the order and asks again later.
 - Amazon, Huawei, Samsung and Meta Quest work the same way with their own APIs.
 
@@ -51,7 +57,7 @@ More: [game integration](game-integration.md), [store setup](store-setup.md).
 
 ## Games without a backend (`delivery = none`)
 
-Purser checks the purchase and keeps the ledger, entitlements and analytics; the client grants the reward itself.
+Purser checks the purchase and keeps the ledger, entitlements and analytics. The client grants the reward itself.
 The order below makes sure a crash at any point never loses a reward.
 
 ```mermaid
@@ -78,8 +84,8 @@ More: [games without a backend](game-integration.md#games-without-a-backend-deli
 
 ## Delivery and retries
 
-Every outside call of a purchase (deliver to the game, consume in the store) is a step of its ledger row. The request
-tries it at once; when it fails, the minute worker retries with backoff.
+Every outside call of a purchase, such as delivering to the game or consuming in the store, is a step of its ledger
+row. The request tries the step at once. When it fails, the minute worker retries it with backoff.
 
 ```mermaid
 sequenceDiagram
@@ -102,19 +108,20 @@ sequenceDiagram
     Note over W: "granted", then the store step, then "completed"
 ```
 
-- The game applies each `event_id` once: a call it applied but answered too late arrives again.
-- With `spacetimedb_idc` delivery the call is written to an outbox in the same transaction and SpacetimeDB delivers it
-  once; the ledger row waits for the game reducer's answer instead of retrying.
-- A step that only a change of the setup can fix (a missing key, a host that is not allowed, a deleted build) is
-  **blocked**: it waits until that setup is saved, or 6 hours.
+- The game applies each `event_id` once, because a call it applied but answered too late arrives again.
+- With `spacetimedb_idc` delivery, the call is written to an outbox in the same transaction, and SpacetimeDB delivers
+  it once. The ledger row waits for the game reducer's answer instead of retrying.
+- Some steps only a change of the setup can fix: a missing key, a host that is not allowed, a deleted build. Such a
+  step is **blocked**. It waits until that setup is saved, or 6 hours.
 - Events of one purchase go one at a time: a `revoke` waits for the `grant` in flight.
 
 More: [retries and ordering](game-integration.md#delivery-events), [owner alerts](alerts.md).
 
 ## Renewals, refunds and expirations
 
-Stores tell Purser about changes with notifications. A notification only says *what to look up again*: Purser asks the
-store for the current state and moves the ledger from that, so a forged or replayed notification changes nothing.
+Stores tell Purser about changes with notifications. A notification only says *what to look up again*. Purser asks the
+store for the current state and moves the ledger from that. A forged or replayed notification therefore changes
+nothing.
 
 ```mermaid
 sequenceDiagram
@@ -141,17 +148,17 @@ sequenceDiagram
     P-->>S: 200
 ```
 
-- Subscriptions are also re-checked by the worker on a schedule, so a renewal or expiration whose notification never
-  arrived is still seen (Steam and Meta Quest have no notifications at all).
-- Refunds that no notification reported are found by a sweep every 6 hours (Google Play voided purchases, App Store
-  notification history).
+- The worker also re-checks subscriptions on a schedule. A renewal or expiration whose notification never arrived is
+  still seen. Steam and Meta Quest have no notifications at all.
+- A sweep every 6 hours finds refunds that no notification reported. It reads Google Play voided purchases and the
+  App Store notification history.
 
 More: [store setup](store-setup.md), [analytics](analytics.md).
 
 ## Restore on another player
 
-Non-consumables and subscriptions belong to the store account. When a player restores them under a new `user_id`
-(reinstall, second profile), the purchase moves: the previous owner loses it first.
+Non-consumables and subscriptions belong to the store account. A player may restore them under a new `user_id`
+(reinstall, second profile). The purchase then moves, and the previous owner loses it first.
 
 ```mermaid
 sequenceDiagram
@@ -174,14 +181,15 @@ sequenceDiagram
     P-->>C: The product, active until expires_at_ms
 ```
 
-An app can limit transfers (at most one per N days, at most N per purchase, or never); a refused restore answers
-`ERR_TRANSFER_LIMIT`. Consumables never move (`ERR_TX_CLAIMED`).
+- An app can limit transfers: at most one per N days, at most N per purchase, or never.
+- A refused restore answers `ERR_TRANSFER_LIMIT`.
+- Consumables never move (`ERR_TX_CLAIMED`).
 
 More: [transfer](game-integration.md#delivery-events).
 
 ## Web checkout with Stripe
 
-There is no client receipt on the web: Purser creates the Checkout Session, and Stripe's webhook is the source of
+There is no client receipt on the web. Purser creates the Checkout Session, and Stripe's webhook is the source of
 truth. Xsolla works the same way with its pay station.
 
 ```mermaid
@@ -216,8 +224,11 @@ More: [Stripe](store-setup.md#stripe), [Xsolla](store-setup.md#xsolla).
 
 ## Steam
 
-Steam purchases are driven by the server: Purser opens the order, the Steam overlay asks the player, and Purser
-finalizes it.
+Steam purchases are driven by the server:
+
+1. Purser opens the order.
+2. The Steam overlay asks the player.
+3. Purser finalizes the order.
 
 ```mermaid
 sequenceDiagram
@@ -276,8 +287,8 @@ More: [Telegram Stars](store-setup.md#telegram-stars).
 
 ## Analytics and attribution events
 
-Every ledger transition queues one event per integration of the build in the same transaction. A sender works through
-the queue outside the request, so a slow analytics service never slows a purchase.
+Every ledger transition queues one event per integration of the build, in the same transaction. A sender works
+through the queue outside the request. A slow analytics service therefore never slows a purchase.
 
 ```mermaid
 sequenceDiagram
@@ -304,6 +315,9 @@ More: [integrations](https://github.com/yevhenii-sir/purser/blob/main/server/REA
 
 ## Paywalls and A/B tests
 
+The client asks Purser which paywall to show, reports the view, and sends the paywall ids with the purchase, so the
+purchase is attributed to the variant.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -324,7 +338,7 @@ More: [paywalls and A/B tests](paywalls.md).
 
 ## Virtual currency
 
-A product can give currency (`gems:100`). Purser keeps the balances; the client or the game's backend spends them.
+A product can give currency (`gems:100`). Purser keeps the balances. The client or the game's backend spends them.
 
 ```mermaid
 sequenceDiagram

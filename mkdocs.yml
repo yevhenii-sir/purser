@@ -14,7 +14,10 @@ theme:
   logo: images/purser.svg
   favicon: images/purser.svg
   features:
+    # Groups of pages are sections of the sidebar; the open page's headings are a tree under it.
     - navigation.sections
+    - navigation.path
+    - toc.integrate
     - navigation.top
     - navigation.footer
     - search.highlight
@@ -47,6 +50,7 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
+      toc_depth: 3
   - pymdownx.highlight
   - pymdownx.inlinehilite
   - pymdownx.superfences:
@@ -61,26 +65,34 @@ exclude_docs: |
 
 nav:
   - Home: index.md
-  - Getting started: getting-started.md
-  - How it works: flows.md
-  - Store setup: store-setup.md
-  - Bulk setup: bulk-setup.md
-  - Games with their own IAP code: observer-mode.md
-  - Purchase events in BigQuery: bigquery.md
-  - Game integration: game-integration.md
-  - SDKs for other engines: sdks.md
-  - Paywalls and A/B tests: paywalls.md
-  - App Store promotional offers: apple-offers.md
-  - Virtual currency: wallet.md
-  - Revenue analytics: analytics.md
-  - Owner alerts: alerts.md
-  - Self-hosting: self-hosting.md
-  - Moving to another server: moving-servers.md
-  - Versions and upgrades: releases.md
-  - Migrating from Adapty: migrating-from-adapty.md
-  - Migrating from RevenueCat: migrating-from-revenuecat.md
-  - Troubleshooting: troubleshooting.md
-  - MCP server: mcp.md
-  - API reference: api.md
-  - Server reference: https://github.com/yevhenii-sir/purser/blob/main/server/README.md
-  - Unity package: https://github.com/yevhenii-sir/purser/blob/main/unity/com.yevhenii.purser/README.md
+  - Get started:
+      - Getting started: getting-started.md
+      - How it works: flows.md
+      - Versions and upgrades: releases.md
+  - Stores:
+      - Store setup: store-setup.md
+      - Bulk setup: bulk-setup.md
+  - Your game:
+      - Game integration: game-integration.md
+      - SDKs for other engines: sdks.md
+      - Games with their own IAP code: observer-mode.md
+      - Virtual currency: wallet.md
+  - Selling:
+      - Paywalls and A/B tests: paywalls.md
+      - App Store promotional offers: apple-offers.md
+  - Revenue and alerts:
+      - Revenue analytics: analytics.md
+      - Purchase events in BigQuery: bigquery.md
+      - Owner alerts: alerts.md
+  - Running the server:
+      - Self-hosting: self-hosting.md
+      - Moving to another server: moving-servers.md
+      - Troubleshooting: troubleshooting.md
+  - Migrating:
+      - From Adapty: migrating-from-adapty.md
+      - From RevenueCat: migrating-from-revenuecat.md
+  - Reference:
+      - API reference: api.md
+      - MCP server: mcp.md
+      - Server reference: https://github.com/yevhenii-sir/purser/blob/main/server/README.md
+      - Unity package: https://github.com/yevhenii-sir/purser/blob/main/unity/com.yevhenii.purser/README.md

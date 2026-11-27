@@ -5,7 +5,9 @@ hide:
 
 # API reference
 
-The billing module serves its HTTP API as SpacetimeDB routes of the billing database:
+This page lists the public HTTP API: the routes that game clients, game backends, stores and monitors call. Use it when you integrate without an SDK or call Purser from a game backend.
+
+The billing module serves its HTTP API as SpacetimeDB routes of the billing database. Every path below is relative to this base:
 
 ```
 https://<host>/v1/database/<your-billing-db>/route
@@ -28,9 +30,15 @@ https://<host>/v1/database/<your-billing-db>/route
 | `POST` | `/notify/apple` | App Store Server Notifications V2 |
 | `POST` | `/notify/amazon?app=…`, `/notify/xsolla?app=…`, `/notify/stripe?app=…` | Amazon RTN (SNS), Xsolla and Stripe webhooks |
 
-Client routes may need a player token (`Authorization: Bearer`, builds with signed client requests), are rate limited (`429` + `Retry-After`) and, with a signing key, sign `/entitlements` and `/restore` answers (`X-Purser-Signature`): see [game integration](game-integration.md#client-requests-player-tokens-limits-signed-answers).
+Client routes follow these rules (see [game integration](game-integration.md#client-requests-player-tokens-limits-signed-answers)):
 
-The machine-readable description is [openapi.yaml](openapi.yaml) (OpenAPI 3.1): generate a client from it or import it into Postman / Insomnia. Admin operations are not HTTP routes but SpacetimeDB reducers and procedures, documented in the [server reference](../server/README.md#configuration).
+- **Player tokens.** They may need a player token (`Authorization: Bearer`) in builds with signed client requests.
+- **Rate limits.** They are rate limited (`429` + `Retry-After`).
+- **Signed answers.** With a signing key, `/entitlements` and `/restore` answers are signed (`X-Purser-Signature`).
+
+The machine-readable description is [openapi.yaml](openapi.yaml) (OpenAPI 3.1). Generate a client from it, or import it into Postman / Insomnia.
+
+Admin operations are not HTTP routes. They are SpacetimeDB reducers and procedures, documented in the [server reference](../server/README.md#configuration).
 
 <style>
   /* Redoc has its own light theme: keep it readable when the site is in dark mode. */

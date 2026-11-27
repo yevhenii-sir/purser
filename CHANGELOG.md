@@ -19,6 +19,7 @@
 - SECURITY.md: what anyone who knows a player id can read without player tokens, and turning them on instead of relying on ids nobody can guess.
 - Docs: the README and the docs site's front page list every implemented store (Huawei AppGallery, Samsung Galaxy Store, Meta Quest and Telegram Stars were missing) and the SDKs for other engines.
 - The module's tests are split by area (`server/spacetimedb/src/tests/`: the harness in `mod.rs`, one `<area>_tests.rs` per area) instead of one file of 10,800 lines.
+- Docs: every page rewritten for reading, with the same facts: an opening that says what the page is for, numbered steps, tables for options and cases, warnings for what loses data or money, shorter sentences. The docs site's sidebar groups the pages (Get started, Stores, Your game, Selling, Revenue and alerts, Running the server, Migrating, Reference) and shows the open page's sections as a tree, with breadcrumbs above the page.
 - CONTRIBUTING.md: `main` stays linear; work from side branches and agents' worktrees lands as rebased or squashed commits.
 
 ## 0.13.0 - 2026-11-26

@@ -1,10 +1,19 @@
 # Purser
 
-In-app purchase billing for mobile games and apps on [SpacetimeDB](https://spacetimedb.com), live on maincloud in seconds or self-hosted: an open-source alternative to Adapty and RevenueCat. Purchases from Google Play, the App Store, Amazon, Huawei, Samsung, Meta Quest, Steam, the web and Telegram are verified by your own SpacetimeDB module, rewards are delivered straight into the game, and the admin panel shows the setup status and the revenue.
+Purser is in-app purchase billing for mobile games and apps, built on [SpacetimeDB](https://spacetimedb.com). It is an open-source alternative to Adapty and RevenueCat. Run it on maincloud, where it is live in seconds, or host it yourself.
+
+- **Your own SpacetimeDB module verifies purchases.** It handles Google Play, the App Store, Amazon, Huawei, Samsung, Meta Quest, Steam, the web and Telegram.
+- **Rewards go straight into the game.**
+- **The admin panel** shows the setup status and the revenue.
 
 [Deploy to maincloud](getting-started.md#on-maincloud){ .md-button .md-button--primary } [Self-host with Docker](self-hosting.md){ .md-button } [Admin panel demo](https://yevhenii-sir.github.io/purser/demo/){ .md-button }
 
-> **Status: before 1.0.** Purser has not run a live game yet, and a minor release may still need a publish with `--delete-data`. What is promised, how often releases come out and how far each store has been tried: [versions and upgrades](releases.md).
+!!! warning "Status: before 1.0"
+    Purser has not run a live game yet. A minor release may still need a publish with `--delete-data`. See [versions and upgrades](releases.md) for what is promised, how often releases come out and how far each store has been tried.
+
+## How it fits together
+
+The game client sends each purchase to Purser. Purser checks it with the store, delivers the reward to your game, and reports the event to your analytics tools. Stores tell Purser about renewals and refunds.
 
 ```mermaid
 flowchart LR
@@ -21,22 +30,28 @@ flowchart LR
     purser -->|"purchase events"| tools
 ```
 
-Step by step, flow by flow: [how it works](flows.md).
+For each flow step by step, see [how it works](flows.md).
 
 ## Features
 
-- **Stores**: Google Play, App Store, Amazon Appstore, Huawei AppGallery, Samsung Galaxy Store, Meta Quest (Horizon Store), Steam, web payments (Stripe, Xsolla) and Telegram Stars. Server-side verification, consume / acknowledge, restore, entitlements shared between all builds of a game.
-- **A ledger with retries**: every reward reaches the game even when the game server is down (retried until it is applied; each event carries an `event_id` to apply it once); refunds, renewals and expirations come from store notifications. Optionally answers App Store refund requests with consumption data.
-- **Admin panel** served by the module: an *Add an app* wizard, a setup check with fix hints, products with Google Play and App Store import, players, purchases, integrations, keys, logs.
-- **Revenue** ([analytics](analytics.md)): net revenue, refunds, subscriptions and MRR in USD (ECB rates), by app, product, country and currency.
-- **[Paywalls and A/B tests](paywalls.md)** as remote config, and **[alerts](alerts.md)** to Telegram, Slack, Discord or a webhook when deliveries fail or keys are rejected.
-- **Integrations**: GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Mixpanel, Meta Conversions API, Singular, Branch, Kochava, Braze and OneSignal server-to-server events, a signed JSON webhook, raw event export to Google Cloud Storage (BigQuery) and S3-compatible storage (AWS S3, Cloudflare R2, MinIO).
-- **Unity package** on Unity IAP 5 with VContainer / Zenject adapters and Apple Ads attribution, and **[SDKs for other engines](sdks.md)**: TypeScript (web games, Cocos Creator, PlayCanvas, Telegram Mini Apps), Godot 4 and Defold.
-- **Configuration as code** (`server/seed.py`: upload, export, a setup wizard) and an **[MCP server](mcp.md)** to ask Claude about revenue, players and the setup.
+- **Stores**: Google Play, App Store, Amazon Appstore, Huawei AppGallery, Samsung Galaxy Store, Meta Quest (Horizon Store), Steam, web payments (Stripe, Xsolla) and Telegram Stars. Purser verifies on the server, consumes or acknowledges, and restores purchases. All builds of a game share entitlements.
+- **A ledger with retries**: every reward reaches the game, even when the game server is down. Purser retries until the reward is applied. Each event carries an `event_id`, so the game applies it once. Refunds, renewals and expirations come from store notifications. Purser can also answer App Store refund requests with consumption data.
+- **Admin panel**, served by the module. It has an *Add an app* wizard, a setup check with fix hints, products with Google Play and App Store import, players, purchases, integrations, keys and logs.
+- **Revenue** ([analytics](analytics.md)): net revenue, refunds, subscriptions and MRR in USD (ECB rates). Break it down by app, product, country and currency.
+- **[Paywalls and A/B tests](paywalls.md)** as remote config.
+- **[Alerts](alerts.md)** to Telegram, Slack, Discord or a webhook when deliveries fail or keys are rejected.
+- **Integrations**:
+    - server-to-server events to GA4, AppsFlyer, Adjust, Tenjin, AppMetrica, Amplitude, Mixpanel, Meta Conversions API, Singular, Branch, Kochava, Braze and OneSignal;
+    - a signed JSON webhook;
+    - raw event export to Google Cloud Storage (BigQuery) and S3-compatible storage (AWS S3, Cloudflare R2, MinIO).
+- **Unity package** on Unity IAP 5, with VContainer / Zenject adapters and Apple Ads attribution.
+- **[SDKs for other engines](sdks.md)**: TypeScript (web games, Cocos Creator, PlayCanvas, Telegram Mini Apps), Godot 4 and Defold.
+- **Configuration as code** with `server/seed.py`: upload, export and a setup wizard.
+- **[MCP server](mcp.md)** to ask Claude about revenue, players and the setup.
 
 ## Compared with Adapty and RevenueCat
 
-Adapty and RevenueCat are hosted services with many more features; this project covers the core purchase backend and keeps it in your hands.
+Adapty and RevenueCat are hosted services with many more features. Purser covers the core purchase backend and keeps it in your hands.
 
 | | Purser | Adapty / RevenueCat |
 |---|---|---|
@@ -52,6 +67,8 @@ Adapty and RevenueCat are hosted services with many more features; this project 
 | Operations | You run and upgrade it | The vendor runs it |
 
 ## Where to go next
+
+New to Purser? Start with [Getting started](getting-started.md).
 
 | | |
 |---|---|
