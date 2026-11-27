@@ -60,13 +60,12 @@ fn refund_sweep_verdict(ctx: &mut impl Ctx, app: &GameApp) -> Verdict {
             "Refunds a store notification missed stay granted until it works: fix the cause, then the worker reads them again within hours (admin_sweep_refunds(app_id) reads them now)",
         ),
         Some(r) => {
-            let hours = (now - r.last_run_micros).max(0) / 3_600_000_000;
             let found = if r.found_total == 0 {
-                "none the notifications missed".to_string()
+                "the notifications missed no refund".to_string()
             } else {
                 format!("{} refund(s) the notifications missed were applied", r.found_total)
             };
-            let verdict = format!("read {hours} h ago: {found}");
+            let verdict = format!("read {}: {found}", purser_core::time::ago(now - r.last_run_micros));
             if r.found_total > 0 {
                 v(Level::Warn, verdict, "A store notification did not arrive: check the notification URL in the store console (Store notifications above)")
             } else {

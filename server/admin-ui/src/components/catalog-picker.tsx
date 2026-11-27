@@ -15,6 +15,9 @@ export interface PickedProduct {
   period?: string
   /** Product id per store id where it differs from `product_id` (from a Unity config). */
   store_ids?: Record<string, string>
+  /** The store listing, when the source has one (store catalogs). */
+  title?: string
+  description?: string
 }
 
 /** Store catalog rows to pick from. The kind of one-time products can be changed: Google Play
@@ -35,7 +38,10 @@ export function CatalogPicker({ rows, onChange, empty = "The store has no produc
         .filter((r) => picked[r.product_id])
         .map((r) => {
           const period = kinds[r.product_id] === "subscription" ? r.period || periodOfDays(r.billing_period_days) : ""
-          return { product_id: r.product_id, kind: kinds[r.product_id], price_micros: r.price_micros, currency: r.currency, ...(period ? { period } : {}) }
+          return {
+            product_id: r.product_id, kind: kinds[r.product_id], price_micros: r.price_micros, currency: r.currency, ...(period ? { period } : {}),
+            ...(r.title ? { title: r.title } : {}), ...(r.description ? { description: r.description } : {}),
+          }
         }),
     )
   }, [rows, picked, kinds, onChange])

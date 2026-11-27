@@ -11,7 +11,7 @@ use crate::google::API;
 pub const PAGE_SIZE: u32 = 100;
 
 /// A product as the store lists it.
-#[derive(Serialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Debug, Clone, PartialEq, Default)]
 pub struct RemoteProduct {
     pub product_id: String,
     /// `subscription`, or `consumable` for one-time products: Google does not say whether a
@@ -22,6 +22,31 @@ pub struct RemoteProduct {
     pub currency: String,
     /// Subscriptions: billing period of the first auto-renewing base plan, 0 if unknown.
     pub billing_period_days: u32,
+    /// The store listing in English (en-US, else another English, else the first language).
+    pub title: String,
+    pub description: String,
+    /// The App Store's resource id of the product (its prices and localizations are looked up by
+    /// it); empty for Google Play.
+    #[serde(skip)]
+    pub store_ref: String,
+}
+
+/// The listing to show of several languages: `en-US`, else another English one, else the first.
+pub fn pick_listing<'a>(listings: &'a [Value], language_key: &str) -> Option<&'a Value> {
+    let lang = |l: &&Value| l[language_key].as_str().unwrap_or("").to_string();
+    listings
+        .iter()
+        .find(|l| lang(l).eq_ignore_ascii_case("en-US"))
+        .or_else(|| listings.iter().find(|l| lang(l).to_ascii_lowercase().starts_with("en")))
+        .or_else(|| listings.first())
+}
+
+/// Title and description of a Google Play product from its `listings`.
+fn google_listing(p: &Value) -> (String, String) {
+    let listings = p["listings"].as_array().cloned().unwrap_or_default();
+    pick_listing(&listings, "languageCode")
+        .map(|l| (l["title"].as_str().unwrap_or("").to_string(), l["description"].as_str().unwrap_or("").to_string()))
+        .unwrap_or_default()
 }
 
 fn page_query(page_token: &str) -> Result<String, String> {
@@ -162,7 +187,8 @@ pub fn parse_one_time_products(body: &str) -> Result<(Vec<RemoteProduct>, Option
                 .flatten()
                 .flat_map(|o| o["regionalPricingAndAvailabilityConfigs"].as_array().into_iter().flatten());
             let (price_micros, currency) = reference_price(configs, "price");
-            Some(RemoteProduct { product_id, kind: kind::CONSUMABLE.into(), price_micros, currency, billing_period_days: 0 })
+            let (title, description) = google_listing(p);
+            Some(RemoteProduct { product_id, kind: kind::CONSUMABLE.into(), price_micros, currency, title, description, ..Default::default() })
         })
         .collect();
     Ok((products, next_page(&v)))
@@ -191,23 +217,27 @@ pub fn parse_subscriptions(body: &str) -> Result<(Vec<RemoteProduct>, Option<Str
                 }
                 None => (0, String::new(), 0),
             };
+            let (title, description) = google_listing(s);
             Some(RemoteProduct {
                 product_id,
                 kind: kind::SUBSCRIPTION.into(),
                 price_micros,
                 currency,
                 billing_period_days,
+                title,
+                description,
+                store_ref: String::new(),
             })
         })
         .collect();
     Ok((products, next_page(&v)))
 }
 
-/// App Store Connect API: in-app purchases and subscriptions of an app. Needs a Team API key
-/// (`jwt::apple_connect_token`); prices are not listed (each would need more calls), so imported
-/// App Store products keep the configured price.
+/// App Store Connect API: in-app purchases and subscriptions of an app, their localizations and US
+/// prices. Needs a Team API key (`jwt::apple_connect_token`). The list carries the in-app
+/// purchases' localizations; prices, and the localizations of subscriptions, take a call per product.
 pub mod apple {
-    use super::RemoteProduct;
+    use super::{pick_listing, RemoteProduct};
     use crate::doctor::{Level, Verdict};
     use crate::model::kind;
     use serde_json::Value;
@@ -237,12 +267,91 @@ pub mod apple {
         Ok(format!("{API}/v1/apps?filter%5BbundleId%5D={bundle_id}&fields%5Bapps%5D=bundleId&limit=2"))
     }
 
-    /// `GET`: consumables, non-consumables and non-renewing subscriptions.
+    /// `GET`: consumables, non-consumables and non-renewing subscriptions, with their localizations.
     pub fn in_app_purchases_url(apple_id: &str) -> Result<String, String> {
         check_app_id(apple_id)?;
         Ok(format!(
-            "{API}/v1/apps/{apple_id}/inAppPurchasesV2?limit=200&fields%5BinAppPurchases%5D=productId,inAppPurchaseType,state"
+            "{API}/v1/apps/{apple_id}/inAppPurchasesV2?limit=200\
+             &fields%5BinAppPurchases%5D=productId,inAppPurchaseType,state,name,inAppPurchaseLocalizations\
+             &include=inAppPurchaseLocalizations&limit%5BinAppPurchaseLocalizations%5D=50\
+             &fields%5BinAppPurchaseLocalizations%5D=name,description,locale"
         ))
+    }
+
+    /// Resource ids in URLs: digits (in-app purchases, subscriptions).
+    fn check_ref(id: &str) -> Result<(), String> {
+        if id.is_empty() || id.len() > 30 || !id.chars().all(|c| c.is_ascii_digit()) {
+            return Err(format!("invalid App Store resource id '{id}'"));
+        }
+        Ok(())
+    }
+
+    /// `GET`: the prices set by hand of an in-app purchase (its base territory at least).
+    pub fn iap_manual_prices_url(iap: &str) -> Result<String, String> {
+        check_ref(iap)?;
+        Ok(format!(
+            "{API}/v1/inAppPurchasePriceSchedules/{iap}/manualPrices?limit=50&include=inAppPurchasePricePoint,territory\
+             &fields%5BinAppPurchasePricePoints%5D=customerPrice&fields%5Bterritories%5D=currency"
+        ))
+    }
+
+    /// `GET`: the US price Apple derives from the base territory's, when the US is not set by hand.
+    pub fn iap_us_automatic_price_url(iap: &str) -> Result<String, String> {
+        check_ref(iap)?;
+        Ok(format!(
+            "{API}/v1/inAppPurchasePriceSchedules/{iap}/automaticPrices?limit=5&filter%5Bterritory%5D=USA\
+             &include=inAppPurchasePricePoint,territory&fields%5BinAppPurchasePricePoints%5D=customerPrice&fields%5Bterritories%5D=currency"
+        ))
+    }
+
+    /// `GET`: the US price of an auto-renewable subscription.
+    pub fn subscription_us_price_url(subscription: &str) -> Result<String, String> {
+        check_ref(subscription)?;
+        Ok(format!(
+            "{API}/v1/subscriptions/{subscription}/prices?limit=10&filter%5Bterritory%5D=USA\
+             &include=subscriptionPricePoint,territory&fields%5BsubscriptionPricePoints%5D=customerPrice&fields%5Bterritories%5D=currency"
+        ))
+    }
+
+    /// `GET`: the localizations of an auto-renewable subscription.
+    pub fn subscription_localizations_url(subscription: &str) -> Result<String, String> {
+        check_ref(subscription)?;
+        Ok(format!("{API}/v1/subscriptions/{subscription}/subscriptionLocalizations?limit=50&fields%5BsubscriptionLocalizations%5D=name,description,locale"))
+    }
+
+    /// A price list ([`iap_manual_prices_url`], [`iap_us_automatic_price_url`],
+    /// [`subscription_us_price_url`]) → the US price, else (`any_territory`) the first one listed,
+    /// with its territory's currency. A price scheduled for later (`startDate` ahead) is skipped.
+    pub fn parse_price(body: &str, any_territory: bool, today: &str) -> Result<Option<(i64, String)>, String> {
+        let v = parse(body, "prices")?;
+        let included = v["included"].as_array().cloned().unwrap_or_default();
+        let find = |kind: &str, id: &str| included.iter().find(|i| i["type"].as_str() == Some(kind) && i["id"].as_str() == Some(id)).cloned();
+        let rows: Vec<&Value> = v["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["attributes"]["startDate"].as_str().is_none_or(|d| d <= today))
+            .collect();
+        let territory = |r: &Value| r["relationships"]["territory"]["data"]["id"].as_str().unwrap_or("").to_string();
+        let row = rows.iter().find(|r| territory(r) == "USA").or_else(|| any_territory.then(|| rows.first()).flatten());
+        let Some(row) = row else { return Ok(None) };
+        let rel = &row["relationships"];
+        let point = ["inAppPurchasePricePoint", "subscriptionPricePoint"]
+            .iter()
+            .find_map(|k| rel[*k]["data"].as_object().map(|d| (d["type"].as_str().unwrap_or("").to_string(), d["id"].as_str().unwrap_or("").to_string())));
+        let Some((point_type, point_id)) = point else { return Ok(None) };
+        let price = find(&point_type, &point_id).and_then(|p| p["attributes"]["customerPrice"].as_str().and_then(crate::money::parse_decimal));
+        let currency = find("territories", &territory(row)).and_then(|t| t["attributes"]["currency"].as_str().map(str::to_string));
+        Ok(price.zip(currency).filter(|(p, c)| *p > 0 && !c.is_empty()))
+    }
+
+    /// [`subscription_localizations_url`] → title and description (English when there is one).
+    pub fn parse_localizations(body: &str) -> Result<(String, String), String> {
+        let v = parse(body, "localizations")?;
+        let rows: Vec<Value> = v["data"].as_array().into_iter().flatten().map(|l| l["attributes"].clone()).collect();
+        Ok(pick_listing(&rows, "locale")
+            .map(|a| (a["name"].as_str().unwrap_or("").to_string(), a["description"].as_str().unwrap_or("").to_string()))
+            .unwrap_or_default())
     }
 
     /// `GET`: subscription groups with their auto-renewable subscriptions included.
@@ -294,13 +403,13 @@ pub mod apple {
         }
     }
 
-    fn product(product_id: &str, kind: &str, billing_period_days: u32) -> RemoteProduct {
+    fn product(product_id: &str, kind: &str, billing_period_days: u32, store_ref: &str) -> RemoteProduct {
         RemoteProduct {
             product_id: product_id.into(),
             kind: kind.into(),
-            price_micros: 0,
-            currency: String::new(),
             billing_period_days,
+            store_ref: store_ref.into(),
+            ..Default::default()
         }
     }
 
@@ -308,6 +417,7 @@ pub mod apple {
     /// is listed as a consumable: it can be bought again and the game decides how long it lasts.
     pub fn parse_in_app_purchases(body: &str) -> Result<(Vec<RemoteProduct>, Option<String>), String> {
         let v = parse(body, "in-app purchases")?;
+        let included = v["included"].as_array().cloned().unwrap_or_default();
         let products = v["data"]
             .as_array()
             .into_iter()
@@ -318,7 +428,27 @@ pub mod apple {
                     "NON_CONSUMABLE" => kind::NON_CONSUMABLE,
                     _ => kind::CONSUMABLE,
                 };
-                Some(product(a["productId"].as_str()?, k, 0))
+                let mut out = product(a["productId"].as_str()?, k, 0, p["id"].as_str().unwrap_or(""));
+                // Its localizations, among the included ones by the ids it names.
+                let ids: Vec<&str> = p["relationships"]["inAppPurchaseLocalizations"]["data"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|d| d["id"].as_str())
+                    .collect();
+                let mine: Vec<Value> = included
+                    .iter()
+                    .filter(|i| i["type"].as_str() == Some("inAppPurchaseLocalizations") && i["id"].as_str().is_some_and(|id| ids.contains(&id)))
+                    .map(|i| i["attributes"].clone())
+                    .collect();
+                if let Some(l) = pick_listing(&mine, "locale") {
+                    out.title = l["name"].as_str().unwrap_or("").to_string();
+                    out.description = l["description"].as_str().unwrap_or("").to_string();
+                } else {
+                    // No localization yet: the reference name stands in for the title.
+                    out.title = a["name"].as_str().unwrap_or("").to_string();
+                }
+                Some(out)
             })
             .collect();
         Ok((products, next_link(&v)))
@@ -334,7 +464,12 @@ pub mod apple {
             .filter(|i| i["type"].as_str() == Some("subscriptions"))
             .filter_map(|s| {
                 let a = &s["attributes"];
-                Some(product(a["productId"].as_str()?, kind::SUBSCRIPTION, subscription_period_days(a["subscriptionPeriod"].as_str().unwrap_or(""))))
+                Some(product(
+                    a["productId"].as_str()?,
+                    kind::SUBSCRIPTION,
+                    subscription_period_days(a["subscriptionPeriod"].as_str().unwrap_or("")),
+                    s["id"].as_str().unwrap_or(""),
+                ))
             })
             .collect();
         Ok((products, next_link(&v)))
@@ -556,6 +691,50 @@ mod tests {
     }
 
     #[test]
+    fn store_listings_come_in_english_when_there_is_one() {
+        let google = r#"{"oneTimeProducts":[{"productId":"coins_150","listings":[
+            {"languageCode":"de-DE","title":"150 Münzen","description":"Ein Beutel"},
+            {"languageCode":"en-US","title":"150 Coins","description":"A small pouch"}]}]}"#;
+        let (p, _) = parse_one_time_products(google).unwrap();
+        assert_eq!((p[0].title.as_str(), p[0].description.as_str()), ("150 Coins", "A small pouch"));
+        let only_german = r#"{"subscriptions":[{"productId":"vip","listings":[{"languageCode":"de-DE","title":"VIP","description":"Alles"}]}]}"#;
+        assert_eq!(parse_subscriptions(only_german).unwrap().0[0].title, "VIP", "the first language without English");
+
+        // App Store: the localizations come included, named by the product's relationships.
+        let apple_list = r#"{"data":[
+            {"type":"inAppPurchases","id":"6821952005","attributes":{"name":"150 Coins (ref)","productId":"coins_150","inAppPurchaseType":"CONSUMABLE"},
+             "relationships":{"inAppPurchaseLocalizations":{"data":[{"type":"inAppPurchaseLocalizations","id":"l1"}]}}},
+            {"type":"inAppPurchases","id":"6821952006","attributes":{"name":"No ads","productId":"no_ads","inAppPurchaseType":"NON_CONSUMABLE"}}],
+            "included":[{"type":"inAppPurchaseLocalizations","id":"l1","attributes":{"name":"150 Coins","locale":"en-US","description":"A small pouch of 150 coins."}}]}"#;
+        let (p, _) = apple::parse_in_app_purchases(apple_list).unwrap();
+        assert_eq!((p[0].title.as_str(), p[0].description.as_str(), p[0].store_ref.as_str()), ("150 Coins", "A small pouch of 150 coins.", "6821952005"));
+        assert_eq!((p[1].title.as_str(), p[1].description.as_str()), ("No ads", ""), "no localization: the reference name");
+        let locs = r#"{"data":[{"attributes":{"name":"VIP","locale":"en-GB","description":"Everything"}}]}"#;
+        assert_eq!(apple::parse_localizations(locs).unwrap(), ("VIP".into(), "Everything".into()));
+    }
+
+    #[test]
+    fn app_store_prices_are_read_in_dollars_where_set() {
+        let manual = r#"{"data":[{"type":"inAppPurchasePrices","attributes":{"startDate":null},
+            "relationships":{"inAppPurchasePricePoint":{"data":{"type":"inAppPurchasePricePoints","id":"pp1"}},"territory":{"data":{"type":"territories","id":"USA"}}}}],
+            "included":[{"type":"inAppPurchasePricePoints","id":"pp1","attributes":{"customerPrice":"0.49"}},{"type":"territories","id":"USA","attributes":{"currency":"USD"}}]}"#;
+        assert_eq!(apple::parse_price(manual, false, "2026-11-27").unwrap(), Some((490_000, "USD".into())));
+        // A base territory other than the US: not the US price, unless any territory will do.
+        let ukraine = manual.replace("\"USA\"", "\"UKR\"").replace("USD", "UAH").replace("0.49", "19.99");
+        assert_eq!(apple::parse_price(&ukraine, false, "2026-11-27").unwrap(), None);
+        assert_eq!(apple::parse_price(&ukraine, true, "2026-11-27").unwrap(), Some((19_990_000, "UAH".into())));
+        // A subscription price scheduled for later is not the price now.
+        let sub = r#"{"data":[
+            {"attributes":{"startDate":"2027-01-01"},"relationships":{"subscriptionPricePoint":{"data":{"type":"subscriptionPricePoints","id":"later"}},"territory":{"data":{"id":"USA"}}}},
+            {"attributes":{"startDate":null},"relationships":{"subscriptionPricePoint":{"data":{"type":"subscriptionPricePoints","id":"now"}},"territory":{"data":{"id":"USA"}}}}],
+            "included":[{"type":"subscriptionPricePoints","id":"later","attributes":{"customerPrice":"9.99"}},
+                        {"type":"subscriptionPricePoints","id":"now","attributes":{"customerPrice":"4.99"}},
+                        {"type":"territories","id":"USA","attributes":{"currency":"USD"}}]}"#;
+        assert_eq!(apple::parse_price(sub, false, "2026-11-27").unwrap(), Some((4_990_000, "USD".into())));
+        assert!(apple::iap_manual_prices_url("123/../x").is_err());
+    }
+
+    #[test]
     fn parses_subscriptions_with_period() {
         let (s, next) = parse_subscriptions(SUBS).unwrap();
         assert_eq!(next, None);
@@ -661,7 +840,7 @@ mod tests {
 
     #[test]
     fn diff_takes_the_kind_from_a_store_that_knows_it() {
-        let remote = vec![RemoteProduct { product_id: "no_ads".into(), kind: "non_consumable".into(), price_micros: 0, currency: String::new(), billing_period_days: 0 }];
+        let remote = vec![RemoteProduct { product_id: "no_ads".into(), kind: "non_consumable".into(), price_micros: 0, currency: String::new(), billing_period_days: 0, ..Default::default() }];
         let local = vec![LocalProduct { product_id: "no_ads".into(), kind: "consumable".into(), price_micros: 0, currency: String::new() }];
         assert_eq!(diff(&remote, &local, false).0[0].status, "same");
         let (rows, _) = diff(&remote, &local, true);

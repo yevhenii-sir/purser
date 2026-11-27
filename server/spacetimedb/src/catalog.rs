@@ -15,6 +15,9 @@ use spacetimedb::ProcedureContext;
 
 /// Pages per list: one HTTP call each, 100-200 products per page.
 const MAX_PAGES: usize = 10;
+/// App Store products whose price (and subscription listing) is looked up, a call or two each;
+/// the others keep the configured price.
+const APPLE_DETAILS_MAX: usize = 100;
 
 type Parser = fn(&str) -> Result<(Vec<RemoteProduct>, Option<String>), String>;
 
@@ -78,6 +81,36 @@ impl Lister<'_> {
     }
 }
 
+/// The US price of App Store products and the listing of subscriptions (the list carries the
+/// in-app purchases' own), a call or two per product. A product whose look-up fails keeps no price:
+/// saving it keeps the configured one.
+fn apple_details(ctx: &mut impl Ctx, l: &Lister, remote: &mut [RemoteProduct]) {
+    use catalog::apple as a;
+    let today = purser_core::time::format_day(purser_core::time::day_of_micros(ctx.now_micros()));
+    let price = |ctx: &mut _, url: Result<String, String>, any: bool| -> Option<(i64, String)> {
+        let body = l.get(ctx, &url.ok()?).ok()?;
+        a::parse_price(&body, any, &today).ok().flatten()
+    };
+    for p in remote.iter_mut().filter(|p| !p.store_ref.is_empty()).take(APPLE_DETAILS_MAX) {
+        let found = if p.kind == purser_core::model::kind::SUBSCRIPTION {
+            if p.title.is_empty() {
+                if let Some(body) = a::subscription_localizations_url(&p.store_ref).ok().and_then(|u| l.get(ctx, &u).ok()) {
+                    (p.title, p.description) = a::parse_localizations(&body).unwrap_or_default();
+                }
+            }
+            price(ctx, a::subscription_us_price_url(&p.store_ref), false)
+        } else {
+            // Set by hand for the US, else derived from the base territory, else the base territory's.
+            price(ctx, a::iap_manual_prices_url(&p.store_ref), false)
+                .or_else(|| price(ctx, a::iap_us_automatic_price_url(&p.store_ref), false))
+                .or_else(|| price(ctx, a::iap_manual_prices_url(&p.store_ref), true))
+        };
+        if let Some((micros, currency)) = found {
+            (p.price_micros, p.currency) = (micros, currency);
+        }
+    }
+}
+
 pub fn list_store_products(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, String> {
     let id = app_id.to_string();
     let (app, local) = ctx.tx(|tx| {
@@ -114,6 +147,7 @@ pub fn list_store_products(ctx: &mut impl Ctx, app_id: &str) -> Result<Value, St
         let same = |u: &str| Ok(u.to_string());
         let mut remote = l.list_all(ctx, catalog::apple::in_app_purchases_url(&apple_id)?, same, catalog::apple::parse_in_app_purchases)?;
         remote.extend(l.list_all(ctx, catalog::apple::subscription_groups_url(&apple_id)?, same, catalog::apple::parse_subscription_groups)?);
+        apple_details(ctx, &l, &mut remote);
         (remote, l.truncated.get())
     } else {
         let token = stores::google_access_token(ctx, &app).map_err(|e: StoreError| e.message().to_string())?;

@@ -131,9 +131,27 @@ pub fn call_timeout_micros(remaining: i64, max: i64) -> i64 {
     remaining.clamp(MIN_CALL_MICROS, max.max(MIN_CALL_MICROS))
 }
 
+/// How long ago, for people: `just now`, `12 min ago`, `3 h ago`, `2 d ago`.
+pub fn ago(elapsed_micros: i64) -> String {
+    let min = elapsed_micros.max(0) / 60_000_000;
+    match min {
+        0 => "just now".into(),
+        1..=59 => format!("{min} min ago"),
+        60..=2879 => format!("{} h ago", min / 60),
+        _ => format!("{} d ago", min / 1440),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ago_reads_like_people_say_it() {
+        let min = 60_000_000;
+        assert_eq!([ago(0), ago(-5), ago(59 * 1_000_000)], ["just now", "just now", "just now"]);
+        assert_eq!([ago(min), ago(59 * min), ago(60 * min), ago(47 * 60 * min), ago(48 * 60 * min)], ["1 min ago", "59 min ago", "1 h ago", "47 h ago", "2 d ago"]);
+    }
 
     #[test]
     fn call_timeout_follows_the_deadline_within_bounds() {

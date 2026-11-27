@@ -537,7 +537,7 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
 /** What each store's import needs and leaves to the admin. */
 const IMPORT_HELP: Record<string, string> = {
   google: 'Pick consumable or non-consumable for one-time products: Google Play does not say. Needs the permission "View app information" for the service account.',
-  apple: "Needs an App Store Connect API Team key (App Manager role) in the build's keys: the In-App Purchase key cannot list products. Prices are not imported: the App Store reports the price of every purchase.",
+  apple: "Needs an App Store Connect API Team key (App Manager role) in the build's keys: the In-App Purchase key cannot list products. Prices are the US ones (else the base territory's).",
 }
 
 function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
@@ -575,9 +575,13 @@ function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
       const priceFor = (own?: Product) => (p.price_micros > 0 ? { price_micros: p.price_micros, currency: p.currency }
         : own && Number(own.price_micros) > 0 ? { price_micros: Number(own.price_micros), currency: own.currency }
         : known ? { price_micros: Number(known.price_micros), currency: known.currency } : { price_micros: 0, currency: p.currency })
-      const mine = { ...p, app_id: app.app_id, catalog_id, ...priceFor(row?.by[app.app_id]) }
+      // The store listing fills only what is empty here: a title or description typed here stays.
+      const { title, description, ...rest } = p
+      const had = row ? listingOfRow(row) : { title: "", description: "" }
+      const listing = { ...(title && !had.title ? { title } : {}), ...(description && !had.description ? { description } : {}) }
+      const mine = { ...rest, app_id: app.app_id, catalog_id, ...priceFor(row?.by[app.app_id]), ...listing }
       // The other builds get only what they do not have: their own rows are never overwritten.
-      const theirs = alsoOthers ? others.filter((o) => !row?.by[o.app_id]).map((o) => ({ ...p, app_id: o.app_id, catalog_id, ...priceFor() })) : []
+      const theirs = alsoOthers ? others.filter((o) => !row?.by[o.app_id]).map((o) => ({ ...rest, app_id: o.app_id, catalog_id, ...priceFor(), ...listing })) : []
       return [mine, ...theirs]
     })
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Saved ${picked.length} product(s)`)

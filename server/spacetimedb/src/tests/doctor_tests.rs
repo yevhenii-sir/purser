@@ -277,22 +277,37 @@ fn app_store_catalog_is_listed_and_compared() {
     w.script("/v1/apps?filter%5BbundleId%5D=com.studio.game.ios", 200, &json!({ "data": [
         { "type": "apps", "id": "1234567890", "attributes": { "bundleId": IOS_ID } }] }).to_string());
     w.script("/subscriptionGroups?", 200, r#"{"data":[{"type":"subscriptionGroups","id":"g"}],"included":[
-        {"type":"subscriptions","id":"s1","attributes":{"productId":"premium","subscriptionPeriod":"ONE_MONTH"}},
-        {"type":"subscriptions","id":"s2","attributes":{"productId":"vip_year","subscriptionPeriod":"ONE_YEAR"}}]}"#);
+        {"type":"subscriptions","id":"6001","attributes":{"productId":"premium","subscriptionPeriod":"ONE_MONTH"}},
+        {"type":"subscriptions","id":"6002","attributes":{"productId":"vip_year","subscriptionPeriod":"ONE_YEAR"}}]}"#);
+    // Prices and the subscriptions' listing: a call or two per product.
+    let us_price = |point: &str, price: &str| json!({
+        "data": [{ "attributes": { "startDate": null }, "relationships": {
+            point: { "data": { "type": format!("{point}s"), "id": "p" } }, "territory": { "data": { "type": "territories", "id": "USA" } } } }],
+        "included": [{ "type": format!("{point}s"), "id": "p", "attributes": { "customerPrice": price } },
+                     { "type": "territories", "id": "USA", "attributes": { "currency": "USD" } }],
+    }).to_string();
+    w.script("/inAppPurchasePriceSchedules/1/manualPrices", 200, &us_price("inAppPurchasePricePoint", "1.99"));
+    w.script("/subscriptions/6001/prices", 200, &us_price("subscriptionPricePoint", "4.99"));
+    w.script("/subscriptions/6001/subscriptionLocalizations", 200, r#"{"data":[{"attributes":{"name":"Premium","locale":"en-US","description":"Every level"}}]}"#);
 
     let v = list(&w).unwrap();
     assert_eq!(v["store"], "apple");
     let row = |id: &str| v["products"].as_array().unwrap().iter().find(|r| r["product_id"] == id).cloned().unwrap();
-    assert_eq!((row("gems")["status"].as_str(), row("gems")["kind"].as_str()), (Some("same"), Some("consumable")));
-    assert_eq!((row("premium")["status"].as_str(), row("premium")["billing_period_days"].as_i64()), (Some("same"), Some(30)));
+    // Apple reports its price now: one other than the configured one is a change.
+    assert_eq!((row("gems")["status"].as_str(), row("gems")["kind"].as_str()), (Some("changed"), Some("consumable")));
+    assert_eq!((row("premium")["status"].as_str(), row("premium")["billing_period_days"].as_i64()), (Some("changed"), Some(30)));
     assert_eq!((row("no_ads")["status"].as_str(), row("no_ads")["kind"].as_str()), (Some("new"), Some("non_consumable")));
     assert_eq!(row("vip_year")["status"], "new");
     assert_eq!(v["missing_in_store"], json!([]));
-    assert_eq!(w.calls("api.appstoreconnect.apple.com"), 4);
+    assert_eq!((row("gems")["price_micros"].as_i64(), row("gems")["currency"].as_str()), (Some(1_990_000), Some("USD")), "the US price");
+    let premium = row("premium");
+    assert_eq!((premium["title"].as_str(), premium["description"].as_str(), premium["price_micros"].as_i64()), (Some("Premium"), Some("Every level"), Some(4_990_000)));
+    assert!(row("gems").get("store_ref").is_none(), "Apple's resource id stays on the server");
+    let calls = w.calls("api.appstoreconnect.apple.com");
 
     // The token is cached: a second import signs nothing new and lists again.
     list(&w).unwrap();
-    assert_eq!(w.calls("api.appstoreconnect.apple.com"), 8);
+    assert_eq!(w.calls("api.appstoreconnect.apple.com"), 2 * calls);
 }
 
 #[test]

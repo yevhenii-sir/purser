@@ -135,6 +135,9 @@ export interface CatalogRow {
   period?: string
   status: "new" | "changed" | "same"
   local_kind: string
+  /** The store listing (English when the store has one); empty when the store has none. */
+  title?: string
+  description?: string
 }
 
 export interface Money {

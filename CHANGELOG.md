@@ -11,12 +11,14 @@
 
 ### Added
 
+- The catalog import brings the store listing (title and description, in English when the store has one) of Google Play and App Store products, and the App Store's prices (the US price, else the base territory's): a call or two per App Store product. The listing fills only fields that are empty here.
 - The Setup tab asks Apple for a test notification from each App Store build's card (**Test notification**, next to Set in App Store Connect) instead of one button for every App Store build.
 - The Products tab is a sortable grid with hideable columns, a search (product id, store ids, title), type and "missing in <build>" filters, and bulk actions on the checked rows: change the type, add to or remove from a build, create in the store, delete. The product dialog has **Delete** too (the product goes from every build; purchases of it stay in the ledger). `RichTable` takes an optional row selection.
 - The Add an app wizard asks for the app's name first and derives the app key from it (`Magnet Rings` → `magnet-rings`) until the key is typed; the name is saved with the builds (`admin_set_app_name`). A name with no Latin letters leaves the key to the app id, as before.
 
 ### Fixed
 
+- The setup check said when refunds were last read as "read 0 h ago": it says "just now", minutes, hours or days now.
 - An App Store build whose app is not on the App Store yet failed with "App Store rejected the API key (HTTP 401)": Apple refuses production requests for such an app with 401, not 404, and Purser took the refusal for a wrong key without asking the sandbox. A transaction look-up, the refund sweep and the setup check go on to the other environment; the key is reported wrong only when both refuse it.
 - A store catalog import with "Also add to" other builds overwrote their products: an App Store import (which carries no prices) set the Google Play prices to 0. The other builds now get only the products they do not have, and a store that reports no price keeps the price a product has.
 - The Apple keys are labelled by where they come from: the In-App Purchase key (Users and Access > Integrations > In-App Purchase) checks purchases, the Team key (App Store Connect API > Team Keys) imports the catalog and sets up the App Store.

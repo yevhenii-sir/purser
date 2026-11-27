@@ -267,6 +267,7 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
           .flatMap((a) => valid.map((p) => ({
             app_id: keyOf(a), product_id: productIdIn(p, a.store).trim(), catalog_id: p.product_id.trim(), kind: p.kind, price_micros: p.price_micros || 0, currency: p.currency || "",
             ...(p.period && p.kind === "subscription" ? { period: p.period } : {}),
+            ...(p.title ? { title: p.title } : {}), ...(p.description ? { description: p.description } : {}),
           })))
         if (items.length) {
           onChange()
