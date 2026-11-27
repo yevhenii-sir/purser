@@ -1,6 +1,6 @@
 {
   "name": "@purser/client",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Client for a self-hosted Purser in-app purchase server: verify, restore, entitlements, paywalls, promo codes, wallet. For web games, Cocos Creator, PlayCanvas and Telegram Mini Apps.",
   "license": "MIT",
   "type": "module",

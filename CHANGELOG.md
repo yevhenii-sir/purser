@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.14.0 - 2026-11-27
+
+**In short:** Google Play notifications are authenticated by Pub/Sub's push token instead of a secret in the URL; integrations take the game's own event names and name free trials and subscription refunds apart, and GA4 counts renewals as purchases; releases carry a signed build provenance, and every page of the docs is rewritten for reading.
+
+**Upgrade:** in place over 0.13.0 (one new table): no `--delete-data`, no backup needed. Google Play builds set up before need their push subscriptions changed (Breaking, below): until then their notifications are refused.
+
 ### Breaking
 
 - Google Play notifications are authenticated by Pub/Sub's push token instead of a secret in the URL (a query string ends up in logs): the push subscription sends an OIDC token of the build's service account with the audience `purser-rtdn:<app_id>`, and the server checks it against Google's published keys (cached in the new table `google_cert`, fetched again for an unknown key at most once a minute). The push URL is `/notify/google` without `?secret=`, and `google_rtdn_secret` is gone. A Google Play build set up before needs its push subscription changed: run the Google Cloud setup again (Setup tab, or `setup_google.py`), or turn on authentication in the subscription by hand (docs/store-setup.md). The module publishes in place: no `--delete-data`.

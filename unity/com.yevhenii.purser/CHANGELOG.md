@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-27
+
+No changes in the package: the version follows the server 0.14.0 (Google Play notifications by push token, the game's own event names in integrations).
+
 ## [0.13.0] - 2026-11-26
 
 No changes in the package: the version follows the server 0.13.0 (admin sign-in through a provider, role-aware admin page).
