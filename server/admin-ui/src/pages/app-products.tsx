@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { CatalogPicker, type PickedProduct } from "@/components/catalog-picker"
+import { CatalogPicker, type CatalogMapping, type PickedProduct } from "@/components/catalog-picker"
 import { Count, DialogBody, ErrorBox, Field, Loading, Mono, Section, Tone } from "@/components/common"
 import { RichTable, type RichColumn } from "@/components/rich-table"
 import { StoreCreateDialog, StoreJobs } from "@/components/store-create-dialog"
@@ -595,6 +595,13 @@ function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
   const [picked, setPicked] = useState<PickedProduct[]>([])
   const [alsoOthers, setAlsoOthers] = useState(false)
   const onPick = useCallback((p: PickedProduct[]) => setPicked(p), [])
+  /** Store ids map to the app's products: the build's own, else a guess, joining a product of another build. */
+  const mapping = useMemo<CatalogMapping>(() => ({
+    catalogIds: existing.map((r) => r.product_id),
+    ownCatalogOf: (storeId) => existing.find((r) => r.by[app.app_id]?.product_id === storeId)?.product_id,
+    ownStoreIdOf: (catalogId) => existing.find((r) => r.product_id === catalogId)?.by[app.app_id]?.product_id,
+    appId: app.store_app_id,
+  }), [existing, app])
   const load = async () => {
     setLoading(true)
     setRows(null)
@@ -609,10 +616,18 @@ function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
     }
   }
   const save = async () => {
+    const targets = picked.map((p) => p.catalog_id || p.product_id)
+    const twice = targets.find((t, i) => targets.indexOf(t) !== i)
+    if (twice) return toast.error(`Two store products go under ${twice}: give one of them another product`)
+    const occupied = picked.find((p) => {
+      const has = existing.find((r) => r.product_id === (p.catalog_id || p.product_id))?.by[app.app_id]?.product_id
+      return has && has !== p.product_id
+    })
+    if (occupied) return toast.error(`${buildLabel(app)} already has ${occupied.catalog_id} under another store id: pick another product for ${occupied.product_id}`)
     const items = picked.flatMap((p) => {
-      // The product this store id already is here (its catalog id may differ), else one of that catalog id.
-      const row = existing.find((r) => r.by[app.app_id]?.product_id === p.product_id) || existing.find((r) => r.product_id === p.product_id)
-      const catalog_id = row?.product_id || p.product_id
+      // The product picked for this store id: the build's own row of it moves there, or it joins one.
+      const catalog_id = p.catalog_id || p.product_id
+      const row = existing.find((r) => r.product_id === catalog_id)
       // A store that reports no price (the App Store) keeps the price this product has already.
       const known = Object.values(row?.by || {}).find((x) => x && Number(x.price_micros) > 0)
       const priceFor = (own?: Product) => (p.price_micros > 0 ? { price_micros: p.price_micros, currency: p.currency }
@@ -621,8 +636,10 @@ function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
       // The store listing fills only what is empty here: a title or description typed here stays.
       // Each build keeps its own listing (stores take different lengths): the store's fills the empty
       // fields of this build, and a new row of another build the fields that fit its store.
-      const { title, description, ...rest } = p
-      const own = row?.by[app.app_id]
+      const { title, description, catalog_id: _picked, ...rest } = p
+      void _picked
+      // This build's row of the product: the store id itself, or (rows the store id moves into) none yet.
+      const own = row?.by[app.app_id]?.product_id === p.product_id ? row.by[app.app_id] : existing.find((r) => r.by[app.app_id]?.product_id === p.product_id)?.by[app.app_id]
       const listing = { ...(title && !own?.title ? { title } : {}), ...(description && !own?.description ? { description } : {}) }
       const fitting = (o: GameApp) => {
         const max = LISTING_LIMITS[storeOf(o).id]
@@ -648,7 +665,7 @@ function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
           {!rows && !loading && <Button variant="outline" onClick={load}>Load catalog</Button>}
           {loading ? <Loading /> : rows && (
             <div className="space-y-3">
-              <CatalogPicker rows={rows} onChange={onPick} />
+              <CatalogPicker rows={rows} onChange={onPick} mapping={mapping} />
               {missing.length > 0 && <p className="text-xs text-muted-foreground">Configured here but not in the store: {missing.join(", ")}</p>}
             </div>
           )}

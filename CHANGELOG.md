@@ -11,6 +11,7 @@
 
 ### Added
 
+- A store catalog import maps every store id to a product of the app (a **→ Product** column): the build's own product, else the id without the bundle in front and a store suffix (`com.example.game.coins_700.ios` → `coins_700`), editable or picked from the app's products. A store id under a product of another build joins it (its id in this store), and two store ids under one product, or a product this build already has under another id, are refused before saving.
 - App Store builds can have their own title and description (the App Store takes 35 and 55 characters, Google Play 55 and 200): the product dialog has App Store fields (empty: the shared ones) and character counts against each store's limit; Create in store sends each store its own text and shows the counts before the check; a catalog import fills each build's own listing, and a new row of another store only with what fits there.
 - The catalog import brings the store listing (title and description, in English when the store has one) of Google Play and App Store products, and the App Store's prices (the US price, else the base territory's): a call or two per App Store product. The listing fills only fields that are empty here.
 - The Setup tab asks Apple for a test notification from each App Store build's card (**Test notification**, next to Set in App Store Connect) instead of one button for every App Store build.
