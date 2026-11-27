@@ -4,7 +4,8 @@ A thin wrapper over the admin procedure `admin_setup_google` (the admin page's S
 "Set up with Google Cloud" does the same): it takes a short-lived access token from
 `gcloud auth print-access-token` and hands it to the module, which enables the APIs, creates the
 service account and its key (stored as google_service_account_json), the Pub/Sub topic Google Play
-publishes to, a google_rtdn_secret per build and the RTDN push subscriptions. Every step is skipped
+publishes to and the RTDN push subscriptions, one per build, authenticated as the build's service
+account (Pub/Sub signs every push with its OIDC token, audience purser-rtdn:<app_id>). Every step is skipped
 when it is already done, so the script is safe to run again. Then it prints what only Play Console
 can do.
 
@@ -15,7 +16,6 @@ PURSER_TOKEN set):
     python setup_google.py --project my-cloud-project              # every Google Play build
     python setup_google.py --project my-cloud-project --app-id com.example.mygame
     python setup_google.py --project my-cloud-project --new-key    # replace the service account key
-    python setup_google.py --project my-cloud-project --rotate-rtdn-secret
 
 The builds must exist already (admin page, seed.py or bulk_setup.py). The module takes at most 20
 builds per call: more are set up 20 at a time, grouped by developer account (each account gets its
@@ -25,7 +25,6 @@ on a command line; secret values never leave the database.
 import argparse
 import json
 import pathlib
-import secrets
 import shutil
 import subprocess
 import sys
@@ -141,7 +140,6 @@ def main(argv=None):
     p.add_argument("--scope", help="where google_service_account_json goes (default: the builds' developer account, else default)")
     p.add_argument("--topic", default="play-billing", help="Pub/Sub topic name (default: play-billing)")
     p.add_argument("--new-key", action="store_true", help="create and store a new service account key")
-    p.add_argument("--rotate-rtdn-secret", action="store_true", help="new google_rtdn_secret per build, push URL updated")
     p.add_argument("--dry-run", action="store_true", help="print what would change, change nothing")
     a = p.parse_args(argv)
     if not a.database or a.database.startswith("<"):
@@ -167,9 +165,6 @@ def main(argv=None):
                    "route": route,
                    # One new key per account: the later calls of the account find it.
                    "new_key": a.new_key and first,
-                   "rotate_rtdn_secret": a.rotate_rtdn_secret,
-                   # Random bytes for new google_rtdn_secret values (the module RNG is not fit for secrets).
-                   "entropy": secrets.token_hex(32),
                    "dry_run": a.dry_run}
         if a.scope:
             request["scope"] = a.scope
@@ -186,8 +181,8 @@ def main(argv=None):
 
     print_manual(last)
     print("\nThen: python seed.py --check-all (or the app's Setup tab) should show \"Test notification received\".")
-    print("If your seed files (credentials.json) hold google_service_account_json or google_rtdn_secret values,")
-    print("replace them or remove those entries: seed.py without --check-only would upload the old values again.")
+    print("If your seed files (credentials.json) hold a google_service_account_json value,")
+    print("replace it or remove that entry: seed.py without --check-only would upload the old key again.")
     if a.dry_run:
         print("\nDry run: nothing was changed.")
     sys.exit(0 if ok else 1)

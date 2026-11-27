@@ -48,9 +48,8 @@ class MainTest(unittest.TestCase):
         requests = [json.loads(c[1]) for c in s.calls if c[0] == "admin_setup_google"]
         self.assertEqual([len(r["app_ids"]) for r in requests], [20, 5, 1])
         self.assertEqual({r["topic"] for r in requests}, {"billing"})
-        # A new key once per account; fresh entropy for every call.
+        # A new key once per account.
         self.assertEqual([r["new_key"] for r in requests], [True, False, True])
-        self.assertEqual(len({r["entropy"] for r in requests}), 3)
         self.assertNotIn("com.example.ios", [i for r in requests for i in r["app_ids"]])
         self.assertIn("== 2/3 (account studio)", out)
         self.assertEqual(out.count("Left to do"), 1)

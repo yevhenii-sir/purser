@@ -178,7 +178,7 @@ fn profile_size(n: usize) -> Run {
         let token = format!("tok-s{i:07}");
         google_subscription(w, &token, "SUBSCRIPTION_STATE_ACTIVE", "vip", &format!("GPA.s{i}..1"), "2026-10-21T00:00:00Z", "");
         let note = json!({ "packageName": APP, "subscriptionNotification": { "notificationType": 2, "purchaseToken": token, "subscriptionId": "vip" } });
-        w.google_notification(RTDN_SECRET, note).http
+        w.google_notification(note).http
     }, |h| format!("{h}"));
     run.time(&w, "client: /healthz", 20, |w, _| health_report(&mut w.ctx()).http, |h| format!("{h}"));
     run.time(&w, "client: /metrics", 5, |w, _| crate::metrics::render(&mut w.ctx(), "Bearer scrape-me-0123456789"), |(s, text)| format!("{s}, {} lines", text.lines().count()));

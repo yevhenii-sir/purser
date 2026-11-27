@@ -31,6 +31,7 @@ mod handlers;
 mod health;
 mod idc;
 mod game_receiver;
+mod google_oidc;
 mod integrations;
 mod ledger;
 mod ledger_index;

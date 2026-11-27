@@ -20,7 +20,6 @@ const NOW_MICROS: i64 = 1_790_000_000_000_000;
 const TOKEN: &str = "tok-1";
 const ORDER: &str = "GPA.1111-2222-3333-44444";
 const LEDGER_ID: &str = "google:GPA.1111-2222-3333-44444";
-const RTDN_SECRET: &str = "rtdn-secret";
 
 /// Google Play Developer API and the game database, scripted per test. Records every call.
 struct Fake {
@@ -105,6 +104,8 @@ impl Fake {
                 "acknowledgementState": 0,
             });
             (200, purchase.to_string())
+        } else if call == format!("GET {}", purser_core::google_oidc::CERTS_URL) {
+            (200, purser_core::google_oidc::testing::jwks(purser_core::google_oidc::testing::KID))
         } else if !self.failing_reducer.is_empty() && call.contains(&format!("/call/{} ", self.failing_reducer)) {
             (503, String::new())
         } else if call.contains("/call/") {
@@ -169,9 +170,8 @@ impl World {
                 tx.db.product().insert(Product::new(APP, id, k));
             }
             for (name, value) in [
-                (secret_name::GOOGLE_SERVICE_ACCOUNT_JSON, "{}"),
+                (secret_name::GOOGLE_SERVICE_ACCOUNT_JSON, SA_JSON),
                 (secret_name::SPACETIME_TOKEN, "stdb-token"),
-                (secret_name::GOOGLE_RTDN_SECRET, RTDN_SECRET),
             ] {
                 tx.db.credential().insert(Credential {
                     key: config::credential_key(config::DEFAULT_SCOPE, name),
@@ -348,13 +348,30 @@ impl World {
             .unwrap()
     }
 
-    fn google_notification(&self, secret: &str, notification: Value) -> Outcome {
+    /// An RTDN push of the build's subscription: signed by "Google" as the build's service account.
+    fn google_notification(&self, notification: Value) -> Outcome {
+        let package = notification["packageName"].as_str().unwrap_or(APP).to_string();
+        let token = self.push_token(|c| c["aud"] = json!(purser_core::google_oidc::audience(&package)));
+        self.google_push(&format!("Bearer {token}"), notification)
+    }
+
+    /// A push token of the build's subscription now, its claims changed by `change`.
+    fn push_token(&self, change: impl FnOnce(&mut Value)) -> String {
+        use purser_core::google_oidc::{audience, testing};
+        let now = self.read(|tx| tx.timestamp.to_micros_since_unix_epoch()) / 1_000_000;
+        let mut claims = testing::claims(&audience(APP), SA_EMAIL, now);
+        change(&mut claims);
+        testing::token(testing::KID, &claims)
+    }
+
+    /// An RTDN push with this `Authorization` header (empty: none).
+    fn google_push(&self, authorization: &str, notification: Value) -> Outcome {
         let data = purser_core::jwt::b64url(notification.to_string().as_bytes());
-        let req = http::Request::builder()
-            .method("POST")
-            .uri(format!("/notify/google?secret={secret}"))
-            .body(Body::from(json!({ "message": { "data": data } }).to_string()))
-            .unwrap();
+        let mut req = http::Request::builder().method("POST").uri("/notify/google");
+        if !authorization.is_empty() {
+            req = req.header("Authorization", authorization);
+        }
+        let req = req.body(Body::from(json!({ "message": { "data": data } }).to_string())).unwrap();
         handle_google_notification(&mut self.ctx(), req)
     }
 }
@@ -532,7 +549,7 @@ fn refund_during_a_pending_transfer_is_revoked_from_the_previous_owner() {
         "packageName": APP,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 1 },
     });
-    assert_eq!(w.google_notification(RTDN_SECRET, voided).http, 200);
+    assert_eq!(w.google_notification(voided).http, 200);
 
     // player-2 never got it in the game; player-1 still has it and loses it as a refund.
     let p = w.purchase();
@@ -611,11 +628,11 @@ fn voided_purchase_is_revoked_in_the_game() {
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 2 },
     });
 
-    assert_eq!(w.google_notification("wrong", voided.clone()).http, 401);
+    assert_eq!(w.google_push("", voided.clone()).http, 401);
     assert_eq!(w.purchase().status, status::COMPLETED);
 
     // Google still reports the purchase as paid: a forged notification revokes nothing.
-    let o = w.google_notification(RTDN_SECRET, voided.clone());
+    let o = w.google_notification(voided.clone());
     assert_eq!((o.http, o.body["status"].as_str()), (200, Some("ignored")), "{}", o.body);
     assert_eq!(w.purchase().status, status::COMPLETED);
 
@@ -623,11 +640,11 @@ fn voided_purchase_is_revoked_in_the_game() {
     // this one reports none refunded).
     let mut partial = voided.clone();
     partial["voidedPurchaseNotification"]["refundType"] = json!(2);
-    assert_eq!(w.google_notification(RTDN_SECRET, partial).http, 200);
+    assert_eq!(w.google_notification(partial).http, 200);
     assert_eq!((w.purchase().status.as_str(), w.purchase().refunded_micros), (status::COMPLETED, 0));
 
     w.script("/purchases/products/", 200, &json!({ "purchaseState": 1, "orderId": ORDER, "consumptionState": 1 }).to_string());
-    let o = w.google_notification(RTDN_SECRET, voided);
+    let o = w.google_notification(voided);
     assert_eq!(o.http, 200);
     assert_eq!(w.purchase().status, status::REVOKED);
     assert_eq!(w.calls("/call/billing_revoke"), 1);
@@ -895,6 +912,7 @@ fn app_display_name_is_set_and_cleared() {
 // Setup check ("doctor") and app health
 // ---------------------------------------------------------------------
 
+const SA_EMAIL: &str = "billing@proj.iam.gserviceaccount.com";
 const SA_JSON: &str = r#"{"client_email":"billing@proj.iam.gserviceaccount.com","private_key":"unused: a token is cached"}"#;
 const GAME_SCHEMA: &str = r#"{"reducers":[
     {"name":"billing_grant","params":{"elements":[{"name":{"some":"ev"},"algebraic_type":{"Ref":0}}]}},
@@ -925,7 +943,7 @@ fn doctor_offline_reports_configuration_and_secret_scopes() {
     assert_eq!(level(&c, "app"), "ok");
     assert_eq!(level(&c, "products"), "warn", "Android products without a default price");
     assert_eq!(c["secret:google_service_account_json"], ("ok".into(), "set (scope default)".into()));
-    assert_eq!(level(&c, "google_key"), "fail", "the seeded key is not a service account");
+    assert_eq!(c["google_key"], ("ok".into(), SA_EMAIL.into()));
     assert_eq!(level(&c, "notifications"), "warn", "no RTDN yet");
     assert_eq!(level(&c, "delivery_identity"), "fail", "the seeded token is not a SpacetimeDB token");
     assert_eq!(level(&c, "delivery_game"), "skip");
@@ -1001,18 +1019,95 @@ fn doctor_does_not_send_the_token_to_a_host_that_is_not_allowed() {
 }
 
 #[test]
-fn rtdn_with_a_wrong_secret_and_test_notifications_show_up_in_the_setup_check() {
+fn rtdn_push_tokens_must_name_the_build_audience_and_service_account() {
+    let w = World::new();
+    let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
+    let push = |change: fn(&mut Value)| w.google_push(&format!("Bearer {}", w.push_token(change)), test.clone());
+
+    let o = push(|c| c["aud"] = json!("purser-rtdn:com.other.game"));
+    assert_eq!(o.http, 403);
+    let h = w.notify_health();
+    assert!(h.last_rejected_reason.contains("service account and audience") && h.last_rejected_reason.contains("audience"), "{}", h.last_rejected_reason);
+    w.advance_clock(61);
+    assert_eq!(push(|c| c["email"] = json!("someone@evil.example")).http, 403);
+    assert!(w.notify_health().last_rejected_reason.contains(SA_EMAIL));
+    assert_eq!(push(|c| c["email_verified"] = json!(false)).http, 403);
+    assert_eq!(push(|c| c["exp"] = json!(1)).http, 403);
+    assert_eq!(w.google_push("", test.clone()).http, 401, "no token: authentication is off in the subscription");
+    assert_eq!(w.google_push("Bearer not-a-jwt", test.clone()).http, 403);
+    assert_eq!(w.notify_health().last_at_micros, 0, "nothing accepted");
+
+    let o = w.google_notification(test.clone());
+    assert_eq!((o.http, o.body["status"].as_str()), (200, Some("ok")), "{}", o.body);
+    assert!(w.notify_health().last_test_at_micros > 0);
+
+    // The build's service account names the tokens: without its key nothing is accepted.
+    w.write(|tx| {
+        tx.db.credential().key().delete(config::credential_key(config::DEFAULT_SCOPE, secret_name::GOOGLE_SERVICE_ACCOUNT_JSON));
+    });
+    w.advance_clock(61);
+    assert_eq!(w.google_notification(test).http, 403);
+    assert!(w.notify_health().last_rejected_reason.contains("google_service_account_json"));
+}
+
+#[test]
+fn google_keys_are_cached_and_fetched_for_an_unknown_key_at_most_once_a_minute() {
+    use purser_core::google_oidc::{audience, testing};
+    let w = World::new();
+    let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
+    let certs = || w.calls(purser_core::google_oidc::CERTS_URL);
+    assert_eq!(w.google_notification(test.clone()).http, 200);
+    assert_eq!(w.google_notification(test.clone()).http, 200);
+    assert_eq!(certs(), 1, "cached");
+
+    w.advance_clock(61);
+    let now = || w.read(|tx| tx.timestamp.to_micros_since_unix_epoch()) / 1_000_000;
+    let unknown = |kid: &str| format!("Bearer {}", testing::token(kid, &testing::claims(&audience(APP), SA_EMAIL, now())));
+    assert_eq!(w.google_push(&unknown("made-up-1"), test.clone()).http, 403);
+    assert_eq!(certs(), 2, "an unknown key is looked up");
+    assert_eq!(w.google_push(&unknown("made-up-2"), test.clone()).http, 403);
+    assert_eq!(certs(), 2, "at most once a minute");
+    assert_eq!(w.google_notification(test.clone()).http, 200, "known keys still work");
+    w.advance_clock(30);
+    assert_eq!(w.google_push(&unknown("made-up-3"), test.clone()).http, 403);
+    assert_eq!(certs(), 2);
+    w.advance_clock(31);
+    assert_eq!(w.google_push(&unknown("made-up-3"), test.clone()).http, 403);
+    assert_eq!(certs(), 3);
+
+    // Keys a day old are fetched again.
+    w.advance_clock(24 * 3600);
+    assert_eq!(w.google_notification(test).http, 200);
+    assert_eq!(certs(), 4);
+}
+
+#[test]
+fn a_failed_fetch_of_google_keys_is_retried_by_pub_sub() {
+    let w = World::new();
+    let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
+    w.script(purser_core::google_oidc::CERTS_URL, 500, "backend error");
+    assert_eq!(w.google_notification(test.clone()).http, 503);
+    w.fake.borrow_mut().overrides.clear();
+    assert_eq!(w.google_notification(test.clone()).http, 503, "no keys, and the last fetch was a moment ago");
+    assert_eq!(w.calls(purser_core::google_oidc::CERTS_URL), 1);
+    assert_eq!(w.notify_health().last_rejected_at_micros, 0, "our failure, not the store's");
+    w.advance_clock(61);
+    assert_eq!(w.google_notification(test).http, 200);
+}
+
+#[test]
+fn rtdn_without_a_token_and_test_notifications_show_up_in_the_setup_check() {
     let w = World::new();
     w.as_admin(false);
     let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
 
-    assert_eq!(w.google_notification("wrong", test.clone()).http, 401);
+    assert_eq!(w.google_push("", test.clone()).http, 401);
     let h = w.notify_health();
     assert!(h.last_rejected_at_micros > 0 && h.last_at_micros == 0);
     assert_eq!(level(&w.doctor(false).unwrap(), "notifications"), "fail");
 
     w.advance_clock(5);
-    assert_eq!(w.google_notification(RTDN_SECRET, test).http, 200);
+    assert_eq!(w.google_notification(test).http, 200);
     let h = w.notify_health();
     assert!(h.last_test_at_micros > h.last_rejected_at_micros);
     let c = w.doctor(false).unwrap();
@@ -1222,14 +1317,14 @@ fn a_refund_of_some_units_takes_back_their_part_of_the_price() {
         "packageName": APP,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 2, "refundType": 2 },
     });
-    assert_eq!(w.google_notification(RTDN_SECRET, voided.clone()).http, 200);
+    assert_eq!(w.google_notification(voided.clone()).http, 200);
     let p = w.purchase();
     assert_eq!((p.status.as_str(), p.refunded_micros), (status::COMPLETED, 1_980_000), "the purchase stays, two units are refunded");
     assert_eq!(w.calls("/call/billing_revoke"), 0, "the game keeps what it granted");
     assert_eq!(revenue_rows(&w).values().next().unwrap().4, 1_980_000);
 
     // The same notification again changes nothing; the rebuild gives the same numbers.
-    w.google_notification(RTDN_SECRET, voided);
+    w.google_notification(voided);
     assert_eq!(w.purchase().refunded_micros, 1_980_000);
     let live = revenue_rows(&w);
     w.as_admin(false);
@@ -1289,7 +1384,7 @@ fn refunds_count_and_transfers_and_manual_grants_add_no_revenue() {
         "packageName": APP,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 1 },
     });
-    w.google_notification(RTDN_SECRET, voided);
+    w.google_notification(voided);
     w.as_admin(false);
     w.test
         .with_reducer_tx(TestAuth::internal(), |ctx| {
@@ -1322,7 +1417,7 @@ fn rebuilding_from_the_ledger_gives_the_live_numbers() {
         "packageName": APP,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 1 },
     });
-    w.google_notification(RTDN_SECRET, voided);
+    w.google_notification(voided);
     let live = revenue_rows(&w);
     assert_eq!(live.len(), 3, "purchase, transfer and refund on three days: {live:?}");
     let live_countries = country_rows(&w);
@@ -2234,8 +2329,8 @@ fn a_store_refund_after_an_admin_revoke_is_counted_once_without_a_second_revoke(
     w.as_admin(false);
     w.verify("player-1", "no_ads");
     admin_revoke(&w, LEDGER_ID);
-    assert_eq!(w.google_notification(RTDN_SECRET, voided_notification(1)).http, 200);
-    w.google_notification(RTDN_SECRET, voided_notification(1));
+    assert_eq!(w.google_notification(voided_notification(1)).http, 200);
+    w.google_notification(voided_notification(1));
 
     assert_eq!(w.calls("/call/billing_revoke"), 1);
     let refunds: Vec<(u32, i64)> = revenue_rows(&w).values().map(|r| (r.1, r.4)).filter(|r| r.0 > 0).collect();
@@ -2816,7 +2911,7 @@ fn alerts_are_throttled_and_repeats_reported_after_the_window() {
 fn rejected_store_notification_is_alerted() {
     let w = World::new();
     setup_alerts(&w, false);
-    w.google_notification("wrong", json!({ "packageName": APP, "testNotification": { "version": "1.0" } }));
+    w.google_push("", json!({ "packageName": APP, "testNotification": { "version": "1.0" } }));
     let msgs = alert_messages(&w);
     assert_eq!(msgs.iter().map(|m| m.rule.as_str()).collect::<Vec<_>>(), ["notification_rejected"]);
     assert!(msgs[0].detail.contains("Google Play RTDN"));
@@ -3021,7 +3116,7 @@ fn silent_store_notifications_and_stale_exchange_rates_are_alerted_by_the_worker
     w.run_worker();
     assert_eq!(rules(&w).len(), 2, "a lasting condition is reported once");
 
-    w.google_notification(RTDN_SECRET, json!({ "packageName": APP, "testNotification": { "version": "1.0" } }));
+    w.google_notification(json!({ "packageName": APP, "testNotification": { "version": "1.0" } }));
     w.script("api.frankfurter.dev/v1/latest", 200, r#"{"amount":1.0,"base":"USD","date":"2026-09-21","rates":{"EUR":0.9}}"#);
     w.advance_clock(6 * 3600);
     w.run_worker();
@@ -3330,7 +3425,7 @@ fn rebuilding_trials_and_countries_gives_the_live_numbers() {
         "packageName": APP,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": "GPA.8888-0000-0000-00001..0", "productType": 1 },
     });
-    w.google_notification(RTDN_SECRET, voided);
+    w.google_notification(voided);
     let (live, live_countries) = (full_revenue_rows(&w), country_rows(&w));
     assert_eq!(live.len(), 3, "trial, conversion, refund: {live:?}");
     assert_eq!(live_countries.values().map(|v| v.4).sum::<u32>(), 1, "the refund is in the country rows too");
@@ -6359,19 +6454,19 @@ fn health_is_rewritten_at_most_once_a_minute_unless_the_verdict_changes() {
 fn rejected_notifications_are_written_at_most_once_a_minute() {
     let w = World::new();
     let test = json!({ "packageName": APP, "testNotification": { "version": "1.0" } });
-    assert_eq!(w.google_notification("wrong", test.clone()).http, 401);
+    assert_eq!(w.google_push("", test.clone()).http, 401);
     w.advance_clock(10);
-    assert_eq!(w.google_notification("wrong", test.clone()).http, 401);
+    assert_eq!(w.google_push("", test.clone()).http, 401);
     assert_eq!(w.notify_health().last_rejected_at_micros, NOW_MICROS);
 
     // An accepted one right after is written (the verdict changes).
     w.advance_clock(10);
-    assert_eq!(w.google_notification(RTDN_SECRET, test.clone()).http, 200);
+    assert_eq!(w.google_notification(test.clone()).http, 200);
     let h = w.notify_health();
     assert_eq!((h.last_at_micros, h.last_test_at_micros), (NOW_MICROS + 20_000_000, NOW_MICROS + 20_000_000));
 
     w.advance_clock(61);
-    w.google_notification("wrong", test);
+    w.google_push("", test);
     assert_eq!(w.notify_health().last_rejected_at_micros, NOW_MICROS + 81_000_000);
 }
 
@@ -6907,7 +7002,7 @@ fn ledger_changes_during_a_rebuild_are_counted_once() {
 
     // A refund of a counted purchase and the first grant of one not counted yet.
     w.advance_clock(3600);
-    w.google_notification(RTDN_SECRET, voided_notification(1));
+    w.google_notification(voided_notification(1));
     assert_eq!(w.purchase().status, status::REVOKED);
     w.write(|tx| {
         let mut p = tx.db.purchase().id().find("google:GPA.F-8".to_string()).unwrap();
@@ -7978,7 +8073,7 @@ fn a_voided_notification_of_another_package_leaves_the_purchase_alone() {
         "packageName": "com.example.other",
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 2 },
     });
-    assert_eq!(w.google_notification(RTDN_SECRET, voided).http, 200);
+    assert_eq!(w.google_notification(voided).http, 200);
     assert_eq!(w.purchase().status, status::COMPLETED, "the refund names another package");
     assert_eq!(w.calls("/call/billing_revoke"), 0);
 }
@@ -8224,7 +8319,7 @@ fn purchase_counters_follow_every_ledger_write() {
         "packageName": APP,
         "voidedPurchaseNotification": { "purchaseToken": TOKEN, "orderId": ORDER, "productType": 1 },
     });
-    w.google_notification(RTDN_SECRET, voided);
+    w.google_notification(voided);
     w.as_admin(false);
     admin_call(&w, |ctx| crate::admin_grant_manual(ctx, json!({ "app_id": APP, "user_id": "player-3", "product_id": "gems" }).to_string())).unwrap();
     w.advance_clock(61);
@@ -8432,10 +8527,18 @@ mod store_setup_tests {
         v.to_string()
     }
 
-    /// A project with the APIs on and nothing else; what `setup_google` creates answers 200.
+    /// The setup's service account, whose key the build has.
+    fn setup_account() -> String {
+        gs::service_account_email("my-game")
+    }
+
+    /// A project with the APIs on and nothing else; what `setup_google` creates answers 200. The
+    /// build already has a key of the setup's service account.
     fn google_world() -> World {
         let w = World::new();
         w.as_admin(false);
+        let key = json!({ "type": "service_account", "client_email": setup_account(), "private_key": "unused" });
+        w.set_secret(secret_name::GOOGLE_SERVICE_ACCOUNT_JSON, &key.to_string());
         w.script("GET https://serviceusage.googleapis.com/", 200, r#"{"state":"ENABLED"}"#);
         w.script("/serviceAccounts/purser-billing@my-game.iam.gserviceaccount.com/keys", 200, &gs::testing_key_answer("my-game"));
         w.script("POST https://iam.googleapis.com/v1/projects/my-game/serviceAccounts", 200, "{}");
@@ -8458,21 +8561,33 @@ mod store_setup_tests {
             actions(&v),
             ["apis exists", "service_account created", "key created", "topic created", "publisher created", "subscription com.studio.game created"]
         );
-        assert!(!v.to_string().contains(GOOGLE_TOKEN) && !v.to_string().contains(RTDN_SECRET));
+        assert!(!v.to_string().contains(GOOGLE_TOKEN));
         assert!(v["manual"][0].as_str().unwrap().contains("purser-billing@my-game.iam.gserviceaccount.com"));
         let key = credential(&w, "studio", secret_name::GOOGLE_SERVICE_ACCOUNT_JSON).expect("the key is stored in the scope");
         assert!(key.contains("purser-billing@my-game"));
         let policy = last_call(&w, "POST https://pubsub.googleapis.com/v1/projects/my-game/topics/play-billing:setIamPolicy");
         assert!(policy.contains("google-play-developer-notifications@system.gserviceaccount.com") && policy.contains("\"etag\":\"e1\""), "{policy}");
         let sub = last_call(&w, "PUT https://pubsub.googleapis.com/v1/projects/my-game/subscriptions/purser-com.studio.game");
-        assert!(sub.contains(&format!("{ROUTE}/notify/google?secret={RTDN_SECRET}")) && sub.contains("projects/my-game/topics/play-billing"), "{sub}");
+        let body: Value = serde_json::from_str(sub.split_once(' ').unwrap().1.split_once(' ').unwrap().1).unwrap();
+        assert_eq!(body["topic"], "projects/my-game/topics/play-billing");
+        assert_eq!(
+            body["pushConfig"],
+            json!({ "pushEndpoint": format!("{ROUTE}/notify/google"),
+                "oidcToken": { "serviceAccountEmail": setup_account(), "audience": format!("purser-rtdn:{APP}") } }),
+            "no secret in the URL: Pub/Sub signs its pushes as the build's service account"
+        );
+        assert!(v["manual"].as_array().unwrap().iter().any(|m| m.as_str().unwrap().contains("serviceAccountTokenCreator")));
     }
 
     #[test]
-    fn a_second_google_setup_changes_nothing_and_can_rotate_the_secret() {
+    fn a_second_google_setup_changes_nothing_and_turns_on_push_authentication() {
         let w = google_world();
         w.fake.borrow_mut().overrides.clear();
-        let push = format!("{ROUTE}/notify/google?secret={RTDN_SECRET}");
+        let push = gs::push_config(&gs::Push {
+            endpoint: format!("{ROUTE}/notify/google"),
+            service_account: setup_account(),
+            audience: format!("purser-rtdn:{APP}"),
+        });
         w.script("GET https://serviceusage.googleapis.com/", 200, r#"{"state":"ENABLED"}"#);
         w.script(
             ":getIamPolicy",
@@ -8485,33 +8600,30 @@ mod store_setup_tests {
         w.script(
             "GET https://pubsub.googleapis.com/v1/projects/my-game/subscriptions/",
             200,
-            &json!({ "topic": "projects/my-game/topics/play-billing", "pushConfig": { "pushEndpoint": push } }).to_string(),
+            &json!({ "topic": "projects/my-game/topics/play-billing", "pushConfig": push }).to_string(),
         );
 
         let v = setup_google(&mut w.ctx(), &google_input(json!({}))).unwrap();
-        assert!(actions(&v).iter().all(|a| a.ends_with(" exists")), "{:?}", actions(&v));
+        assert!(actions(&v).iter().all(|a| a.ends_with(" exists")), "{v}");
         assert_eq!(v["scope"], "default", "the build's developer account");
         assert_eq!(w.calls("POST ") + w.calls("PUT "), 0);
 
-        let entropy = "ab".repeat(32);
-        let v = setup_google(&mut w.ctx(), &google_input(json!({ "rotate_rtdn_secret": true, "entropy": entropy }))).unwrap();
-        assert_eq!(actions(&v).last().unwrap(), "subscription com.studio.game updated");
-        let rotated = gs::rtdn_secret(&entropy, APP).unwrap();
-        assert!(last_call(&w, "POST https://pubsub.googleapis.com").contains(&rotated));
-        assert_eq!(credential(&w, APP, secret_name::GOOGLE_RTDN_SECRET), Some(rotated));
+        // A subscription that pushes without authentication (or as another account) is repaired.
+        let unsigned = json!({ "topic": "projects/my-game/topics/play-billing", "pushConfig": { "pushEndpoint": format!("{ROUTE}/notify/google") } });
+        w.fake.borrow_mut().overrides.insert(0, ("GET https://pubsub.googleapis.com/v1/projects/my-game/subscriptions/".into(), 200, unsigned.to_string()));
+        let v = setup_google(&mut w.ctx(), &google_input(json!({}))).unwrap();
+        assert_eq!(actions(&v).last().unwrap(), "subscription com.studio.game updated", "{v}");
+        let modified = last_call(&w, "POST https://pubsub.googleapis.com");
+        assert!(modified.contains(":modifyPushConfig") && modified.contains(&setup_account()) && modified.contains("purser-rtdn:com.studio.game"), "{modified}");
     }
 
     #[test]
     fn google_dry_run_writes_nothing() {
         let w = google_world();
-        delete_credential(&w, config::DEFAULT_SCOPE, secret_name::GOOGLE_RTDN_SECRET);
         let v = setup_google(&mut w.ctx(), &google_input(json!({ "dry_run": true, "new_key": true }))).unwrap();
         assert!(actions(&v).iter().skip(1).all(|a| a.contains(" would_")), "{:?}", actions(&v));
         assert_eq!(w.calls("POST ") + w.calls("PUT "), 0);
-        assert_eq!(credential(&w, config::DEFAULT_SCOPE, secret_name::GOOGLE_SERVICE_ACCOUNT_JSON).as_deref(), Some("{}"));
-        assert!(credential(&w, APP, secret_name::GOOGLE_RTDN_SECRET).is_none());
-        let e = setup_google(&mut w.ctx(), &google_input(json!({}))).unwrap_err();
-        assert!(e.contains("entropy"), "a new RTDN secret needs random bytes from the caller: {e}");
+        assert!(credential(&w, config::DEFAULT_SCOPE, secret_name::GOOGLE_SERVICE_ACCOUNT_JSON).unwrap().contains("\"private_key\":\"unused\""));
     }
 
     #[test]
@@ -8587,9 +8699,9 @@ mod scope_tests {
         admin_call(&w, |ctx| crate::admin_upsert_game_app(ctx, moved.to_string())).unwrap();
 
         // Secrets of their builds only; account and default secrets are server-wide.
-        admin_call(&w, |ctx| crate::admin_set_credential(ctx, APP.into(), "google_rtdn_secret".into(), "s".into())).unwrap();
+        admin_call(&w, |ctx| crate::admin_set_credential(ctx, APP.into(), "apple_notification_secret".into(), "s".into())).unwrap();
         for scope in [OTHER_APP, "default", "studio-account"] {
-            let e = admin_call(&w, |ctx| crate::admin_set_credential(ctx, scope.into(), "google_rtdn_secret".into(), "s".into())).unwrap_err();
+            let e = admin_call(&w, |ctx| crate::admin_set_credential(ctx, scope.into(), "apple_notification_secret".into(), "s".into())).unwrap_err();
             assert!(e.contains("ERR_SCOPE"), "{scope}: {e}");
         }
         // Server-wide settings, hosts and admins need access to every app.
@@ -8717,7 +8829,6 @@ fn a_google_grace_period_keeps_access_and_is_checked_daily() {
 
 fn subscription_notification(w: &World, kind: i64) -> Outcome {
     w.google_notification(
-        RTDN_SECRET,
         json!({ "packageName": APP, "subscriptionNotification": { "notificationType": kind, "purchaseToken": TOKEN, "subscriptionId": "vip" } }),
     )
 }

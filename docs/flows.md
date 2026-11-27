@@ -124,7 +124,7 @@ sequenceDiagram
     participant G as Game server
     participant I as Analytics
 
-    S->>P: POST /notify/google (Pub/Sub push with the secret)<br/>or /notify/apple (signed payload, Apple certificate chain)
+    S->>P: POST /notify/google (Pub/Sub push with a Google-signed token)<br/>or /notify/apple (signed payload, Apple certificate chain)
     P->>S: Look the purchase up again
     S-->>P: Current state
     alt Renewed

@@ -24,7 +24,7 @@ https://<host>/v1/database/<your-billing-db>/route
 | `POST` | `/claim/xsolla` | game client: moves the Xsolla inventory of an old client-side login to the player |
 | `POST` | `/manage/stripe` | game client with a player token: Stripe's customer portal for the player's subscription |
 | `POST` | `/server/entitlements`, `/server/grant`, `/server/revoke` | game backend with a server key: read a player's purchases, give and take back products |
-| `POST` | `/notify/google?secret=…` | Google Play RTDN (Pub/Sub push) |
+| `POST` | `/notify/google` | Google Play RTDN (Pub/Sub push with an OIDC token) |
 | `POST` | `/notify/apple` | App Store Server Notifications V2 |
 | `POST` | `/notify/amazon?app=…`, `/notify/xsolla?app=…`, `/notify/stripe?app=…` | Amazon RTN (SNS), Xsolla and Stripe webhooks |
 

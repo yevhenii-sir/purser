@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Breaking
+
+- Google Play notifications are authenticated by Pub/Sub's push token instead of a secret in the URL (a query string ends up in logs): the push subscription sends an OIDC token of the build's service account with the audience `purser-rtdn:<app_id>`, and the server checks it against Google's published keys (cached in the new table `google_cert`, fetched again for an unknown key at most once a minute). The push URL is `/notify/google` without `?secret=`, and `google_rtdn_secret` is gone. A Google Play build set up before needs its push subscription changed: run the Google Cloud setup again (Setup tab, or `setup_google.py`), or turn on authentication in the subscription by hand (docs/store-setup.md). The module publishes in place: no `--delete-data`.
+
 ### Added
 
 - Releases carry a signed build provenance attestation of `purser.wasm` and `seed.example.zip`: `gh attestation verify purser.wasm -R yevhenii-sir/purser` checks that the file was built by the release workflow from the tagged commit (README, docs/getting-started.md).

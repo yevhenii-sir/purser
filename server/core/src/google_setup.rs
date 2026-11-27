@@ -1,16 +1,15 @@
 //! Google Cloud setup of a Google Play developer account, run once with an access token of the
 //! project's owner (`gcloud auth print-access-token`): the APIs, the service account and its
 //! key, the Pub/Sub topic of real-time developer notifications with the publisher grant for
-//! Google Play, and one push subscription per build. Request builders and answer parsers; the
+//! Google Play, and one push subscription per build, authenticated with an OIDC token of the
+//! service account ([`push_config`], checked by `google_oidc`). Request builders and answer parsers; the
 //! module makes the calls (`store_setup::setup_google`).
 //!
 //! What has no API stays manual: inviting the service account in Play Console and naming the
 //! topic in Monetization setup ([`manual_steps`]).
 
 use base64::Engine;
-use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
-use sha2::Sha256;
 
 pub const SERVICE_USAGE: &str = "https://serviceusage.googleapis.com/v1";
 pub const IAM: &str = "https://iam.googleapis.com/v1";
@@ -187,26 +186,49 @@ pub fn subscription_url(project: &str, subscription: &str) -> String {
     format!("{PUBSUB}/projects/{project}/subscriptions/{subscription}")
 }
 
-pub fn create_subscription_body(topic_path: &str, push_url: &str) -> String {
-    json!({ "topic": topic_path, "pushConfig": { "pushEndpoint": push_url }, "ackDeadlineSeconds": 60 }).to_string()
+/// Where a build's subscription pushes, and as whom: Pub/Sub signs every push with an OIDC token
+/// of `service_account` for `audience` (`google_oidc::audience`).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Push {
+    pub endpoint: String,
+    pub service_account: String,
+    pub audience: String,
+}
+
+pub fn push_config(push: &Push) -> Value {
+    json!({
+        "pushEndpoint": push.endpoint,
+        "oidcToken": { "serviceAccountEmail": push.service_account, "audience": push.audience },
+    })
+}
+
+pub fn create_subscription_body(topic_path: &str, push: &Push) -> String {
+    json!({ "topic": topic_path, "pushConfig": push_config(push), "ackDeadlineSeconds": 60 }).to_string()
 }
 
 pub fn modify_push_url(project: &str, subscription: &str) -> String {
     format!("{}:modifyPushConfig", subscription_url(project, subscription))
 }
 
-pub fn modify_push_body(push_url: &str) -> String {
-    json!({ "pushConfig": { "pushEndpoint": push_url } }).to_string()
+pub fn modify_push_body(push: &Push) -> String {
+    json!({ "pushConfig": push_config(push) }).to_string()
 }
 
-/// `(topic path, push endpoint)` of a subscription.
-pub fn parse_subscription(body: &str) -> Result<(String, String), String> {
+/// `(topic path, push)` of a subscription; the service account and audience are empty when it
+/// pushes without authentication.
+pub fn parse_subscription(body: &str) -> Result<(String, Push), String> {
     let v: Value = serde_json::from_str(body).map_err(|e| format!("bad Pub/Sub response: {e}"))?;
     let s = |x: &Value| x.as_str().unwrap_or("").to_string();
-    Ok((s(&v["topic"]), s(&v["pushConfig"]["pushEndpoint"])))
+    let c = &v["pushConfig"];
+    let push = Push {
+        endpoint: s(&c["pushEndpoint"]),
+        service_account: s(&c["oidcToken"]["serviceAccountEmail"]),
+        audience: s(&c["oidcToken"]["audience"]),
+    };
+    Ok((s(&v["topic"]), push))
 }
 
-// --- Errors and secrets ---------------------------------------------------------------------
+// --- Errors and manual steps ---------------------------------------------------------------------
 
 /// `error.message` of a Google API error body, else a short prefix of the body.
 pub fn error_message(status: u16, body: &str) -> String {
@@ -231,19 +253,6 @@ pub fn error_message(status: u16, body: &str) -> String {
     format!("HTTP {status}: {msg}{hint}")
 }
 
-/// `google_rtdn_secret` of a build: HMAC of the app id with random bytes from the admin's
-/// browser or terminal (the module RNG is not fit for secrets).
-pub fn rtdn_secret(entropy_hex: &str, app_id: &str) -> Result<String, String> {
-    let entropy = hex::decode(entropy_hex).map_err(|_| "entropy must be hex")?;
-    if entropy.len() < 32 {
-        return Err("entropy must be at least 32 random bytes".into());
-    }
-    let mut mac = Hmac::<Sha256>::new_from_slice(&entropy).map_err(|e| e.to_string())?;
-    mac.update(b"google_rtdn_secret/");
-    mac.update(app_id.as_bytes());
-    Ok(hex::encode(mac.finalize().into_bytes()))
-}
-
 /// What only a person can do afterwards.
 pub fn manual_steps(email: &str, topic_path: &str) -> Vec<String> {
     vec![
@@ -253,6 +262,10 @@ pub fn manual_steps(email: &str, topic_path: &str) -> Vec<String> {
         ),
         format!("Play Console > each app > Monetization setup > Real-time developer notifications: topic {topic_path}, then Save"),
         "Press \"Send test notification\" there, then run the setup check".into(),
+        "Projects created before 8 April 2021 only: grant roles/iam.serviceAccountTokenCreator on the project to the \
+         Pub/Sub service agent service-<PROJECT_NUMBER>@gcp-sa-pubsub.iam.gserviceaccount.com, or Pub/Sub cannot sign \
+         its pushes"
+            .into(),
     ]
 }
 
@@ -315,15 +328,19 @@ mod tests {
     }
 
     #[test]
-    fn errors_and_secrets() {
+    fn errors_and_subscriptions() {
         let blocked = r#"{"error":{"code":400,"message":"Key creation is not allowed","status":"FAILED_PRECONDITION","details":[{"violations":[{"type":"constraints/iam.disableServiceAccountKeyCreation"}]}]}}"#;
         assert!(error_message(400, blocked).contains("Organization policies"));
         assert!(error_message(401, r#"{"error":{"message":"bad"}}"#).contains("expired"));
-        let a = rtdn_secret(&"ab".repeat(32), "com.a").unwrap();
-        assert_eq!(a.len(), 64);
-        assert_ne!(a, rtdn_secret(&"ab".repeat(32), "com.b").unwrap());
-        assert!(rtdn_secret("abcd", "com.a").is_err() && rtdn_secret(&"zz".repeat(32), "com.a").is_err());
         let (topic, push) = parse_subscription(r#"{"topic":"projects/p/topics/t","pushConfig":{"pushEndpoint":"https://h/x"}}"#).unwrap();
-        assert_eq!((topic.as_str(), push.as_str()), ("projects/p/topics/t", "https://h/x"));
+        assert_eq!((topic.as_str(), push.endpoint.as_str(), push.service_account.as_str()), ("projects/p/topics/t", "https://h/x", ""));
+        let want = Push { endpoint: "https://h/notify/google".into(), service_account: "sa@p.iam.gserviceaccount.com".into(), audience: "purser-rtdn:com.a".into() };
+        let created: Value = serde_json::from_str(&create_subscription_body("projects/p/topics/t", &want)).unwrap();
+        assert_eq!(created["pushConfig"]["oidcToken"]["audience"], "purser-rtdn:com.a");
+        let answer = json!({ "topic": "projects/p/topics/t", "pushConfig": push_config(&want) }).to_string();
+        assert_eq!(parse_subscription(&answer).unwrap().1, want, "what the setup writes reads back the same");
+        let modified: Value = serde_json::from_str(&modify_push_body(&want)).unwrap();
+        assert_eq!(modified["pushConfig"]["oidcToken"]["serviceAccountEmail"], "sa@p.iam.gserviceaccount.com");
+        assert!(manual_steps("sa@p", "projects/p/topics/t").iter().any(|s| s.contains("gcp-sa-pubsub")));
     }
 }

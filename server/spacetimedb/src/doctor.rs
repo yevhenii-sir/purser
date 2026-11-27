@@ -105,7 +105,6 @@ struct Snapshot {
 
 const ALL_SECRETS: &[&str] = &[
     secret_name::GOOGLE_SERVICE_ACCOUNT_JSON,
-    secret_name::GOOGLE_RTDN_SECRET,
     secret_name::APPLE_ISSUER_ID,
     secret_name::APPLE_KEY_ID,
     secret_name::APPLE_PRIVATE_KEY_P8,
@@ -301,9 +300,13 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
     if store.notifications {
         let sh = &s.store_health;
         let fix = match store.id {
-            store::GOOGLE => "Play Console > Monetization setup > Real-time developer notifications: a Pub/Sub topic with a Push \
-                 subscription to the RTDN URL below, then \"Send test notification\""
-                .to_string(),
+            store::GOOGLE => format!(
+                "Play Console > Monetization setup > Real-time developer notifications: a Pub/Sub topic with a Push \
+                 subscription to the RTDN URL below with authentication on (service account {}, audience {}), then \
+                 \"Send test notification\"",
+                google_push_account(&s).unwrap_or_else(|| "of google_service_account_json".into()),
+                purser_core::google_oidc::audience(&app.app_id)
+            ),
             store::APPLE => "App Store Connect > App Information > App Store Server Notifications: Version 2, the URL below for \
                  Production and Sandbox"
                 .to_string(),
@@ -405,12 +408,20 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
     let base = s.public_base_url.clone();
     let notify_secret_set = store.notify_secret.is_some_and(|n| s.secret(n).is_some());
     let notify = store.notify_url(&base, &app.app_id, notify_secret_set).unwrap_or_default();
+    let (push_account, push_audience) = if store.id == store::GOOGLE {
+        (google_push_account(&s).unwrap_or_default(), purser_core::google_oidc::audience(&app.app_id))
+    } else {
+        Default::default()
+    };
     let urls = json!({
         "base": base,
         "store": store.id,
         // Notification URL of any store, and where it goes.
         "notify": notify,
         "notify_label": store.notify_label,
+        // Google Play: the push subscription authenticates as this service account, for this audience.
+        "push_service_account": push_account,
+        "push_audience": push_audience,
         "billing_identity": s.value(secret_name::SPACETIME_TOKEN)
             .and_then(|t| d::spacetime_token_identity(t).ok())
             .map(|(hex, _)| hex)
@@ -422,6 +433,12 @@ pub fn check_app(ctx: &mut impl Ctx, app_id: &str, opts: &Options) -> Result<Val
     let summary = report["summary"].as_str().unwrap_or_default().to_string();
     ctx.tx(|tx| health::save_check(tx, &app_id, &summary, saved.clone()));
     Ok(report)
+}
+
+/// `client_email` of the build's Google service account key: who Pub/Sub's push tokens name.
+fn google_push_account(s: &Snapshot) -> Option<String> {
+    let json = s.value(secret_name::GOOGLE_SERVICE_ACCOUNT_JSON)?;
+    purser_core::jwt::GoogleServiceAccount::from_json(json).ok().map(|sa| sa.client_email)
 }
 
 fn check_google(ctx: &mut impl Ctx, s: &Snapshot, opts: &Options, r: &mut Report) {

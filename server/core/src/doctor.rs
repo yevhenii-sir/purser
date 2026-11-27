@@ -383,7 +383,7 @@ mod tests {
     fn required_secrets_depend_on_platform_and_delivery() {
         let a = required_secrets("android", "spacetimedb");
         assert!(a.contains(&("google_service_account_json", true)));
-        assert!(a.contains(&("google_rtdn_secret", false)));
+        assert!(!a.iter().any(|(n, _)| n.contains("rtdn")), "Pub/Sub signs its pushes");
         assert!(a.contains(&("spacetime_token", true)));
         let i = required_secrets("ios", "webhook");
         assert!(i.contains(&("apple_private_key_p8", true)));

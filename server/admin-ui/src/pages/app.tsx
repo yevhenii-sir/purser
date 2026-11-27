@@ -18,7 +18,7 @@ import { SecretDialog, type SecretTarget } from "@/components/secret-dialog"
 import { StoreSetupButton } from "@/components/store-setup"
 import { call, proc, publicRoute, select } from "@/lib/api"
 import { accountsOf, appsChanged, useApps, type AppGroup } from "@/lib/apps"
-import { checkBuilds, replaceRtdnSecret, reportUrls } from "@/lib/checks"
+import { checkBuilds, reportUrls } from "@/lib/checks"
 import { DELIVERY_DEFAULTS, type DeliverySettings } from "@/lib/delivery"
 import { buildLabel, PLATFORM_ICON, platformById, storeOf, STORE_SECRETS } from "@/lib/stores"
 import { tryAct, useAsync, useCopy } from "@/lib/hooks"
@@ -240,7 +240,6 @@ function SetupTab({ data, reload }: TabProps) {
   const g = data.group
   const [checking, setChecking] = useState<"" | "all" | "apple">("")
   const [wizard, setWizard] = useState(false)
-  const [secrets, setSecrets] = useState<Record<string, string>>({})
   const base = useAsync(() => publicRoute())
   const can = useCan()
   const appleBuilds = g.apps.filter((a) => storeOf(a).id === "apple")
@@ -260,13 +259,6 @@ function SetupTab({ data, reload }: TabProps) {
     setChecking("")
     reload()
   }
-  const newRtdn = async (appId: string) => {
-    const secret = await replaceRtdnSecret(appId)
-    if (secret) {
-      setSecrets({ google_rtdn_secret: secret })
-      reload()
-    }
-  }
   return (
     <>
       {configure && <div className="flex flex-wrap items-center gap-2">
@@ -281,7 +273,7 @@ function SetupTab({ data, reload }: TabProps) {
       </div>}
       {g.apps.map((a) => {
         const rep = data.reports[a.app_id]
-        const urls = rep && base.data ? reportUrls(rep, base.data, secrets) : null
+        const urls = rep && base.data ? reportUrls(rep, base.data) : null
         return (
           <Section key={a.app_id} title={<span className="flex items-center gap-2">{buildLabel(a)} <Mono className="font-normal">{a.app_id}</Mono></span>}
             actions={
@@ -298,11 +290,16 @@ function SetupTab({ data, reload }: TabProps) {
                 {urls && (
                   <div className="space-y-3">
                     {urls.notify && <CopyField label={urls.notifyLabel} value={urls.notify} />}
-                    {urls.rtdn.includes("<google_rtdn_secret>") && can("secrets") && (
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        The stored secret is never shown. Generate a new one to get the full URL, then update the Pub/Sub push subscription.
-                        <Button size="xs" variant="outline" onClick={() => newRtdn(a.app_id)}><KeyRoundIcon /> New RTDN secret</Button>
-                      </div>
+                    {urls.pushAudience && (
+                      <>
+                        <p className="text-xs text-muted-foreground">
+                          Turn on authentication in the push subscription: Pub/Sub then signs every push as this service account for this audience.
+                        </p>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <CopyField label="Authentication: service account" value={urls.pushAccount || "the client_email of google_service_account_json"} />
+                          <CopyField label="Authentication: audience" value={urls.pushAudience} />
+                        </div>
+                      </>
                     )}
                     <CopyField label="Billing identity (the app database must trust it)" value={urls.identity} />
                   </div>

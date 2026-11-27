@@ -104,7 +104,7 @@ Every per-store fact lives in one registry, [`core/src/registry.rs`](core/src/re
 
 | Store | Platform | Verification | Notifications | Secrets |
 |---|---|---|---|---|
-| `google` | `android` | `/verify/google` (purchase token) | `/notify/google?secret=` (RTDN) | `google_service_account_json`, `google_rtdn_secret` |
+| `google` | `android` | `/verify/google` (purchase token) | `/notify/google` (RTDN, Pub/Sub push with an OIDC token of the build's service account) | `google_service_account_json` |
 | `apple` | `ios` | `/verify/apple` (transaction id) | `/notify/apple` (ASSN V2) | `apple_issuer_id`, `apple_key_id`, `apple_private_key_p8`, `apple_notification_secret` |
 | `amazon` | `amazon` | `/verify/amazon` (receipt id + Amazon user id) | `/notify/amazon?app=<app_id>` (RTN via SNS) | `amazon_shared_secret` |
 | `xsolla` | `web` | none: checkout `/checkout/xsolla`, granted by webhooks | `/notify/xsolla?app=<app_id>` (signed webhooks) | `xsolla_project_id`, `xsolla_api_key`, `xsolla_webhook_secret` |
@@ -129,8 +129,7 @@ A secret key is `{scope}/{name}`, where scope is an app id, an account name or `
 
 | `name` | What it is |
 |---|---|
-| `google_service_account_json` | JSON key of a service account with access to the app in Play Console (Financial data + Manage orders) |
-| `google_rtdn_secret` | secret in the RTDN push subscription URL |
+| `google_service_account_json` | JSON key of a service account with access to the app in Play Console (Financial data + Manage orders); its `client_email` is also who the RTDN push tokens must name |
 | `apple_issuer_id`, `apple_key_id`, `apple_private_key_p8` | App Store Connect → Users and Access → Integrations → In-App Purchase |
 | `apple_notification_secret` | optional secret in the Apple notifications URL |
 | `amazon_shared_secret` | Amazon Developer Console → Shared Key (one per developer account) |
@@ -169,13 +168,13 @@ After `integrations.json` it loads, when present: `paywalls.json` (`admin_upsert
 - the app and its products (Android products without a price are counted as 0 revenue);
 - which secrets are set and from which scope; the service account's `client_email` (the account to invite in Play Console), the `.p8` key;
 - Google Play API access with the app's permissions; App Store Server API access and, on the next run, whether Apple delivered the test notification to the server; whether Amazon RVS accepts the shared secret; whether Xsolla accepts the API key and lists the products as enabled virtual items; whether Stripe accepts the key (and its mode fits the build's sandbox setting) and every product is an active Stripe Price of the right type;
-- whether store notifications arrive, and whether they arrive with a wrong secret or signature; for Amazon the endpoint confirmation token to paste into the Developer Console;
+- whether store notifications arrive, and whether they are refused (a wrong secret, signature or push token); for Amazon the endpoint confirmation token to paste into the Developer Console;
 - delivery: the host allowlist, the billing identity and its token, and that the game database has the grant / revoke reducers with the right number of arguments (they are never called); webhook reachability;
 - GA4 (validation endpoint), AppsFlyer settings, purchases that keep failing.
 
 `options_json`: `{"online": false}` checks only the configuration (no HTTP); `{"apple_test": false}` skips the Apple test notification. `admin_ping_webhook(app_id)` sends a signed `{"event":"ping"}` to the webhook.
 
-One-click store setup (`store_setup.rs`; `base` is the public route base, the `public_base_url` setting wins): `admin_setup_apple_notifications(app_id, base)` sets the App Store Server Notifications URLs of the app through the App Store Connect API (Team key, Configure); `admin_setup_stripe_webhook(app_id, base, replace)` creates or repairs the build's Stripe webhook endpoint and stores its signing secret (Secrets); `admin_setup_google(json)` sets up the Google Cloud side of Google Play with a one-time access token of the project's owner: APIs, the service account and its key, the RTDN topic with Google Play's publisher grant and a push subscription per build (Secrets; `{"project", "app_ids", "access_token", "scope"?, "topic"?, "route"?, "new_key"?, "rotate_rtdn_secret"?, "dry_run"?, "entropy"}`, also `server/setup_google.py`). The token is not stored. The setup check reports the App Store URLs (`apple_notification_url`) and the Stripe endpoint (`stripe_webhook_endpoint`). `admin_list_store_products(app_id)` lists the store catalog compared with the configured products: Google Play (one-time products and subscriptions with US prices) or the App Store (in-app purchases and subscriptions through the App Store Connect API, without prices; needs the Team key secrets `apple_connect_key_id` and `apple_connect_private_key_p8`, see [docs/store-setup.md](../docs/store-setup.md#catalog-import-optional)).
+One-click store setup (`store_setup.rs`; `base` is the public route base, the `public_base_url` setting wins): `admin_setup_apple_notifications(app_id, base)` sets the App Store Server Notifications URLs of the app through the App Store Connect API (Team key, Configure); `admin_setup_stripe_webhook(app_id, base, replace)` creates or repairs the build's Stripe webhook endpoint and stores its signing secret (Secrets); `admin_setup_google(json)` sets up the Google Cloud side of Google Play with a one-time access token of the project's owner: APIs, the service account and its key, the RTDN topic with Google Play's publisher grant and a push subscription per build, authenticated as the build's service account for the audience `purser-rtdn:<app_id>` (Secrets; `{"project", "app_ids", "access_token", "scope"?, "topic"?, "route"?, "new_key"?, "dry_run"?}`, also `server/setup_google.py`). The token is not stored. The setup check reports the App Store URLs (`apple_notification_url`) and the Stripe endpoint (`stripe_webhook_endpoint`). `admin_list_store_products(app_id)` lists the store catalog compared with the configured products: Google Play (one-time products and subscriptions with US prices) or the App Store (in-app purchases and subscriptions through the App Store Connect API, without prices; needs the Team key secrets `apple_connect_key_id` and `apple_connect_private_key_p8`, see [docs/store-setup.md](../docs/store-setup.md#catalog-import-optional)).
 
 Creating products in the stores ([docs/store-setup.md](../docs/store-setup.md#creating-products-from-the-admin-page)):
 
@@ -350,9 +349,9 @@ in the terminal.
 (`last_seen` is rewritten at most once an hour). The player profile shows them with the billing country of the
 newest purchase.
 
-### `POST /notify/google?secret=<google_rtdn_secret>`
+### `POST /notify/google`
 
-Play Console → Monetization setup → Real-time developer notifications → Pub/Sub topic. Create a **Push** subscription to this URL. A test notification from the console should return `200 {"status":"ok","message":"test"}`. The module doesn't trust notification contents: it always re-queries Google by `purchaseToken`. The exception is voided purchases, which are protected by the secret.
+Play Console → Monetization setup → Real-time developer notifications → Pub/Sub topic. Create a **Push** subscription to this URL with **authentication** on: service account = the `client_email` of the build's `google_service_account_json`, audience = `purser-rtdn:<app_id>` (no secret in the URL, nothing to leak into logs). Pub/Sub sends `Authorization: Bearer <OIDC token>`; the module accepts it when it is signed by Google (RS256 with a key of `https://www.googleapis.com/oauth2/v3/certs`, cached in `google_cert`, fetched again for an unknown key id at most once a minute and when a day old), issued by `accounts.google.com`, for that audience and service account (`email_verified`), and current (60 s skew). No token answers 401, a refused one 403 (both reported by the setup check and the `notification_rejected` alert); keys that cannot be fetched answer 503, so Pub/Sub retries. A test notification from the console should return `200 {"status":"ok","message":"test"}`. The module doesn't trust notification contents: it always re-queries Google by `purchaseToken`. The exception is voided purchases, which are protected by the token.
 
 ### `POST /notify/apple`
 

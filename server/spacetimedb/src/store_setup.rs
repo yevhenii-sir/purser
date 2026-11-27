@@ -256,12 +256,7 @@ struct GoogleSetup {
     #[serde(default)]
     new_key: bool,
     #[serde(default)]
-    rotate_rtdn_secret: bool,
-    #[serde(default)]
     dry_run: bool,
-    /// Hex of at least 32 random bytes for new `google_rtdn_secret`s (`gs::rtdn_secret`).
-    #[serde(default)]
-    entropy: String,
 }
 
 struct Steps(Vec<Value>);
@@ -311,7 +306,8 @@ fn store_secret(ctx: &mut impl Ctx, scope: &str, name: &str, value: String) -> R
 
 /// Enables the APIs, creates the service account, its key (stored as
 /// `google_service_account_json` in the scope), the topic with Google Play's publisher grant and
-/// a push subscription per build with its `google_rtdn_secret`. Every step looks first, so a
+/// a push subscription per build, authenticated as the build's service account (the push token
+/// `handlers` checks: `google_oidc`). Every step looks first, so a
 /// second run changes nothing; `dry_run` only looks. The token is used for this call only.
 pub fn setup_google(ctx: &mut impl Ctx, input: &str) -> Result<Value, String> {
     let req: GoogleSetup = serde_json::from_str(input).map_err(|e| format!("[ERR_BAD_JSON] {e}"))?;
@@ -323,7 +319,7 @@ pub fn setup_google(ctx: &mut impl Ctx, input: &str) -> Result<Value, String> {
         return Err("name 1 to 20 Google Play builds".into());
     }
     let (p, token, dry) = (req.project.as_str(), req.access_token.as_str(), req.dry_run);
-    let (apps, base, scope, has_key, rtdn) = ctx.tx(|tx| {
+    let (apps, base, scope, has_key) = ctx.tx(|tx| {
         let who = crate::access::require(tx, Cap::Secrets)?;
         crate::access::audit(tx, &who, "admin_setup_google", p, &req.app_ids.join(","));
         let mut apps = Vec::new();
@@ -344,8 +340,7 @@ pub fn setup_google(ctx: &mut impl Ctx, input: &str) -> Result<Value, String> {
             apps[0].account.clone()
         };
         let has_key = tx.db.credential().key().find(config::credential_key(&scope, secret_name::GOOGLE_SERVICE_ACCOUNT_JSON)).is_some();
-        let rtdn: Vec<Option<String>> = apps.iter().map(|a| config::secret(tx, a, secret_name::GOOGLE_RTDN_SECRET).map(|s| s.value)).collect();
-        Ok::<_, String>((apps, public_base(tx, &req.route)?, scope, has_key, rtdn))
+        Ok::<_, String>((apps, public_base(tx, &req.route)?, scope, has_key))
     })?;
     let email = gs::service_account_email(p);
     let topic_path = gs::topic_path(p, &topic);
@@ -432,45 +427,50 @@ pub fn setup_google(ctx: &mut impl Ctx, input: &str) -> Result<Value, String> {
         }
     }
 
-    // A push subscription per build; a new secret is stored once the subscription carries it.
+    // A push subscription per build, signed as the service account the build's key names (the
+    // setup's account until a key is stored).
+    let accounts: Vec<String> = ctx.tx(|tx| {
+        apps.iter()
+            .map(|a| {
+                config::secret(tx, a, secret_name::GOOGLE_SERVICE_ACCOUNT_JSON)
+                    .and_then(|s| purser_core::jwt::GoogleServiceAccount::from_json(&s.value).ok())
+                    .map_or_else(|| email.clone(), |sa| sa.client_email)
+            })
+            .collect()
+    });
     let mut ok = true;
-    for (app, current) in apps.iter().zip(rtdn) {
+    for (app, account) in apps.iter().zip(accounts) {
         let step = format!("subscription {}", app.app_id);
         let sub = gs::subscription_id(&app.app_id)?;
-        let new_secret = current.is_none() || req.rotate_rtdn_secret;
-        let secret = match current {
-            Some(s) if !new_secret => s,
-            _ if dry => "new".to_string(),
-            _ => gs::rtdn_secret(&req.entropy, &app.app_id)?,
+        let push = gs::Push {
+            endpoint: format!("{base}/notify/google"),
+            service_account: account,
+            audience: purser_core::google_oidc::audience(&app.app_id),
         };
-        let push_url = format!("{base}/notify/google?secret={secret}");
         let res = google(ctx, token, "GET", &gs::subscription_url(p, &sub), None)?;
         let action = if !exists(&res)? {
             if !dry {
-                let body = gs::create_subscription_body(&topic_path, &push_url);
+                let body = gs::create_subscription_body(&topic_path, &push);
                 google_ok(ctx, token, "PUT", &gs::subscription_url(p, &sub), Some(body))?;
             }
             if dry { "would_create" } else { "created" }
         } else {
-            let (sub_topic, endpoint) = gs::parse_subscription(&res.body)?;
+            let (sub_topic, current) = gs::parse_subscription(&res.body)?;
             if sub_topic != topic_path {
                 ok = false;
                 steps.add(&step, "failed", format!("{sub} belongs to {sub_topic}: delete it, or run the setup with that topic"));
                 continue;
             }
-            if endpoint == push_url {
+            if current == push {
                 "exists"
             } else if dry {
                 "would_update"
             } else {
-                google_ok(ctx, token, "POST", &gs::modify_push_url(p, &sub), Some(gs::modify_push_body(&push_url)))?;
+                google_ok(ctx, token, "POST", &gs::modify_push_url(p, &sub), Some(gs::modify_push_body(&push)))?;
                 "updated"
             }
         };
-        if new_secret && !dry {
-            store_secret(ctx, &app.app_id, secret_name::GOOGLE_RTDN_SECRET, secret)?;
-        }
-        steps.add(&step, action, format!("{sub} > {}", apple::hide_secret(&push_url)));
+        steps.add(&step, action, format!("{sub} > {} as {}, audience {}", push.endpoint, push.service_account, push.audience));
     }
     Ok(result(steps, ok))
 }

@@ -13,7 +13,7 @@
 //! | POST   | `/paywall`         | game client: what to show at a placement |
 //! | POST   | `/paywall/event`   | game client: paywall shown (A/B test views) |
 //! | POST   | `/attributes`      | game client: custom player attributes (shown on the admin page) |
-//! | POST   | `/notify/<store>`  | store notifications: `google` (RTDN Pub/Sub push, `?secret=`), `apple` (ASSN V2), `amazon` (RTN over SNS, `?app=`), `huawei` (`?app=&secret=`), `samsung` (`?app=`), `xsolla`, `stripe` and `telegram` (webhooks, `?app=`) |
+//! | POST   | `/notify/<store>`  | store notifications: `google` (RTDN Pub/Sub push, `Authorization: Bearer` OIDC token of the subscription), `apple` (ASSN V2), `amazon` (RTN over SNS, `?app=`), `huawei` (`?app=&secret=`), `samsung` (`?app=`), `xsolla`, `stripe` and `telegram` (webhooks, `?app=`) |
 //! | POST   | `/checkout/xsolla`, `/checkout/xsolla/status` | game client / website: Xsolla payment token, order status (`xsolla.rs`) |
 //! | POST   | `/checkout/stripe` | web client: creates a Stripe Checkout Session (`stripe.rs`) |
 //! | POST   | `/verify/stripe`   | web client after the Checkout redirect: confirms the session |
@@ -27,6 +27,7 @@ use crate::players;
 use purser_core::player::ClientInfo;
 use crate::config::{self, secret_name};
 use crate::ctx::{Budget, Ctx};
+use crate::google_oidc::{self, PushAuth};
 use crate::health;
 use crate::integrations;
 use crate::store_health;
@@ -990,8 +991,6 @@ fn product_or_subscription(app: &GameApp, product: Option<Product>, product_id: 
     product.unwrap_or_else(|| Product::new(&app.app_id, product_id, default_kind))
 }
 
-/// Notification health of a build whose store authenticates notifications with a secret in the
-/// URL (Google RTDN, App Store).
 /// Records a store notification in the build's health; a rejected one also raises the alert.
 fn record_notification(tx: &TxContext, app_id: &str, source: &str, rejected: Option<&str>, is_test: bool) {
     match rejected {
@@ -1009,9 +1008,10 @@ fn record_notification(tx: &TxContext, app_id: &str, source: &str, rejected: Opt
 }
 
 const WRONG_SECRET: &str = "the secret in the URL does not match";
+const REFUSED_TOKEN: &str = "the push token was refused: check the subscription's service account and audience";
 
 fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
-    let secret = web::query_param(&req, "secret");
+    let authorization = req.headers().get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
     let body = match web::text(req) {
         Ok(b) => b,
         Err(a) => return a.into(),
@@ -1034,27 +1034,42 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
     };
     let is_test = matches!(n, Rtdn::Test { .. });
     let now = ctx.now_micros();
-    // One transaction: the build, the secret check and its health, the product and the token.
-    let checked = ctx.tx(|tx| {
+    // Pub/Sub's OIDC token: the build, what the check needs (and a due fetch of Google's keys,
+    // claimed) in one transaction, the check itself outside it.
+    let token = google_oidc::read_token(&authorization);
+    let found = ctx.tx(|tx| {
         let app = config::find_app(tx, &package).filter(|a| config::app_store(a).id == store::GOOGLE)?;
-        let expected = config::secret(tx, &app, secret_name::GOOGLE_RTDN_SECRET).map(|s| s.value);
-        let accepted = matches!(&expected, Some(exp) if web::secret_matches(exp, &secret));
-        record_notification(tx, &app.app_id, "Google Play RTDN", (!accepted).then_some(WRONG_SECRET), is_test);
-        if !accepted {
-            return Some((app, false, None, Auth::default()));
-        }
-        let product = if product_id.is_empty() { None } else { config::find_product(tx, &app.app_id, product_id) };
-        let auth = if product_id.is_empty() { Auth::default() } else { Auth::cached(tx, &app, now) };
-        Some((app, true, product, auth))
+        let prepared = token.as_ref().map(|t| google_oidc::prepare(tx, &app, t, now)).map_err(Clone::clone);
+        Some((app, prepared))
     });
-    let Some((app, accepted, product, mut auth)) = checked else {
+    let Some((app, prepared)) = found else {
         log::warn!("RTDN for unknown package {}", log_id(&package));
         return Outcome::status(200, "ignored", "unknown package");
     };
-    if !accepted {
-        log::warn!("RTDN for {} rejected: bad or unconfigured secret", log_id(&package));
-        return Outcome::status(401, "error", "unauthorized");
+    let verdict = match (&token, prepared) {
+        (Ok(t), Ok(p)) => google_oidc::check(ctx, &app, t, p),
+        (_, Err(refused)) => refused,
+        (Err(refused), Ok(_)) => refused.clone(),
+    };
+    match verdict {
+        PushAuth::Accepted => {}
+        PushAuth::Unavailable(e) => {
+            log::error!("RTDN for {} not checked: {e}", log_id(&package));
+            return Outcome::status(503, "error", "retry later");
+        }
+        PushAuth::Refused(http, why) => {
+            log::warn!("RTDN for {} refused: {why}", log_id(&package));
+            let reason = format!("{REFUSED_TOKEN} ({why})");
+            ctx.tx(|tx| record_notification(tx, &app.app_id, "Google Play RTDN", Some(&reason), is_test));
+            return Outcome::status(http, "error", "unauthorized");
+        }
     }
+    let (product, mut auth) = ctx.tx(|tx| {
+        record_notification(tx, &app.app_id, "Google Play RTDN", None, is_test);
+        let product = if product_id.is_empty() { None } else { config::find_product(tx, &app.app_id, product_id) };
+        let auth = if product_id.is_empty() { Auth::default() } else { Auth::cached(tx, &app, now) };
+        (product, auth)
+    });
 
     match n {
         Rtdn::Test { .. } => {
@@ -1087,7 +1102,7 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
             }
         }
         Rtdn::Voided { token, order_id, product_type, refund_type, .. } => {
-            // Refund / chargeback of a purchase of this package (the secret may be shared by several).
+            // Refund / chargeback of a purchase of this package.
             let found = (product_type == google::VOIDED_ONE_TIME_PRODUCT)
                 .then(|| {
                     ctx.tx(|tx| {
@@ -1107,8 +1122,8 @@ fn handle_google_notification(ctx: &mut impl Ctx, req: Request) -> Outcome {
                     Err(e) => notification_fetch_error(e),
                 };
             }
-            // A one-time product is checked with Google first: a forged notification (someone who has
-            // the push URL) must not revoke a paid purchase. Google reports a refunded one canceled.
+            // A one-time product is checked with Google first: a notification must not revoke a
+            // purchase Google still reports paid. Google reports a refunded one canceled.
             if product_type == google::VOIDED_ONE_TIME_PRODUCT {
                 if let Some(product) = found {
                     match stores::google_fetch(ctx, &app, &product, &token, &mut auth) {

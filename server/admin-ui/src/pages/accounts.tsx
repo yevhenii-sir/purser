@@ -126,7 +126,7 @@ export function AccountsPage({ go }: PageProps) {
                 },
               ]}
             />
-            <p className="mt-3 text-xs text-muted-foreground">Keys of a single build (RTDN secret, GA4 secret, webhook integration key) are on the app's Keys tab.</p>
+            <p className="mt-3 text-xs text-muted-foreground">Keys of a single build (GA4 secret, webhook integration key, notification secrets) are on the app's Keys tab.</p>
           </Section>
         )
       })}

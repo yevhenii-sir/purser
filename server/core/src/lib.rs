@@ -14,6 +14,7 @@ pub mod encoding;
 pub mod event;
 pub mod fx;
 pub mod google;
+pub mod google_oidc;
 pub mod google_setup;
 pub mod huawei;
 pub mod integrations;

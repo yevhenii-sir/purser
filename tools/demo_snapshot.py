@@ -447,8 +447,6 @@ def main():
             srv.call("admin_upsert_game_app", json.dumps({"app_id": app, "platform": platform, "store": store, "game_key": game,
                                                           "account": "", "allow_sandbox": True, "enabled": True, **delivery}))
             srv.call("admin_set_credential", app, "spacetime_token" if game == "galaxy-miner" else "webhook_secret", "demo-%x" % rnd.getrandbits(64))
-            if st == "google":
-                srv.call("admin_set_credential", app, "google_rtdn_secret", "%032x" % rnd.getrandbits(128))
             if st == "huawei":
                 srv.call("admin_set_credential", app, "huawei_client_id", "1%08d" % rnd.randrange(10**8))
                 srv.call("admin_set_credential", app, "huawei_client_secret", "%064x" % rnd.getrandbits(256))

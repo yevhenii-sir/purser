@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { DialogBody, ErrorBox, Field, Mono, Tone } from "@/components/common"
 import { SecretField } from "@/components/secret-field"
-import { genSecret, proc } from "@/lib/api"
+import { proc } from "@/lib/api"
 import { errorText } from "@/lib/format"
 import { tryAct } from "@/lib/hooks"
 import { storeOf } from "@/lib/stores"
@@ -95,7 +95,6 @@ function GoogleSetup({ apps, base, onClose }: { apps: GameApp[]; base: string; o
   const [token, setToken] = useState("")
   const [topic, setTopic] = useState("play-billing")
   const [newKey, setNewKey] = useState(false)
-  const [rotate, setRotate] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<GoogleResult | null>(null)
@@ -107,7 +106,7 @@ function GoogleSetup({ apps, base, onClose }: { apps: GameApp[]; base: string; o
     try {
       const r = await proc<GoogleResult>("admin_setup_google", JSON.stringify({
         project: project.trim(), app_ids: apps.map((a) => a.app_id), access_token: token.trim(), topic: topic.trim(),
-        route: base, new_key: newKey, rotate_rtdn_secret: rotate, dry_run: dryRun, entropy: genSecret(),
+        route: base, new_key: newKey, dry_run: dryRun,
       }))
       setResult(r)
       if (!dryRun) setChanged(true)
@@ -123,7 +122,7 @@ function GoogleSetup({ apps, base, onClose }: { apps: GameApp[]; base: string; o
         <DialogTitle>Set up with Google Cloud</DialogTitle>
         <DialogDescription>
           Creates what Google Play needs in your Cloud project: the APIs, a service account and its key, the Pub/Sub topic of
-          real-time notifications and a push subscription to this server for {apps.length === 1 ? "this build" : `these ${apps.length} builds`}.
+          real-time notifications and a push subscription to this server, authenticated as the service account, for {apps.length === 1 ? "this build" : `these ${apps.length} builds`}.
           Every step looks first, so running it again is safe.
         </DialogDescription>
       </DialogHeader>
@@ -142,9 +141,6 @@ function GoogleSetup({ apps, base, onClose }: { apps: GameApp[]; base: string; o
         <div className="flex flex-wrap gap-x-6 gap-y-2">
           <Label className="flex items-center gap-2 text-sm font-normal">
             <Checkbox checked={newKey} onCheckedChange={(v) => setNewKey(v === true)} /> Create a new key even if one is stored
-          </Label>
-          <Label className="flex items-center gap-2 text-sm font-normal">
-            <Checkbox checked={rotate} onCheckedChange={(v) => setRotate(v === true)} /> New RTDN secrets
           </Label>
         </div>
         {error && <ErrorBox error={error} />}

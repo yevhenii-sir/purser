@@ -23,8 +23,6 @@ pub fn app_store(app: &GameApp) -> &'static purser_core::registry::StoreInfo {
 pub mod secret_name {
     /// Full JSON key of a Google service account with access to the Play Console app.
     pub const GOOGLE_SERVICE_ACCOUNT_JSON: &str = "google_service_account_json";
-    /// Shared secret in the RTDN Pub/Sub push URL (`/notify/google?secret=...`).
-    pub const GOOGLE_RTDN_SECRET: &str = "google_rtdn_secret";
     /// App Store Connect → Users and Access → Integrations → In-App Purchase key.
     pub const APPLE_ISSUER_ID: &str = "apple_issuer_id";
     pub const APPLE_KEY_ID: &str = "apple_key_id";
@@ -99,7 +97,6 @@ pub mod secret_name {
         purser_core::registry::STORES.iter().any(|s| s.secret(name).is_some()) || matches!(
             name,
             GOOGLE_SERVICE_ACCOUNT_JSON
-                | GOOGLE_RTDN_SECRET
                 | APPLE_ISSUER_ID
                 | APPLE_KEY_ID
                 | APPLE_PRIVATE_KEY_P8

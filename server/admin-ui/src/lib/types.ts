@@ -115,7 +115,11 @@ export interface Report {
   summary: Level
   counts?: { ok: number; warn: number; fail: number }
   checks: Check[]
-  urls: { base?: string; store?: string; notify?: string; notify_label?: string; billing_identity?: string }
+  urls: {
+    base?: string; store?: string; notify?: string; notify_label?: string; billing_identity?: string
+    /** Google Play: the push subscription's authentication (the OIDC token Pub/Sub signs). */
+    push_service_account?: string; push_audience?: string
+  }
 }
 
 export interface CatalogRow {

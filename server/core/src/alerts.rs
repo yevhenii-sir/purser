@@ -16,7 +16,7 @@ pub mod rule {
     pub const INTEGRATION_FAILED: &str = "integration_failed";
     /// An app had store purchases but no store notification (RTDN / App Store) for `silent_days`.
     pub const NOTIFICATIONS_SILENT: &str = "notifications_silent";
-    /// A store notification was rejected for a wrong or missing secret in its URL.
+    /// A store notification was refused: a bad signature or push token, a wrong or missing secret.
     pub const NOTIFICATION_REJECTED: &str = "notification_rejected";
     /// Exchange rates could not be refreshed for `fx_failing_hours`.
     pub const FX_FAILING: &str = "fx_failing";
@@ -371,7 +371,7 @@ pub fn rule_hint(rule: &str) -> &'static str {
             "Purchases come in but the store does not call /notify: check the RTDN topic / App Store notification URL in the app's Setup tab. Renewals and refunds are missed meanwhile."
         }
         rule::NOTIFICATION_REJECTED => {
-            "The secret in the notification URL does not match google_rtdn_secret / apple_notification_secret. Copy the URL from the app's Setup tab into the store console."
+            "The store's notification was refused: a Google Play push token that does not name the build's service account and audience, or a secret in the URL that does not match apple_notification_secret. Copy the settings from the app's Setup tab into the store console."
         }
         rule::FX_FAILING => "The ECB rates source (api.frankfurter.dev) is unreachable; revenue in USD uses older rates meanwhile.",
         rule::QUEUE_BEHIND => {

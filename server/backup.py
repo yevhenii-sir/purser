@@ -9,7 +9,7 @@ Use it around a release whose notes say "publish with --delete-data", and for re
 Everything goes through the owner's `/sql` (SELECT to back up; DELETE and INSERT to restore), so the
 token must be the database owner's: `PURSER_TOKEN`, else the `spacetime login` one.
 
-What is copied: every table except caches (access tokens, rate limit buckets), queues of work in
+What is copied: every table except caches (access tokens, Google's token keys, rate limit buckets), queues of work in
 progress (integration, alert and Apple refund outboxes), the worker's schedules, which the new
 module creates itself, inter-database calls in flight, and tables derived from the ledger (rebuilt
 after a restore). Large tables are read in pages the module reads through an index
@@ -39,6 +39,7 @@ FORMAT_VERSION = 1
 # Not backed up: caches, queued work and the schedules the module creates on publish.
 SKIP = {
     "access_token_cache",
+    "google_cert",
     "rate_bucket",
     "integration_outbox",
     "alert_outbox",

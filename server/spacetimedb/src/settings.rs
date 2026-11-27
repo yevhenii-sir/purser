@@ -20,6 +20,8 @@ pub mod key {
     pub const PUBLIC_BASE_URL: &str = "public_base_url";
     /// Last FX refresh attempt (micros), to retry hourly at most.
     pub const FX_LAST_ATTEMPT: &str = "fx_last_attempt_micros";
+    /// Last fetch of Google's OIDC keys (micros), to fetch at most once a minute (`google_oidc`).
+    pub const GOOGLE_CERTS_ATTEMPT: &str = "google_certs_attempt_micros";
     /// Earliest day (days since epoch) FX rates were backfilled to.
     pub const FX_BACKFILL_FROM: &str = "fx_backfill_from_day";
     /// Day of the last active-subscriptions snapshot.

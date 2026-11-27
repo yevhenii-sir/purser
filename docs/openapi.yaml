@@ -13,7 +13,8 @@ info:
     `https://stdb.example.com/v1/database/<your-billing-db>/route`.
 
     - Purchases are trusted only after the module re-queries the store. Store notification endpoints
-      check the store's signature or a shared secret in the URL.
+      check the store's signature, a token the store signs (Google Play's Pub/Sub push) or a shared
+      secret in the URL.
     - Client routes (everything under Purchases, Offers and paywalls, Players and Checkout) may need
       a player token: a build with `client_auth = signed` refuses requests without
       `Authorization: Bearer <HS256 JWT>` signed by the game's backend (`401`, code `ERR_CLIENT_AUTH`).
@@ -578,22 +579,17 @@ paths:
     post:
       tags: [Store notifications]
       operationId: notifyGoogle
-      security: []
+      security:
+        - pubSubToken: []
       summary: Google Play real-time developer notification (Pub/Sub push)
       description: |
-        Endpoint of the Pub/Sub **push** subscription of the RTDN topic. The notification is used only to
-        find the purchase: the module re-queries Google by `purchaseToken`. Voided purchases (refunds) are
-        applied from the notification itself, which is why the secret is required.
+        Endpoint of the Pub/Sub **push** subscription of the RTDN topic, with authentication on. The
+        notification is used only to find the purchase: the module re-queries Google by `purchaseToken`.
+        Voided purchases (refunds) are applied from the notification itself, which is why the push must
+        carry Pub/Sub's token.
 
         Non-2xx answers make Pub/Sub retry the delivery. `200` with `status: ignored` is final (unknown
         package or product, purchase not verified by a client yet, sandbox disabled, ...).
-      parameters:
-        - name: secret
-          in: query
-          required: true
-          description: The app's `google_rtdn_secret` (resolved app → developer account → default).
-          schema:
-            type: string
       requestBody:
         required: true
         content:
@@ -624,7 +620,18 @@ paths:
                 status: error
                 message: push body without message.data
         "401":
-          description: Wrong or unconfigured secret. The setup check reports such notifications.
+          description: No token (authentication is off in the subscription). The setup check reports such notifications.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusMessage"
+              example:
+                status: error
+                message: unauthorized
+        "403":
+          description: |
+            The token was refused: not signed by Google, another service account or audience, expired, or
+            the build has no `google_service_account_json`. The setup check reports the reason.
           content:
             application/json:
               schema:
@@ -633,7 +640,9 @@ paths:
                 status: error
                 message: unauthorized
         "503":
-          description: Google Play was unavailable or the store keys are misconfigured; Pub/Sub retries.
+          description: |
+            Google Play was unavailable, the store keys are misconfigured, or Google's token keys could not
+            be fetched; Pub/Sub retries.
           content:
             application/json:
               schema:
@@ -1541,6 +1550,14 @@ components:
           type: string
 
   securitySchemes:
+    pubSubToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        The OIDC token Pub/Sub sends with every push of a subscription with authentication: signed by
+        Google (RS256), `email` = the `client_email` of the build's `google_service_account_json`
+        (verified), `aud` = `purser-rtdn:<app_id>`.
     metricsToken:
       type: http
       scheme: bearer

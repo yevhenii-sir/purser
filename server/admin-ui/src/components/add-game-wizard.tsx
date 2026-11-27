@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactNode } from "react"
+import { Fragment, useCallback, useRef, useState, type ReactNode } from "react"
 import { CheckIcon, ClipboardPasteIcon, DownloadIcon, PlusIcon, Trash2Icon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -563,7 +563,18 @@ function Wizard({ existing, onClose, onChange }: { existing?: AppGroup; onClose:
                   {reports.reports.map((r) => {
                     const u = reportUrls(r, reports.base, generated)
                     const b = apps().find((x) => x.app_id === r.app_id)
-                    return u.notify && <CopyField key={r.app_id} label={`${b ? buildLabel(b) : r.app_id}: ${u.notifyLabel}`} value={u.notify} />
+                    const name = b ? buildLabel(b) : r.app_id
+                    return u.notify && (
+                      <Fragment key={r.app_id}>
+                        <CopyField label={`${name}: ${u.notifyLabel}`} value={u.notify} />
+                        {u.pushAudience && (
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <CopyField label={`${name}: push authentication, service account`} value={u.pushAccount || "the client_email of google_service_account_json"} />
+                            <CopyField label={`${name}: push authentication, audience`} value={u.pushAudience} />
+                          </div>
+                        )}
+                      </Fragment>
+                    )
                   })}
                   <CopyField label="Webhook HMAC key (shown once)" value={generated.webhook_secret || ""} />
                   <CopyField label="Unity config: paste it into the Purser config inspector" value={unityConfig} />

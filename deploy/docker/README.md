@@ -68,7 +68,7 @@ The URLs for the stores and clients are then:
 | | URL |
 |---|---|
 | Billing API (Unity config `serverBaseUrl`) | `https://stdb.example.com/v1/database/<your-billing-db>/route` |
-| Google RTDN push endpoint | `https://stdb.example.com/v1/database/<your-billing-db>/route/notify/google?secret=<google_rtdn_secret>` |
+| Google RTDN push endpoint | `https://stdb.example.com/v1/database/<your-billing-db>/route/notify/google` (authentication on, audience `purser-rtdn:<app_id>`) |
 | App Store Server Notifications V2 | `https://stdb.example.com/v1/database/<your-billing-db>/route/notify/apple` |
 | Health check | `https://stdb.example.com/v1/database/<your-billing-db>/route/healthz` |
 

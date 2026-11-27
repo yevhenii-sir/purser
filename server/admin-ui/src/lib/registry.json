@@ -76,7 +76,7 @@
       "notify_label": "Google RTDN push subscription URL",
       "notify_query": "",
       "notify_route": "/notify/google",
-      "notify_secret": "google_rtdn_secret",
+      "notify_secret": null,
       "platforms": [
         "android"
       ],
@@ -96,13 +96,6 @@
           "label": "Google Play service account JSON key",
           "name": "google_service_account_json",
           "need": "required"
-        },
-        {
-          "account_wide": false,
-          "file": false,
-          "label": "Secret in the RTDN push URL (/notify/google?secret=…)",
-          "name": "google_rtdn_secret",
-          "need": "recommended"
         }
       ],
       "verification": "client_receipt",

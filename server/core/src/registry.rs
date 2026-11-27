@@ -230,7 +230,7 @@ pub const GOOGLE: StoreInfo = StoreInfo {
     verification: Verification::ClientReceipt,
     notifications: true,
     notify_query: "",
-    notify_secret: Some("google_rtdn_secret"),
+    notify_secret: None,
     notify_label: "Google RTDN push subscription URL",
     secrets: &[
         SecretSpec {
@@ -239,13 +239,6 @@ pub const GOOGLE: StoreInfo = StoreInfo {
             need: Need::Required,
             account_wide: true,
             file: true,
-        },
-        SecretSpec {
-            name: "google_rtdn_secret",
-            label: "Secret in the RTDN push URL (/notify/google?secret=…)",
-            need: Need::Recommended,
-            account_wide: false,
-            file: false,
         },
     ],
     finish: Finish::ServerConsumeAcknowledge,
@@ -503,7 +496,7 @@ mod tests {
         assert_eq!(GOOGLE.verify_route().as_deref(), Some("/verify/google"));
         assert_eq!(MANUAL.verify_route(), None);
         let base = "https://h/v1/database/b/route";
-        assert_eq!(GOOGLE.notify_url(base, "com.g", false).unwrap(), format!("{base}/notify/google?secret=<google_rtdn_secret>"));
+        assert_eq!(GOOGLE.notify_url(base, "com.g", false).unwrap(), format!("{base}/notify/google"), "Pub/Sub signs its pushes");
         assert_eq!(APPLE.notify_url(base, "com.g", false).unwrap(), format!("{base}/notify/apple"));
         assert_eq!(
             APPLE.notify_url(base, "com.g", true).unwrap(),

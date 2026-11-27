@@ -215,7 +215,7 @@ const RULES: { key: keyof Rules; title: string; description: string; thresholds?
     description: "An app sold something but no RTDN / App Store notification arrived for this many days (production purchases only).",
     thresholds: [{ key: "silent_days", label: "Days", min: 1, max: 60 }],
   },
-  { key: "notification_rejected", title: "Store notification rejected", description: "A notification came with a wrong or missing secret in its URL." },
+  { key: "notification_rejected", title: "Store notification rejected", description: "A notification came without a valid signature, token or secret." },
   {
     key: "fx_failing",
     title: "Exchange rates are not updating",
