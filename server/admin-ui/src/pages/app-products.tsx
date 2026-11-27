@@ -211,7 +211,7 @@ export function AppProductsTab({ data, go }: TabProps) {
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="min-w-56">
                   {importers.map((a) => (
-                    <DropdownMenuItem key={a.app_id} onClick={() => setDialog(`import:${a.app_id}`)}>From {storeOf(a).name}{importers.length > 1 && storeOf(a).name !== buildLabel(a) ? ` (${buildLabel(a)})` : ""}</DropdownMenuItem>
+                    <DropdownMenuItem key={a.app_id} onClick={() => setDialog(`import:${a.app_id}`)}>From {buildLabel(a)}{importers.some((b) => b !== a && buildLabel(b) === buildLabel(a)) ? ` (${a.store_app_id})` : ""}</DropdownMenuItem>
                   ))}
                   {importers.length > 0 && <DropdownMenuSeparator />}
                   <DropdownMenuItem onClick={() => setDialog("unity")}><ClipboardPasteIcon /> From Unity config</DropdownMenuItem>
@@ -658,7 +658,7 @@ function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); else if (!rows && !loading) void load() }}>
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Import from {storeOf(app).name}</DialogTitle>
+          <DialogTitle>Import from {buildLabel(app)}</DialogTitle>
           <DialogDescription>The catalog of {app.store_app_id}. {IMPORT_HELP[storeOf(app).id] || ""}</DialogDescription>
         </DialogHeader>
         <DialogBody>

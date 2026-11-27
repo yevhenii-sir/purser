@@ -83,11 +83,14 @@ export function storeOf(a: Pick<GameApp, "store">): StoreInfo {
   return storeById(a.store) || MANUAL
 }
 
-/** "Android", "iOS", "Amazon", "Web · Stripe": names a build in tables and selects. */
+/** "Google Play", "App Store", "Steam", "Xsolla (Android)": names a build in tables and selects. The
+ * store says the platform, except for a store of several platforms. */
 export function buildLabel(a: Pick<GameApp, "platform" | "store">): string {
   const p = platformById(a.platform)
-  if (!p) return a.platform
-  return p.stores.length > 1 ? `${p.name} · ${storeOf(a).name}` : p.name
+  const store = storeById(a.store) || (p?.default_store ? storeById(p.default_store) : undefined)
+  if (!store) return p?.name || a.platform
+  const platforms = PLATFORMS.filter((x) => x.stores.includes(store.id))
+  return platforms.length > 1 ? `${store.name} (${p?.name || a.platform})` : store.name
 }
 
 /** Secret names declared by stores; account-wide ones are kept per developer account. */

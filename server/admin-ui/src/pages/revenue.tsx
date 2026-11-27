@@ -169,7 +169,7 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
   }
 
   const subs = r?.subscriptions
-  // "Android", "iOS", "Web · Stripe": the store of a build the app list knows.
+  // "Google Play", "App Store", "Xsolla (Web)": the store of a build the app list knows.
   const buildText = useCallback((appId: string) => {
     const b = builds.get(appId)
     return b ? buildLabel(b) : ""

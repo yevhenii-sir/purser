@@ -99,8 +99,7 @@ function BuildChip({ app, level }: { app: GameApp; level?: Level }) {
       </span>
       <span className="flex min-w-0 flex-col leading-tight">
         <span className="flex items-center gap-1.5 text-xs font-medium">
-          {platformById(app.platform)?.name || app.platform}
-          {buildLabel(app).includes("·") && <span className="font-normal text-muted-foreground">{storeOf(app).name}</span>}
+          {buildLabel(app)}
           {!app.enabled && <span className="font-normal text-muted-foreground">· disabled</span>}
         </span>
         <span className="truncate font-mono text-[11px] text-muted-foreground">{app.store_app_id}</span>
@@ -379,8 +378,8 @@ function DeliveryTab({ data, reload, go }: TabProps) {
         <DataTable
           rows={g.apps}
           columns={[
-            { title: "Platform", cell: (a) => buildLabel(a) },
-            { title: "Store", cell: (a) => storeOf(a).name },
+            { title: "Store", cell: (a) => buildLabel(a) },
+            { title: "Platform", cell: (a) => platformById(a.platform)?.name || a.platform },
             { title: "App id", cell: (a) => <Mono>{a.store_app_id}</Mono> },
             {
               title: "Developer account",
@@ -744,7 +743,7 @@ function SteamBuildSection({ app }: { app: GameApp }) {
     if (ok !== undefined) { setEdit(null); loaded.reload() }
   }
   return (
-    <Section title={`Steam: ${buildLabel(app)}`} description="Without an auth ticket, anyone can start a checkout for any SteamID: turn it on once the game sends the ticket."
+    <Section title={`Steam: ${app.store_app_id}`} description="Without an auth ticket, anyone can start a checkout for any SteamID: turn it on once the game sends the ticket."
       actions={canSet && edit ? <Button onClick={save}>Save</Button> : undefined}>
       {loaded.error ? <ErrorBox error={loaded.error} /> : (
         <div className="grid items-start gap-4 sm:grid-cols-3">

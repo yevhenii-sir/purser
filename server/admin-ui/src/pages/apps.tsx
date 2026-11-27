@@ -212,7 +212,7 @@ export function AppsPage({ go }: PageProps) {
                   <div className="space-y-1">
                     {g.apps.map((a) => (
                       <div key={a.app_id} className="flex items-center gap-2 text-sm">
-                        <span className="w-20 shrink-0 truncate text-muted-foreground">{buildLabel(a)}</span>
+                        <span className="w-36 shrink-0 truncate text-muted-foreground">{buildLabel(a)}</span>
                         <Mono className="truncate">{a.store_app_id}</Mono>
                         {!a.enabled && <Tone tone="bad">disabled</Tone>}
                       </div>
