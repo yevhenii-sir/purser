@@ -66,6 +66,7 @@ namespace Purser.Tests
                 new BillingProductConfig("vip", BillingProductType.Subscription));
             m_Config.WithBuild(BillingStores.Stripe, "com.test.game.web");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Stripe = new FakeStripeApi();
             m_Opened = new List<string>();

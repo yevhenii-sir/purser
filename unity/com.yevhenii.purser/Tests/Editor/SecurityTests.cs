@@ -69,6 +69,7 @@ namespace Purser.Tests
         {
             var config = BillingConfig.Create("http://billing.example.com/route", new BillingProductConfig("gems_100", BillingProductType.Consumable));
             config.refreshEntitlementsOnInit = false;
+            config.restoreOnFirstLaunch = false;
             config.logLevel = BillingLogLevel.None;
             BillingService Create(bool isEditor) => new BillingService(config, new BillingDependencies
             {
@@ -140,6 +141,7 @@ namespace Purser.Tests
                 new BillingProductConfig("premium", BillingProductType.Subscription),
                 new BillingProductConfig("vip", BillingProductType.NonConsumable));
             config.refreshEntitlementsOnInit = false;
+            config.restoreOnFirstLaunch = false;
             config.logLevel = BillingLogLevel.None;
             BillingService Create(FakeApi api)
             {

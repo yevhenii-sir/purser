@@ -175,6 +175,7 @@ namespace Purser.Tests
                 new BillingProductConfig("premium_year", BillingProductType.Subscription).WithAccess("premium"),
                 new BillingProductConfig("vip", BillingProductType.NonConsumable));
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Config.responseSigningPublicKey = PublicKey;
             m_Transport = new FakeTransport();
@@ -918,6 +919,9 @@ namespace Purser.Tests
             StringAssert.Contains("<assembly fullname=\"Unity.Purchasing.Stores\" ignoreIfMissing=\"1\">", xml);
             StringAssert.Contains("UnityEngine.Purchasing.AppleStoreImpl", xml);
             StringAssert.Contains("Purchasing.Utilities.StoreKitSelector", xml);
+            // Nothing calls the registration that makes Unity IAP the default store: a stripped build would lose it.
+            StringAssert.Contains("<assembly fullname=\"Purser.UnityIap\" ignoreIfMissing=\"1\">", xml);
+            StringAssert.Contains("<type fullname=\"Purser.UnityIapRegistration\" preserve=\"all\" />", xml);
         }
 
         private static string ThisFile([CallerFilePath] string path = "") => path;

@@ -53,6 +53,7 @@ namespace Purser.Tests
                 new BillingProductConfig("no_ads", BillingProductType.NonConsumable));
             m_Config.WithBuild(BillingStores.Steam, "480");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Bridge = new FakeSteamBridge();
             m_Server = new FakeTransport { Next = Checkout(Order) };

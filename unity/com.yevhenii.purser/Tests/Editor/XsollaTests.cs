@@ -75,6 +75,7 @@ namespace Purser.Tests
                 new BillingProductConfig("no_ads", BillingProductType.NonConsumable));
             m_Config.WithBuild(BillingStores.Xsolla, "com.test.game.web");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Server = new XsollaServer();
             m_Storage = new MemoryBillingStorage();

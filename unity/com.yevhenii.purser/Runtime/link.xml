@@ -1,7 +1,8 @@
 <!--
   Managed code stripping (IL2CPP, "Managed Stripping Level" above Minimal) removes what no code calls directly.
   Newtonsoft.Json creates and fills the types below by reflection, and the App Store promotional offer bridge
-  (UnityIapApplePromotionalOffers) calls Unity IAP internals by reflection: they are preserved here.
+  (UnityIapApplePromotionalOffers) calls Unity IAP internals by reflection: they are preserved here. So is
+  UnityIapRegistration, which no code calls: the player runs it on load to make Unity IAP the default store.
   The EditMode test LinkXml_PreservesEveryTypeJsonCreatesByReflection fails when a type with [JsonProperty] is
   missing from this file.
 -->
@@ -56,6 +57,9 @@
     <type fullname="Purser.TelegramCheckoutResponse" preserve="all" />
     <type fullname="Purser.TelegramStoreAdapter/CheckoutRequest" preserve="all" />
     <type fullname="Purser.TelegramStoreAdapter/StatusRequest" preserve="all" />
+  </assembly>
+  <assembly fullname="Purser.UnityIap" ignoreIfMissing="1">
+    <type fullname="Purser.UnityIapRegistration" preserve="all" />
   </assembly>
   <assembly fullname="Unity.Purchasing.Stores" ignoreIfMissing="1">
     <type fullname="UnityEngine.Purchasing.AppleStoreImpl" preserve="all" />

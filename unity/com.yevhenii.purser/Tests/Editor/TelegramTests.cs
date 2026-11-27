@@ -75,6 +75,7 @@ namespace Purser.Tests
                 new BillingProductConfig("vip", BillingProductType.Subscription));
             m_Config.WithBuild(BillingStores.Telegram, "com.test.game.telegram");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Server = new TelegramServer();
             m_WebApp = new FakeTelegramWebApp();

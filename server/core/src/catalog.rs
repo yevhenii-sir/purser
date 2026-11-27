@@ -584,6 +584,27 @@ pub struct DiffRow {
     pub status: String,
     /// Kind configured on the server, empty for new products.
     pub local_kind: String,
+    /// The kind is the store's or the one configured here; false: a guess for a new one-time product
+    /// of a store that does not say whether it is consumed ([`guess_one_time_kind`]), to check.
+    pub kind_known: bool,
+}
+
+/// Ids of one-time products that unlock something for good rather than being used up.
+const UNLOCK_WORDS: &[&str] = &[
+    "no_ads", "noads", "remove_ads", "removeads", "ad_free", "adfree", "premium", "unlock", "lifetime", "full_version",
+    "fullversion", "pro_version", "vip",
+];
+
+/// The kind a new one-time product most likely is when the store does not say (Google Play):
+/// `non_consumable` for ids that name a lasting unlock (`no_ads_bundle`, `premium`, `unlock_levels`),
+/// else `consumable`.
+pub fn guess_one_time_kind(product_id: &str) -> &'static str {
+    let id = product_id.to_ascii_lowercase().replace(['-', '.', ' '], "_");
+    if UNLOCK_WORDS.iter().any(|w| id.contains(w)) {
+        kind::NON_CONSUMABLE
+    } else {
+        kind::CONSUMABLE
+    }
 }
 
 /// Compares the store catalog with the configured products. Unless the store says whether a
@@ -596,7 +617,11 @@ pub fn diff(remote: &[RemoteProduct], local: &[LocalProduct], kinds_known: bool)
         .map(|r| {
             let mut product = r.clone();
             let Some(l) = local.iter().find(|l| l.product_id == r.product_id) else {
-                return DiffRow { product, status: "new".into(), local_kind: String::new() };
+                let kind_known = kinds_known || r.kind == kind::SUBSCRIPTION;
+                if !kind_known {
+                    product.kind = guess_one_time_kind(&r.product_id).into();
+                }
+                return DiffRow { product, status: "new".into(), local_kind: String::new(), kind_known };
             };
             if !kinds_known && r.kind != kind::SUBSCRIPTION && l.kind != kind::SUBSCRIPTION {
                 product.kind = l.kind.clone();
@@ -608,7 +633,7 @@ pub fn diff(remote: &[RemoteProduct], local: &[LocalProduct], kinds_known: bool)
                 product.price_micros = l.price_micros;
                 product.currency = l.currency.clone();
             }
-            DiffRow { product, status: if same { "same" } else { "changed" }.into(), local_kind: l.kind.clone() }
+            DiffRow { product, status: if same { "same" } else { "changed" }.into(), local_kind: l.kind.clone(), kind_known: true }
         })
         .collect();
     let missing = local
@@ -622,6 +647,22 @@ pub fn diff(remote: &[RemoteProduct], local: &[LocalProduct], kinds_known: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_one_time_products_of_a_store_that_does_not_say_get_a_guessed_kind_to_check() {
+        assert_eq!(guess_one_time_kind("com.game.No-Ads_Bundle"), kind::NON_CONSUMABLE);
+        assert_eq!(guess_one_time_kind("premium"), kind::NON_CONSUMABLE);
+        assert_eq!(guess_one_time_kind("coins_700"), kind::CONSUMABLE);
+        let remote = |id: &str| RemoteProduct { product_id: id.into(), kind: kind::CONSUMABLE.into(), ..Default::default() };
+        let local = [LocalProduct { product_id: "gems".into(), kind: kind::CONSUMABLE.into(), price_micros: 0, currency: String::new() }];
+        let (rows, _) = diff(&[remote("no_ads"), remote("coins"), remote("gems")], &local, false);
+        let of = |id: &str| rows.iter().find(|r| r.product.product_id == id).map(|r| (r.product.kind.as_str(), r.kind_known)).unwrap();
+        assert_eq!(of("no_ads"), (kind::NON_CONSUMABLE, false));
+        assert_eq!(of("coins"), (kind::CONSUMABLE, false));
+        assert_eq!(of("gems"), (kind::CONSUMABLE, true), "configured here: the kind chosen before");
+        let (rows, _) = diff(&[remote("no_ads")], &[], true);
+        assert_eq!((rows[0].product.kind.as_str(), rows[0].kind_known), (kind::CONSUMABLE, true), "the App Store says");
+    }
 
     const ONE_TIME: &str = r#"{"oneTimeProducts":[
         {"packageName":"com.game","productId":"gems_100","purchaseOptions":[{"purchaseOptionId":"buy",

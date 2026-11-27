@@ -9,7 +9,7 @@ This page walks through moving a game from RevenueCat to Purser. Purser verifies
 
 ## 2. Import the history (optional)
 
-- **Without the import**, a player's purchases appear in Purser when their client restores purchases. The Unity package does it on first start with a store that reports owned purchases.
+- **Without the import**, a player's purchases appear in Purser when their client restores purchases. The Unity package does it on its first launch with Purser (`BillingConfig.restoreOnFirstLaunch`, on by default) when the store reports owned purchases.
 - **With the import**, `/entitlements` knows subscriptions and non-consumables right away, revenue reports include the past, and the admin page shows the players' history.
 
 To import:
@@ -46,7 +46,7 @@ What the import does:
 
 Limits:
 
-- The export has no Google purchase token. Google Play notifications about an imported subscription find it only after the player's client verifies or restores it once. The Unity package restores on start.
+- The export has no Google purchase token. Google Play notifications about an imported subscription find it only after the player's client verifies or restores it once. The Unity package restores on its first launch with Purser (`restoreOnFirstLaunch`).
 - Stripe rows get their ids from RevenueCat (`<id>.<renewal_number>` for renewals), not Stripe's invoice ids.
 
 ## 3. Switch the clients

@@ -19,6 +19,16 @@ Purser calls one grant and one revoke reducer of the game's database. Each takes
 
 A game that received purchases through Adapty-era reducers adds these two. It keeps its old ones until Adapty is off.
 
+## Purchases made before Purser
+
+The Purser server does not know the purchases players made through Adapty. The Unity package brings them over by
+itself: on the first launch with Purser (and the first launch with another player), once initialized, it sends what the
+store reports the player owns to `/restore`, without asking the App Store to restore (no sign-in prompt). Non-consumables
+(no-ads) and running subscriptions come back to the customer info and `HasAccess`; consumables already used up are not
+reported by the stores and need nothing. `BillingConfig.restoreOnFirstLaunch` turns it off; a failed attempt is made
+again on the next launch. Until the first answer, `CustomerInfo.IsKnown` is false: check it before showing ads to a
+player who may own no-ads. To bring the history too (revenue, renewals), import it with `admin_import_purchases` (below).
+
 ## Moving the ledger to another server
 
 See [moving to another server](moving-servers.md). It covers:

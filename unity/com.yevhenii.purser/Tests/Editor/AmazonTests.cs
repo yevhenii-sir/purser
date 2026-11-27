@@ -91,6 +91,7 @@ namespace Purser.Tests
                     .WithStoreId(BillingStores.Amazon, "vip_monthly"));
             m_Config.WithBuild(BillingStores.Amazon, "com.test.game.amazon");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Iap = new FakeAmazonIap();
             m_Storage = new MemoryBillingStorage();
@@ -270,6 +271,7 @@ namespace Purser.Tests
             var config = BillingConfig.Create("https://b.example.com/route", new BillingProductConfig("gems", BillingProductType.Consumable));
             config.logLevel = BillingLogLevel.None;
             config.refreshEntitlementsOnInit = false;
+            config.restoreOnFirstLaunch = false;
             var store = new WebStore();
             var api = new FakeApi();
             var service = new BillingService(config, new BillingDependencies

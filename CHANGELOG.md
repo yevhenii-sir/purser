@@ -21,6 +21,7 @@
 
 ### Changed
 
+- A catalog import from Google Play (which does not say whether a one-time product is used up) suggests `non_consumable` for new one-time products whose id names a lasting unlock (`no_ads`, `remove_ads`, `premium`, `unlock`, `lifetime`, `vip`, ...) and `consumable` for the rest, marks the guess **check**, and a store id that joins an existing product takes that product's kind. `admin_list_store_products` rows carry `kind_known`.
 - GA4 events can carry the player: `send_user_id` (**Send the player's user id as GA4 user_id**, off by default) sends the billing user id as GA4's `user_id`, for games that give Firebase the same id; and a purchase lands in the session it was made in when the client sends `attribution.ga_session_id` (Firebase's session id). Session ids are kept only from the latest request and used within 30 minutes of it (`session_at_ms`, set by the server), so refunds and renewals do not reopen an old session.
 - Amplitude events land in the player's session when the client sends `attribution.amplitude_session_id` (the SDK's session id, used within 5 minutes), and Mixpanel events go to the player Mixpanel already knows when it sends `attribution.mixpanel_distinct_id` (the SDK's `distinct_id`, `$device:...` allowed; the billing id then goes as `purser_user_id`).
 - The admin page names a build by its store ("Google Play", "App Store", "Steam"), with the platform only for a store of several platforms ("Xsolla (Android)"), instead of "Android · Google Play"; the import menu says "From Google Play".

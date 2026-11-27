@@ -201,6 +201,12 @@ namespace Purser
         /// <summary>When the device received the data from the server (device clock, UTC).</summary>
         public DateTime FetchedAtUtc { get; }
 
+        /// <summary>
+        /// The server's answer for this player (fresh, or the offline cache of one); false for <see cref="Empty"/> before
+        /// the first answer. Check it before acting on what the player does not own: an unknown player may own no-ads.
+        /// </summary>
+        public bool IsKnown => FetchedAtUtc > DateTime.MinValue;
+
         /// <summary>True when the server could not be reached and this is the last saved copy.</summary>
         public bool IsFromCache { get; }
 

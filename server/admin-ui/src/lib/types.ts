@@ -135,6 +135,8 @@ export interface CatalogRow {
   period?: string
   status: "new" | "changed" | "same"
   local_kind: string
+  /** False: the kind of a new one-time product is a guess (Google Play does not say whether it is consumed). */
+  kind_known?: boolean
   /** The store listing (English when the store has one); empty when the store has none. */
   title?: string
   description?: string

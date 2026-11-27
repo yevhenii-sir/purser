@@ -2,7 +2,23 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- IL2CPP builds with managed code stripping lost Unity IAP as the default store: the linker removed
+  `UnityIapRegistration`, which no code calls (`No store adapter` at startup). It is kept now (`[Preserve]`,
+  `AlwaysLinkAssembly`, `link.xml`), and the message names the cause when the registration did not run although Unity IAP
+  is installed, or Unity IAP is older than 5.4.
+- A store that cannot be created (no Unity IAP, an Amazon, Huawei or Samsung build without its adapter) no longer throws
+  from the `BillingService` constructor, which broke the DI container that resolved it: `InitializeAsync` fails with the
+  reason and `IsInitialized` stays false. `Billing.CreateDefaultStore` still throws.
+
 ### Added
+
+- `BillingConfig.restoreOnFirstLaunch` (on by default): the first launch with Purser, and the first with another player,
+  sends what the store reports owned to `/restore`, without the App Store's restore (no sign-in prompt), so purchases
+  made before Purser (Adapty, RevenueCat) or a reinstall come back. Retried on the next launch after a failure.
+- `CustomerInfo.IsKnown`: false for `CustomerInfo.Empty` before the first answer or its cache, so a game can wait before
+  showing ads to a player who may own no-ads.
 
 - `AttributionKeys.GaSessionId`: Firebase's session id (`FirebaseAnalytics.GetSessionIdAsync()`), so GA4 counts a purchase
   in the session the player made it in. The **Attribution ids** sample sends it with `PURSER_FIREBASE`.

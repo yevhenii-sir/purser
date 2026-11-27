@@ -106,6 +106,11 @@ namespace Purser
         [Tooltip("Load the customer info from the server right after initialization.")]
         public bool refreshEntitlementsOnInit = true;
 
+        [Tooltip("On the first launch (and the first with another player) send what the store says the player owns to the " +
+                 "server, without a sign-in prompt: purchases made before Purser (Adapty, RevenueCat) or before a " +
+                 "reinstall come back. Only when the store reports any.")]
+        public bool restoreOnFirstLaunch = true;
+
         [Tooltip("IsActive, HasAccess and GetExpiration trust subscriptions and expiring access from customer info " +
                  "received at most this many days ago (device clock), e.g. the offline cache; older ones count again " +
                  "after the next refresh from the server. Non-consumables and lifetime access are not affected. 0 = no limit.")]
@@ -230,6 +235,7 @@ namespace Purser
             c.products = (products ?? new List<BillingProductConfig>()).Select(p => p?.Clone()).ToList();
             c.bindPurchasesToUser = bindPurchasesToUser;
             c.refreshEntitlementsOnInit = refreshEntitlementsOnInit;
+            c.restoreOnFirstLaunch = restoreOnFirstLaunch;
             c.entitlementsMaxAgeDays = entitlementsMaxAgeDays;
             c.collectAppleAdsAttribution = collectAppleAdsAttribution;
             c.childDirected = childDirected;

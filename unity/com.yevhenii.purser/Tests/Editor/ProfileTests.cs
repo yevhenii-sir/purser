@@ -104,7 +104,7 @@ namespace Purser.Tests
             {
                 "androidStore", "bindPurchasesToUser", "builds", "childDirected", "collectAppleAdsAttribution", "developmentProfile", "editorMode",
                 "editorProfile", "entitlementsMaxAgeDays", "failOpenAfterSeconds", "logLevel", "products", "profiles", "refreshEntitlementsOnInit",
-                "releaseProfile", "requestTimeoutSeconds", "responseSigningPublicKey", "retryDelaysSeconds", "serverBaseUrl",
+                "releaseProfile", "requestTimeoutSeconds", "responseSigningPublicKey", "restoreOnFirstLaunch", "retryDelaysSeconds", "serverBaseUrl",
             }, fields.ToArray());
             m_Config.androidStore = AndroidStore.AmazonAppstore;
             m_Config.bindPurchasesToUser = false;
@@ -114,6 +114,7 @@ namespace Purser.Tests
             m_Config.failOpenAfterSeconds = 8;
             m_Config.childDirected = true;
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.requestTimeoutSeconds = 9;
             m_Config.retryDelaysSeconds = new[] { 1, 2 };
             m_Config.developmentProfile = "dev";

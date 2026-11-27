@@ -51,6 +51,7 @@ namespace Purser.Tests
             Config.WithBuild(BillingStores.Google, AppId).WithBuild(BillingStores.Apple, "com.test.game.ios");
             Config.retryDelaysSeconds = new[] { 5, 30 };
             Config.refreshEntitlementsOnInit = false;
+            Config.restoreOnFirstLaunch = false;
             Config.logLevel = BillingLogLevel.None;
         }
 

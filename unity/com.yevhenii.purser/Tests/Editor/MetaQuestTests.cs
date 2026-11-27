@@ -74,6 +74,7 @@ namespace Purser.Tests
                 new BillingProductConfig("no_ads", BillingProductType.NonConsumable));
             m_Config.WithBuild(BillingStores.Meta, "com.test.game.quest");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Iap = new FakeMetaQuestIap();
             m_Api = new FakeApi();

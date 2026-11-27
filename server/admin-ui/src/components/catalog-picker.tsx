@@ -31,6 +31,8 @@ export interface CatalogMapping {
   ownCatalogOf: (storeId: string) => string | undefined
   /** The store id this build already has for a product, if any. */
   ownStoreIdOf: (catalogId: string) => string | undefined
+  /** The kind of one of the app's products, if it exists. */
+  kindOf?: (catalogId: string) => Kind | undefined
   /** The build's package / bundle id: a store id that starts with it is suggested without it. */
   appId: string
 }
@@ -59,10 +61,18 @@ export function CatalogPicker({ rows, onChange, empty = "The store has no produc
 }) {
   const [picked, setPicked] = useState<Record<string, boolean>>(() => Object.fromEntries(rows.map((r) => [r.product_id, r.status !== "same"])))
   const [kinds, setKinds] = useState<Record<string, Kind>>(() => Object.fromEntries(rows.map((r) => [r.product_id, r.kind])))
+  /** Rows whose kind the admin picked: no longer a guess. */
+  const [chosen, setChosen] = useState<Record<string, boolean>>({})
   /** The product each store id goes under: the one this build gives it, else a guess from the id. */
   const [targets, setTargets] = useState<Record<string, string>>(() =>
     Object.fromEntries(rows.map((r) => [r.product_id, mapping ? mapping.ownCatalogOf(r.product_id) ?? suggestCatalogId(r.product_id, mapping.appId) : r.product_id])))
   const listId = useId()
+  const guessed = (r: CatalogRow) => r.kind_known === false && r.kind !== "subscription" && !chosen[r.product_id]
+  /** The kind saved for a row: the admin's pick, else that of the product it joins, else the store's or the guess. */
+  const kindOf = (r: CatalogRow): Kind => {
+    const joined = guessed(r) ? mapping?.kindOf?.(targets[r.product_id]?.trim()) : undefined
+    return joined && joined !== "subscription" ? joined : kinds[r.product_id]
+  }
   // Two picked store ids under one product: the build would have two rows of it.
   const taken = new Map<string, number>()
   for (const r of rows) if (picked[r.product_id]) taken.set(targets[r.product_id]?.trim(), (taken.get(targets[r.product_id]?.trim()) || 0) + 1)
@@ -78,15 +88,17 @@ export function CatalogPicker({ rows, onChange, empty = "The store has no produc
       rows
         .filter((r) => picked[r.product_id])
         .map((r) => {
-          const period = kinds[r.product_id] === "subscription" ? r.period || periodOfDays(r.billing_period_days) : ""
+          const kind = kindOf(r)
+          const period = kind === "subscription" ? r.period || periodOfDays(r.billing_period_days) : ""
           return {
-            product_id: r.product_id, kind: kinds[r.product_id], price_micros: r.price_micros, currency: r.currency, ...(period ? { period } : {}),
+            product_id: r.product_id, kind, price_micros: r.price_micros, currency: r.currency, ...(period ? { period } : {}),
             ...(r.title ? { title: r.title } : {}), ...(r.description ? { description: r.description } : {}),
             ...(mapping ? { catalog_id: targets[r.product_id]?.trim() || r.product_id } : {}),
           }
         }),
     )
-  }, [rows, picked, kinds, targets, mapping, onChange])
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- kindOf reads kinds, chosen, targets and mapping
+  }, [rows, picked, kinds, chosen, targets, mapping, onChange])
 
   /** What saving does to a row: the build's own status, joining a product, or a new one. */
   const outcome = (r: CatalogRow): ReactNode => {
@@ -133,13 +145,23 @@ export function CatalogPicker({ rows, onChange, empty = "The store has no produc
             r.kind === "subscription" ? (
               "subscription"
             ) : (
-              <Select value={kinds[r.product_id]} onValueChange={(v) => setKinds((k) => ({ ...k, [r.product_id]: v as Kind }))}>
-                <SelectTrigger size="sm" className="w-40"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="consumable">consumable</SelectItem>
-                  <SelectItem value="non_consumable">non_consumable</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="flex items-center gap-2">
+                <Select value={kindOf(r)} onValueChange={(v) => {
+                  setKinds((k) => ({ ...k, [r.product_id]: v as Kind }))
+                  setChosen((c) => ({ ...c, [r.product_id]: true }))
+                }}>
+                  <SelectTrigger size="sm" className="w-40" aria-invalid={guessed(r) || undefined}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="consumable">consumable</SelectItem>
+                    <SelectItem value="non_consumable">non_consumable</SelectItem>
+                  </SelectContent>
+                </Select>
+                {guessed(r) && (
+                  <span title="The store does not say whether this product is used up: a guess from its id, or the kind of the product it joins">
+                    <Tone tone="warn">check</Tone>
+                  </span>
+                )}
+              </div>
             ),
         },
         { title: "Price", cell: (r) => money(r.price_micros, r.currency) + (r.billing_period_days ? ` / ${r.billing_period_days} d` : "") },

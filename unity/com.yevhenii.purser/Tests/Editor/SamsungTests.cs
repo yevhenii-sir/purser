@@ -70,6 +70,7 @@ namespace Purser.Tests
                 new BillingProductConfig("vip", BillingProductType.Subscription).WithStoreId(BillingStores.Samsung, "vip_monthly"));
             m_Config.WithBuild(BillingStores.Samsung, "com.test.game.samsung");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Iap = new FakeSamsungIap();
             m_Api = new FakeApi();

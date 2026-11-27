@@ -175,6 +175,7 @@ namespace Purser.Tests
                 new BillingProductConfig("premium", BillingProductType.Subscription).WithAccess("premium"),
                 new BillingProductConfig("vip", BillingProductType.NonConsumable));
             config.refreshEntitlementsOnInit = false;
+            config.restoreOnFirstLaunch = false;
             config.logLevel = BillingLogLevel.None;
             config.responseSigningPublicKey = PublicKey;
             var now = DateTimeOffset.FromUnixTimeMilliseconds(1_800_000_000_000).UtcDateTime;

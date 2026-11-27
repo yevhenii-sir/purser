@@ -39,6 +39,7 @@ namespace Purser.Tests
                     .WithStoreId(BillingStores.Google, "premium_android").WithStoreId(BillingStores.Apple, "premium_ios"));
             m_Config.WithBuild(BillingStores.Google, "com.example.mygame").WithBuild(BillingStores.Apple, "com.example.mygame.ios");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Store = new FakeStore();
             m_Api = new FakeApi();

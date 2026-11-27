@@ -134,6 +134,7 @@ namespace Purser.Tests
             var config = BillingConfig.Create("https://billing.example.com/route", new BillingProductConfig("gems_100", BillingProductType.Consumable));
             config.WithBuild(BillingStores.Xsolla, "com.test.game.web");
             config.refreshEntitlementsOnInit = false;
+            config.restoreOnFirstLaunch = false;
             config.logLevel = BillingLogLevel.None;
             var transport = new FakeTransport
             {

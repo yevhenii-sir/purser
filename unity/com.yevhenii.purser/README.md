@@ -12,7 +12,10 @@ All the client has to do is show the store and react to the result.
 - Unity 2022.3+, Newtonsoft JSON. Google Play and the App Store through the package (the default store adapter)
   need Unity IAP (`com.unity.purchasing`) 5.4 or later: add it to the project yourself, the package does not depend on
   it. Without Unity IAP 5.4+ the adapter (assembly `Purser.UnityIap`) is not compiled and `BillingDependencies.Store`
-  must name a store (Amazon, Steam, Stripe, Xsolla or your own).
+  must name a store (Amazon, Steam, Stripe, Xsolla or your own). Unity IAP 5 brings Unity Services Core and initializes
+  it when the store connects, which adds to the startup time. A store that cannot be created (no Unity IAP, an Amazon
+  build without its adapter) does not throw when the service is created (a DI container still builds):
+  `InitializeAsync` fails with the reason and `IsInitialized` stays false.
 - The core is not tied to any DI: the `IBillingService` interface and the `BillingService` class. There's a ready-made `BillingBootstrap` component and optional adapters for VContainer and Zenject.
 
 ## Installation
@@ -189,6 +192,8 @@ billing.PurchaseSucceeded += r =>
 };
 
 bool noAds = billing.HasAccess("no_ads");                 // access levels — via the server's customer info
+bool known = billing.CustomerInfo.IsKnown;                // false until the first answer (or its offline cache):
+                                                          // wait for it before showing ads to a player who may own no-ads
 ```
 
 How this protects the reward:
@@ -624,8 +629,9 @@ Steam orders and the refund data consent. Cache writes are batched: a storage th
 disposed, and at once after a write that must not be lost (a started order, the consent). An answer equal to the
 cached one is written again at most once an hour, and the device keeps the cache of the last player only.
 
-`Runtime/link.xml` keeps the types Newtonsoft.Json creates by reflection and the Unity IAP internals of the App Store
-promotional offer bridge from managed code stripping (IL2CPP, a stripping level above Minimal). Unity reads `link.xml`
+`Runtime/link.xml` keeps the types Newtonsoft.Json creates by reflection, the Unity IAP internals of the App Store
+promotional offer bridge and the registration that makes Unity IAP the default store (`Purser.UnityIapRegistration`,
+which no code calls) from managed code stripping (IL2CPP, a stripping level above Minimal). Unity reads `link.xml`
 files from `Assets` only, so the package's Editor assembly hands this one to the linker during a build; nothing to set
 up.
 

@@ -71,6 +71,8 @@ namespace Purser
 
         private readonly BillingConfig m_Config;
         private readonly IStoreAdapter m_Store;
+        /// <summary>Why the default store could not be created (<see cref="UnavailableStoreAdapter"/>); null when it was.</summary>
+        private readonly BillingException m_StoreError;
         private readonly IBillingApi m_Api;
         private readonly IBillingStorage m_Storage;
         private readonly BillingLog m_Log;
@@ -161,8 +163,10 @@ namespace Purser
 
         private bool SkipServer => m_Context.SkipServer;
 
-        /// <summary>Creates the service; nothing is loaded until <see cref="InitializeAsync"/>.</summary>
-        /// <exception cref="BillingException">The store adapter names no store, or an Amazon build has no Amazon adapter.</exception>
+        /// <summary>Creates the service; nothing is loaded until <see cref="InitializeAsync"/>. A default store that
+        /// cannot be created (no Unity IAP, an Amazon build without its adapter) does not throw here:
+        /// <see cref="InitializeAsync"/> fails with the reason, so a DI container still builds.</summary>
+        /// <exception cref="BillingException">The store adapter given names no store.</exception>
         public BillingService(BillingConfig config, BillingDependencies dependencies = null)
         {
             // The profile of this run applied (dev / staging / prod); the asset itself never changes.
@@ -171,7 +175,7 @@ namespace Purser
             m_Log = new BillingLog(m_Config.logLevel, deps.LogSink);
             if (m_Config.ProfileName.Length > 0)
                 m_Log.Info($"Profile {m_Config.ProfileName}: {m_Config.serverBaseUrl}");
-            m_Store = deps.Store ?? CreateDefaultStore(m_Config, m_Log);
+            m_Store = deps.Store ?? CreateDefaultStoreOrPlaceholder(m_Config, m_Log, out m_StoreError);
             Platform = m_Store.Platform;
             if (string.IsNullOrEmpty(m_Store.Store))
                 throw new BillingException($"The store adapter {m_Store.GetType().Name} names no store (IStoreAdapter.Store)");
@@ -217,6 +221,22 @@ namespace Purser
                 changes.ChangeDeferred += OnSubscriptionChangeDeferred;
         }
 
+        /// <summary><see cref="CreateDefaultStore"/>, or a placeholder and the reason when it cannot be created.</summary>
+        private static IStoreAdapter CreateDefaultStoreOrPlaceholder(BillingConfig config, BillingLog log, out BillingException error)
+        {
+            try
+            {
+                error = null;
+                return CreateDefaultStore(config, log);
+            }
+            catch (BillingException e)
+            {
+                log.Error(e.Message);
+                error = e;
+                return new UnavailableStoreAdapter(BillingPlatforms.For(config), e);
+            }
+        }
+
         internal static IStoreAdapter CreateDefaultStore(BillingConfig config, BillingLog log)
         {
             var platform = BillingPlatforms.For(config);
@@ -244,12 +264,26 @@ namespace Purser
                 log.Warning("Installed by Samsung Galaxy Store, but no SamsungStoreAdapter was given in BillingDependencies.Store: using Google Play.");
                 platform = BillingPlatform.Google;
             }
-            var factory = Billing.DefaultStoreFactory
-                          ?? throw new BillingException("No store adapter: install Unity IAP (com.unity.purchasing) 5.4 or later for " +
-                                                        "the default UnityIapStoreAdapter, or pass a store in BillingDependencies.Store " +
-                                                        "(e.g. observer mode when the game keeps its own Unity IAP code)");
+            var factory = Billing.DefaultStoreFactory ?? throw new BillingException(NoStoreAdapterMessage(IsAssemblyLoaded));
             return factory(platform, log);
         }
+
+        /// <summary>Why there is no default store: Unity IAP missing, too old, or its registration stripped.</summary>
+        internal static string NoStoreAdapterMessage(Func<string, bool> isLoaded)
+        {
+            const string or = ", or pass a store in BillingDependencies.Store (e.g. observer mode when the game keeps its own Unity IAP code)";
+            if (isLoaded("Purser.UnityIap"))
+                return "No store adapter: Unity IAP is installed, but Purser's registration of it did not run. Managed code " +
+                       "stripping removed Purser.UnityIapRegistration: update Purser, or keep it in a link.xml " +
+                       "(<assembly fullname=\"Purser.UnityIap\" preserve=\"all\" />)" + or;
+            if (isLoaded("Unity.Purchasing"))
+                return "No store adapter: Unity IAP is older than 5.4. Update com.unity.purchasing to 5.4 or later for the " +
+                       "default UnityIapStoreAdapter" + or;
+            return "No store adapter: install Unity IAP (com.unity.purchasing) 5.4 or later for the default UnityIapStoreAdapter" + or;
+        }
+
+        private static bool IsAssemblyLoaded(string name) =>
+            AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == name);
 
         private static string NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
 

@@ -20,6 +20,19 @@ namespace Purser.Tests
         }
 
         [Test]
+        public void UnityIap_RegistrationSurvivesStripping()
+        {
+            // The Editor registers through InitializeOnLoadMethod: only these keep a stripped player build registering.
+            var assembly = typeof(UnityIapRegistration).Assembly;
+            Assert.IsTrue(System.Attribute.IsDefined(assembly, typeof(UnityEngine.Scripting.AlwaysLinkAssemblyAttribute)));
+            Assert.IsTrue(System.Attribute.IsDefined(typeof(UnityIapRegistration), typeof(UnityEngine.Scripting.PreserveAttribute)));
+            var method = typeof(UnityIapRegistration).GetMethod("RegisterAtRuntime",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            Assert.IsNotNull(method);
+            Assert.IsTrue(System.Attribute.IsDefined(method, typeof(UnityEngine.Scripting.PreserveAttribute)));
+        }
+
+        [Test]
         public void UnityIapOptions_HoldTheOfferAtTheTopLevel()
         {
             var json = JObject.Parse(UnityIapApplePromotionalOffers.BuildOptionsJson(SignedOffer()));

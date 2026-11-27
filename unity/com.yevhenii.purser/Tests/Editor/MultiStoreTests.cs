@@ -28,6 +28,7 @@ namespace Purser.Tests
                 new BillingProductConfig("no_ads", BillingProductType.NonConsumable));
             m_Config.WithBuild(BillingStores.Google, "com.test.game").WithBuild(BillingStores.Xsolla, "com.test.game.xsolla");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.Warning;
             // NUnit reuses the fixture: every field a test changes starts over here.
             m_Route = null;

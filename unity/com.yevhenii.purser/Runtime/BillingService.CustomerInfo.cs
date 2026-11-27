@@ -12,7 +12,12 @@ namespace Purser
         /// <inheritdoc/>
         /// <exception cref="ObjectDisposedException">The service was disposed.</exception>
         /// <exception cref="BillingException">Billing is not initialized, or the user id is not set.</exception>
-        public async Task<CustomerInfo> RestoreAsync(CancellationToken ct = default)
+        public Task<CustomerInfo> RestoreAsync(CancellationToken ct = default) => RestoreOwnedAsync(askStore: true, ct);
+
+        /// <summary>Sends the purchases the store reports owned to <c>/restore</c>. <paramref name="askStore"/>: ask the
+        /// App Store to restore first (it may ask the player to sign in), and refresh the customer info when the store
+        /// reports nothing.</summary>
+        private async Task<CustomerInfo> RestoreOwnedAsync(bool askStore, CancellationToken ct)
         {
             ThrowIfDisposed();
             if (!IsInitialized)
@@ -21,7 +26,7 @@ namespace Purser
             if (SkipServer)
                 return m_Refresher.Current;
 
-            if (Platform == BillingPlatform.Apple)
+            if (askStore && Platform == BillingPlatform.Apple)
                 await m_Store.RestoreTransactionsAsync(ct);
 
             // Orders being verified right now (e.g. re-delivered by RestoreTransactions) are not sent again.
@@ -50,7 +55,7 @@ namespace Purser
             await m_Orders.WaitForInFlightAsync(TimeSpan.FromSeconds(Math.Max(1, m_Config.requestTimeoutSeconds)), ct);
             ThrowIfDisposed();
             if (batches.Count == 0)
-                return await RefreshCustomerInfoAsync(ct);
+                return askStore ? await RefreshCustomerInfoAsync(ct) : m_Refresher.Current;
 
             ApiResult<RestoreResponse> latest = null;
             var appInstanceId = await m_Context.AppInstanceIdAsync();

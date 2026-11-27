@@ -47,6 +47,8 @@ namespace Purser
         /// in-app purchases.</exception>
         private void CheckConfiguration()
         {
+            if (m_StoreError != null)
+                throw m_StoreError;
             foreach (var problem in m_Config.Validate())
                 m_Log.Warning("Config: " + problem);
             var insecure = UrlPolicy.ServerUrlProblem(m_Config.serverBaseUrl, m_IsEditor);
@@ -99,6 +101,37 @@ namespace Purser
             m_Observed.RetryAll();
             if (m_Config.refreshEntitlementsOnInit && m_Context.User != null)
                 m_Refresher.RefreshInBackground();
+            if (m_Config.restoreOnFirstLaunch)
+                RestoreOnFirstLaunch();
+        }
+
+        /// <summary>Storage key of the player whose purchases were restored on this device's first launch.</summary>
+        internal const string FirstRestoreKey = "purser.first_restore_user";
+
+        /// <summary>
+        /// The first launch with Purser (and the first with another player) sends what the store says the player owns,
+        /// as <see cref="RestoreAsync"/> does but without asking the store to restore (no App Store sign-in prompt): a
+        /// game that moves from Adapty or RevenueCat, or a reinstall, gets its non-consumables and subscriptions back. A
+        /// failure is tried again on the next launch.
+        /// </summary>
+        private async void RestoreOnFirstLaunch()
+        {
+            var user = m_Context.User;
+            if (user == null || SkipServer || m_Storage.Load(FirstRestoreKey) == user)
+                return;
+            try
+            {
+                await RestoreOwnedAsync(askStore: false, m_Context.Lifetime);
+                if (!m_Context.IsDisposed && m_Context.User == user)
+                {
+                    m_Storage.Save(FirstRestoreKey, user);
+                    m_Log.Info("Owned purchases restored on the first launch");
+                }
+            }
+            catch (Exception e) when (!(e is OperationCanceledException) && !(e is ObjectDisposedException))
+            {
+                m_Log.Warning("Restoring owned purchases on the first launch failed (tried again on the next launch): " + e.Message);
+            }
         }
 
         /// <summary>Starts the background retries when <paramref name="attempt"/> fails for a reason a later attempt

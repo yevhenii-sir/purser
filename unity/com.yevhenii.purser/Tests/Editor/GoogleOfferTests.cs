@@ -28,6 +28,7 @@ namespace Purser.Tests
                 new BillingProductConfig("premium_yearly", BillingProductType.Subscription));
             m_Config.WithBuild(BillingStores.Google, "com.test.game");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Store = new FakeStore { Platform = BillingPlatform.Google };
             m_Api = new FakeApi();

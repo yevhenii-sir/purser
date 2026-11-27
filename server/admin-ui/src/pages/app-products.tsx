@@ -600,6 +600,7 @@ function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
     catalogIds: existing.map((r) => r.product_id),
     ownCatalogOf: (storeId) => existing.find((r) => r.by[app.app_id]?.product_id === storeId)?.product_id,
     ownStoreIdOf: (catalogId) => existing.find((r) => r.product_id === catalogId)?.by[app.app_id]?.product_id,
+    kindOf: (catalogId) => existing.find((r) => r.product_id === catalogId)?.kind,
     appId: app.store_app_id,
   }), [existing, app])
   const load = async () => {

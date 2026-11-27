@@ -71,6 +71,7 @@ namespace Purser.Tests
                 new BillingProductConfig("vip", BillingProductType.Subscription).WithStoreId(BillingStores.Huawei, "vip_monthly"));
             m_Config.WithBuild(BillingStores.Huawei, "com.test.game.huawei");
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Iap = new FakeHuaweiIap();
             m_Api = new FakeApi();

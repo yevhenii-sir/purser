@@ -33,6 +33,7 @@ namespace Purser.Tests
             m_Config.WithBuild(BillingStores.Google, "com.test.game").WithBuild(BillingStores.Apple, "com.test.game.ios");
             m_Config.retryDelaysSeconds = new[] { 5, 30 };
             m_Config.refreshEntitlementsOnInit = false;
+            m_Config.restoreOnFirstLaunch = false;
             m_Config.logLevel = BillingLogLevel.None;
             m_Store = new FakeStore();
             m_Api = new FakeApi();
@@ -95,20 +96,74 @@ namespace Purser.Tests
         }
 
         [Test]
-        public void NoStore_WithoutUnityIap_SaysWhatIsMissing()
+        public void NoStore_TheServiceIsCreatedAndInitializeSaysWhatIsMissing()
         {
             var factory = Billing.DefaultStoreFactory;
             Billing.DefaultStoreFactory = null;
             try
             {
-                var e = Assert.Throws<BillingException>(() => new BillingService(m_Config));
-                StringAssert.Contains("Unity IAP", e.Message);
-                StringAssert.Contains("BillingDependencies.Store", e.Message);
+                // A DI container that builds the service must not fail: only its initialization does, with the reason.
+                using (var service = new BillingService(m_Config, new BillingDependencies { Api = m_Api, Storage = new MemoryBillingStorage() }))
+                {
+                    var init = service.InitializeAsync();
+                    Assert.IsTrue(init.IsFaulted);
+                    var e = (BillingException)init.Exception.InnerException;
+                    StringAssert.Contains("No store adapter", e.Message);
+                    StringAssert.Contains("BillingDependencies.Store", e.Message);
+                    Assert.IsFalse(service.IsInitialized);
+                    Assert.AreSame(e, service.InitializeAsync().Exception.InnerException, "every attempt fails the same way");
+                    Assert.IsFalse(service.CustomerInfo.IsKnown);
+                }
             }
             finally
             {
                 Billing.DefaultStoreFactory = factory;
             }
+        }
+
+        [Test]
+        public void NoStore_TheMessageNamesTheCause()
+        {
+            System.Func<string[], System.Func<string, bool>> loaded = names => name => names.Contains(name);
+            StringAssert.Contains("install Unity IAP", BillingService.NoStoreAdapterMessage(loaded(new string[0])));
+            StringAssert.Contains("older than 5.4", BillingService.NoStoreAdapterMessage(loaded(new[] { "Unity.Purchasing" })));
+            var stripped = BillingService.NoStoreAdapterMessage(loaded(new[] { "Unity.Purchasing", "Purser.UnityIap" }));
+            StringAssert.Contains("stripping", stripped);
+            StringAssert.Contains("link.xml", stripped);
+        }
+
+        [Test]
+        public void FirstLaunch_RestoresWhatTheStoreReportsOwned_OncePerPlayer()
+        {
+            m_Config.restoreOnFirstLaunch = true;
+            m_Storage = new MemoryBillingStorage();
+            m_Store.Owned.Add(FakeStore.GoogleOrder("vip", "tok-a", "GPA.A"));
+            m_Api.RestoreResult = new ApiResult<RestoreResponse>(200, new RestoreResponse
+            {
+                Results = new List<RestoreItemResult>(),
+                CustomerInfo = FakeApi.Entitlements(new Dictionary<string, long>(), "vip").Value,
+            }, null);
+
+            CreateService();
+            Assert.AreEqual("tok-a", m_Api.RestoreRequests.Single().Purchases.Single().PurchaseToken);
+            Assert.IsTrue(m_Service.CustomerInfo.Owns("vip"));
+            Assert.IsFalse(m_Store.RestoreCalled, "no App Store sign-in prompt on launch");
+
+            // The next launch of the same player restores nothing; another player gets their own.
+            m_Service.Dispose();
+            CreateService();
+            Assert.AreEqual(1, m_Api.RestoreRequests.Count);
+            m_Service.Dispose();
+            CreateService("player-2");
+            Assert.AreEqual(2, m_Api.RestoreRequests.Count);
+        }
+
+        [Test]
+        public void FirstLaunch_WithoutOwnedPurchases_CallsNothing()
+        {
+            m_Config.restoreOnFirstLaunch = true;
+            CreateService();
+            Assert.IsEmpty(m_Api.RestoreRequests);
         }
 
         [Test]
