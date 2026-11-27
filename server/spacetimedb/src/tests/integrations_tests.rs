@@ -440,3 +440,55 @@ fn integration_health_shows_sent_skipped_and_failed_events_in_the_setup_check() 
     assert!(dead(&w).is_empty());
     assert_eq!(outbox(&w).len(), before + 1);
 }
+
+#[test]
+fn trial_events_carry_the_trial_and_take_the_names_of_the_game() {
+    use super::revenue_reports_tests::{add_subscription_product, keep_google_token_valid, subscription_period};
+    use purser_core::integrations::OutEvent;
+    use crate::integrations::integration_outbox;
+    let w = World::new();
+    w.as_admin(false);
+    keep_google_token_valid(&w, 60);
+    add_subscription_product(&w);
+    connect(&w, "amplitude", json!({ "event_names": { "trial_start": "trial_started", "trial_converted": "trial_converted", "renewal": "subscription_renewed" } }));
+    w.set_secret(secret_name::AMPLITUDE_API_KEY, "amp-key");
+    w.script("api2.amplitude.com", 200, r#"{"code":200}"#);
+    let send_all = |w: &World| -> Vec<OutEvent> {
+        // The scheduler takes a row out of the table when it runs it.
+        let rows: Vec<_> = w
+            .test
+            .with_reducer_tx(TestAuth::internal(), |tx| {
+                let rows: Vec<_> = tx.db.integration_outbox().iter().collect();
+                for r in &rows {
+                    tx.db.integration_outbox().id().delete(r.id);
+                }
+                Ok::<_, ()>(rows)
+            })
+            .unwrap();
+        let events = rows.iter().map(|r| serde_json::from_str::<OutEvent>(&r.event_json).unwrap()).collect();
+        for r in rows {
+            crate::integrations::send_integration_event(&mut w.ctx(), r);
+        }
+        events
+    };
+    let sent_names = |w: &World| -> Vec<String> {
+        w.fake.borrow().calls.iter().filter(|c| c.contains("amplitude")).map(|c| c.split("\"event_type\":\"").nth(1).unwrap().split('"').next().unwrap().to_string()).collect()
+    };
+
+    // A 7-day free trial.
+    subscription_period(&w, "GPA.7777-0000-0000-00002", "freeTrial", "2026-09-28T00:00:00Z");
+    assert_eq!(w.verify("player-1", "vip").body["status"], "success");
+    let events = send_all(&w);
+    assert_eq!(events.iter().map(|e| (e.kind.as_str(), e.trial, e.trial_conversion)).collect::<Vec<_>>(), [("subscription_start", true, false)]);
+    // The first paid period, then a renewal.
+    w.advance_clock(7 * 86_400);
+    subscription_period(&w, "GPA.7777-0000-0000-00002..0", "basePrice", "2026-10-28T00:00:00Z");
+    assert_eq!(w.verify("player-1", "vip").body["status"], "success");
+    let events = send_all(&w);
+    assert_eq!(events.iter().map(|e| (e.kind.as_str(), e.trial, e.trial_conversion)).collect::<Vec<_>>(), [("renewal", false, true)]);
+    w.advance_clock(30 * 86_400);
+    subscription_period(&w, "GPA.7777-0000-0000-00002..1", "basePrice", "2026-11-28T00:00:00Z");
+    assert_eq!(w.verify("player-1", "vip").body["status"], "success");
+    send_all(&w);
+    assert_eq!(sent_names(&w), ["trial_started", "trial_converted", "subscription_renewed"]);
+}

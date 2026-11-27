@@ -1425,6 +1425,8 @@ pub fn admin_test_integration(ctx: &ReducerContext, json: String) -> Result<(), 
         previous_product_id: String::new(),
         quantity: 1,
         event_id: String::new(),
+        trial: false,
+        trial_conversion: false,
     };
     let only = if i.kind.is_empty() { None } else { Some(i.kind.as_str()) };
     let queued = integrations::enqueue_event(ctx, &app, &format!("test:{now}"), &event, only);

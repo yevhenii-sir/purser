@@ -227,9 +227,50 @@ pub struct OutEvent {
     /// estimated from `country` instead.
     #[serde(default)]
     pub tax_micros: i64,
+    /// The period of the event is a free trial (nothing was paid for it).
+    #[serde(default)]
+    pub trial: bool,
+    /// The period is the first paid one after a free trial.
+    #[serde(default)]
+    pub trial_conversion: bool,
 }
 
 /// What an integration reports as revenue (`revenue` in its settings).
+/// Keys narrower than a kind: keys of an integration's `event_names` (and Adjust's `event_tokens`)
+/// next to the kinds, for some of a kind's events (free trials, refunds of subscriptions). A narrow
+/// key without a name of its own falls back to the kind's name, so `subscription_start` still names
+/// trial starts until `trial_start` is set.
+pub mod narrow_key {
+    /// `subscription_start` of a free trial.
+    pub const TRIAL_START: &str = "trial_start";
+    /// `renewal` that is the first paid period after a free trial.
+    pub const TRIAL_CONVERTED: &str = "trial_converted";
+    /// `cancel` during a free trial: it ends without a payment.
+    pub const TRIAL_CANCEL: &str = "trial_cancel";
+    /// `uncancel` during a free trial.
+    pub const TRIAL_UNCANCEL: &str = "trial_uncancel";
+    /// `expire` of a free trial that ended without a payment.
+    pub const TRIAL_EXPIRE: &str = "trial_expire";
+    /// `refund` of a subscription (a `refund` key then names refunds of the other products).
+    pub const SUBSCRIPTION_REFUND: &str = "subscription_refund";
+
+    pub const ALL: &[&str] = &[TRIAL_START, TRIAL_CONVERTED, TRIAL_CANCEL, TRIAL_UNCANCEL, TRIAL_EXPIRE, SUBSCRIPTION_REFUND];
+
+    /// The kind a narrow key belongs to.
+    pub fn kind_of(key: &str) -> Option<&'static str> {
+        use super::event_kind as k;
+        Some(match key {
+            TRIAL_START => k::SUBSCRIPTION_START,
+            TRIAL_CONVERTED => k::RENEWAL,
+            TRIAL_CANCEL => k::CANCEL,
+            TRIAL_UNCANCEL => k::UNCANCEL,
+            TRIAL_EXPIRE => k::EXPIRE,
+            SUBSCRIPTION_REFUND => k::REFUND,
+            _ => return None,
+        })
+    }
+}
+
 pub mod revenue_mode {
     /// The price the player paid.
     pub const GROSS: &str = "gross";
@@ -310,6 +351,20 @@ pub struct Amounts {
 }
 
 impl OutEvent {
+    /// The [`narrow_key`] of the event (a free trial's, a subscription's refund); `None` for every
+    /// other event.
+    pub fn narrow_key(&self) -> Option<&'static str> {
+        match self.kind.as_str() {
+            event_kind::SUBSCRIPTION_START if self.trial => Some(narrow_key::TRIAL_START),
+            event_kind::RENEWAL | event_kind::SUBSCRIPTION_START if self.trial_conversion => Some(narrow_key::TRIAL_CONVERTED),
+            event_kind::CANCEL if self.trial => Some(narrow_key::TRIAL_CANCEL),
+            event_kind::UNCANCEL if self.trial => Some(narrow_key::TRIAL_UNCANCEL),
+            event_kind::EXPIRE if self.trial => Some(narrow_key::TRIAL_EXPIRE),
+            event_kind::REFUND if self.product_kind == crate::model::kind::SUBSCRIPTION => Some(narrow_key::SUBSCRIPTION_REFUND),
+            _ => None,
+        }
+    }
+
     /// Units, at least 1.
     pub fn units(&self) -> u32 {
         self.quantity.max(1)
@@ -456,7 +511,15 @@ pub mod ga4 {
         /// Also report sandbox / license-tester purchases (DebugView, no revenue).
         #[serde(default)]
         pub send_sandbox: bool,
+        /// Names per kind and [`narrow_key`]; an empty string disables that event. A subscription
+        /// change is sent only when it is named. GA4 counts revenue only of its e-commerce events
+        /// (`purchase`, `refund`): a payment named otherwise carries a value that is not revenue.
+        #[serde(default)]
+        pub event_names: BTreeMap<String, String>,
     }
+
+    /// Prefixes GA4 reserves for its own event names.
+    const RESERVED: &[&str] = &["firebase_", "google_", "ga_"];
 
     impl Settings {
         pub fn parse(json: &str) -> Result<Self, String> {
@@ -464,14 +527,30 @@ pub mod ga4 {
             if s.firebase_app_id.is_empty() || !s.firebase_app_id.chars().all(|c| c.is_ascii_alphanumeric() || c == ':') {
                 return Err("GA4 settings: firebase_app_id must look like 1:1234567890:android:abc123".into());
             }
+            check_event_names("GA4", &s.event_names, EVERY_KEY, NameRule::Identifier(40))?;
+            if let Some((k, v)) = s.event_names.iter().find(|(_, v)| RESERVED.iter().any(|r| v.to_ascii_lowercase().starts_with(r))) {
+                return Err(format!("GA4 settings: event name '{v}' for '{k}' starts with a prefix GA4 reserves ({})", RESERVED.join(", ")));
+            }
             Ok(s)
+        }
+
+        /// The event name of `ev`; `None`: not sent.
+        pub fn event_name(&self, ev: &OutEvent) -> Option<String> {
+            if let Some(name) = renamed_event(&self.event_names, ev) {
+                return name;
+            }
+            default_name(ev).map(str::to_string)
         }
     }
 
-    pub fn event_name(kind: &str) -> Option<&'static str> {
-        match kind {
-            event_kind::PURCHASE | event_kind::SUBSCRIPTION_START => Some("purchase"),
-            event_kind::RENEWAL => Some("subscription_renew"),
+    /// GA4's default name of an event: payments are `purchase` (GA4 counts revenue only of its
+    /// e-commerce events), a free trial `trial_started`; subscription changes are off.
+    pub fn default_name(ev: &OutEvent) -> Option<&'static str> {
+        if ev.narrow_key() == Some(narrow_key::TRIAL_START) {
+            return Some("trial_started");
+        }
+        match ev.kind.as_str() {
+            event_kind::PURCHASE | event_kind::SUBSCRIPTION_START | event_kind::RENEWAL => Some("purchase"),
             event_kind::REFUND => Some("refund"),
             event_kind::EXPIRE => Some("subscription_expire"),
             event_kind::TEST => Some("purser_test"),
@@ -481,15 +560,16 @@ pub mod ga4 {
 
     /// `send_sandbox`: also report sandbox / license-tester purchases (for QA). Off by default:
     /// even without revenue they would inflate purchase counts and conversion in reports.
-    pub fn build(ev: &OutEvent, firebase_app_id: &str, api_secret: &str, send_sandbox: bool) -> Result<Built, String> {
+    pub fn build(ev: &OutEvent, settings: &Settings, api_secret: &str) -> Result<Built, String> {
+        let (firebase_app_id, send_sandbox) = (&settings.firebase_app_id, settings.send_sandbox);
         if firebase_app_id.is_empty() || api_secret.is_empty() {
             return Err("GA4 firebase_app_id / api_secret are not configured".into());
         }
         if let Some(skip) = ev.skip_unless_mobile("GA4") {
             return Ok(skip);
         }
-        let Some(name) = event_name(&ev.kind) else {
-            return Ok(Built::Skip(format!("no GA4 event for '{}'", ev.kind)));
+        let Some(name) = settings.event_name(ev) else {
+            return Ok(Built::Skip(format!("no GA4 event for '{}'", name_key(&settings.event_names, ev))));
         };
         if ev.is_sandbox() && !send_sandbox && ev.kind != event_kind::TEST {
             return Ok(Built::Skip("sandbox purchase".into()));
@@ -551,11 +631,23 @@ pub mod appsflyer {
         /// Also report sandbox / license-tester purchases (default: no, to keep revenue clean).
         #[serde(default)]
         pub send_sandbox: bool,
-        /// Overrides of event names per kind (`purchase`, `subscription_start`, `renewal`, `refund`,
-        /// `expire`); an empty string disables that event.
+        /// Overrides of event names per key of [`NAMED_KEYS`]; an empty string disables that event.
         #[serde(default)]
         pub event_names: BTreeMap<String, String>,
     }
+
+    /// Keys `event_names` may name.
+    pub const NAMED_KEYS: &[&str] = &[
+        event_kind::PURCHASE,
+        event_kind::SUBSCRIPTION_START,
+        event_kind::RENEWAL,
+        event_kind::REFUND,
+        event_kind::EXPIRE,
+        narrow_key::TRIAL_START,
+        narrow_key::TRIAL_CONVERTED,
+        narrow_key::TRIAL_EXPIRE,
+        narrow_key::SUBSCRIPTION_REFUND,
+    ];
 
     impl Settings {
         pub fn parse(json: &str) -> Result<Self, String> {
@@ -565,14 +657,16 @@ pub mod appsflyer {
             {
                 return Err("AppsFlyer settings: app_id must be the package name or id123456789".into());
             }
+            check_event_names("AppsFlyer", &s.event_names, NAMED_KEYS, NameRule::Ascii(45))?;
             Ok(s)
         }
 
-        pub fn event_name(&self, kind: &str) -> Option<String> {
-            if let Some(name) = self.event_names.get(kind) {
-                return if name.is_empty() { None } else { Some(name.clone()) };
+        /// The event name of `ev`; `None`: not sent.
+        pub fn event_name(&self, ev: &OutEvent) -> Option<String> {
+            if let Some(name) = renamed_event(&self.event_names, ev) {
+                return name;
             }
-            let default = match kind {
+            let default = match ev.kind.as_str() {
                 event_kind::PURCHASE => "af_purchase",
                 event_kind::SUBSCRIPTION_START => "af_subscribe",
                 event_kind::RENEWAL => "subscription_renew",
@@ -594,8 +688,8 @@ pub mod appsflyer {
         if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
             return Ok(Built::Skip("sandbox purchase".into()));
         }
-        let Some(name) = settings.event_name(&ev.kind) else {
-            return Ok(Built::Skip(format!("AppsFlyer event for '{}' is disabled", ev.kind)));
+        let Some(name) = settings.event_name(ev) else {
+            return Ok(Built::Skip(format!("AppsFlyer event for '{}' is disabled", name_key(&settings.event_names, ev))));
         };
         let Some(af_id) = ev.attribution.get(attribution_key::APPSFLYER_ID) else {
             return Ok(Built::Skip(format!("{MISSING_CLIENT_ID} appsflyer_id")));
@@ -854,8 +948,9 @@ pub mod adjust {
         /// App token from the Adjust dashboard (AppView → app settings).
         pub app_token: String,
         /// Event token per event kind (`purchase`, `subscription_start`, `renewal`, `refund`,
-        /// `expire`, `test`): each event is created in the Adjust dashboard. Kinds without a token
-        /// are not sent.
+        /// `expire`, the subscription changes, `test`) and [`narrow_key`] (a trial without a token of
+        /// its own uses its kind's): each event is created in the Adjust dashboard. Kinds without a
+        /// token are not sent.
         #[serde(default)]
         pub event_tokens: BTreeMap<String, String>,
         /// Also report sandbox / license-tester purchases, to the Adjust sandbox environment.
@@ -870,6 +965,9 @@ pub mod adjust {
                 return Err("Adjust settings: app_token must be the app token from the dashboard (letters and digits)".into());
             }
             s.event_tokens.retain(|_, v| !v.trim().is_empty());
+            if let Some(k) = s.event_tokens.keys().find(|k| *k != event_kind::TEST && !EVERY_KEY.contains(&k.as_str())) {
+                return Err(format!("Adjust settings: event_tokens: '{k}' is not an event kind or trial key"));
+            }
             if let Some((k, _)) = s.event_tokens.iter().find(|(_, v)| !is_token(v)) {
                 return Err(format!("Adjust settings: event token for '{k}' must be letters and digits"));
             }
@@ -890,7 +988,8 @@ pub mod adjust {
         if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
             return Ok(Built::Skip("sandbox purchase".into()));
         }
-        let Some(event_token) = settings.event_tokens.get(&ev.kind) else {
+        let tokens = &settings.event_tokens;
+        let Some(event_token) = ev.narrow_key().and_then(|k| tokens.get(k)).or_else(|| tokens.get(&ev.kind)) else {
             return Ok(Built::Skip(format!("no Adjust event token for '{}'", ev.kind)));
         };
         let ios = ev.os() == Some("ios");
@@ -979,13 +1078,22 @@ pub mod appmetrica {
         }
     }
 
-    pub fn revenue_event_type(kind: &str) -> Option<&'static str> {
-        match kind {
+    /// AppMetrica's own type of the event (its list of revenue event types: no names of our own).
+    pub fn revenue_event_type(ev: &OutEvent) -> Option<&'static str> {
+        match ev.narrow_key() {
+            Some(narrow_key::TRIAL_START) => return Some("trial_started"),
+            Some(narrow_key::TRIAL_CONVERTED) => return Some("subscription_converted"),
+            _ => {}
+        }
+        match ev.kind.as_str() {
             event_kind::PURCHASE => Some("one_time_purchase"),
             event_kind::SUBSCRIPTION_START => Some("subscription_started"),
             event_kind::RENEWAL => Some("subscription_renewed"),
             event_kind::REFUND => Some("refund"),
             event_kind::EXPIRE => Some("expired"),
+            event_kind::CANCEL => Some("cancellation"),
+            event_kind::UNCANCEL => Some("uncancellation"),
+            event_kind::BILLING_ISSUE => Some("billing_issues"),
             _ => None,
         }
     }
@@ -1033,13 +1141,13 @@ pub mod appmetrica {
             params.push(("event_json", json!({ "source": "purser" }).to_string()));
             EVENTS_API
         } else {
-            let Some(kind) = revenue_event_type(&ev.kind) else {
+            let Some(kind) = revenue_event_type(ev) else {
                 return Ok(Built::Skip(format!("no AppMetrica revenue type for '{}'", ev.kind)));
             };
             params.push(("revenue_event_type", kind.into()));
-            // Refunds carry the refunded amount; expirations no money.
+            // Refunds carry the refunded amount; expirations and subscription changes no money.
             // AppMetrica multiplies the price by the quantity.
-            let price = if ev.kind == event_kind::EXPIRE { 0 } else { ev.price_micros.abs() / ev.units() as i64 };
+            let price = if is_money_kind(&ev.kind) { ev.price_micros.abs() / ev.units() as i64 } else { 0 };
             params.push(("price", crate::money::to_decimal(price)));
             params.push(("currency", ev.currency_or_usd().to_string()));
             params.push(("product_id", ev.product_id.clone()));
@@ -1147,12 +1255,6 @@ fn is_money_kind(kind: &str) -> bool {
     matches!(kind, event_kind::PURCHASE | event_kind::SUBSCRIPTION_START | event_kind::RENEWAL | event_kind::REFUND)
 }
 
-/// The analytics integrations below take every money event and expirations; the subscription
-/// changes of [`event_kind::LIFECYCLE`] are for the webhook and the export only.
-fn skip_lifecycle(ev: &OutEvent, integration: &str) -> Option<Built> {
-    event_kind::LIFECYCLE.contains(&ev.kind.as_str()).then(|| Built::Skip(format!("{integration} does not take '{}'", ev.kind)))
-}
-
 /// Lowercase hex SHA-256.
 fn sha256_hex(s: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -1191,12 +1293,17 @@ pub mod amplitude {
         /// Also report sandbox / license-tester purchases (default: no).
         #[serde(default)]
         pub send_sandbox: bool,
+        /// Event names per kind and [`narrow_key`] instead of `purser_<kind>`; an empty string
+        /// disables that event. A subscription change is sent only when it is named.
+        #[serde(default)]
+        pub event_names: BTreeMap<String, String>,
     }
 
     impl Settings {
         pub fn parse(json: &str) -> Result<Self, String> {
             let s: Settings = serde_json::from_str(json).map_err(|e| format!("invalid Amplitude settings: {e}"))?;
             region("Amplitude", &s.region, REGIONS)?;
+            check_event_names("Amplitude", &s.event_names, EVERY_KEY, NameRule::Ascii(100))?;
             Ok(s)
         }
 
@@ -1209,15 +1316,17 @@ pub mod amplitude {
         }
     }
 
-    /// One event `purser_<kind>` for the billing user (plus the Amplitude device id when the client
-    /// sent it); money events carry Amplitude's revenue fields, refunds with a negative price.
+    /// One event (`purser_<kind>` unless named) for the billing user (plus the Amplitude device id
+    /// when the client sent it); money events carry Amplitude's revenue fields, refunds with a
+    /// negative price.
     pub fn build(ev: &OutEvent, settings: &Settings, api_key: &str) -> Result<Built, String> {
         if api_key.is_empty() {
             return Err("Amplitude API key is not configured".into());
         }
-        if let Some(skip) = skip_lifecycle(ev, "Amplitude") {
-            return Ok(skip);
-        }
+        let name = match analytics_name(&settings.event_names, ev, "Amplitude") {
+            Ok(name) => name,
+            Err(skip) => return Ok(skip),
+        };
         if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
             return Ok(Built::Skip("sandbox purchase".into()));
         }
@@ -1226,7 +1335,7 @@ pub mod amplitude {
             return Ok(Built::Skip(format!("{MISSING_CLIENT_ID} amplitude_device_id and the event has no user id")));
         }
         let mut event = json!({
-            "event_type": format!("purser_{}", ev.kind),
+            "event_type": name,
             "time": ev.at_ms,
             "insert_id": dedup_id(ev),
             "platform": ev.platform,
@@ -1290,6 +1399,10 @@ pub mod mixpanel {
         /// Also report sandbox / license-tester purchases (default: no).
         #[serde(default)]
         pub send_sandbox: bool,
+        /// Event names per kind and [`narrow_key`] instead of `purser_<kind>`; an empty string
+        /// disables that event. A subscription change is sent only when it is named.
+        #[serde(default)]
+        pub event_names: BTreeMap<String, String>,
     }
 
     impl Settings {
@@ -1299,6 +1412,7 @@ pub mod mixpanel {
                 return Err("Mixpanel settings: project_id must be the numeric project id".into());
             }
             region("Mixpanel", &s.region, REGIONS)?;
+            check_event_names("Mixpanel", &s.event_names, EVERY_KEY, NameRule::Ascii(100))?;
             Ok(s)
         }
 
@@ -1325,15 +1439,17 @@ pub mod mixpanel {
         sha256_hex(&dedup_id(ev))[..32].to_string()
     }
 
-    /// One event `purser_<kind>` for `distinct_id` = the billing user id, with the signed revenue.
+    /// One event (`purser_<kind>` unless named) for `distinct_id` = the billing user id, with the
+    /// signed revenue.
     pub fn build(ev: &OutEvent, settings: &Settings, service_account: &str) -> Result<Built, String> {
         if service_account.is_empty() {
             return Err("Mixpanel service account is not configured".into());
         }
         let auth = auth_header(service_account)?;
-        if let Some(skip) = skip_lifecycle(ev, "Mixpanel") {
-            return Ok(skip);
-        }
+        let name = match analytics_name(&settings.event_names, ev, "Mixpanel") {
+            Ok(name) => name,
+            Err(skip) => return Ok(skip),
+        };
         if ev.is_sandbox() && !settings.send_sandbox && ev.kind != event_kind::TEST {
             return Ok(Built::Skip("sandbox purchase".into()));
         }
@@ -1355,7 +1471,7 @@ pub mod mixpanel {
         if !ev.country.is_empty() {
             properties["mp_country_code"] = json!(ev.country);
         }
-        let body = json!([{ "event": format!("purser_{}", ev.kind), "properties": properties }]);
+        let body = json!([{ "event": name, "properties": properties }]);
         Ok(Built::Send(HttpCall {
             sign_with: String::new(),
             method: "POST",
@@ -1525,24 +1641,94 @@ pub mod meta {
     }
 }
 
-/// `name=override` of an integration's `event_names`: `Some(None)` disables the kind, `None` keeps
+/// `name=override` of an integration's `event_names`: `Some(None)` disables the key, `None` keeps
 /// the default.
-fn renamed(names: &BTreeMap<String, String>, kind: &str) -> Option<Option<String>> {
-    names.get(kind).map(|n| if n.is_empty() { None } else { Some(n.clone()) })
+fn renamed(names: &BTreeMap<String, String>, key: &str) -> Option<Option<String>> {
+    names.get(key).map(|n| if n.is_empty() { None } else { Some(n.clone()) })
 }
 
-/// `event_names` of an integration: known kinds only, names of at most `max` printable ASCII
-/// characters (an empty name disables the kind).
-fn check_event_names(integration: &str, names: &BTreeMap<String, String>, kinds: &[&str], max: usize) -> Result<(), String> {
+/// What `event_names` says about `ev`: the entry of its [`narrow_key`] when it has one, otherwise
+/// the entry of its kind. `Some(None)`: not sent; `None`: the integration's default name.
+fn renamed_event(names: &BTreeMap<String, String>, ev: &OutEvent) -> Option<Option<String>> {
+    ev.narrow_key().and_then(|k| renamed(names, k)).or_else(|| renamed(names, &ev.kind))
+}
+
+/// The key `event_names` names `ev` by (its trial key when that has an entry), for messages.
+fn name_key<'a>(names: &BTreeMap<String, String>, ev: &'a OutEvent) -> &'a str {
+    ev.narrow_key().filter(|k| names.contains_key(*k)).unwrap_or(&ev.kind)
+}
+
+/// What the names of an integration may look like.
+#[derive(Clone, Copy)]
+enum NameRule {
+    /// Printable ASCII and spaces, at most this many characters.
+    Ascii(usize),
+    /// A letter, then letters, digits and `_`, at most this many characters (GA4).
+    Identifier(usize),
+}
+
+/// `event_names` of an integration: the keys it takes (kinds and [`narrow_key`]s), names that follow
+/// `rule` (an empty name disables the key).
+fn check_event_names(integration: &str, names: &BTreeMap<String, String>, keys: &[&str], rule: NameRule) -> Result<(), String> {
     for (k, v) in names {
-        if !kinds.contains(&k.as_str()) {
-            return Err(format!("{integration} settings: event_names: '{k}' is not one of {}", kinds.join(", ")));
+        if !keys.contains(&k.as_str()) {
+            return Err(format!("{integration} settings: event_names: '{k}' is not one of {}", keys.join(", ")));
         }
-        if v.len() > max || !v.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
-            return Err(format!("{integration} settings: event name for '{k}' must be at most {max} ASCII characters"));
+        if v.is_empty() {
+            continue;
+        }
+        match rule {
+            NameRule::Ascii(max) if v.len() > max || !v.chars().all(|c| c.is_ascii_graphic() || c == ' ') => {
+                return Err(format!("{integration} settings: event name for '{k}' must be at most {max} ASCII characters"));
+            }
+            NameRule::Identifier(max)
+                if v.len() > max
+                    || !v.starts_with(|c: char| c.is_ascii_alphabetic())
+                    || !v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+            {
+                return Err(format!(
+                    "{integration} settings: event name for '{k}' must start with a letter and have at most {max} letters, digits and underscores"
+                ));
+            }
+            _ => {}
         }
     }
     Ok(())
+}
+
+/// The keys of every kind and trial key: integrations that take a free name for any event.
+const EVERY_KEY: &[&str] = &[
+    event_kind::PURCHASE,
+    event_kind::SUBSCRIPTION_START,
+    event_kind::RENEWAL,
+    event_kind::REFUND,
+    event_kind::EXPIRE,
+    event_kind::CANCEL,
+    event_kind::UNCANCEL,
+    event_kind::BILLING_ISSUE,
+    event_kind::BILLING_RECOVERED,
+    event_kind::PRODUCT_CHANGE,
+    event_kind::PAUSE,
+    event_kind::RESUME,
+    narrow_key::TRIAL_START,
+    narrow_key::TRIAL_CONVERTED,
+    narrow_key::TRIAL_CANCEL,
+    narrow_key::TRIAL_UNCANCEL,
+    narrow_key::TRIAL_EXPIRE,
+    narrow_key::SUBSCRIPTION_REFUND,
+];
+
+/// The name of a product-analytics event (Amplitude, Mixpanel, OneSignal): `event_names` first,
+/// then `purser_<kind>`; the subscription changes of [`event_kind::LIFECYCLE`] only when named.
+fn analytics_name(names: &BTreeMap<String, String>, ev: &OutEvent, integration: &str) -> Result<String, Built> {
+    match renamed_event(names, ev) {
+        Some(Some(name)) => Ok(name),
+        Some(None) => Err(Built::Skip(format!("{integration} event for '{}' is off", name_key(names, ev)))),
+        None if event_kind::LIFECYCLE.contains(&ev.kind.as_str()) => {
+            Err(Built::Skip(format!("{integration} does not take '{}' unless it is named", ev.kind)))
+        }
+        None => Ok(format!("purser_{}", ev.kind)),
+    }
 }
 
 /// A UUID (version 4 layout) derived from `seed`: the same seed gives the same id, for APIs that
@@ -1566,6 +1752,12 @@ fn event_properties(ev: &OutEvent) -> Map<String, Value> {
     p.insert("platform".into(), json!(ev.platform));
     if !ev.previous_product_id.is_empty() {
         p.insert("previous_product_id".into(), json!(ev.previous_product_id));
+    }
+    if ev.trial {
+        p.insert("trial".into(), json!(true));
+    }
+    if ev.trial_conversion {
+        p.insert("trial_conversion".into(), json!(true));
     }
     p
 }
@@ -1706,6 +1898,11 @@ pub mod singular {
         event_kind::EXPIRE,
         event_kind::CANCEL,
         event_kind::TEST,
+        narrow_key::TRIAL_START,
+        narrow_key::TRIAL_CONVERTED,
+        narrow_key::TRIAL_CANCEL,
+        narrow_key::TRIAL_EXPIRE,
+        narrow_key::SUBSCRIPTION_REFUND,
     ];
     /// Singular takes event names of at most 32 ASCII characters.
     pub const MAX_NAME: usize = 32;
@@ -1730,13 +1927,13 @@ pub mod singular {
             if !s.app_id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) || s.app_id.len() > 255 {
                 return Err("Singular settings: app_id must be the package name or bundle id".into());
             }
-            check_event_names("Singular", &s.event_names, NAMED_KINDS, MAX_NAME)?;
+            check_event_names("Singular", &s.event_names, NAMED_KINDS, NameRule::Ascii(MAX_NAME))?;
             Ok(s)
         }
 
         /// The event name of `ev`; `None`: not sent.
         pub fn event_name(&self, ev: &OutEvent) -> Option<String> {
-            if let Some(name) = renamed(&self.event_names, &ev.kind) {
+            if let Some(name) = renamed_event(&self.event_names, ev) {
                 return name;
             }
             // Subscription names of Singular's subscription event guide; `__iap__` is its in-app
@@ -1998,8 +2195,18 @@ pub mod kochava {
     use super::*;
 
     pub const API: &str = "https://control.kochava.com/track/json";
-    pub const NAMED_KINDS: &[&str] =
-        &[event_kind::PURCHASE, event_kind::SUBSCRIPTION_START, event_kind::RENEWAL, event_kind::REFUND, event_kind::EXPIRE, event_kind::TEST];
+    pub const NAMED_KINDS: &[&str] = &[
+        event_kind::PURCHASE,
+        event_kind::SUBSCRIPTION_START,
+        event_kind::RENEWAL,
+        event_kind::REFUND,
+        event_kind::EXPIRE,
+        event_kind::TEST,
+        narrow_key::TRIAL_START,
+        narrow_key::TRIAL_CONVERTED,
+        narrow_key::TRIAL_EXPIRE,
+        narrow_key::SUBSCRIPTION_REFUND,
+    ];
 
     /// Non-secret settings. The App GUID is a credential (`kochava_app_guid`): it is what lets a
     /// caller post events to the app.
@@ -2017,12 +2224,12 @@ pub mod kochava {
         pub fn parse(json: &str) -> Result<Self, String> {
             let s: Settings = serde_json::from_str(if json.trim().is_empty() { "{}" } else { json })
                 .map_err(|e| format!("invalid Kochava settings: {e}"))?;
-            check_event_names("Kochava", &s.event_names, NAMED_KINDS, 100)?;
+            check_event_names("Kochava", &s.event_names, NAMED_KINDS, NameRule::Ascii(100))?;
             Ok(s)
         }
 
         pub fn event_name(&self, ev: &OutEvent) -> Option<String> {
-            if let Some(name) = renamed(&self.event_names, &ev.kind) {
+            if let Some(name) = renamed_event(&self.event_names, ev) {
                 return name;
             }
             let name = match ev.kind.as_str() {
@@ -2132,7 +2339,27 @@ pub mod braze {
         /// Also report sandbox / license-tester purchases (default: no).
         #[serde(default)]
         pub send_sandbox: bool,
+        /// Names of the custom events ([`NAMED_KEYS`]) instead of `purser_<kind>`; an empty string
+        /// disables that event. Payments are Braze purchases and have no name.
+        #[serde(default)]
+        pub event_names: BTreeMap<String, String>,
     }
+
+    /// Keys of the events Braze gets as custom events.
+    pub const NAMED_KEYS: &[&str] = &[
+        event_kind::EXPIRE,
+        event_kind::CANCEL,
+        event_kind::UNCANCEL,
+        event_kind::BILLING_ISSUE,
+        event_kind::BILLING_RECOVERED,
+        event_kind::PRODUCT_CHANGE,
+        event_kind::PAUSE,
+        event_kind::RESUME,
+        narrow_key::TRIAL_START,
+        narrow_key::TRIAL_CANCEL,
+        narrow_key::TRIAL_UNCANCEL,
+        narrow_key::TRIAL_EXPIRE,
+    ];
 
     impl Settings {
         pub fn parse(json: &str) -> Result<Self, String> {
@@ -2149,6 +2376,7 @@ pub mod braze {
             if s.app_id.len() > 64 || !s.app_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
                 return Err("Braze settings: app_id must be an App Identifier (letters, digits, -)".into());
             }
+            check_event_names("Braze", &s.event_names, NAMED_KEYS, NameRule::Ascii(255))?;
             Ok(s)
         }
 
@@ -2159,7 +2387,7 @@ pub mod braze {
 
     /// Money events with a price (purchases, subscription payments, refunds with a negative price)
     /// are `purchases` of the billing user (`external_id`); everything else (free trials,
-    /// expirations, subscription changes, the test) is a custom event `purser_<kind>`.
+    /// expirations, subscription changes, the test) is a custom event, `purser_<kind>` unless named.
     pub fn build(ev: &OutEvent, settings: &Settings, api_key: &str) -> Result<Built, String> {
         if api_key.is_empty() {
             return Err("Braze REST API key is not configured".into());
@@ -2188,7 +2416,12 @@ pub mod braze {
             item["quantity"] = json!(quantity);
             json!({ "purchases": [item] })
         } else {
-            item["name"] = json!(format!("purser_{}", ev.kind));
+            let name = match renamed_event(&settings.event_names, ev) {
+                Some(Some(name)) => name,
+                Some(None) => return Ok(Built::Skip(format!("Braze event for '{}' is off", name_key(&settings.event_names, ev)))),
+                None => format!("purser_{}", ev.kind),
+            };
+            item["name"] = json!(name);
             json!({ "events": [item] })
         };
         Ok(Built::Send(HttpCall {
@@ -2226,6 +2459,10 @@ pub mod onesignal {
         /// Also report sandbox / license-tester purchases (default: no).
         #[serde(default)]
         pub send_sandbox: bool,
+        /// Event names per kind and [`narrow_key`] instead of `purser_<kind>`; an empty string
+        /// disables that event.
+        #[serde(default)]
+        pub event_names: BTreeMap<String, String>,
     }
 
     impl Settings {
@@ -2237,6 +2474,7 @@ pub mod onesignal {
             if !uuid {
                 return Err("OneSignal settings: app_id must be the App ID (a UUID) from Settings → Keys & IDs".into());
             }
+            check_event_names("OneSignal", &s.event_names, EVERY_KEY, NameRule::Ascii(128))?;
             Ok(s)
         }
 
@@ -2245,7 +2483,7 @@ pub mod onesignal {
         }
     }
 
-    /// One custom event `purser_<kind>` for `external_id` = the billing user id, with the product,
+    /// One custom event (`purser_<kind>` unless named) for `external_id` = the billing user id, with the product,
     /// the signed revenue and its currency in `properties` and an `idempotency_key` that is the same
     /// on every retry.
     pub fn build(ev: &OutEvent, settings: &Settings, api_key: &str) -> Result<Built, String> {
@@ -2258,6 +2496,11 @@ pub mod onesignal {
         if ev.user_id.is_empty() {
             return Ok(Built::Skip("the event has no user id (OneSignal external_id)".into()));
         }
+        let name = match renamed_event(&settings.event_names, ev) {
+            Some(Some(name)) => name,
+            Some(None) => return Ok(Built::Skip(format!("OneSignal event for '{}' is off", name_key(&settings.event_names, ev)))),
+            None => format!("purser_{}", ev.kind),
+        };
         let mut properties = event_properties(ev);
         if is_money_kind(&ev.kind) {
             properties.insert("revenue".into(), json!(ev.revenue()));
@@ -2265,7 +2508,7 @@ pub mod onesignal {
             properties.insert("quantity".into(), json!(ev.units()));
         }
         let event = json!({
-            "name": format!("purser_{}", ev.kind),
+            "name": name,
             "external_id": ev.user_id,
             "timestamp": crate::time::format_rfc3339(ev.at_ms),
             "idempotency_key": uuid_of(&dedup_id(ev)),
@@ -2332,7 +2575,13 @@ mod tests {
             previous_product_id: String::new(),
             quantity: 1,
             event_id: String::new(),
+            trial: false,
+            trial_conversion: false,
         }
+    }
+
+    fn ga4s(send_sandbox: bool) -> ga4::Settings {
+        ga4::Settings { firebase_app_id: "1:1:android:abc".into(), send_sandbox, ..Default::default() }
     }
 
     fn settings() -> appsflyer::Settings {
@@ -2433,25 +2682,25 @@ mod tests {
     fn ga4_skips_sandbox_unless_enabled() {
         let mut sandbox = event("purchase", "android");
         sandbox.environment = "sandbox".into();
-        assert!(matches!(ga4::build(&sandbox, "1:1:android:abc", "S", false).unwrap(), Built::Skip(_)));
-        let call = send(ga4::build(&sandbox, "1:1:android:abc", "S", true).unwrap());
+        assert!(matches!(ga4::build(&sandbox, &ga4s(false), "S").unwrap(), Built::Skip(_)));
+        let call = send(ga4::build(&sandbox, &ga4s(true), "S").unwrap());
         let body: Value = serde_json::from_str(&call.body).unwrap();
         assert_eq!(body["events"][0]["params"]["value"], 0.0);
         assert_eq!(body["events"][0]["params"]["debug_mode"], 1);
         let mut test = event("test", "android");
         test.environment = "sandbox".into();
-        assert!(matches!(ga4::build(&test, "1:1:android:abc", "S", false).unwrap(), Built::Send(_)));
+        assert!(matches!(ga4::build(&test, &ga4s(false), "S").unwrap(), Built::Send(_)));
     }
 
     #[test]
     fn ga4_payload() {
-        let call = send(ga4::build(&event("renewal", "android"), "1:1:android:abc", "SECRET", false).unwrap());
+        let call = send(ga4::build(&event("renewal", "android"), &ga4s(false), "SECRET").unwrap());
         assert!(call.url.ends_with("firebase_app_id=1:1:android:abc&api_secret=SECRET"));
         let body: Value = serde_json::from_str(&call.body).unwrap();
-        assert_eq!(body["events"][0]["name"], "subscription_renew");
+        assert_eq!(body["events"][0]["name"], "purchase", "GA4 counts revenue only of its e-commerce events");
         assert_eq!(body["events"][0]["params"]["value"], 4.99);
         assert_eq!(body["app_instance_id"].as_str().unwrap().len(), 32);
-        assert!(ga4::build(&event("purchase", "android"), "", "x", false).is_err());
+        assert!(ga4::build(&event("purchase", "android"), &ga4::Settings::default(), "x").is_err());
     }
 
     #[test]
@@ -2472,7 +2721,7 @@ mod tests {
         let mut web = event("purchase", "web");
         web.attribution.insert(attribution_key::APPSFLYER_ID.into(), "1700000000000-1".into());
         assert!(matches!(appsflyer::build(&web, &settings(), "K").unwrap(), Built::Skip(_)));
-        assert!(matches!(ga4::build(&web, "1:1:android:abc", "S", false).unwrap(), Built::Skip(_)));
+        assert!(matches!(ga4::build(&web, &ga4s(false), "S").unwrap(), Built::Skip(_)));
         let mut amazon = web.clone();
         amazon.platform = "amazon".into();
         amazon.attribution.insert(attribution_key::ADVERTISING_ID.into(), "ad-1".into());
@@ -3333,5 +3582,212 @@ mod tests {
         assert!(is_retryable_status(503));
         assert!(!is_retryable_status(400));
         assert!(!is_retryable_status(401));
+    }
+
+    /// A subscription event of a free trial (`trial`) or of the first payment after one (`conversion`).
+    fn trial_event(kind: &str, trial: bool, conversion: bool) -> OutEvent {
+        let mut ev = event(kind, "android");
+        ev.product_kind = crate::model::kind::SUBSCRIPTION.into();
+        ev.trial = trial;
+        ev.trial_conversion = conversion;
+        if trial {
+            ev.price_micros = 0;
+        }
+        ev
+    }
+
+    #[test]
+    fn trials_and_subscription_refunds_have_narrow_keys() {
+        assert_eq!(trial_event("subscription_start", true, false).narrow_key(), Some(narrow_key::TRIAL_START));
+        assert_eq!(trial_event("renewal", false, true).narrow_key(), Some(narrow_key::TRIAL_CONVERTED));
+        assert_eq!(trial_event("cancel", true, false).narrow_key(), Some(narrow_key::TRIAL_CANCEL));
+        assert_eq!(trial_event("uncancel", true, false).narrow_key(), Some(narrow_key::TRIAL_UNCANCEL));
+        assert_eq!(trial_event("expire", true, false).narrow_key(), Some(narrow_key::TRIAL_EXPIRE));
+        // Paid periods and the refund of a trial have none.
+        assert_eq!(trial_event("subscription_start", false, false).narrow_key(), None);
+        assert_eq!(trial_event("renewal", false, false).narrow_key(), None);
+        assert_eq!(trial_event("cancel", false, false).narrow_key(), None);
+        // A refund of a subscription has its own key; of another product, none.
+        assert_eq!(trial_event("refund", false, false).narrow_key(), Some(narrow_key::SUBSCRIPTION_REFUND));
+        assert_eq!(event("refund", "android").narrow_key(), None);
+        assert!(narrow_key::ALL.iter().all(|k| narrow_key::kind_of(k).is_some()));
+        assert_eq!(narrow_key::kind_of("refund"), None);
+    }
+
+    #[test]
+    fn a_trial_name_falls_back_to_the_name_of_its_kind() {
+        let names: BTreeMap<String, String> =
+            [("subscription_start", "sub_started"), ("trial_expire", ""), ("cancel", "sub_cancelled")].map(|(k, v)| (k.into(), v.into())).into();
+        let start = trial_event("subscription_start", true, false);
+        assert_eq!(renamed_event(&names, &start), Some(Some("sub_started".into())));
+        let mut with_trial = names.clone();
+        with_trial.insert("trial_start".into(), "trial_started".into());
+        assert_eq!(renamed_event(&with_trial, &start), Some(Some("trial_started".into())));
+        assert_eq!(renamed_event(&with_trial, &trial_event("subscription_start", false, false)), Some(Some("sub_started".into())));
+        // An empty name turns off only the trial's event.
+        assert_eq!(renamed_event(&names, &trial_event("expire", true, false)), Some(None));
+        assert_eq!(renamed_event(&names, &trial_event("expire", false, false)), None);
+        assert_eq!(renamed_event(&names, &trial_event("cancel", true, false)), Some(Some("sub_cancelled".into())));
+    }
+
+    #[test]
+    fn product_analytics_take_the_names_of_the_game() {
+        let s = amplitude::Settings::parse(
+            r#"{"event_names":{"renewal":"subscription_renewed","trial_start":"trial_started","cancel":"subscription_renewal_cancelled","purchase":""}}"#,
+        )
+        .unwrap();
+        let name = |ev: &OutEvent| -> Option<String> {
+            match amplitude::build(ev, &s, "K").unwrap() {
+                Built::Send(c) => Some(serde_json::from_str::<Value>(&c.body).unwrap()["events"][0]["event_type"].as_str().unwrap().to_string()),
+                Built::Skip(_) => None,
+            }
+        };
+        assert_eq!(name(&trial_event("renewal", false, false)).as_deref(), Some("subscription_renewed"));
+        assert_eq!(name(&trial_event("renewal", false, true)).as_deref(), Some("subscription_renewed"));
+        assert_eq!(name(&trial_event("subscription_start", true, false)).as_deref(), Some("trial_started"));
+        assert_eq!(name(&trial_event("subscription_start", false, false)).as_deref(), Some("purser_subscription_start"));
+        assert_eq!(name(&event("purchase", "android")), None);
+        // Subscription changes are sent once they are named.
+        assert_eq!(name(&trial_event("cancel", false, false)).as_deref(), Some("subscription_renewal_cancelled"));
+        assert_eq!(name(&trial_event("pause", false, false)), None);
+        assert!(name(&event("test", "android")).is_some());
+
+        let m = mixpanel::Settings::parse(r#"{"project_id":"1","event_names":{"trial_converted":"trial_converted","billing_issue":"billing_issue_detected"}}"#).unwrap();
+        let body = |ev: &OutEvent| match mixpanel::build(ev, &m, "user:secret").unwrap() {
+            Built::Send(c) => serde_json::from_str::<Value>(&c.body).unwrap()[0]["event"].as_str().unwrap().to_string(),
+            Built::Skip(r) => r,
+        };
+        assert_eq!(body(&trial_event("renewal", false, true)), "trial_converted");
+        assert_eq!(body(&trial_event("renewal", false, false)), "purser_renewal");
+        assert_eq!(body(&trial_event("billing_issue", false, false)), "billing_issue_detected");
+
+        let o = onesignal::Settings::parse(r#"{"app_id":"8250EAF6-1A4B-4DE3-9E5A-2B4D63D1E7AB","event_names":{"trial_cancel":"trial_renewal_cancelled","expire":""}}"#).unwrap();
+        let call = send(onesignal::build(&trial_event("cancel", true, false), &o, "K").unwrap());
+        let v: Value = serde_json::from_str(&call.body).unwrap();
+        assert_eq!(v["events"][0]["name"], "trial_renewal_cancelled");
+        assert_eq!(v["events"][0]["properties"]["trial"], true);
+        assert!(matches!(onesignal::build(&trial_event("expire", true, false), &o, "K").unwrap(), Built::Skip(_)));
+        assert!(send(onesignal::build(&trial_event("cancel", false, false), &o, "K").unwrap()).body.contains("purser_cancel"));
+
+        assert!(amplitude::Settings::parse(r#"{"event_names":{"test":"x"}}"#).unwrap_err().contains("test"));
+        assert!(amplitude::Settings::parse(r#"{"event_names":{"renewal":"a\nb"}}"#).is_err());
+        assert!(onesignal::Settings::parse(r#"{"app_id":"8250eaf6-1a4b-4de3-9e5a-2b4d63d1e7ab","event_names":{"trial":"x"}}"#).is_err());
+    }
+
+    #[test]
+    fn ga4_sends_payments_as_purchases_and_names_every_event() {
+        let name_with = |names: Value, ev: &OutEvent| {
+            let s = ga4::Settings::parse(&json!({ "firebase_app_id": "1:1:android:abc", "event_names": names }).to_string()).unwrap();
+            match ga4::build(ev, &s, "S").unwrap() {
+                Built::Send(c) => serde_json::from_str::<Value>(&c.body).unwrap()["events"][0]["name"].as_str().unwrap().to_string(),
+                Built::Skip(r) => format!("skip: {r}"),
+            }
+        };
+        let defaults = |ev: &OutEvent| name_with(json!({}), ev);
+        // Defaults: every payment is a purchase, a free trial is not.
+        assert_eq!(defaults(&trial_event("subscription_start", false, false)), "purchase");
+        assert_eq!(defaults(&trial_event("renewal", false, false)), "purchase");
+        assert_eq!(defaults(&trial_event("renewal", false, true)), "purchase");
+        assert_eq!(defaults(&trial_event("subscription_start", true, false)), "trial_started");
+        assert_eq!(defaults(&trial_event("refund", false, false)), "refund");
+        assert_eq!(defaults(&trial_event("expire", false, false)), "subscription_expire");
+        assert!(defaults(&trial_event("cancel", false, false)).starts_with("skip"), "subscription changes only when named");
+
+        let names = json!({
+            "purchase": "in_app_purchase", "renewal": "subscription_renewed", "trial_start": "trial_began",
+            "trial_expire": "", "cancel": "subscription_renewal_cancelled", "subscription_refund": "subscription_refunded",
+        });
+        assert_eq!(name_with(names.clone(), &event("purchase", "android")), "in_app_purchase");
+        assert_eq!(name_with(names.clone(), &trial_event("renewal", false, false)), "subscription_renewed");
+        assert_eq!(name_with(names.clone(), &trial_event("subscription_start", true, false)), "trial_began");
+        assert!(name_with(names.clone(), &trial_event("expire", true, false)).starts_with("skip"));
+        assert_eq!(name_with(names.clone(), &trial_event("expire", false, false)), "subscription_expire");
+        assert_eq!(name_with(names.clone(), &trial_event("cancel", false, false)), "subscription_renewal_cancelled");
+        assert_eq!(name_with(names.clone(), &trial_event("refund", false, false)), "subscription_refunded");
+        assert_eq!(name_with(names, &event("refund", "android")), "refund");
+
+        for bad in [r#"{"test":"x"}"#, r#"{"renewal":"1st"}"#, r#"{"renewal":"sub renewed"}"#, r#"{"renewal":"firebase_x"}"#, r#"{"renewal":"a_name_that_is_longer_than_forty_characters"}"#] {
+            let json = format!(r#"{{"firebase_app_id":"1:1:android:abc","event_names":{bad}}}"#);
+            assert!(ga4::Settings::parse(&json).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_subscription_refund_has_a_name_of_its_own() {
+        let s = amplitude::Settings::parse(r#"{"event_names":{"refund":"purchase_refunded","subscription_refund":"subscription_refunded"}}"#).unwrap();
+        let name = |ev: &OutEvent| match amplitude::build(ev, &s, "K").unwrap() {
+            Built::Send(c) => serde_json::from_str::<Value>(&c.body).unwrap()["events"][0]["event_type"].as_str().unwrap().to_string(),
+            Built::Skip(r) => r,
+        };
+        assert_eq!(name(&trial_event("refund", false, false)), "subscription_refunded");
+        assert_eq!(name(&event("refund", "android")), "purchase_refunded");
+        // Without a name of its own it takes the refund's.
+        let only_refund = appsflyer::Settings::parse(r#"{"app_id":"com.test.game","event_names":{"refund":"af_refund"}}"#).unwrap();
+        assert_eq!(only_refund.event_name(&trial_event("refund", false, false)).as_deref(), Some("af_refund"));
+        // Singular already tells them apart by default.
+        let sg = singular::Settings::parse("{}").unwrap();
+        assert_eq!(sg.event_name(&trial_event("refund", false, false)).as_deref(), Some("subscription_refunded"));
+        assert_eq!(sg.event_name(&event("refund", "android")).as_deref(), Some("refund"));
+    }
+
+    #[test]
+    fn attribution_networks_name_trials_apart() {
+        let s = appsflyer::Settings::parse(r#"{"app_id":"com.test.game","event_names":{"trial_start":"af_start_trial","trial_converted":"trial_converted"}}"#).unwrap();
+        assert_eq!(s.event_name(&trial_event("subscription_start", true, false)).as_deref(), Some("af_start_trial"));
+        assert_eq!(s.event_name(&trial_event("subscription_start", false, false)).as_deref(), Some("af_subscribe"));
+        assert_eq!(s.event_name(&trial_event("renewal", false, true)).as_deref(), Some("trial_converted"));
+        assert_eq!(s.event_name(&trial_event("renewal", false, false)).as_deref(), Some("subscription_renew"));
+        assert!(appsflyer::Settings::parse(r#"{"app_id":"com.test.game","event_names":{"pause":"x"}}"#).is_err());
+
+        let k = kochava::Settings::parse(r#"{"event_names":{"trial_expire":"Trial Expired"}}"#).unwrap();
+        assert_eq!(k.event_name(&trial_event("expire", true, false)).as_deref(), Some("Trial Expired"));
+        assert_eq!(k.event_name(&trial_event("expire", false, false)), None);
+        let sg = singular::Settings::parse(r#"{"event_names":{"trial_cancel":"trial_cancelled"}}"#).unwrap();
+        assert_eq!(sg.event_name(&trial_event("cancel", true, false)).as_deref(), Some("trial_cancelled"));
+        assert_eq!(sg.event_name(&trial_event("cancel", false, false)).as_deref(), Some("subscription_cancelled"));
+    }
+
+    #[test]
+    fn adjust_takes_a_token_of_its_own_for_trials() {
+        let s = adjust::Settings::parse(r#"{"app_token":"abc123","event_tokens":{"subscription_start":"sub111","trial_start":"tri222"}}"#).unwrap();
+        let token = |ev: &OutEvent| {
+            let mut ev = ev.clone();
+            ev.attribution.insert(attribution_key::ADJUST_ID.into(), "adid1".into());
+            match adjust::build(&ev, &s, "T").unwrap() {
+                Built::Send(c) => format!("{}&{}", c.url, c.body).split("event_token=").nth(1).unwrap().split('&').next().unwrap().to_string(),
+                Built::Skip(r) => r,
+            }
+        };
+        assert_eq!(token(&trial_event("subscription_start", true, false)), "tri222");
+        assert_eq!(token(&trial_event("subscription_start", false, false)), "sub111");
+        assert!(adjust::Settings::parse(r#"{"app_token":"abc123","event_tokens":{"trial":"x1"}}"#).is_err());
+    }
+
+    #[test]
+    fn appmetrica_reports_trials_and_subscription_changes_with_its_own_types() {
+        let s = appmetrica::Settings::parse(r#"{"application_id":"1234567"}"#).unwrap();
+        let params = |mut ev: OutEvent| {
+            ev.attribution.insert("appmetrica_device_id".into(), "12345678901234567890".into());
+            let call = send(appmetrica::build(&ev, &s, "K").unwrap());
+            let q = call.url.split_once('?').unwrap().1.to_string();
+            let get = |k: &str| q.split('&').find_map(|p| p.strip_prefix(&format!("{k}=")).map(str::to_string)).unwrap_or_default();
+            (get("revenue_event_type"), get("price"))
+        };
+        assert_eq!(params(trial_event("subscription_start", true, false)), ("trial_started".into(), "0".into()));
+        assert_eq!(params(trial_event("renewal", false, true)).0, "subscription_converted");
+        assert_eq!(params(trial_event("renewal", false, false)).0, "subscription_renewed");
+        assert_eq!(params(trial_event("cancel", false, false)), ("cancellation".into(), "0".into()));
+        assert_eq!(params(trial_event("uncancel", true, false)).0, "uncancellation");
+        assert_eq!(params(trial_event("billing_issue", false, false)).0, "billing_issues");
+    }
+
+    #[test]
+    fn braze_names_only_its_custom_events() {
+        let s = braze::Settings::parse(r#"{"endpoint":"https://rest.iad-01.braze.com","event_names":{"trial_start":"trial_started","expire":"subscription_expired"}}"#).unwrap();
+        let body = |ev: &OutEvent| send(braze::build(ev, &s, "K").unwrap()).body;
+        assert!(body(&trial_event("subscription_start", true, false)).contains(r#""name":"trial_started""#));
+        assert!(body(&trial_event("expire", false, false)).contains(r#""name":"subscription_expired""#));
+        assert!(body(&trial_event("renewal", false, false)).contains(r#""purchases""#));
+        assert!(braze::Settings::parse(r#"{"endpoint":"https://rest.iad-01.braze.com","event_names":{"purchase":"x"}}"#).is_err());
     }
 }

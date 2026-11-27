@@ -35,7 +35,7 @@ export const KINDS: Record<Kind, KindDef> = {
   ga4: {
     name: "Google Analytics 4",
     icon: ChartColumnIcon,
-    description: "Purchases, renewals and refunds as GA4 / Firebase events through the Measurement Protocol.",
+    description: "Payments as GA4 purchase events (revenue), refunds, free trials and, when named, subscription changes through the Measurement Protocol.",
     secret: "ga4_api_secret",
     secretLabel: "Measurement Protocol API secret",
     secretScope: "app",
@@ -75,7 +75,7 @@ export const KINDS: Record<Kind, KindDef> = {
   appmetrica: {
     name: "AppMetrica",
     icon: ActivityIcon,
-    description: "Purchases, renewals and refunds as revenue events through the AppMetrica Post API.",
+    description: "Purchases, renewals, refunds, free trials and subscription changes as revenue events through the AppMetrica Post API.",
     secret: "appmetrica_post_api_key",
     secretLabel: "Post API key (app settings → Post API)",
     secretScope: "app",
@@ -85,7 +85,7 @@ export const KINDS: Record<Kind, KindDef> = {
   amplitude: {
     name: "Amplitude",
     icon: ChartLineIcon,
-    description: "Purchases, renewals, refunds and expirations as purser_* events with revenue through the HTTP V2 API, for the billing user id.",
+    description: "Purchases, renewals, refunds and expirations as purser_* events (or your own names) with revenue through the HTTP V2 API, for the billing user id.",
     secret: "amplitude_api_key",
     secretLabel: "Project API key (project settings → General)",
     secretScope: "app",
@@ -95,7 +95,7 @@ export const KINDS: Record<Kind, KindDef> = {
   mixpanel: {
     name: "Mixpanel",
     icon: ChartSplineIcon,
-    description: "Purchases, renewals, refunds and expirations as purser_* events with revenue through the Import API, with the billing user id as distinct_id.",
+    description: "Purchases, renewals, refunds and expirations as purser_* events (or your own names) with revenue through the Import API, with the billing user id as distinct_id.",
     secret: "mixpanel_service_account",
     secretLabel: "Service account as username:secret (Organization settings → Service accounts)",
     secretScope: "app",
@@ -145,7 +145,7 @@ export const KINDS: Record<Kind, KindDef> = {
   braze: {
     name: "Braze",
     icon: MegaphoneIcon,
-    description: "Purchases (refunds with a negative price) and purser_* custom events for cancellations, billing issues, expirations, for the player's external_id (/users/track).",
+    description: "Purchases (refunds with a negative price) and purser_* custom events (or your own names) for free trials, cancellations, billing issues, expirations, for the player's external_id (/users/track).",
     secret: "braze_rest_api_key",
     secretLabel: "REST API key with users.track (Settings → APIs and Identifiers)",
     secretScope: "app",
@@ -155,7 +155,7 @@ export const KINDS: Record<Kind, KindDef> = {
   onesignal: {
     name: "OneSignal",
     icon: BellIcon,
-    description: "Every purchase and subscription event as a purser_* custom event for the player's external_id, for journeys and segments (Custom Events API).",
+    description: "Every purchase and subscription event as a purser_* custom event (or your own names) for the player's external_id, for journeys and segments (Custom Events API).",
     secret: "onesignal_api_key",
     secretLabel: "App API key (Settings → Keys & IDs)",
     secretScope: "app",

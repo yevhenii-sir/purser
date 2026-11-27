@@ -336,7 +336,9 @@ in `registry::STORES`; builds cannot use it.
 1. `server/core/src/integrations.rs`: a constant in `integration_kind` (+ `ALL`), a `mod <kind>`
    with `Settings { ... }::parse` (validate!) and `build(ev: &OutEvent, settings, secret) -> Result<Built, String>`
    (`Built::Skip(reason)` when the event does not apply: sandbox, missing device id, disabled kind).
-   New client ids → `attribution_key` (+ `ALL`). Unit tests next to the others.
+   New client ids → `attribution_key` (+ `ALL`). A platform that takes free event names gets
+   `event_names` (`check_event_names` with the keys it sends, kinds and `narrow_key`s; `renamed_event`
+   picks the name) and an `EVENT_NAMES` entry in `components/integrations.tsx`. Unit tests next to the others.
 2. `server/spacetimedb/src/config.rs`: secret name in `secret_name` + `is_known`.
 3. `server/spacetimedb/src/integrations.rs`: `validate_settings`, `secret_for`, a `build_call` arm.
    An OAuth token (like Cloud Storage) is fetched in `send_integration_event` via `stores::google_token`.

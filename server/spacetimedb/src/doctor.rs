@@ -1011,8 +1011,11 @@ fn probe_ga4(ctx: &mut impl Ctx, app: &GameApp, firebase_app_id: &str, api_secre
         previous_product_id: String::new(),
         quantity: 1,
         event_id: String::new(),
+        trial: false,
+        trial_conversion: false,
     };
-    match ga4::build(&event, firebase_app_id, api_secret, true) {
+    let settings = ga4::Settings { firebase_app_id: firebase_app_id.to_string(), send_sandbox: true, ..Default::default() };
+    match ga4::build(&event, &settings, api_secret) {
         Ok(Built::Send(call)) => {
             let url = call.url.replacen("/mp/collect", "/debug/mp/collect", 1);
             match net::send(ctx.http(), "POST", &url, &[("Content-Type", "application/json")], call.body) {

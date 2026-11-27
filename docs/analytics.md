@@ -76,7 +76,9 @@ While the report is counted, the page shows the previous report, or waits for th
     - Google Play refunds of some units of a multi-quantity purchase (their share of the price);
     - App Store prorated refunds (`revocationType` `REFUND_PRORATED`). The purchase is revoked, and the
       refund counts `revocationPercentage` of the price.
-- **A free-trial period** is recorded with price 0, so integrations get no revenue for it either. Google
+- **A free-trial period** is recorded with price 0, so integrations get no revenue for it either. Its
+  events carry `trial`, and the first payment after it `trial_conversion`; integrations can name them
+  apart from paid periods (`trial_start`, `trial_converted`, ... in `event_names`). Google
   reports the price of the next renewal for it, which is not what the buyer paid. Trials are detected
   from Google's `lineItems[].offerPhase.freeTrial` (subscriptionsv2) and Apple's `offerDiscountType` =
   `FREE_TRIAL` (older Apple payloads: introductory offer with price 0).

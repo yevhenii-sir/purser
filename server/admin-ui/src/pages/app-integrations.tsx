@@ -170,6 +170,10 @@ export function AppIntegrationsTab({ data, reload }: TabProps) {
       <IntegrationDialog
         editing={editing && { kind: editing.kind, row: editing.row }}
         apps={editing ? g.apps.filter((a) => a.app_id === editing.appId) : g.apps}
+        others={editing ? g.apps.flatMap((a) => {
+          const row = a.app_id !== editing.appId && data.integrations.find((i) => i.app_id === a.app_id && i.kind === editing.kind)
+          return row ? [{ label: buildLabel(a), row: row as Integration }] : []
+        }) : []}
         onClose={() => setEditing(null)}
         onSaved={reload}
       />

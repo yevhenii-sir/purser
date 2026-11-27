@@ -220,6 +220,8 @@ pub fn out_event(tx: &ReducerContext, app: &GameApp, p: &Purchase, kind: &str) -
         previous_product_id: String::new(),
         quantity: p.quantity.max(1),
         event_id: format!("{}#{}", p.id, p.step_seq),
+        trial: p.trial,
+        trial_conversion: !p.trial && p.trial_conversion,
     }
 }
 
@@ -371,8 +373,7 @@ fn build_call(tx: &TxContext, row: &IntegrationOutbox, event: &OutEvent, access_
     };
     match row.kind.as_str() {
         integration_kind::GA4 => {
-            let s = ga4::Settings::parse(&integration.settings_json)?;
-            ga4::build(event, &s.firebase_app_id, &secret(secret_name::GA4_API_SECRET)?, s.send_sandbox)
+            ga4::build(event, &ga4::Settings::parse(&integration.settings_json)?, &secret(secret_name::GA4_API_SECRET)?)
         }
         integration_kind::APPSFLYER => {
             appsflyer::build(event, &appsflyer::Settings::parse(&integration.settings_json)?, &secret(secret_name::APPSFLYER_S2S_KEY)?)

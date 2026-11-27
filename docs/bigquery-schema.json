@@ -18,5 +18,7 @@
   {"name": "attribution_json", "type": "JSON", "description": "Device ids the client sent (tenjin_id, appsflyer_id, ...)"},
   {"name": "country", "type": "STRING", "description": "Billing country, ISO 3166-1 alpha-2"},
   {"name": "commission_percent", "type": "FLOAT"},
-  {"name": "previous_product_id", "type": "STRING", "description": "product_change: the product before"}
+  {"name": "previous_product_id", "type": "STRING", "description": "product_change: the product before"},
+  {"name": "trial", "type": "BOOLEAN", "description": "The period is a free trial"},
+  {"name": "trial_conversion", "type": "BOOLEAN", "description": "The first paid period after a free trial"}
 ]
