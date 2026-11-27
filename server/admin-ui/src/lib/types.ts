@@ -243,6 +243,8 @@ export interface Stats extends Partial<Kept> {
     gross_usd_micros: number
     refunded_usd_micros: number
     converted: boolean
+    /** Where the rate of the range's last day comes from; null without one. */
+    rate_source: "ecb" | "market" | "manual" | "telegram" | null
   }[]
   subscriptions: {
     /** Paid subscriptions running now; free trials are `trials_now`. */
@@ -271,7 +273,7 @@ export interface Stats extends Partial<Kept> {
     /** A price increase the player has not accepted: these end unless they do. */
     price_consent_needed_now?: number
   }
-  fx: { as_of: string | null; missing: string[]; overrides: Record<string, number> }
+  fx: { as_of: string | null; market_as_of: string | null; missing: string[]; overrides: Record<string, number> }
   /** The worker is recomputing the revenue aggregates: totals may be incomplete for a while. */
   rebuilding?: boolean
 }

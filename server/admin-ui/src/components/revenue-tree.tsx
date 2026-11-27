@@ -141,7 +141,7 @@ const NODES: NodeDef[] = [
     detail: (m) => (m.mrr === null ? "no snapshot yet" : `MRR ${usd(m.mrr)}`),
     help: "Active subscriptions at the last daily snapshot of the period, and their monthly recurring revenue." },
   { id: "gross", col: 4, row: 2, compactRow: 1, title: "Gross revenue", role: "Revenue", icon: CircleDollarSignIcon, value: (m) => m.gross, format: usd,
-    help: "All payments at store prices, converted to USD at the ECB rate of each day." },
+    help: "All payments at store prices, converted to USD at the rate of each day (ECB, market rates for the rest)." },
   { id: "refunds", col: 4, row: 4, compactRow: 2, title: "Refunds", role: "Revenue", icon: UndoIcon, value: (m) => m.refunded, format: usd, lowerIsBetter: true,
     detail: (m) => `${count(m.refunds)} refunded`,
     help: "Money the stores gave back for purchases of the period's days." },

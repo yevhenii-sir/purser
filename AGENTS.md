@@ -101,7 +101,7 @@ games and apps. It is one **SpacetimeDB module** (Rust → wasm) plus a **Unity 
   client (renewals, refunds).
 - **Revenue**: `revenue_daily` (day × app × product × environment × currency), `revenue_country_daily`
   (day × app × billing country × environment × currency), `subscription_daily`
-  snapshots, ECB rates (`fx_day`, `fx_override`). Rules in `purser_core::revenue` are used both live
+  snapshots, ECB rates (`fx_day`), market rates for the other currencies (`fx_market_day`), manual ones (`fx_override`). Rules in `purser_core::revenue` are used both live
   and by `admin_rebuild_revenue`, so both give the same numbers. `build_sales_daily` (day × build ×
   currency, production) is counted live in every `analytics` mode, `off` included, and read by business
   alerts and `/metrics` (never by reports; the rebuild does not touch it). `analytics` = `off` is the

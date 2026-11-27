@@ -124,6 +124,34 @@ fn a_failed_fx_backfill_waits_an_hour() {
 }
 
 #[test]
+fn market_rates_fill_the_currencies_the_ecb_does_not_publish() {
+    let w = World::new();
+    w.as_admin(false);
+    let at = NOW_MICROS - 3 * DAY_MICROS;
+    w.insert_ledger(vec![ledger_row("google:GPA.UAH", at, |p| (p.currency, p.price_micros) = ("UAH".into(), 41_000_000))], Vec::new());
+    w.write(crate::revenue::invalidate);
+    w.script("api.frankfurter.dev/v1/latest", 200, r#"{"amount":1.0,"base":"USD","date":"2026-09-21","rates":{"EUR":0.9}}"#);
+    w.script("api.frankfurter.dev/v1/20", 200, r#"{"amount":1.0,"base":"USD","rates":{"2026-09-18":{"EUR":0.9}}}"#);
+    w.script("currency-api@latest", 200, r#"{"date":"2026-09-21","usd":{"uah":42.0,"eur":0.95,"btc":0.00001}}"#);
+    w.script("currency-api@2026-09-20", 200, r#"{"date":"2026-09-20","usd":{"uah":41.5}}"#);
+    w.script("currency-api@2026-09-18", 200, r#"{"date":"2026-09-18","usd":{"uah":41.0}}"#);
+    // 2026-09-19 answers 404 at the CDN and its mirror: a day the history does not have.
+    for _ in 0..3 {
+        w.run_worker();
+        w.advance_clock(61);
+    }
+    assert_eq!(w.calls("2026-09-19.currency-api.pages.dev"), 1, "the mirror is asked when the CDN has no file");
+    assert_eq!(w.calls("currency-api@2026-09-17"), 0, "no history before the first revenue day");
+
+    let r = crate::revenue::stats(&mut w.ctx(), &json!({ "from": "2026-09-01", "to": "2026-09-30" }).to_string()).unwrap();
+    assert_eq!(r["totals"]["gross_usd_micros"], 1_000_000, "41 UAH at the market rate of 2026-09-18");
+    assert_eq!(r["fx"]["missing"], json!([]));
+    assert_eq!(r["fx"]["market_as_of"], "2026-09-21");
+    let uah = r["by_currency"].as_array().unwrap().iter().find(|c| c["currency"] == "UAH").unwrap().clone();
+    assert_eq!(uah["rate_source"], "market");
+}
+
+#[test]
 fn old_denied_steam_orders_are_pruned_daily() {
     use crate::steam::{steam_order, SteamOrder};
     let w = World::new();

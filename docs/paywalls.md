@@ -92,7 +92,7 @@ The admin page shows these columns per variant (app → **Paywalls** → Results
 | Buyers | the players with a first purchase (`reason = purchase`) whose `/verify` named this placement, test and variant |
 | Purchases | those first purchases (a player who buys twice is one buyer, two purchases) |
 | Renewals | Renewals of those subscriptions. A renewal row inherits the attribution of the purchase that started the subscription. |
-| Revenue | Gross of purchases and renewals in USD, at the ECB rate of the purchase day (the same rates as the revenue dashboard). Refunded rows (`revoke_pending` / `revoked`) are subtracted for net. |
+| Revenue | Gross of purchases and renewals in USD, at the rate of the purchase day (ECB, market rates for the other currencies: the same rates as the revenue dashboard). Refunded rows (`revoke_pending` / `revoked`) are subtracted for net. |
 | Conversion | buyers / players (shown as "—" without players) |
 | ARPU / player | net revenue / players |
 | Probability to be best | see below |

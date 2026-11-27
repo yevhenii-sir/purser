@@ -829,6 +829,8 @@ pub fn build_full_report(input: &ReportInput) -> Value {
             "currency": c, "gross_micros": g, "refunded_micros": f,
             "gross_usd_micros": gu, "refunded_usd_micros": fu,
             "converted": !usd.missing.contains(if c.is_empty() { "(none)" } else { c.as_str() }),
+            // Where the rate of the range's last day comes from (`fx::source`), if there is one.
+            "rate_source": fx.rate_with_source(c, q.to).map(|(_, source)| source),
         })).collect::<Vec<_>>(),
         "proceeds": {
             "estimated": true,
@@ -858,6 +860,7 @@ pub fn build_full_report(input: &ReportInput) -> Value {
         },
         "fx": {
             "as_of": fx.as_of().map(format_day),
+            "market_as_of": fx.market_as_of().map(format_day),
             "missing": usd.missing.into_iter().collect::<Vec<_>>(),
             // Converted with the last rate known, older than two weeks.
             "stale": usd.stale.into_iter().collect::<Vec<_>>(),
@@ -1343,6 +1346,8 @@ mod tests {
         assert_eq!(r["totals"]["purchases"], 3);
         assert_eq!(r["totals"]["refund_rate"], 1.0 / 3.0);
         assert_eq!(r["fx"]["missing"], json!(["UAH"]));
+        let source_of = |c: &str| r["by_currency"].as_array().unwrap().iter().find(|x| x["currency"] == c).map(|x| x["rate_source"].clone());
+        assert_eq!((source_of("EUR"), source_of("UAH")), (Some(json!("ecb")), Some(Value::Null)));
         assert_eq!(r["series"].as_array().unwrap().len(), 3);
         assert_eq!(r["series"][1]["day"], "2026-11-02");
         assert_eq!(r["by_app"][1]["app_id"], "b");

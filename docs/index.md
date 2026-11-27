@@ -37,7 +37,7 @@ For each flow step by step, see [how it works](flows.md).
 - **Stores**: Google Play, App Store, Amazon Appstore, Huawei AppGallery, Samsung Galaxy Store, Meta Quest (Horizon Store), Steam, web payments (Stripe, Xsolla) and Telegram Stars. Purser verifies on the server, consumes or acknowledges, and restores purchases. All builds of a game share entitlements.
 - **A ledger with retries**: every reward reaches the game, even when the game server is down. Purser retries until the reward is applied. Each event carries an `event_id`, so the game applies it once. Refunds, renewals and expirations come from store notifications. Purser can also answer App Store refund requests with consumption data.
 - **Admin panel**, served by the module. It has an *Add an app* wizard, a setup check with fix hints, products with Google Play and App Store import, players, purchases, integrations, keys and logs.
-- **Revenue** ([analytics](analytics.md)): net revenue, refunds, subscriptions and MRR in USD (ECB rates). Break it down by app, product, country and currency.
+- **Revenue** ([analytics](analytics.md)): net revenue, refunds, subscriptions and MRR in USD (ECB rates, market rates for the other currencies). Break it down by app, product, country and currency.
 - **[Paywalls and A/B tests](paywalls.md)** as remote config.
 - **[Alerts](alerts.md)** to Telegram, Slack, Discord or a webhook when deliveries fail or keys are rejected.
 - **Integrations**:

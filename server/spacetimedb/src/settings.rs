@@ -41,6 +41,10 @@ pub mod key {
     pub const FX_LAST_OK: &str = "fx_last_ok_micros";
     /// Next FX history backfill attempt after a failed one (micros).
     pub const FX_BACKFILL_RETRY_AT: &str = "fx_backfill_retry_at_micros";
+    /// Earliest day (days since epoch) market FX rates were backfilled to.
+    pub const FX_MARKET_BACKFILL_FROM: &str = "fx_market_backfill_from_day";
+    /// Next market FX history backfill attempt after a failed one (micros).
+    pub const FX_MARKET_RETRY_AT: &str = "fx_market_retry_at_micros";
     /// Days player profiles, attribution ids and paywall view counts are kept after their last
     /// change (default `retention::DEFAULT_DAYS`). The ledger and revenue are kept for good.
     pub const RETENTION_DAYS: &str = "retention_days";

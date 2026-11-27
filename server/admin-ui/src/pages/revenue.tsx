@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { AppCombobox } from "@/components/app-combobox"
-import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Section, Stat } from "@/components/common"
+import { DataTable, DialogBody, ErrorBox, Field, Loading, Mono, PageHeader, Section, Stat, Tone } from "@/components/common"
 import { RevenueTree } from "@/components/revenue-tree"
 import { RevenueUpdated } from "@/components/revenue-updated"
 import { RichTable, type RichColumn } from "@/components/rich-table"
@@ -181,7 +181,7 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
       {!embedded && (
         <PageHeader
           title="Revenue"
-          description="Store prices before the store's commission, converted to USD at the ECB rate of each day. Proceeds are an estimate."
+          description="Store prices before the store's commission, converted to USD at the rate of each day (ECB, market rates for the rest). Proceeds are an estimate."
         />
       )}
       <div className="flex flex-wrap items-center gap-3">
@@ -390,7 +390,7 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
           <ByAppSection stats={r} groupOf={groupOf} buildText={buildText} />
           <Section
             title="By currency"
-            description={`ECB rates as of ${r.fx.as_of || "—"}.`}
+            description={`ECB rates as of ${r.fx.as_of || "—"}; currencies the ECB does not publish at market rates (fawazahmed0/currency-api) as of ${r.fx.market_as_of || "—"}. A manual rate wins over both.`}
             actions={edit && <Button size="sm" variant="outline" onClick={() => setFxDialog("")}><PlusIcon /> Manual rate</Button>}
           >
             <DataTable
@@ -404,6 +404,12 @@ export function RevenuePage({ fixedGame, embedded, go }: PageProps & { fixedGame
                   title: "Gross, USD",
                   num: true,
                   cell: (x) => (x.converted ? usd(x.gross_usd_micros) : edit ? <Button size="xs" variant="outline" onClick={() => setFxDialog(x.currency)}>Set rate</Button> : <span className="text-muted-foreground">no rate</span>),
+                },
+                {
+                  title: "Rate",
+                  cell: (x) => x.currency && x.currency !== "USD" && x.rate_source
+                    ? <Tone tone={x.rate_source === "manual" ? "warn" : "muted"}>{RATE_SOURCES[x.rate_source]}</Tone>
+                    : <span className="text-muted-foreground">—</span>,
                 },
               ]}
             />
@@ -788,6 +794,8 @@ function FeeDialog({ stats, onClose, onSaved }: { stats: Stats; onClose: () => v
   )
 }
 
+const RATE_SOURCES: Record<string, string> = { ecb: "ECB", market: "market", manual: "manual", telegram: "Telegram" }
+
 function FxDialog({ currency, onClose, onSaved }: { currency: string | null; onClose: () => void; onSaved: () => void }) {
   const [ccy, setCcy] = useState("")
   const [rate, setRate] = useState("")
@@ -814,7 +822,7 @@ function FxDialog({ currency, onClose, onSaved }: { currency: string | null; onC
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
           <DialogTitle>Manual exchange rate</DialogTitle>
-          <DialogDescription>For currencies the ECB does not publish. Used instead of the ECB rate for every day.</DialogDescription>
+          <DialogDescription>Used instead of the ECB and market rates for every day, for a currency neither has or a rate of your own.</DialogDescription>
         </DialogHeader>
         <div className="grid gap-4">
           {!currency && (

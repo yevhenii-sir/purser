@@ -28,6 +28,9 @@ const FX_REFRESH_MICROS: i64 = 6 * 3600 * 1_000_000;
 const FX_CHUNK_DAYS: i32 = 60;
 /// A failed history backfill is tried again after this long.
 const FX_BACKFILL_RETRY_MICROS: i64 = 3600 * 1_000_000;
+/// Market rates come one file per day: at most this many days per worker run, within this time.
+const FX_MARKET_DAYS_PER_RUN: i32 = 15;
+const FX_MARKET_SECS_PER_RUN: i64 = 10;
 /// Ranges up to this many days read their rates by day; longer ones scan `fx_day`.
 const FX_POINT_LOOKUP_DAYS: i32 = 1000;
 /// Longest report range.
@@ -161,7 +164,16 @@ pub struct FxDay {
     pub rates_json: String,
 }
 
-/// Manual rate for currencies the ECB does not publish.
+/// Market rates of one day (`purser_core::fx::parse_market`), for the currencies the ECB does not
+/// publish: units per 1 USD, JSON object.
+#[spacetimedb::table(accessor = fx_market_day, cache_policy = required_in_memory)]
+pub struct FxMarketDay {
+    #[primary_key]
+    pub day: i32,
+    pub rates_json: String,
+}
+
+/// Manual rate, used instead of the ECB and market rates.
 #[spacetimedb::table(accessor = fx_override, cache_policy = required_in_memory)]
 pub struct FxOverride {
     #[primary_key]
@@ -920,6 +932,80 @@ fn store_rates(tx: &ReducerContext, day: i32, rates: &Rates) {
     forget_reports(tx);
 }
 
+fn store_market_rates(tx: &ReducerContext, day: i32, rates: &Rates) {
+    let row = FxMarketDay { day, rates_json: serde_json::to_string(rates).unwrap_or_default() };
+    if tx.db.fx_market_day().day().find(day).is_some() {
+        tx.db.fx_market_day().day().update(row);
+    } else {
+        tx.db.fx_market_day().insert(row);
+    }
+    forget_reports(tx);
+}
+
+/// A market rates file from the CDN, else its mirror; `Ok(None)` when both answer 404 (a day the
+/// history does not have).
+fn fetch_market(ctx: &mut impl Ctx, urls: &[String; 2]) -> Result<Option<String>, String> {
+    let mut missing = true;
+    let mut error = String::new();
+    for url in urls {
+        match net::send(ctx.http(), "GET", url, &[], ()) {
+            Ok(res) if res.ok() => return Ok(Some(res.body)),
+            Ok(res) => {
+                missing &= res.status == 404;
+                error = format!("market FX {url}: {}", res.describe());
+            }
+            Err(e) => {
+                missing = false;
+                error = e;
+            }
+        }
+    }
+    if missing {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
+/// The latest market rates; the first ones start their history backfill.
+fn refresh_market_latest(ctx: &mut impl Ctx) -> Result<(), String> {
+    let body = fetch_market(ctx, &fx::market_latest_urls())?.ok_or("market FX: no latest rates")?;
+    let (day, rates) = fx::parse_market(&body)?;
+    ctx.tx(|tx| {
+        store_market_rates(tx, day, &rates);
+        if settings::get(tx, key::FX_MARKET_BACKFILL_FROM).is_none() {
+            settings::set(tx, key::FX_MARKET_BACKFILL_FROM, &day.to_string());
+        }
+    });
+    log::info!("Market FX rates of {} stored", format_day(day));
+    Ok(())
+}
+
+/// Market history, newest day first, a file per day, until the run's share of time is spent.
+fn backfill_market(ctx: &mut impl Ctx, start: i32, end: i32) -> Result<(), String> {
+    let budget = crate::ctx::Budget::new(ctx, FX_MARKET_SECS_PER_RUN);
+    for day in (start..=end).rev() {
+        if !budget.left() {
+            break;
+        }
+        let rates = match fetch_market(ctx, &fx::market_day_urls(day)).and_then(|body| body.map(|b| fx::parse_market(&b)).transpose()) {
+            Ok(rates) => rates,
+            Err(e) => {
+                let retry_at = ctx.now_micros() + FX_BACKFILL_RETRY_MICROS;
+                ctx.tx(|tx| settings::set(tx, key::FX_MARKET_RETRY_AT, &retry_at.to_string()));
+                return Err(e);
+            }
+        };
+        ctx.tx(|tx| {
+            if let Some((_, rates)) = &rates {
+                store_market_rates(tx, day, rates);
+            }
+            settings::set(tx, key::FX_MARKET_BACKFILL_FROM, &day.to_string());
+        });
+    }
+    Ok(())
+}
+
 fn fetch(ctx: &mut impl Ctx, url: &str) -> Result<String, String> {
     let res = net::send(ctx.http(), "GET", url, &[], ())?;
     if res.ok() {
@@ -937,6 +1023,8 @@ enum FxPlan {
     Latest,
     /// One chunk of history, `start..=end`, until the rates reach back to the first revenue day.
     Backfill { start: i32, end: i32 },
+    /// Days of market history, `start..=end`, the same way (once the ECB history is complete).
+    MarketBackfill { start: i32, end: i32 },
 }
 
 fn fx_plan(tx: &ReducerContext, force: bool) -> FxPlan {
@@ -945,16 +1033,25 @@ fn fx_plan(tx: &ReducerContext, force: bool) -> FxPlan {
     if force || !has_rates || now - settings::get_i64(tx, key::FX_LAST_ATTEMPT) >= FX_REFRESH_MICROS {
         return FxPlan::Latest;
     }
-    let Some(from) = settings::get(tx, key::FX_BACKFILL_FROM).and_then(|v| v.parse::<i32>().ok()) else { return FxPlan::Nothing };
-    if now < settings::get_i64(tx, key::FX_BACKFILL_RETRY_AT) {
+    let backfilled_to = |k: &str| settings::get(tx, k).and_then(|v| v.parse::<i32>().ok());
+    let (Some(ecb_from), market_from) = (backfilled_to(key::FX_BACKFILL_FROM), backfilled_to(key::FX_MARKET_BACKFILL_FROM)) else {
         return FxPlan::Nothing;
-    }
+    };
     // The first revenue day: the first row of the `day` index.
     let Some(needed) = tx.db.revenue_daily().day().filter(i32::MIN..).next().map(|r| r.day) else { return FxPlan::Nothing };
-    if needed >= from {
-        FxPlan::Nothing
-    } else {
-        FxPlan::Backfill { start: (from - FX_CHUNK_DAYS).max(needed), end: from - 1 }
+    if needed < ecb_from {
+        return if now < settings::get_i64(tx, key::FX_BACKFILL_RETRY_AT) {
+            FxPlan::Nothing
+        } else {
+            FxPlan::Backfill { start: (ecb_from - FX_CHUNK_DAYS).max(needed), end: ecb_from - 1 }
+        };
+    }
+    let market_needed = needed.max(parse_day(fx::MARKET_FIRST_DAY).unwrap_or(needed));
+    match market_from {
+        Some(from) if market_needed < from && now >= settings::get_i64(tx, key::FX_MARKET_RETRY_AT) => {
+            FxPlan::MarketBackfill { start: (from - FX_MARKET_DAYS_PER_RUN).max(market_needed), end: from - 1 }
+        }
+        _ => FxPlan::Nothing,
     }
 }
 
@@ -964,15 +1061,27 @@ fn refresh_fx(ctx: &mut impl Ctx, plan: FxPlan) -> Result<(), String> {
         FxPlan::Latest => {
             let now = ctx.now_micros();
             ctx.tx(|tx| settings::set(tx, key::FX_LAST_ATTEMPT, &now.to_string()));
-            let (day, rates) = fx::parse_latest(&fetch(ctx, &fx::latest_url())?)?;
-            ctx.tx(|tx| {
-                store_rates(tx, day, &rates);
-                settings::set(tx, key::FX_LAST_OK, &crate::ctx::tx_now_micros(tx).to_string());
-                if settings::get(tx, key::FX_BACKFILL_FROM).is_none() {
-                    settings::set(tx, key::FX_BACKFILL_FROM, &day.to_string());
-                }
-            });
-            log::info!("FX rates of {} stored", format_day(day));
+            let ecb = fetch(ctx, &fx::latest_url()).and_then(|body| fx::parse_latest(&body));
+            if let Ok((day, rates)) = &ecb {
+                ctx.tx(|tx| {
+                    store_rates(tx, *day, rates);
+                    settings::set(tx, key::FX_LAST_OK, &crate::ctx::tx_now_micros(tx).to_string());
+                    if settings::get(tx, key::FX_BACKFILL_FROM).is_none() {
+                        settings::set(tx, key::FX_BACKFILL_FROM, &day.to_string());
+                    }
+                });
+                log::info!("FX rates of {} stored", format_day(*day));
+            }
+            // The market rates only fill in: their failure is logged, the alert is about the ECB's.
+            if let Err(e) = refresh_market_latest(ctx) {
+                log::warn!("{e}");
+            }
+            ecb.map(|_| ())
+        }
+        FxPlan::MarketBackfill { start, end } => {
+            if let Err(e) = backfill_market(ctx, start, end) {
+                log::warn!("{e}");
+            }
             Ok(())
         }
         FxPlan::Backfill { start, end } => {
@@ -997,7 +1106,7 @@ fn refresh_fx(ctx: &mut impl Ctx, plan: FxPlan) -> Result<(), String> {
     }
 }
 
-/// Fetches the latest ECB rates now.
+/// Fetches the latest ECB and market rates now.
 #[spacetimedb::procedure]
 pub fn admin_refresh_fx(ctx: &mut ProcedureContext) -> String {
     let allowed = ctx.tx(|tx| crate::access::require(tx, purser_core::roles::Cap::Configure).map(|who| crate::access::audit(tx, &who, "admin_refresh_fx", "", "")));
@@ -1019,9 +1128,20 @@ pub fn fx_table(tx: &ReducerContext, from: i32, to: i32) -> FxTable {
         // Nothing near the range: the closest days on either side still give a usable rate.
         rows = tx.db.fx_day().iter().collect();
     }
+    let mut market: Vec<FxMarketDay> = if to - from <= FX_POINT_LOOKUP_DAYS {
+        (from..=to).filter_map(|day| tx.db.fx_market_day().day().find(day)).collect()
+    } else {
+        tx.db.fx_market_day().iter().filter(|f| f.day >= from && f.day <= to).collect()
+    };
+    if market.is_empty() {
+        market = tx.db.fx_market_day().iter().collect();
+    }
     let mut table = FxTable::default();
     for f in rows {
         table.add_day(f.day, serde_json::from_str(&f.rates_json).unwrap_or_default());
+    }
+    for f in market {
+        table.add_market_day(f.day, serde_json::from_str(&f.rates_json).unwrap_or_default());
     }
     for o in tx.db.fx_override().iter() {
         table.set_override(&o.currency, o.units_per_usd);

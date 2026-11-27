@@ -82,4 +82,4 @@ GROUP BY tenjin_id
   external table for recent days and load older ones into a native table.
 - **Sandbox purchases** are exported only with **Send sandbox / test purchases** on.
 - **Amounts** are in micros of `currency`. The admin page's revenue report converts to USD with ECB
-  rates. To do the same in BigQuery, join a table of daily rates.
+  rates (market rates for the other currencies). To do the same in BigQuery, join a table of daily rates.

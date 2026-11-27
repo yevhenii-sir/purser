@@ -248,16 +248,26 @@ reference rate of that day ([frankfurter.dev](https://frankfurter.dev), no key n
 Friday's rate. The worker fetches the latest rates every 6 hours and backfills history as far back as
 the first sale.
 
-The ECB publishes about 30 currencies. Others (UAH, VND, …) are listed as *No rate for …*. They are
-left out of USD totals until you set a manual rate.
+The ECB publishes about 30 currencies. The others (UAH, VND, KZT, …) are converted at the market rate
+of that day from the open [currency-api](https://github.com/fawazahmed0/exchange-api) (served by
+jsDelivr, with `currency-api.pages.dev` as its mirror; no key needed). It has a rate for every day,
+weekends included, from 2024-03-02 on. The ECB stays the source of its own currencies; the market
+rate of one of them is used only on a day the ECB has none within two weeks. The same refresh fetches
+both every 6 hours. Market history is backfilled after the ECB's, a file per day, up to 15 days per
+worker run.
+
+Revenue → By currency shows where each rate comes from (**ECB**, **market**, **manual**). A currency
+with neither rate is listed as *No rate for …* and left out of USD totals until you set a manual
+rate.
 
 - **Set a manual rate**: Revenue → By currency → **Set rate**, or `admin_set_fx_override("UAH", 41.5)`.
-  The rate is in units per 1 USD.
-- **Go back to the ECB rate**: `admin_delete_fx_override("UAH")`.
-- **Fetch the latest ECB rates now**: **Rates** on the Revenue page (`admin_refresh_fx`).
+  The rate is in units per 1 USD and wins over the ECB and market rates for every day.
+- **Go back to the published rates**: `admin_delete_fx_override("UAH")`.
+- **Fetch the latest rates now**: **Rates** on the Revenue page (`admin_refresh_fx`).
 
-A currency the ECB stopped publishing for more than two weeks is converted at its last rate and listed
-under `fx.stale`. Totals per currency are always shown in the original currency.
+A currency neither source has published for more than two weeks is converted at its last rate and
+listed under `fx.stale`. Totals per currency are always shown in the original currency. A failing
+market source is only logged; the `fx_failing` alert is about the ECB rates.
 
 ## Data and API
 
