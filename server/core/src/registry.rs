@@ -260,11 +260,11 @@ pub const APPLE: StoreInfo = StoreInfo {
     notify_secret: Some("apple_notification_secret"),
     notify_label: "App Store Server Notifications URL (Production and Sandbox, Version 2)",
     secrets: &[
-        SecretSpec { name: "apple_issuer_id", label: "App Store Connect Issuer ID", need: Need::Required, account_wide: true, file: false },
-        SecretSpec { name: "apple_key_id", label: "App Store Connect Key ID", need: Need::Required, account_wide: true, file: false },
+        SecretSpec { name: "apple_issuer_id", label: "Issuer ID (Users and Access > Integrations; the same for every key)", need: Need::Required, account_wide: true, file: false },
+        SecretSpec { name: "apple_key_id", label: "In-App Purchase key ID (Users and Access > Integrations > In-App Purchase, not App Store Connect API)", need: Need::Required, account_wide: true, file: false },
         SecretSpec {
             name: "apple_private_key_p8",
-            label: "Private key .p8 (In-App Purchase key)",
+            label: "Private key .p8 of the In-App Purchase key",
             need: Need::Required,
             account_wide: true,
             file: true,
@@ -278,14 +278,14 @@ pub const APPLE: StoreInfo = StoreInfo {
         },
         SecretSpec {
             name: "apple_connect_key_id",
-            label: "App Store Connect API Team key ID (catalog import, optional)",
+            label: "Team key ID (Users and Access > Integrations > App Store Connect API > Team Keys, App Manager; catalog import and App Store setup, optional)",
             need: Need::Optional,
             account_wide: true,
             file: false,
         },
         SecretSpec {
             name: "apple_connect_private_key_p8",
-            label: "Private key .p8 of the App Store Connect API Team key (catalog import, optional)",
+            label: "Private key .p8 of the Team key (catalog import and App Store setup, optional)",
             need: Need::Optional,
             account_wide: true,
             file: true,

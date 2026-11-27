@@ -11,10 +11,13 @@
 
 ### Added
 
+- The product dialog has **Delete**: the product goes from every build (purchases of it stay in the ledger).
 - The Add an app wizard asks for the app's name first and derives the app key from it (`Magnet Rings` → `magnet-rings`) until the key is typed; the name is saved with the builds (`admin_set_app_name`). A name with no Latin letters leaves the key to the app id, as before.
 
 ### Fixed
 
+- A store catalog import with "Also add to" other builds overwrote their products: an App Store import (which carries no prices) set the Google Play prices to 0. The other builds now get only the products they do not have, and a store that reports no price keeps the price a product has.
+- The Apple keys are labelled by where they come from: the In-App Purchase key (Users and Access > Integrations > In-App Purchase) checks purchases, the Team key (App Store Connect API > Team Keys) imports the catalog and sets up the App Store.
 - The refund sweep of Google Play builds read voided purchases from exactly 30 days back, which Google refuses ("Start time must be within [30] days of data"): it starts a day later now, so refunds no notification reported are found again.
 - Set up with Google Cloud: a push subscription refused with `iam.serviceAccounts.actAs` says which service account it authenticates as (the build key's, possibly of another project) and that the token's account needs Service Account User; the role is in the list of needed roles too (docs/store-setup.md).
 - Importing the catalog of a Google Play app without subscriptions (or one-time products) failed with `bad subscriptions response: EOF`: Google answers an empty list with an empty body. The refund sweep read an empty voided-purchases answer the same way.

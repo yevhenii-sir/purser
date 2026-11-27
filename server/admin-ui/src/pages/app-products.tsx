@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useState } from "react"
-import { ChevronDownIcon, ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon, RefreshCwIcon, StoreIcon, UploadIcon } from "lucide-react"
+import { ChevronDownIcon, ClipboardCopyIcon, ClipboardPasteIcon, CopyIcon, DownloadIcon, FileJsonIcon, PlusIcon, RefreshCwIcon, StoreIcon, Trash2Icon, UploadIcon } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -216,7 +216,7 @@ export function AppProductsTab({ data, go }: TabProps) {
           return { product_id: r.product_id, kind: r.kind, price_micros: common.price_micros, currency: common.currency || "USD", prices, ...listingOfRow(r) }
         })} />
       {importers.map((a) => (
-        <StoreImportDialog key={a.app_id} open={dialog === `import:${a.app_id}`} app={a} others={g.apps.filter((o) => o !== a)} onClose={() => setDialog(null)} onSaved={products.reload} />
+        <StoreImportDialog key={a.app_id} open={dialog === `import:${a.app_id}`} app={a} others={g.apps.filter((o) => o !== a)} existing={rows} onClose={() => setDialog(null)} onSaved={products.reload} />
       ))}
       <UnityImportDialog open={dialog === "unity"} apps={g.apps} existing={products.data ? rows : null} onClose={() => setDialog(null)} onSaved={products.reload}
         onWizard={() => go(appRoute(g.key, "setup"))} />
@@ -278,6 +278,18 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
       const p = row?.by[a.app_id]
       return [a.app_id, p && p.product_id !== row?.product_id ? p.product_id : ""]
     })))
+
+  /** Deletes the product from every build; purchases of it and their history stay. */
+  const remove = async () => {
+    if (!row) return
+    const builds = apps.filter((a) => row.by[a.app_id])
+    if (!confirm(`Delete ${row.product_id} from ${builds.map((a) => buildLabel(a)).join(" and ")}? Purchases already made stay in the ledger; new purchases of it are refused as unknown.`)) return
+    const ok = await tryAct(async () => {
+      for (const a of builds) await call("admin_delete_product", a.app_id, row.by[a.app_id]!.product_id)
+      return true
+    }, "Deleted")
+    if (ok) { onSaved(); onClose() }
+  }
 
   const save = async () => {
     const id = productId.trim()
@@ -387,7 +399,10 @@ function ProductForm({ row, apps, onClose, onSaved }: { row: Row | null; apps: G
           </div>
         </div>
       </DialogBody>
-      <DialogFooter><Button onClick={save}>Save</Button></DialogFooter>
+      <DialogFooter className="gap-2 sm:justify-between">
+        <div>{row && <Button variant="ghost" className="text-destructive" onClick={remove}><Trash2Icon /> Delete</Button>}</div>
+        <Button onClick={save}>Save</Button>
+      </DialogFooter>
     </>
   )
 }
@@ -398,7 +413,12 @@ const IMPORT_HELP: Record<string, string> = {
   apple: "Needs an App Store Connect API Team key (App Manager role) in the build's keys: the In-App Purchase key cannot list products. Prices are not imported: the App Store reports the price of every purchase.",
 }
 
-function StoreImportDialog({ open, app, others, onClose, onSaved }: { open: boolean; app: GameApp; others: GameApp[]; onClose: () => void; onSaved: () => void }) {
+function StoreImportDialog({ open, app, others, existing, onClose, onSaved }: {
+  open: boolean; app: GameApp; others: GameApp[]
+  /** The app's products now, grouped by catalog id. */
+  existing: Row[]
+  onClose: () => void; onSaved: () => void
+}) {
   const [rows, setRows] = useState<CatalogRow[] | null>(null)
   const [missing, setMissing] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
@@ -419,8 +439,20 @@ function StoreImportDialog({ open, app, others, onClose, onSaved }: { open: bool
     }
   }
   const save = async () => {
-    const targets = [app, ...(alsoOthers ? others : [])]
-    const items = targets.flatMap((t) => picked.map((p) => ({ app_id: t.app_id, ...p })))
+    const items = picked.flatMap((p) => {
+      // The product this store id already is here (its catalog id may differ), else one of that catalog id.
+      const row = existing.find((r) => r.by[app.app_id]?.product_id === p.product_id) || existing.find((r) => r.product_id === p.product_id)
+      const catalog_id = row?.product_id || p.product_id
+      // A store that reports no price (the App Store) keeps the price this product has already.
+      const known = Object.values(row?.by || {}).find((x) => x && Number(x.price_micros) > 0)
+      const priceFor = (own?: Product) => (p.price_micros > 0 ? { price_micros: p.price_micros, currency: p.currency }
+        : own && Number(own.price_micros) > 0 ? { price_micros: Number(own.price_micros), currency: own.currency }
+        : known ? { price_micros: Number(known.price_micros), currency: known.currency } : { price_micros: 0, currency: p.currency })
+      const mine = { ...p, app_id: app.app_id, catalog_id, ...priceFor(row?.by[app.app_id]) }
+      // The other builds get only what they do not have: their own rows are never overwritten.
+      const theirs = alsoOthers ? others.filter((o) => !row?.by[o.app_id]).map((o) => ({ ...p, app_id: o.app_id, catalog_id, ...priceFor() })) : []
+      return [mine, ...theirs]
+    })
     const ok = await tryAct(() => call("admin_upsert_products", JSON.stringify(items)), `Saved ${picked.length} product(s)`)
     if (ok !== undefined) { onSaved(); onClose(); setRows(null) }
   }
@@ -444,7 +476,7 @@ function StoreImportDialog({ open, app, others, onClose, onSaved }: { open: bool
           {others.length > 0 ? (
             <div className="flex items-center gap-2">
               <Checkbox id="also" checked={alsoOthers} onCheckedChange={(v) => setAlsoOthers(v === true)} />
-              <Label htmlFor="also" className="font-normal">Also add to {others.map((o) => buildLabel(o)).join(", ")}</Label>
+              <Label htmlFor="also" className="font-normal">Also add to {others.map((o) => buildLabel(o)).join(", ")} <span className="text-muted-foreground">(what they do not have yet)</span></Label>
             </div>
           ) : <span />}
           <Button onClick={save} disabled={!rows || !picked.length}>Save selected</Button>
