@@ -367,8 +367,9 @@ function DeliveryTab({ data, reload, go }: TabProps) {
 
   return (
     <>
-      {/* Read-only for roles that cannot change builds. */}
-      <fieldset disabled={!edit} className="contents">
+      {/* Read-only for roles that cannot change builds. A block of its own: the page's space-y spaces
+          only its direct children, and a `contents` box shows no margin. */}
+      <fieldset disabled={!edit} className="min-w-0 space-y-6">
       <Section title="Reward delivery" description="How purchases reach the app. Shared by all its builds."
         actions={edit && <Button onClick={save}>Save</Button>}>
         {differs && <p className="mb-4 text-sm text-amber-700 dark:text-amber-400">The builds have different settings now; saving applies these to all of them.</p>}
