@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.15.0 - 2026-11-28
+
+**In short:** a build is its store and its id in the store, so Google Play and App Store builds may share a bundle id; a catalog import maps store ids to the app's products and brings store listings and App Store prices; currencies the ECB does not publish (UAH, VND, ...) get market rates; GA4, Amplitude and Mixpanel events land in the player's session and on the player their SDKs know; the Unity package keeps Unity IAP in stripped IL2CPP builds and restores owned purchases on the first launch.
+
+**Upgrade:** needs a publish with `--delete-data` over 0.14.0: the builds' keys change (Breaking, below). Load the setup again with `seed.py` (or the admin page) afterwards. Clients name the build's store in every request: update the Unity package (or the SDK) to 0.15.0 together with the server.
+
 ### Breaking
 
 - A build is its store and its id in the store, so a Google Play build and an App Store build (or an Amazon, Huawei, Samsung build) may share a package name / bundle id. `game_app` gets `store_app_id` (the id in the store: package, bundle id, Steam App ID, any id of a web build) and its key `app_id` becomes `{store}:{store_app_id}` (`google:com.example.mygame`, `apple:com.example.mygame`); products, ledger rows, secrets scopes, integrations, revenue rows and every admin call use the key. Store API calls, notification URLs (`/notify/amazon?app=<package>`, ...), the game's `BillingEvent.app_id` and integration events carry the id in the store. The `.amazon` / `.huawei` / `.samsung` / `.quest` suffixes are no longer needed, and the `samsung_package_name` secret is gone (the build's id is the package).

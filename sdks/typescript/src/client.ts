@@ -19,7 +19,7 @@ import {
 } from "./types.js";
 
 /** Version of this SDK, sent as `client.sdk_version` (`typescript/<version>`). */
-export const SDK_VERSION = "0.14.0";
+export const SDK_VERSION = "0.15.0";
 
 /** At most this many purchases per `/restore` call. */
 export const MAX_RESTORE_ITEMS = 20;

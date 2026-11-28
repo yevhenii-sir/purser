@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-28
+
 ### Fixed
 
 - IL2CPP builds with managed code stripping lost Unity IAP as the default store: the linker removed
@@ -19,7 +21,6 @@
   made before Purser (Adapty, RevenueCat) or a reinstall come back. Retried on the next launch after a failure.
 - `CustomerInfo.IsKnown`: false for `CustomerInfo.Empty` before the first answer or its cache, so a game can wait before
   showing ads to a player who may own no-ads.
-
 - `AttributionKeys.GaSessionId`: Firebase's session id (`FirebaseAnalytics.GetSessionIdAsync()`), so GA4 counts a purchase
   in the session the player made it in. The **Attribution ids** sample sends it with `PURSER_FIREBASE`.
 - `AttributionKeys.AmplitudeSessionId` (the Amplitude SDK's session id) and `AttributionKeys.MixpanelDistinctId` (the

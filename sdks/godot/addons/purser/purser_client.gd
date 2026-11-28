@@ -6,7 +6,7 @@ extends Node
 ## [code]{"http_status": int (0 = not reached), "value": the parsed body or null, "error": String ("" on
 ## success), "code": the error code ("ERR_..."), "retry_after": seconds of a 429 or -1}[/code].
 
-const SDK_VERSION := "0.14.0"
+const SDK_VERSION := "0.15.0"
 const MAX_RESTORE_ITEMS := 20
 ## A [code]Retry-After[/code] longer than this (seconds) is cut to it.
 const MAX_RETRY_AFTER := 60.0

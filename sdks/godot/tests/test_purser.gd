@@ -82,7 +82,7 @@ func _test_verify_body() -> void:
 	check(_has_auth(calls[0]["headers"]) == "", "no token without a provider")
 	var body: Dictionary = calls[0]["body"]
 	check(not body.has("order_id"), "empty fields are left out")
-	check(body["price_micros"] == 990000 and body["client"]["sdk_version"] == "godot/0.14.0", "price and sdk version")
+	check(body["price_micros"] == 990000 and body["client"]["sdk_version"] == "godot/0.15.0", "price and sdk version")
 	c.free()
 
 
